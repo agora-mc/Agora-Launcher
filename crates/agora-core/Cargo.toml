@@ -64,6 +64,10 @@ quick-xml = "0.39"
 [target.'cfg(windows)'.dependencies]
 junction = "2"
 
+# Starting a game under agora_vfs.dll: import-table injection, with a remote thread as the fallback.
+# The DLL itself is never linked, only found at runtime.
+agora-vfs-inject = { path = "../agora-vfs-inject" }
+
 # Store discovery reads Steam, GOG and Microsoft Store install records from the registry.
 winreg = "0.55"
 

@@ -1593,6 +1593,217 @@ fn real_injection_a_delete_of_a_deployed_file_leaves_a_whiteout() {
     }
 }
 
+/// The fixture program and DLL of `crates/agora-vfs/fixtures/early-import`, which sit beside
+/// `agora_vfs.dll` in the target folder: `cargo build -p agora-vfs -p agora-vfs-early-import`.
+#[cfg(windows)]
+fn early_import_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = built_dll().parent().unwrap().to_path_buf();
+    let exe = dir.join("agora-early-import-exe.exe");
+    let dll = dir.join("agora_early_import.dll");
+    for file in [&exe, &dll] {
+        assert!(
+            file.is_file(),
+            "{} does not exist: run `cargo build -p agora-vfs -p agora-vfs-early-import`",
+            file.display()
+        );
+    }
+    (exe, dll)
+}
+
+/// A game whose executable statically imports a DLL whose `DllMain` rewrites `early_<program>.txt`
+/// beside it, the way Engine Fixes' preloader rewrites its log, and which starts a child that
+/// does the same (the way SKSE's loader starts the game). Both writes must reach the writable
+/// layer: the DLL has to be loaded, and its hooks installed, before the program's own imports in
+/// the game and in its child.
+#[cfg(windows)]
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs -p agora-vfs-early-import, then set AGORA_VFS_DLL"]
+fn real_injection_loads_the_vfs_before_the_games_own_imports() {
+    let (exe, dll) = early_import_fixture();
+    let def = cmd_game(&["spawn"]);
+    let tmp = TempDir::new().unwrap();
+    let ctx = create_test_context(&tmp, &def);
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    std::fs::copy(&exe, install_dir.join("Game.exe")).unwrap();
+    std::fs::copy(&exe, install_dir.join("Child.exe")).unwrap();
+    std::fs::copy(&dll, install_dir.join("agora_early_import.dll")).unwrap();
+    let install = make_test_install(&install_dir, true, true);
+    let inst = create_pinned_instance(&ctx, &install, &def, "Early");
+    let id = &inst.instance_id;
+    // The files the DLL rewrites are a mod's: links into the content store.
+    let item = add_content_folder(
+        &ctx,
+        "Mod",
+        &[
+            ("early_Game.txt", b"original"),
+            ("early_Child.txt", b"original"),
+        ],
+    );
+    add_content(&ctx, id, &item, None, None).unwrap();
+    let objects: Vec<_> = agora_core::content_store::get_item(&ctx, &item)
+        .unwrap()
+        .files
+        .iter()
+        .map(|f| ctx.paths.content_object_path(&f.sha256))
+        .collect();
+    let launcher = RealDllLauncher(built_dll());
+
+    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher);
+    assert_eq!(launched.prepared.deployment, Some(DeployMode::Virtual));
+    assert!(
+        launched.prepared.vfs.is_some() && launched.prepared.notice.is_none(),
+        "{:?}",
+        launched.prepared.notice
+    );
+    let status = launched.launched.child.wait().unwrap();
+    assert!(status.success(), "the fixture exited with {status}");
+
+    let log = read_vfs_log(&ctx, id);
+    println!("vfs log:\n{log}");
+    for object in &objects {
+        assert_eq!(
+            std::fs::read(object).unwrap(),
+            b"original",
+            "a DllMain ran before the hooks and wrote through the link into the content store"
+        );
+    }
+    let game_dir = deployment_dir(&ctx, id).unwrap().unwrap();
+    for program in ["Game", "Child"] {
+        let name = format!("early_{program}.txt");
+        assert_eq!(
+            std::fs::read(game_dir.join(&name)).unwrap(),
+            b"original",
+            "the farm's link {name} changed"
+        );
+        let written =
+            std::fs::read(instance_writable_dir(&ctx, id).join(&name)).unwrap_or_else(|e| {
+                panic!("{program}'s DllMain write must land in the writable layer: {e}")
+            });
+        assert_eq!(written, b"written by the fixture DllMain", "{program}");
+        println!(
+            "{program}'s DllMain write landed in the writable layer ({:?}); the content object still holds \"original\"",
+            String::from_utf8_lossy(&written)
+        );
+    }
+    assert!(
+        log.contains("[agora] injected by import table"),
+        "the game was not injected by its import table"
+    );
+    assert!(
+        log.contains("injected child") && !log.contains("remote thread"),
+        "the child was not injected by its import table"
+    );
+}
+
+/// Import-table injection rewrites the suspended process's headers and import table; the DLL must
+/// put them back when it loads (Detours' `DetourRestoreAfterWith`), because DRM such as SteamStub
+/// reads them (real Skyrim hung at start-up without it). The fixture compares its own in-memory
+/// headers with its file and exits non-zero if they differ.
+#[cfg(windows)]
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs -p agora-vfs-early-import, then set AGORA_VFS_DLL"]
+fn real_injection_leaves_the_games_headers_as_they_were_on_disk() {
+    let (exe, dll) = early_import_fixture();
+    let def = cmd_game(&["headers"]);
+    let tmp = TempDir::new().unwrap();
+    let ctx = create_test_context(&tmp, &def);
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    std::fs::copy(&exe, install_dir.join("Game.exe")).unwrap();
+    std::fs::copy(&dll, install_dir.join("agora_early_import.dll")).unwrap();
+    let install = make_test_install(&install_dir, true, true);
+    let inst = create_pinned_instance(&ctx, &install, &def, "Headers");
+    let id = &inst.instance_id;
+    let launcher = RealDllLauncher(built_dll());
+
+    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher);
+    assert!(
+        launched.prepared.vfs.is_some() && launched.prepared.notice.is_none(),
+        "{:?}",
+        launched.prepared.notice
+    );
+    let status = launched.launched.child.wait().unwrap();
+    let log = read_vfs_log(&ctx, id);
+    println!(
+        "vfs log:
+{log}"
+    );
+    assert!(
+        log.contains("[agora] injected by import table"),
+        "the game was not injected by its import table"
+    );
+    assert!(
+        status.success(),
+        "the game's in-memory headers differ from its file ({status}): the DLL did not restore them"
+    );
+    println!("the game's headers matched its file under import-table injection");
+}
+
+/// A 32-bit game from the 64-bit DLL: refused up front with the reason, nothing left running,
+/// and the executable untouched.
+#[cfg(windows)]
+#[test]
+#[ignore = "starts and ends a suspended process: needs a 32-bit cmd.exe (SysWOW64) and AGORA_VFS_DLL"]
+fn real_injection_a_32_bit_game_is_refused_cleanly() {
+    let wow64_cmd = std::path::Path::new(r"C:\Windows\SysWOW64\cmd.exe");
+    assert!(wow64_cmd.is_file(), "no 32-bit cmd.exe on this machine");
+    let def = cmd_game(&["/c", "exit", "0"]);
+    let tmp = TempDir::new().unwrap();
+    let ctx = create_test_context(&tmp, &def);
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    std::fs::copy(wow64_cmd, install_dir.join("Game.exe")).unwrap();
+    let before = std::fs::read(install_dir.join("Game.exe")).unwrap();
+    let install = make_test_install(&install_dir, true, true);
+    let inst = create_pinned_instance(&ctx, &install, &def, "Wow64");
+    let id = &inst.instance_id;
+    let launcher = RealDllLauncher(built_dll());
+
+    let err = agora_core::game_instance::launch_with(
+        &ctx,
+        id,
+        &def,
+        agora_core::game_instance::LaunchOptions {
+            launch_anyway: false,
+            plain: false,
+            deployment: Some(DeployMode::Virtual),
+        },
+        &DiscoveryReport::default,
+        &launcher,
+    )
+    .err()
+    .expect("a chosen rung must fail");
+    println!("chosen virtual, 32-bit game: {err}");
+    assert!(
+        matches!(err, InstanceError::VfsUnavailable { .. }),
+        "{err:?}"
+    );
+    assert!(
+        err.to_string().contains("built for another architecture"),
+        "{err}"
+    );
+    let game_dir = deployment_dir(&ctx, id).unwrap().unwrap();
+    for _ in 0..40 {
+        if agora_core::game_launch::processes_running_from(&game_dir).is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        agora_core::game_launch::processes_running_from(&game_dir).is_empty(),
+        "a suspended 32-bit game was left behind"
+    );
+    assert_eq!(
+        std::fs::read(install_dir.join("Game.exe")).unwrap(),
+        before,
+        "the executable changed"
+    );
+}
+
 #[cfg(windows)]
 fn read_vfs_log(ctx: &CoreContext, id: &str) -> String {
     std::fs::read_to_string(ctx.paths.instance_dir(id).unwrap().join("logs/vfs.log"))

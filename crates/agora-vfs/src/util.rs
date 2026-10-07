@@ -34,7 +34,9 @@ pub fn log(msg: impl AsRef<str>) {
                 .append(true)
                 .open(path)
             {
-                let _ = writeln!(f, "[{}] {}", std::process::id(), msg.as_ref());
+                // One write, so lines from several processes (and the launcher) do not interleave.
+                let _ =
+                    f.write_all(format!("[{}] {}\n", std::process::id(), msg.as_ref()).as_bytes());
             }
         }
     }

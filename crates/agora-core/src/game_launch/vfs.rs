@@ -1,9 +1,14 @@
 //! Running a game under `agora_vfs.dll` (MASTER_SPEC §26.5, rung 1).
 //!
-//! The game starts suspended, the DLL is injected with a remote `LoadLibraryW`, and the game is
-//! resumed only after the DLL has confirmed its hooks through a named event. Any failure before
-//! that point terminates the suspended process, so nothing has run, and is reported as
-//! [`LaunchError::VfsUnavailable`]. The DLL is found at runtime and never linked, fetched or built.
+//! The game starts suspended and its import table is rewritten in memory so `agora_vfs.dll` is its
+//! first import (`agora-vfs-inject`, the technique Microsoft Detours uses). Once resumed, Windows'
+//! own loader loads the DLL before any of the game's other DLLs, and the DLL confirms its hooks
+//! through a named event. Any failure ends the process and is reported as
+//! [`LaunchError::VfsUnavailable`]. For an executable whose import table cannot be rewritten the
+//! older way is the fallback: the DLL is loaded by a remote `LoadLibraryW` thread and the game is
+//! resumed only after the DLL has confirmed its hooks. By then the game's own static imports have
+//! already run their `DllMain`s, which is why it is only the fallback. The VFS's log says which
+//! was used. The DLL is found at runtime and never linked, fetched or built.
 
 use std::path::{Path, PathBuf};
 
@@ -105,23 +110,19 @@ pub fn launch_under_vfs(
 
 #[cfg(windows)]
 mod windows {
-    use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
-    use std::path::Path;
     use std::time::Duration;
 
+    use agora_vfs_inject::{Failure, Method};
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
-    use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-    use windows_sys::Win32::System::Memory::{
-        VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
-    };
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, CreateRemoteThread, GetExitCodeThread, WaitForSingleObject, CREATE_SUSPENDED,
+        CreateEventW, GetExitCodeProcess, WaitForMultipleObjects, WaitForSingleObject,
+        CREATE_SUSPENDED,
     };
 
     use super::{config_json, LaunchError, LaunchedGame, ResolvedLaunch, VfsLaunch};
@@ -191,12 +192,16 @@ mod windows {
         let mut child = cmd.spawn().map_err(LaunchError::Io)?;
         let process = child.as_raw_handle() as HANDLE;
 
-        // From here on the process exists and is suspended: any failure must end it.
+        // From here on the process exists: any failure must end it.
         // SAFETY: `process` is the live handle `child` owns and `event` outlives the call.
-        if let Err(reason) = unsafe { inject_and_resume(process, vfs, event.0) } {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable(reason));
+        match unsafe { inject_and_resume(process, vfs, event.0) } {
+            Ok(method) => append_log(vfs, &format!("[agora] injected by {}", method.describe())),
+            Err(reason) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                append_log(vfs, &format!("[agora] injection failed: {reason}"));
+                return Err(unavailable(reason));
+            }
         }
 
         let identity = process_identity::capture(child.id())
@@ -206,6 +211,18 @@ mod windows {
             identity,
             program: resolved.program.clone(),
         })
+    }
+
+    /// One line in the VFS's log, beside the DLL's own lines. Best effort: the log is a diagnostic.
+    fn append_log(vfs: &VfsLaunch, line: &str) {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&vfs.log)
+        {
+            let _ = file.write_all(format!("{line}\n").as_bytes());
+        }
     }
 
     fn write_config(vfs: &VfsLaunch, event_name: &str) -> Result<(), LaunchError> {
@@ -228,7 +245,8 @@ mod windows {
         })
     }
 
-    /// Inject the DLL, wait for it to confirm its hooks, then resume the process.
+    /// Get the DLL into the suspended process, make sure it confirmed its hooks, and leave the
+    /// process running. Returns how the DLL was injected.
     ///
     /// # Safety
     /// `process` must be a live handle to a suspended process and `event` a live event handle.
@@ -236,8 +254,41 @@ mod windows {
         process: HANDLE,
         vfs: &VfsLaunch,
         event: HANDLE,
+    ) -> Result<Method, String> {
+        match agora_vfs_inject::inject_import_table(process, &vfs.dll) {
+            Ok(()) => {
+                // The DLL loads during the process's own start-up, so the process must run for
+                // it to confirm. It is first in the import table, so the loader initialises it
+                // before the game's other DLLs; a DLL that cannot load or hook ends the process
+                // (the loader, or the DLL itself).
+                resume(process)?;
+                wait_for_ready(process, event, vfs)?;
+                Ok(Method::ImportTable)
+            }
+            // Nothing was touched, and a remote thread would fail the same way.
+            Err(Failure::WrongArchitecture(why)) => Err(format!(
+                "the game process could not load agora_vfs.dll: {why}"
+            )),
+            Err(Failure::Other(why)) => {
+                append_log(
+                    vfs,
+                    &format!(
+                        "[agora] import-table injection not possible ({why}); using a remote thread"
+                    ),
+                );
+                inject_remote_and_resume(process, vfs, event)?;
+                Ok(Method::RemoteThread)
+            }
+        }
+    }
+
+    /// The older way: load the DLL with a remote `LoadLibraryW`, wait for its hooks, then resume.
+    unsafe fn inject_remote_and_resume(
+        process: HANDLE,
+        vfs: &VfsLaunch,
+        event: HANDLE,
     ) -> Result<(), String> {
-        let load_result = inject(process, &vfs.dll)?;
+        let load_result = agora_vfs_inject::inject_remote_thread(process, &vfs.dll, STEP_TIMEOUT)?;
         let timeout_ms = STEP_TIMEOUT.as_millis() as u32;
         if load_result == 0 && WaitForSingleObject(event, 0) != WAIT_OBJECT_0 {
             // The DLL signals ready from DllMain, before LoadLibraryW returns, so a NULL module
@@ -262,86 +313,39 @@ mod windows {
         resume(process)
     }
 
-    /// Load `dll` into the suspended `process` with a remote `LoadLibraryW`, and return the
-    /// (truncated) module handle the call produced; zero means the load failed.
-    unsafe fn inject(process: HANDLE, dll: &Path) -> Result<u32, String> {
-        let path = wide(dll);
-        let bytes = path.len() * 2;
-        let remote = VirtualAllocEx(
-            process,
-            std::ptr::null(),
-            bytes,
-            MEM_COMMIT | MEM_RESERVE,
-            PAGE_READWRITE,
-        );
-        if remote.is_null() {
-            return Err(format!(
-                "could not allocate memory in the game process (error {})",
-                GetLastError()
-            ));
-        }
-        let mut written = 0usize;
-        if WriteProcessMemory(
-            process,
-            remote,
-            path.as_ptr() as *const c_void,
-            bytes,
-            &mut written,
-        ) == 0
-            || written != bytes
-        {
-            return Err(format!(
-                "could not write to the game process (error {})",
-                GetLastError()
-            ));
-        }
-        let kernel32 = GetModuleHandleW(wide("kernel32.dll").as_ptr());
-        if kernel32.is_null() {
-            return Err("kernel32.dll is not loaded".to_string());
-        }
-        let Some(load_library) = GetProcAddress(kernel32, c"LoadLibraryW".as_ptr() as *const u8)
-        else {
-            return Err("LoadLibraryW was not found".to_string());
-        };
-        let thread = CreateRemoteThread(
-            process,
-            std::ptr::null(),
+    /// Wait for the DLL's ready signal in a process that is running, or for the process to end.
+    unsafe fn wait_for_ready(
+        process: HANDLE,
+        event: HANDLE,
+        vfs: &VfsLaunch,
+    ) -> Result<(), String> {
+        // The event comes first: when both are signalled, the lowest index wins, so a game that
+        // ran to its end straight after the DLL's confirmation still counts as confirmed.
+        let handles = [event, process];
+        match WaitForMultipleObjects(
+            handles.len() as u32,
+            handles.as_ptr(),
             0,
-            Some(std::mem::transmute::<
-                unsafe extern "system" fn() -> isize,
-                unsafe extern "system" fn(*mut c_void) -> u32,
-            >(load_library)),
-            remote,
-            0,
-            std::ptr::null_mut(),
-        );
-        if thread.is_null() {
-            return Err(format!(
-                "the game process refused the injection thread (error {})",
-                GetLastError()
-            ));
-        }
-        let thread = Handle(thread);
-        match WaitForSingleObject(thread.0, STEP_TIMEOUT.as_millis() as u32) {
-            WAIT_OBJECT_0 => {}
-            WAIT_TIMEOUT => {
-                return Err(format!(
-                    "loading agora_vfs.dll took longer than {} seconds",
-                    STEP_TIMEOUT.as_secs()
-                ));
+            STEP_TIMEOUT.as_millis() as u32,
+        ) {
+            WAIT_OBJECT_0 => Ok(()),
+            x if x == WAIT_OBJECT_0 + 1 => {
+                let mut code = 0u32;
+                GetExitCodeProcess(process, &mut code);
+                Err(format!(
+                    "the game process ended (exit code {code:#x}) before agora_vfs.dll confirmed \
+                     its hooks (blocked by security software, or its hooks could not be \
+                     installed; see {})",
+                    vfs.log.display()
+                ))
             }
-            other => return Err(format!("waiting for the injection thread failed ({other})")),
+            WAIT_TIMEOUT => Err(format!(
+                "agora_vfs.dll did not confirm its hooks within {} seconds (see {})",
+                STEP_TIMEOUT.as_secs(),
+                vfs.log.display()
+            )),
+            other => Err(format!("waiting for the VFS ready signal failed ({other})")),
         }
-        let mut code = 0u32;
-        if GetExitCodeThread(thread.0, &mut code) == 0 {
-            return Err(format!(
-                "could not read the injection result (error {})",
-                GetLastError()
-            ));
-        }
-        // The thread is done with the path: give the page back.
-        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-        Ok(code)
     }
 
     /// Resume every thread of a process created suspended.

@@ -4185,19 +4185,47 @@ What the done-test changed:
 - **DLLs Windows loads while starting a game run before the VFS's hooks.** Engine Fixes' preloader
   rewrote its log through a farm link into the base. Declared writes are now the instance's copy in
   every mode; the general fix is import-table injection (Detours-style), so the DLL loads before
-  the game's own imports.
+  the game's own imports (slice 12, below).
 - **BepInEx rewrites its own config at start.** Under link deployment the protected link refused it,
   as designed, and BepInEx stopped. Valheim's definition now declares `BepInEx/config/**`.
 - **The plugin system must be on for community game packages to load** in a fresh data dir; the
   tracers were invisible until it was.
 
 **Phase 3 status: done-when met**, with follow-ups:
-- import-table injection;
 - Thunderstore's package layout, so BepInEx packs and mods place themselves (they were placed with
   `--from`/`--into`);
 - linked archive patterns for Valheim's base (it copied 4.3 GB);
 - per-user files mapped through the VFS rather than swapped;
 - the desktop app's views of all of this.
+
+**Slice 12: the DLL loads before the game's own imports** (`crates/agora-vfs-inject`). The launcher
+and the DLL's `CreateProcessInternalW` hook used to start a remote `LoadLibraryW` thread in the
+suspended process, and starting that thread is what makes Windows initialise the process, so the
+game's static imports ran their `DllMain`s first. Now the suspended process's import table is
+rewritten in memory (Microsoft Detours' `DetourUpdateProcessWithDll`, MIT, built from the
+`detours-sys2` crate's bundled source with the `cc` crate) so `agora_vfs.dll` is its first import,
+and the loader initialises it before any of the others. The DLL exports an `agora_vfs_ordinal1` at
+ordinal 1, which is how Detours names it.
+- The DLL calls `DetourRestoreAfterWith` first thing on attach, putting back the headers and import
+  table the injection rewrote. Without it real Skyrim hung at start-up (SteamStub reads them). With
+  it, Skyrim through SKSE's loader ran to `kDataLoaded` with all 16 plugins, and Engine Fixes' early
+  `d3dx9_42.log` write landed in the writable layer. Valheim's BepInEx loaded its three plugins the
+  same way, and Unity's crash handler, a child of the game, was injected too. A test compares a fixture's in-memory headers
+  with its file.
+- Core resumes the game, then waits for the ready event or for the process to end, and kills it on
+  timeout or early exit. A DLL that cannot read its configuration (one was named) or install its hooks
+  ends its own process at once (`0xA6F50001`), so a failure costs a start-up, not a timeout.
+- A child process the game starts is injected the same way, so SKSE's loader's `SkyrimSE.exe` is
+  covered. A child started with its own environment block has no configuration to find and runs
+  unhooked, as before.
+- If the import table cannot be rewritten (a protected or unusual executable, a path the loader
+  cannot read as an ANSI import name and that has no 8.3 name) the remote thread is the fallback, and
+  the VFS log says which was used. `AGORA_VFS_INJECTION=remote-thread` forces the fallback.
+- A process of another architecture is refused before anything is written, with the existing
+  "built for another architecture" message; the fallback cannot load it either.
+- What still runs before the hooks: the system DLLs and the DLL's own dependencies (kernel32, ntdll,
+  the C runtime), which are resolved before it initialises, and in the fallback case everything
+  the old way ran.
 
 ### 26.13 Phases
 

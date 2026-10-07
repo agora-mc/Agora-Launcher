@@ -87,6 +87,7 @@ dependencies = [
  "agora-game-api",
  "agora-plugin-api",
  "agora-plugin-host",
+ "agora-vfs-inject",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -246,9 +247,25 @@ dependencies = [
 name = "agora-vfs"
 version = "0.1.0"
 dependencies = [
+ "agora-vfs-inject",
  "retour",
  "serde",
  "serde_json",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "agora-vfs-early-import"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "agora-vfs-inject"
+version = "0.1.0"
+dependencies = [
+ "detours-sys2",
  "windows-sys 0.59.0",
 ]
 
@@ -1429,6 +1446,16 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "detours-sys2"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd63cbf1fb4cc81566f502cf1e257a43d49f4f859bc4f3a3be7cbc8731bc76bd"
+dependencies = [
+ "cc",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

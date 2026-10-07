@@ -12,7 +12,6 @@ use windows_sys::Win32::System::Threading::*;
 use crate::cfg;
 use crate::config::RuntimeConfig;
 use crate::handles;
-use crate::inject::inject;
 use crate::listing::*;
 use crate::nt::*;
 use crate::paths::*;
@@ -732,14 +731,24 @@ unsafe extern "system" fn create_process_internal_w(
         new_token,
     );
     if ok != 0 {
-        if let Err(e) = inject((*pi).hProcess, &cfg().dll) {
-            guarded(|| {
-                log(format!(
-                    "inject into child {} failed: {e}",
-                    (*pi).dwProcessId
-                ))
-            });
+        // Our own file work (the short path name, the log) must not be redirected.
+        let was_inside = is_inside();
+        crate::util::set_inside(true);
+        match agora_vfs_inject::inject_child((*pi).hProcess, &cfg().dll) {
+            Ok((method, fallback_from)) => log(format!(
+                "injected child {} by {}{}",
+                (*pi).dwProcessId,
+                method.describe(),
+                fallback_from
+                    .map(|why| format!(" (import-table injection was not possible: {why})"))
+                    .unwrap_or_default()
+            )),
+            Err(e) => log(format!(
+                "inject into child {} failed: {e}",
+                (*pi).dwProcessId
+            )),
         }
+        crate::util::set_inside(was_inside);
         if flags & CREATE_SUSPENDED == 0 {
             ResumeThread((*pi).hThread);
         }

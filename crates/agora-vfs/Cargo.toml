@@ -19,6 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+agora-vfs-inject = { path = "../agora-vfs-inject" }
 retour = "0.3"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",

@@ -21,8 +21,6 @@ pub mod paths;
 #[cfg(windows)]
 pub mod hooks;
 #[cfg(windows)]
-pub mod inject;
-#[cfg(windows)]
 pub mod listing;
 #[cfg(windows)]
 pub mod nt;
@@ -39,7 +37,9 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::*;
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, OpenEventW, SetEvent, TerminateProcess, EVENT_MODIFY_STATE,
+};
 
 use crate::config::RuntimeConfig;
 
@@ -85,6 +85,27 @@ unsafe fn signal_ready(event_name: &str) -> bool {
     ok
 }
 
+/// The export at ordinal 1, which import-table injection (`crates/agora-vfs-inject`) imports by
+/// number. It does nothing: importing it is what makes the loader load this DLL.
+#[cfg(windows)]
+#[no_mangle]
+pub extern "system" fn agora_vfs_ordinal1() {}
+
+/// Exit code of a process this DLL ended because it could not protect it.
+#[cfg(windows)]
+const EXIT_UNPROTECTED: u32 = 0xA6F5_0001;
+
+/// End the process: it was set up to run under the VFS and cannot, and running it unprotected
+/// would let it write to shared files. The launcher sees the process end before the ready signal
+/// and steps down; for a child process the game started, the game sees it fail to start.
+#[cfg(windows)]
+unsafe fn end_unprotected(why: &str) -> ! {
+    util::log(format!("ending the process: {why}"));
+    TerminateProcess(GetCurrentProcess(), EXIT_UNPROTECTED);
+    // Not reached: the process is gone.
+    std::process::abort()
+}
+
 #[cfg(windows)]
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
@@ -94,9 +115,19 @@ pub unsafe extern "system" fn DllMain(
 ) -> BOOL {
     const DLL_PROCESS_ATTACH: u32 = 1;
     if reason == DLL_PROCESS_ATTACH {
+        // Put back the import table that import-table injection rewrote, before the program
+        // reads it. A no-op when the DLL was loaded any other way.
+        agora_vfs_inject::restore_after_import_injection();
         let Some(config) = config::load_config_from_env() else {
-            // Unreadable or invalid config: install NO hooks, do not signal ready
-            return 1;
+            // No `AGORA_VFS_CONFIG` at all: this process was never meant to run under the VFS
+            // (a child started with its own environment block), so install nothing.
+            if std::env::var_os("AGORA_VFS_CONFIG").is_none() {
+                return 1;
+            }
+            // A configuration that is named but unreadable or invalid: the process was meant to
+            // be protected and cannot be.
+            eprintln!("[agora-vfs] the configuration could not be loaded");
+            end_unprotected("the configuration could not be loaded");
         };
         let ready_event = config.ready_event.clone();
         let _ = CONFIG.set(config);
@@ -119,6 +150,7 @@ pub unsafe extern "system" fn DllMain(
             }
             Err(e) => {
                 util::log(format!("hook install failed: {e}"));
+                end_unprotected("its hooks could not be installed");
             }
         }
     }

@@ -26,6 +26,8 @@ members = [
     "desktop/src-tauri",
     "crates/agora",
     "crates/agora-vfs",
+    "crates/agora-vfs-inject",
+    "crates/agora-vfs/fixtures/early-import",
 ]
 
 [workspace.package]
