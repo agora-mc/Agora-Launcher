@@ -458,6 +458,7 @@ impl InstanceManifest {
                         content_kind: kind.into(),
                     },
                     whiteouts: Vec::new(),
+                    own_copy: false,
                 })
                 .collect();
                 current.game_data.layers = agora_game_api::LayerStack::new(default_layers)

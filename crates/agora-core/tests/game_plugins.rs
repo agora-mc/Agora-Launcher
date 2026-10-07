@@ -124,6 +124,7 @@ fn definition() -> GameDefinition {
             },
             reason: "the loader is installed, so the game starts through it".into(),
         }],
+        copy_patterns: Vec::new(),
     }
 }
 

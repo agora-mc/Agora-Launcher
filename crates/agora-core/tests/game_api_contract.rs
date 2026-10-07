@@ -152,6 +152,7 @@ fn test_layer_stack_serde_validation() {
                 content: "h".into(),
             },
             whiteouts: Vec::new(),
+            own_copy: false,
         },
         Layer {
             id: LayerId::new("w").unwrap(),
@@ -162,6 +163,7 @@ fn test_layer_stack_serde_validation() {
                 path: RelPath::default(),
             },
             whiteouts: Vec::new(),
+            own_copy: false,
         },
     ])
     .unwrap();

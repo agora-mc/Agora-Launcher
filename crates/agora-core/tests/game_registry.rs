@@ -65,6 +65,7 @@ fn dummy_game(id: &str, stores: Vec<(&str, &str)>) -> GameDefinition {
         plugin_list: None,
         launch_alternatives: Vec::new(),
         content_layout: None,
+        copy_patterns: Vec::new(),
     }
 }
 
@@ -427,6 +428,7 @@ fn spike_machine_skyrim_steam_and_gog_identification() {
         plugin_list: None,
         launch_alternatives: Vec::new(),
         content_layout: None,
+        copy_patterns: Vec::new(),
     };
 
     builder
@@ -579,6 +581,7 @@ fn unreadable_executable_falls_back_to_store_record_and_nothing_usable_gives_uni
         plugin_list: None,
         launch_alternatives: Vec::new(),
         content_layout: None,
+        copy_patterns: Vec::new(),
     };
     builder
         .add(

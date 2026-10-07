@@ -48,6 +48,7 @@ fn make_test_definition(recipe: Option<LaunchRecipe>) -> GameDefinition {
         plugin_list: None,
         launch_alternatives: Vec::new(),
         content_layout: None,
+        copy_patterns: Vec::new(),
     }
 }
 

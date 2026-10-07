@@ -625,6 +625,7 @@ pub mod test_support {
                 content_layout: None,
                 plugin_list: None,
                 launch_alternatives: Vec::new(),
+                copy_patterns: Vec::new(),
             }],
             frameworks: Vec::new(),
             tools: Vec::new(),

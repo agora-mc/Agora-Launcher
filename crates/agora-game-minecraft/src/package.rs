@@ -42,6 +42,7 @@ pub fn game_package() -> Arc<dyn GamePackage> {
                     plugin_list: None,
                     launch_alternatives: Vec::new(),
                     content_layout: None,
+                    copy_patterns: Vec::new(),
                 }],
                 frameworks: Vec::new(),
                 tools: Vec::new(),

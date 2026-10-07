@@ -5,7 +5,7 @@ use agora_core::ctx::CoreContext;
 use agora_core::game_base::{get_file_identity, BaseMode};
 use agora_core::game_deploy::{
     add_content, deploy, deployment_dir, move_content, plan, remove_content, set_content_enabled,
-    undeploy, DeployError, DeployMode, DeployOutcome, FileSource, Placement,
+    set_content_own_copy, undeploy, DeployError, DeployMode, DeployOutcome, FileSource, Placement,
 };
 use agora_core::game_discovery::{DiscoveredInstall, DiscoveryReport, InstallCapabilities};
 use agora_core::game_instance::{
@@ -87,6 +87,7 @@ fn make_test_definition() -> GameDefinition {
         plugin_list: None,
         launch_alternatives: Vec::new(),
         content_layout: None,
+        copy_patterns: Vec::new(),
     }
 }
 
@@ -1347,19 +1348,54 @@ fn a_chosen_rung_is_used_and_auto_clears_the_choice() {
 }
 
 #[test]
-fn a_redirect_game_stays_on_links_and_never_looks_for_the_dll() {
+fn a_redirect_game_defaults_to_virtual_and_steps_down_to_links_when_dll_missing() {
     let mut def = make_test_definition();
     def.deployment = DeploymentStrategy::Redirect;
-    let (_tmp, ctx, inst) = rung_fixture("RedirectGame", &def);
-    let launcher = FakeLauncher::new(Err("no dll".into()), None);
+    let (tmp, ctx, inst) = rung_fixture("RedirectGame", &def);
 
+    // Found DLL: deploys and launches as Virtual
+    let launcher = FakeLauncher::new(Ok("C:/Agora/agora_vfs.dll".into()), None);
+    let mut launched = launch_with_fake(&ctx, &inst.instance_id, &def, None, &launcher).unwrap();
+    let _ = launched.launched.child.wait();
+    assert_eq!(launcher.attempts(), vec![(Some(DeployMode::Virtual), true)]);
+    assert_eq!(launched.prepared.deployment, Some(DeployMode::Virtual));
+    assert!(launched.prepared.notice.is_none());
+
+    // Missing DLL: steps down to Links with notice
+    let launcher = FakeLauncher::new(Err("no dll".into()), None);
     let mut launched = launch_with_fake(&ctx, &inst.instance_id, &def, None, &launcher).unwrap();
     let _ = launched.launched.child.wait();
     assert_eq!(launcher.attempts(), vec![(Some(DeployMode::Links), false)]);
+    assert_eq!(launched.prepared.deployment, Some(DeployMode::Links));
     assert!(
-        launched.prepared.notice.is_none(),
-        "nothing was stepped down from"
+        launched.prepared.notice.is_some(),
+        "notice when stepped down from virtual to links"
     );
+
+    // Unpinned instance is unchanged
+    let install_dir = tmp.path().join("install");
+    let unpinned_install = make_test_install(&install_dir, false, true);
+    let unpinned_inst = create(
+        &ctx,
+        &unpinned_install,
+        &def,
+        "UnpinnedRedirect",
+        None,
+        BaseMode::Linked,
+        &|_| {},
+    )
+    .unwrap();
+    let unpinned_report = DiscoveryReport {
+        installs: vec![unpinned_install.discovered.clone()],
+        ..Default::default()
+    };
+    let unpinned_prep =
+        prepare_launch_with_discovery(&ctx, &unpinned_inst.instance_id, &def, false, &|| {
+            unpinned_report.clone()
+        })
+        .unwrap();
+    assert!(unpinned_prep.deploy_outcome.is_none());
+    assert_eq!(unpinned_prep.deployment, None);
 }
 
 fn bare_fixture(name: &str, def: &GameDefinition) -> (TempDir, CoreContext, GameInstanceRecord) {
@@ -1420,7 +1456,7 @@ fn a_vfs_game_with_no_content_still_runs_under_the_vfs_and_steps_down_the_same_w
 }
 
 #[test]
-fn a_redirect_game_with_no_content_runs_from_its_base_unless_a_rung_is_chosen() {
+fn a_redirect_game_with_no_content_runs_under_the_vfs_and_steps_down_the_same_way() {
     let mut def = make_test_definition();
     def.deployment = DeploymentStrategy::Redirect;
     let (_tmp, ctx, inst) = bare_fixture("BareRedirect", &def);
@@ -1429,15 +1465,16 @@ fn a_redirect_game_with_no_content_runs_from_its_base_unless_a_rung_is_chosen() 
 
     let mut launched = launch_with_fake(&ctx, id, &def, None, &launcher).unwrap();
     let _ = launched.launched.child.wait();
-    assert!(launched.prepared.deploy_outcome.is_none());
-    assert!(launched.prepared.vfs.is_none());
-
-    // The user chose a rung: it is honoured.
-    let mut launched =
-        launch_with_fake(&ctx, id, &def, Some(DeployMode::Virtual), &launcher).unwrap();
-    let _ = launched.launched.child.wait();
     assert!(launched.prepared.deploy_outcome.is_some());
     assert!(launched.prepared.vfs.is_some());
+    assert_eq!(launched.prepared.deployment, Some(DeployMode::Virtual));
+
+    // Without the DLL it steps down to links and says so
+    let launcher = FakeLauncher::new(Err("agora_vfs.dll was not found".into()), None);
+    let mut launched = launch_with_fake(&ctx, id, &def, None, &launcher).unwrap();
+    let _ = launched.launched.child.wait();
+    assert_eq!(launched.prepared.deployment, Some(DeployMode::Links));
+    assert!(launched.prepared.notice.is_some());
 }
 
 // -- real injection ----------------------------------------------------------
@@ -1925,5 +1962,339 @@ fn harvesting_a_recreated_file_clears_its_whiteout_marker() {
     assert_eq!(
         std::fs::read(writable.join("base_file.txt")).unwrap(),
         b"made again"
+    );
+}
+
+#[test]
+fn copy_patterns_in_links_mode() {
+    let mut def = make_test_definition();
+    def.copy_patterns = vec!["**/*.dat".into()];
+    let tmp = TempDir::new().unwrap();
+    let ctx = create_test_context(&tmp, &def);
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    let install = make_test_install(&install_dir, true, true);
+    let inst = create_pinned_instance(&ctx, &install, &def, "CopyPatternsInstance");
+    let id = &inst.instance_id;
+
+    // Small settings.ini (copy)
+    let small_ini = b"[Settings]\nfoo = bar\n";
+    // .esp plugin (link)
+    let esp_data = b"ESP BINARY DATA";
+    // 2 MiB json (stays link)
+    let large_json = vec![b' '; 2 * 1024 * 1024];
+    // custom .dat (copy)
+    let dat_data = b"custom binary dat";
+    // case-insensitive SETTINGS.INI (copy)
+    let upper_ini = b"[UPPER]\nx=1\n";
+
+    let item = add_content_folder(
+        &ctx,
+        "ModWithConfigs",
+        &[
+            ("Mod/settings.ini", small_ini),
+            ("Mod/plugin.esp", esp_data),
+            ("Mod/large.json", &large_json),
+            ("Mod/data.dat", dat_data),
+            ("Mod2/SETTINGS.INI", upper_ini),
+        ],
+    );
+    add_content(&ctx, id, &item, None, None).unwrap();
+
+    let p = plan(&ctx, id, &def, DeployMode::Links).unwrap();
+    assert_eq!(
+        find(&p, "Mod/settings.ini").unwrap().placement,
+        Placement::Copy
+    );
+    assert_eq!(
+        find(&p, "Mod/plugin.esp").unwrap().placement,
+        Placement::Link
+    );
+    assert_eq!(
+        find(&p, "Mod/large.json").unwrap().placement,
+        Placement::Link
+    );
+    assert_eq!(find(&p, "Mod/data.dat").unwrap().placement, Placement::Copy);
+    assert_eq!(
+        find(&p, "Mod2/SETTINGS.INI").unwrap().placement,
+        Placement::Copy
+    );
+
+    let outcome = deploy(&ctx, id, &def, DeployMode::Links).unwrap();
+    match outcome {
+        DeployOutcome::Built { config_copied, .. } => {
+            assert_eq!(
+                config_copied, 3,
+                "settings.ini, data.dat, SETTINGS.INI are small config copies"
+            );
+        }
+        _ => panic!("expected DeployOutcome::Built"),
+    }
+
+    let game_dir = deployment_dir(&ctx, id).unwrap().unwrap();
+    // Changing the copied file does not make the next deploy rebuild
+    std::fs::write(
+        game_dir.join("Mod/settings.ini"),
+        b"[Settings]\nfoo = changed\n",
+    )
+    .unwrap();
+    let second_deploy = deploy(&ctx, id, &def, DeployMode::Links).unwrap();
+    assert!(
+        matches!(second_deploy, DeployOutcome::UpToDate { .. }),
+        "deploy should be up to date even after config copy changed"
+    );
+
+    // Undeploy harvests the change into the writable layer
+    let report = undeploy(&ctx, id).unwrap();
+    assert!(
+        report
+            .copied_to_writable
+            .iter()
+            .any(|p| p.as_str() == "Mod/settings.ini"),
+        "changed settings.ini should be harvested into writable layer"
+    );
+    let writable = instance_writable_dir(&ctx, id);
+    assert_eq!(
+        std::fs::read(writable.join("Mod/settings.ini")).unwrap(),
+        b"[Settings]\nfoo = changed\n"
+    );
+}
+
+#[test]
+fn own_copy_behaviour() {
+    let def = make_test_definition();
+    let tmp = TempDir::new().unwrap();
+    let ctx = create_test_context(&tmp, &def);
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    let install = make_test_install(&install_dir, true, true);
+    let inst = create_pinned_instance(&ctx, &install, &def, "OwnCopyInstance");
+    let id = &inst.instance_id;
+
+    let item1 = add_content_folder(
+        &ctx,
+        "ModOwn",
+        &[("Mod/file1.bin", b"file 1"), ("Mod/file2.bin", b"file 2")],
+    );
+    let item2 = add_content_folder(&ctx, "ModOther", &[("Mod/other.bin", b"other")]);
+
+    add_content(&ctx, id, &item1, None, None).unwrap();
+    add_content(&ctx, id, &item2, None, None).unwrap();
+
+    // Turn own_copy on for ModOwn
+    set_content_own_copy(&ctx, id, &item1, true).unwrap();
+
+    // In Links mode, every file of ModOwn is a copy, others stay links
+    let p_links = plan(&ctx, id, &def, DeployMode::Links).unwrap();
+    assert_eq!(
+        find(&p_links, "Mod/file1.bin").unwrap().placement,
+        Placement::Copy
+    );
+    assert_eq!(
+        find(&p_links, "Mod/file2.bin").unwrap().placement,
+        Placement::Copy
+    );
+    assert_eq!(
+        find(&p_links, "Mod/other.bin").unwrap().placement,
+        Placement::Link
+    );
+
+    // In Virtual mode, every file of ModOwn is also a copy, others stay links
+    let p_virt = plan(&ctx, id, &def, DeployMode::Virtual).unwrap();
+    assert_eq!(
+        find(&p_virt, "Mod/file1.bin").unwrap().placement,
+        Placement::Copy
+    );
+    assert_eq!(
+        find(&p_virt, "Mod/file2.bin").unwrap().placement,
+        Placement::Copy
+    );
+    assert_eq!(
+        find(&p_virt, "Mod/other.bin").unwrap().placement,
+        Placement::Link
+    );
+
+    // Deploy in Links mode
+    deploy(&ctx, id, &def, DeployMode::Links).unwrap();
+    let game_dir = deployment_dir(&ctx, id).unwrap().unwrap();
+
+    // Edit a file in the game folder
+    std::fs::write(game_dir.join("Mod/file1.bin"), b"file 1 edited by game").unwrap();
+
+    // Turn own_copy off and redeploy: keeps the change in the writable layer
+    set_content_own_copy(&ctx, id, &item1, false).unwrap();
+    let outcome = deploy(&ctx, id, &def, DeployMode::Links).unwrap();
+    assert!(matches!(outcome, DeployOutcome::Built { .. }));
+
+    let writable = instance_writable_dir(&ctx, id);
+    assert_eq!(
+        std::fs::read(writable.join("Mod/file1.bin")).unwrap(),
+        b"file 1 edited by game"
+    );
+}
+
+#[test]
+fn bepinex_case_end_to_end() {
+    let def = make_test_definition();
+    let tmp = TempDir::new().unwrap();
+    let ctx = create_test_context(&tmp, &def);
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    let install = make_test_install(&install_dir, true, true);
+    let inst = create_pinned_instance(&ctx, &install, &def, "BepInExInstance");
+    let id = &inst.instance_id;
+
+    let original_cfg = b"[Logging]\nUnityLog = true\n";
+    let bepinex_item = add_content_folder(
+        &ctx,
+        "BepInExPack",
+        &[("BepInEx/config/BepInEx.cfg", original_cfg)],
+    );
+    add_content(&ctx, id, &bepinex_item, None, None).unwrap();
+
+    // Deploy in Links mode
+    let outcome = deploy(&ctx, id, &def, DeployMode::Links).unwrap();
+    match outcome {
+        DeployOutcome::Built { config_copied, .. } => {
+            assert_eq!(
+                config_copied, 1,
+                "BepInEx.cfg matched default config copy pattern"
+            );
+        }
+        _ => panic!("expected DeployOutcome::Built"),
+    }
+
+    let game_dir = deployment_dir(&ctx, id).unwrap().unwrap();
+    let cfg_path = game_dir.join("BepInEx/config/BepInEx.cfg");
+
+    // File is writable in the game folder (open for write succeeds)
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cfg_path)
+        .expect("open for write succeeds on small config copy in link mode");
+    file.write_all(b"[Logging]\nUnityLog = false\n").unwrap();
+    drop(file);
+
+    // Content object in content store stays protected and unchanged
+    let item_info = agora_core::content_store::get_item(&ctx, &bepinex_item).unwrap();
+    let sha256 = &item_info.files[0].sha256;
+    let obj_path = ctx.paths.content_object_path(sha256);
+    let obj_bytes = std::fs::read(&obj_path).unwrap();
+    assert_eq!(
+        obj_bytes, original_cfg,
+        "content store object remains unchanged"
+    );
+}
+
+// ---- Review probes (slice 10) ----
+
+fn probe_fixture(name: &str) -> (TempDir, CoreContext, GameDefinition, String) {
+    let mut def = make_test_definition();
+    def.declared_writes = vec!["Logs/**".into()];
+    let tmp = TempDir::new().unwrap();
+    let ctx = create_test_context(&tmp, &def);
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    let install = make_test_install(&install_dir, true, true);
+    let inst = create_pinned_instance(&ctx, &install, &def, name);
+    let id = inst.instance_id.clone();
+    (tmp, ctx, def, id)
+}
+
+#[test]
+fn probe_size_boundary_root_level_and_big_declared_write() {
+    let (_tmp, ctx, def, id) = probe_fixture("ProbeBoundary");
+    let exactly = vec![b'a'; 1024 * 1024];
+    let over = vec![b'a'; 1024 * 1024 + 1];
+    let big_log = vec![b'l'; 3 * 1024 * 1024];
+    let item = add_content_folder(
+        &ctx,
+        "ProbeMod",
+        &[
+            ("exact.json", &exactly),
+            ("over.json", &over),
+            ("doorstop_config.ini", b"[General]\n"),
+            ("Logs/big.cfg", &big_log),
+        ],
+    );
+    add_content(&ctx, &id, &item, None, None).unwrap();
+    let p = plan(&ctx, &id, &def, DeployMode::Links).unwrap();
+    assert_eq!(find(&p, "exact.json").unwrap().placement, Placement::Copy);
+    assert_eq!(find(&p, "over.json").unwrap().placement, Placement::Link);
+    assert_eq!(
+        find(&p, "doorstop_config.ini").unwrap().placement,
+        Placement::Copy
+    );
+    assert_eq!(find(&p, "Logs/big.cfg").unwrap().placement, Placement::Copy);
+    // Virtual is unaffected by config copies.
+    let v = plan(&ctx, &id, &def, DeployMode::Virtual).unwrap();
+    assert_eq!(
+        find(&v, "doorstop_config.ini").unwrap().placement,
+        Placement::Link
+    );
+}
+
+#[test]
+fn probe_own_copy_and_enable_refuse_an_empty_prefix() {
+    let (_tmp, ctx, def, id) = probe_fixture("ProbeEmptyPrefix");
+    let a = add_content_folder(&ctx, "ProbeA", &[("A/a.bin", b"a")]);
+    let b = add_content_folder(&ctx, "ProbeB", &[("B/b.bin", b"b")]);
+    add_content(&ctx, &id, &a, None, None).unwrap();
+    add_content(&ctx, &id, &b, None, None).unwrap();
+    assert!(
+        set_content_own_copy(&ctx, &id, "", true).is_err(),
+        "empty prefix must not match every layer"
+    );
+    assert!(
+        set_content_enabled(&ctx, &id, "", false).is_err(),
+        "empty prefix must not pick a layer"
+    );
+    let p = plan(&ctx, &id, &def, DeployMode::Links).unwrap();
+    assert_eq!(find(&p, "A/a.bin").unwrap().placement, Placement::Link);
+    assert_eq!(find(&p, "B/b.bin").unwrap().placement, Placement::Link);
+    // A full id affects only its own layer.
+    set_content_own_copy(&ctx, &id, &a, true).unwrap();
+    let p = plan(&ctx, &id, &def, DeployMode::Links).unwrap();
+    assert_eq!(find(&p, "A/a.bin").unwrap().placement, Placement::Copy);
+    assert_eq!(find(&p, "B/b.bin").unwrap().placement, Placement::Link);
+}
+
+#[test]
+fn probe_own_copy_on_a_disabled_layer_changes_nothing() {
+    let (_tmp, ctx, def, id) = probe_fixture("ProbeDisabledOwn");
+    let a = add_content_folder(&ctx, "ProbeDis", &[("A/a.bin", b"a")]);
+    add_content(&ctx, &id, &a, None, None).unwrap();
+    set_content_own_copy(&ctx, &id, &a, true).unwrap();
+    set_content_enabled(&ctx, &id, &a, false).unwrap();
+    let p = plan(&ctx, &id, &def, DeployMode::Links).unwrap();
+    assert!(find(&p, "A/a.bin").is_none());
+}
+
+#[test]
+fn probe_an_edited_config_copy_survives_redeploy_and_is_harvested() {
+    let (_tmp, ctx, def, id) = probe_fixture("ProbeEditCfg");
+    let item = add_content_folder(&ctx, "ProbeCfg", &[("Mod/x.cfg", b"original")]);
+    add_content(&ctx, &id, &item, None, None).unwrap();
+    deploy(&ctx, &id, &def, DeployMode::Links).unwrap();
+    let game = deployment_dir(&ctx, &id).unwrap().unwrap();
+    std::fs::write(game.join("Mod/x.cfg"), b"edited by the game, longer").unwrap();
+    let again = deploy(&ctx, &id, &def, DeployMode::Links).unwrap();
+    assert!(
+        matches!(again, DeployOutcome::UpToDate { .. }),
+        "got {again:?}"
+    );
+    assert_eq!(
+        std::fs::read(game.join("Mod/x.cfg")).unwrap(),
+        b"edited by the game, longer"
+    );
+    undeploy(&ctx, &id).unwrap();
+    assert_eq!(
+        std::fs::read(instance_writable_dir(&ctx, &id).join("Mod/x.cfg")).unwrap(),
+        b"edited by the game, longer"
     );
 }

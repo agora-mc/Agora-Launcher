@@ -77,6 +77,8 @@ pub struct PlannedFile {
     pub source: FileSource,
     pub placement: Placement,
     pub size: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_config_copy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +123,8 @@ pub enum DeployOutcome {
         linked: usize,
         copied: usize,
         copied_bytes: u64,
+        #[serde(default)]
+        config_copied: usize,
         harvest: Option<HarvestReport>,
         /// What changed in the plugin list; `None` when the game keeps none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -344,6 +348,7 @@ struct LayerFileEntry {
 struct LayerContribution {
     layer_id: String,
     files: Vec<LayerFileEntry>,
+    own_copy: bool,
 }
 
 pub fn plan(
@@ -403,6 +408,7 @@ pub fn plan(
         layers.push(LayerContribution {
             layer_id: "base".to_string(),
             files: base_files,
+            own_copy: false,
         });
     }
 
@@ -475,6 +481,7 @@ pub fn plan(
                 layers.push(LayerContribution {
                     layer_id: layer.id.as_str().to_string(),
                     files: content_files,
+                    own_copy: layer.own_copy,
                 });
             }
         }
@@ -495,6 +502,7 @@ pub fn plan(
             layers.push(LayerContribution {
                 layer_id: "writable".to_string(),
                 files: writable_files,
+                own_copy: false,
             });
         }
     }
@@ -544,6 +552,7 @@ pub fn plan(
         modified_unix_ms: i64,
         layer_id: String,
         hidden_layers: Vec<String>,
+        own_copy: bool,
     }
 
     let mut candidates: BTreeMap<String, Candidate> = BTreeMap::new();
@@ -560,6 +569,7 @@ pub fn plan(
                     modified_unix_ms: f.modified_unix_ms,
                     layer_id: l.layer_id.clone(),
                     hidden_layers: hidden,
+                    own_copy: l.own_copy,
                 };
             } else {
                 candidates.insert(
@@ -571,6 +581,7 @@ pub fn plan(
                         modified_unix_ms: f.modified_unix_ms,
                         layer_id: l.layer_id.clone(),
                         hidden_layers: Vec::new(),
+                        own_copy: l.own_copy,
                     },
                 );
             }
@@ -605,15 +616,47 @@ pub fn plan(
     let mut fingerprint_lines = Vec::with_capacity(candidates.len());
 
     for (_key, cand) in candidates {
+        let is_config_copy = mode == DeployMode::Links
+            && cand.size <= 1024 * 1024
+            && definition.is_copy_pattern(cand.path.as_str())
+            && !definition.is_declared_write(cand.path.as_str())
+            && !cand.own_copy
+            && !matches!(cand.source, FileSource::Writable { .. });
+
         let placement = match mode {
             DeployMode::Copies => Placement::Copy,
-            DeployMode::Links | DeployMode::Virtual => {
-                // A declared-write path gets the instance's own copy in every mode. Under the VFS
-                // too: DLLs Windows loads while starting the game run before the VFS's hooks exist
-                // (measured: Engine Fixes' preloader `d3dx9_42.dll` rewrote `d3dx9_42.log` through
-                // the farm's hardlink into the base), so a link would let that early write reach
-                // the base, and through a Linked base the store install.
-                if definition.is_declared_write(cand.path.as_str()) {
+            DeployMode::Virtual => {
+                if cand.own_copy || definition.is_declared_write(cand.path.as_str()) {
+                    Placement::Copy
+                } else {
+                    match &cand.source {
+                        FileSource::Writable { .. } => Placement::Copy,
+                        FileSource::Base { .. } => Placement::Link,
+                        FileSource::Content { sha256, .. } => {
+                            let obj_path = ctx.paths.content_object_path(sha256);
+                            let obj_vol = detector.get_volume_info(&obj_path);
+                            match (&obj_vol, &deploy_vol) {
+                                (Some(ov), Some(dv))
+                                    if ov.id.eq_ignore_ascii_case(&dv.id)
+                                        && ov.supports_hardlinks
+                                        && dv.supports_hardlinks =>
+                                {
+                                    Placement::Link
+                                }
+                                _ => Placement::Copy,
+                            }
+                        }
+                    }
+                }
+            }
+            DeployMode::Links => {
+                // A declared-write path gets the instance's own copy in every mode.
+                // An own_copy layer deploys all its files as copies.
+                // Small text files matching copy patterns (<= 1 MiB) are placed as copies too.
+                if cand.own_copy
+                    || definition.is_declared_write(cand.path.as_str())
+                    || is_config_copy
+                {
                     Placement::Copy
                 } else {
                     match &cand.source {
@@ -677,6 +720,7 @@ pub fn plan(
             source: cand.source,
             placement,
             size: cand.size,
+            is_config_copy,
         });
     }
 
@@ -892,8 +936,26 @@ pub fn deploy(
                         // The instance's own copy of a path the game is declared to write is
                         // expected to change (an early write under the VFS lands in it); that
                         // is the game's state, not a damaged deployment.
+                        // Small config files matching copy patterns and files from own_copy layers
+                        // are likewise expected to be rewritten by the game/mod.
+                        let is_own_copy = match &f.source {
+                            FileSource::Content { item_id, .. } => {
+                                manifest.layers.layers().iter().any(|l| {
+                                    l.enabled
+                                        && l.own_copy
+                                        && match &l.source {
+                                            LayerSource::Content { content } => content == item_id,
+                                            _ => false,
+                                        }
+                                })
+                            }
+                            _ => false,
+                        };
                         if f.placement == Placement::Copy
-                            && definition.is_declared_write(f.path.as_str())
+                            && (definition.is_declared_write(f.path.as_str())
+                                || (f.size <= 1024 * 1024
+                                    && definition.is_copy_pattern(f.path.as_str()))
+                                || is_own_copy)
                         {
                             continue;
                         }
@@ -949,9 +1011,14 @@ pub fn deploy(
     let mut linked_count = 0usize;
     let mut copied_count = 0usize;
     let mut copied_bytes = 0u64;
+    let mut config_copied_count = 0usize;
     let mut recorded_files = Vec::with_capacity(current_plan.files.len());
 
     for file in &current_plan.files {
+        if file.is_config_copy {
+            config_copied_count += 1;
+        }
+
         let dest = staging_dir.join(file.path.as_str());
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
@@ -1026,6 +1093,7 @@ pub fn deploy(
         linked: linked_count,
         copied: copied_count,
         copied_bytes,
+        config_copied: config_copied_count,
         harvest,
         plugins,
     })
@@ -1311,6 +1379,7 @@ fn harvest_internal(
                         .map_err(|e| DeployError::Other(format!("invalid rel path: {e}")))?,
                 },
                 whiteouts: new_whiteouts,
+                own_copy: false,
             };
             let insert_pos = layers_vec
                 .iter()
@@ -1392,6 +1461,7 @@ pub fn add_content(
         source_path: source_rel,
         source: LayerSource::Content { content: item_id },
         whiteouts: Vec::new(),
+        own_copy: false,
     };
 
     let mut layers = manifest.layers.layers().to_vec();
@@ -1428,6 +1498,39 @@ pub fn set_deployment(
     write_instance_manifest_atomic(ctx, instance_id, &manifest)
 }
 
+/// The index in `layers` of the content layer `item_id_or_prefix` names: an exact item id, else a
+/// prefix exactly one content layer's id starts with. An empty prefix names nothing, and a prefix
+/// two layers share is refused rather than resolved to whichever comes first.
+fn resolve_content_layer(layers: &[Layer], item_id_or_prefix: &str) -> Result<usize, DeployError> {
+    let content_of = |l: &Layer| match &l.source {
+        LayerSource::Content { content } => Some(content.clone()),
+        _ => None,
+    };
+    if item_id_or_prefix.is_empty() {
+        return Err(DeployError::ContentNotFound(item_id_or_prefix.to_string()));
+    }
+    if let Some(idx) = layers
+        .iter()
+        .position(|l| content_of(l).as_deref() == Some(item_id_or_prefix))
+    {
+        return Ok(idx);
+    }
+    let matches: Vec<usize> = layers
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| content_of(l).is_some_and(|c| c.starts_with(item_id_or_prefix)))
+        .map(|(i, _)| i)
+        .collect();
+    match matches.as_slice() {
+        [idx] => Ok(*idx),
+        [] => Err(DeployError::ContentNotFound(item_id_or_prefix.to_string())),
+        _ => Err(DeployError::Other(format!(
+            "'{item_id_or_prefix}' matches {} content items in this instance; give more of the id",
+            matches.len()
+        ))),
+    }
+}
+
 pub fn remove_content(
     ctx: &Ctx,
     instance_id: &str,
@@ -1445,17 +1548,7 @@ pub fn remove_content(
         })?;
 
     let mut layers = manifest.layers.layers().to_vec();
-    let pos = layers.iter().position(|l| {
-        if let LayerSource::Content { content } = &l.source {
-            content == item_id_or_prefix || content.starts_with(item_id_or_prefix)
-        } else {
-            false
-        }
-    });
-
-    let Some(idx) = pos else {
-        return Err(DeployError::ContentNotFound(item_id_or_prefix.to_string()));
-    };
+    let idx = resolve_content_layer(&layers, item_id_or_prefix)?;
 
     layers.remove(idx);
     manifest.layers = LayerStack::new(layers)?;
@@ -1482,19 +1575,36 @@ pub fn set_content_enabled(
         })?;
 
     let mut layers = manifest.layers.layers().to_vec();
-    let pos = layers.iter().position(|l| {
-        if let LayerSource::Content { content } = &l.source {
-            content == item_id_or_prefix || content.starts_with(item_id_or_prefix)
-        } else {
-            false
-        }
-    });
-
-    let Some(idx) = pos else {
-        return Err(DeployError::ContentNotFound(item_id_or_prefix.to_string()));
-    };
+    let idx = resolve_content_layer(&layers, item_id_or_prefix)?;
 
     layers[idx].enabled = enabled;
+    manifest.layers = LayerStack::new(layers)?;
+    write_instance_manifest_atomic(ctx, instance_id, &manifest)?;
+
+    Ok(())
+}
+
+pub fn set_content_own_copy(
+    ctx: &Ctx,
+    instance_id: &str,
+    item_id_or_prefix: &str,
+    own_copy: bool,
+) -> Result<(), DeployError> {
+    let _lock = ctx.lock_manager.acquire(
+        LockResource::Instance(instance_id.to_string()),
+        "content-own-copy",
+    )?;
+
+    let mut manifest =
+        crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
+            crate::game_instance::InstanceError::NotFound(id) => DeployError::InstanceNotFound(id),
+            other => DeployError::Other(other.to_string()),
+        })?;
+
+    let mut layers = manifest.layers.layers().to_vec();
+    let idx = resolve_content_layer(&layers, item_id_or_prefix)?;
+    layers[idx].own_copy = own_copy;
+
     manifest.layers = LayerStack::new(layers)?;
     write_instance_manifest_atomic(ctx, instance_id, &manifest)?;
 
@@ -1545,15 +1655,8 @@ pub fn move_content(
         )));
     }
 
-    let relative_pos = content_indices.iter().position(|&idx| {
-        if let LayerSource::Content { content } = &layers[idx].source {
-            content == item_id_or_prefix || content.starts_with(item_id_or_prefix)
-        } else {
-            false
-        }
-    });
-
-    let Some(rel_idx) = relative_pos else {
+    let source_idx = resolve_content_layer(&layers, item_id_or_prefix)?;
+    let Some(rel_idx) = content_indices.iter().position(|&idx| idx == source_idx) else {
         return Err(DeployError::ContentNotFound(item_id_or_prefix.to_string()));
     };
 

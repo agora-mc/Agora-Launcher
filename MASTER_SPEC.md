@@ -3655,11 +3655,7 @@ mechanisms, each covering what the one before cannot:
    the 12 in-place edits of the 62 fail; without it, all 62). Switching instances re-links, which is
    fast but not free, and the content store must be on the instance's volume.
 
-**When a write is refused** (link deployment, or a path agvfs cannot redirect), copies are made a mod
-at a time, which matches what the spike saw: both observed writes were a tool editing its *own* mod
-folder (F4). A mod that contains a tool the instance runs gets its own writable copy in that instance
-automatically; any other mod can be given one from its menu; "Reset to original" drops the copy; paths
-a game is declared to write (logs, INIs in its root) are materialised before launch.
+**When a write is refused** (link deployment, or a path agvfs cannot redirect), in link mode small text files likely to be rewritten (matching core default patterns `**/*.ini`, `**/*.cfg`, `**/*.json`, `**/*.toml`, `**/*.xml`, `**/*.yaml`, `**/*.yml`, `**/*.conf`, `**/*.config`, `**/*.properties` or the game's `copy_patterns`, up to 1 MiB) are placed as copies rather than links so in-place edits succeed. For other files, copies are made a mod at a time: both observed writes were a tool editing its *own* mod folder (F4). A mod that contains a tool the instance runs gets its own writable copy in that instance automatically; any other mod can be given an own copy via the per-mod `own_copy` switch (`agora games instance content own-copy <instance> <item> on|off`) or from its menu; turning it off harvests changed files into the writable layer; paths a game is declared to write (logs, INIs in its root) are materialised before launch.
 
 A write can never silently reach a shared file. Hash checks after a session (the content store,
 §26.6; bases, §26.4) remain as detection of anything missed, not as the protection.
@@ -3672,7 +3668,7 @@ and machine support, and says which, and why, on its page.
 |---|---|---|---|
 | 0 | **Redirect** | The game or its framework can be pointed at a mod folder (BepInEx, Paradox, Factorio, Minecraft) | Nothing; the game definition's first choice when it applies |
 | 1 | **agvfs** | Default for games that load mods only from their own folder | — |
-| 2 | **Link deployment** | agvfs cannot run: anti-cheat, a protected process, an unsupported architecture, a failed trial | Switching instances re-links; an in-place edit of a mod file fails closed, so that mod gets a per-instance copy. Needs the base's writable files to be Agora's own (a Copied base), because an ACL cannot protect a file hardlinked to the store install |
+| 2 | **Link deployment** | agvfs cannot run: anti-cheat, a protected process, an unsupported architecture, a failed trial | Switching instances re-links; an in-place edit of a mod file fails closed, so small config files (≤ 1 MiB) are copied automatically and a mod can be given a per-instance own copy (`own_copy`). Needs the base's writable files to be Agora's own (a Copied base), because an ACL cannot protect a file hardlinked to the store install |
 | 3 | **Copy deployment** | Hardlinks are impossible: the content store is on another volume, or the volume is exFAT/FAT32 or a network share | Disk space and switching time; where the file system has no ACLs, post-session verification is the only protection |
 | 4 | **Direct install into the game folder** | The game must run from its own install (some DRM and anti-cheat check the path; Microsoft Store packages), **or the user chooses it** | Agora modifies the real install. Content is copied in, never linked, so the content store stays protected; a journal records what was replaced and added, restores it after the session or when switching instance, and the user may choose to leave it deployed instead |
 

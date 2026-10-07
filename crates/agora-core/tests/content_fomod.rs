@@ -1264,6 +1264,7 @@ mod instance {
                 data_markers: vec![],
                 root_markers: vec![],
             }),
+            copy_patterns: Vec::new(),
         }
     }
 

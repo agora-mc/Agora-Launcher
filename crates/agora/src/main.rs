@@ -493,6 +493,15 @@ enum InstanceContentCmd {
         /// Target 1-based position.
         position: usize,
     },
+    /// Configure whether an instance deploys its own copies of a content item's files.
+    OwnCopy {
+        /// Instance ID.
+        instance_id: String,
+        /// Content item ID or prefix.
+        item_id: String,
+        /// "on" or "off".
+        state: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -5326,12 +5335,18 @@ async fn run_command(
                                     linked,
                                     copied,
                                     copied_bytes,
+                                    config_copied,
                                     harvest,
                                     ..
                                 } => {
                                     println!(
                                         "Deployed: {linked} linked, {copied} copied ({copied_bytes} bytes)."
                                     );
+                                    if *config_copied > 0 {
+                                        println!(
+                                            "{config_copied} small config files copied so the game can write them."
+                                        );
+                                    }
                                     if let Some(h) = harvest {
                                         if !h.is_empty() {
                                             println!(
@@ -5414,6 +5429,7 @@ async fn run_command(
                         std::process::exit(1);
                     }
 
+                    let launch_start = std::time::Instant::now();
                     // The launch may step down from the virtual file system, which replaces
                     // `prepared` with the one that actually ran.
                     let (mut launched, prepared) = match agora_core::game_instance::spawn_prepared(
@@ -5534,6 +5550,7 @@ async fn run_command(
                             std::time::Duration::from_millis(250),
                             std::time::Duration::from_secs(5),
                         );
+                        let session_duration = launch_start.elapsed();
                         report_user_files_restore(
                             agora_core::game_user_files::restore(ctx, game_def, &store),
                             game_def.id.as_str(),
@@ -5600,6 +5617,16 @@ async fn run_command(
                                     );
                                     print_base_problems(&ver.problems);
                                 }
+                            }
+                            if prepared.deployment
+                                == Some(agora_core::game_deploy::DeployMode::Links)
+                                && session_duration < std::time::Duration::from_secs(30)
+                            {
+                                println!();
+                                println!("The session ended quickly. Under linked files a mod that edits its own files is refused.");
+                                println!("Remedies:");
+                                println!("  agora games instance launch {instance_id} --deployment virtual");
+                                println!("  agora games instance content own-copy {instance_id} <item> on");
                             }
                         }
                         if after.as_ref().is_some_and(|v| !v.problems.is_empty()) {
@@ -5898,6 +5925,7 @@ async fn run_command(
                                     "item_id": content,
                                     "layer_id": layer.id.as_str(),
                                     "enabled": layer.enabled,
+                                    "own_copy": layer.own_copy,
                                     "mount_path": layer.mount_path.as_str(),
                                     "source_path": layer.source_path.as_str(),
                                 }));
@@ -5909,7 +5937,10 @@ async fn run_command(
                         } else if items.is_empty() {
                             println!("No content items found for instance '{instance_id}'.");
                         } else {
-                            println!("{:<4} {:<18} {:<10} Mount Path", "#", "Item ID", "Enabled");
+                            println!(
+                                "{:<4} {:<18} {:<10} {:<10} Mount Path",
+                                "#", "Item ID", "Enabled", "Own Copy"
+                            );
                             for it in &items {
                                 let pos = it["position"].as_u64().unwrap_or(0);
                                 let item_id = it["item_id"].as_str().unwrap_or("");
@@ -5919,6 +5950,11 @@ async fn run_command(
                                     item_id
                                 };
                                 let enabled = if it["enabled"].as_bool().unwrap_or(false) {
+                                    "yes"
+                                } else {
+                                    "no"
+                                };
+                                let own_copy = if it["own_copy"].as_bool().unwrap_or(false) {
                                     "yes"
                                 } else {
                                     "no"
@@ -5933,8 +5969,8 @@ async fn run_command(
                                     format!("{mount} (from {source})")
                                 };
                                 println!(
-                                    "{:<4} {:<18} {:<10} {}",
-                                    pos, short_id, enabled, mount_display
+                                    "{:<4} {:<18} {:<10} {:<10} {}",
+                                    pos, short_id, enabled, own_copy, mount_display
                                 );
                             }
                         }
@@ -6108,6 +6144,67 @@ async fn run_command(
                             }
                         }
                     }
+                    InstanceContentCmd::OwnCopy {
+                        instance_id,
+                        item_id,
+                        state,
+                    } => {
+                        let own_copy = match state.to_ascii_lowercase().as_str() {
+                            "on" | "true" | "1" => true,
+                            "off" | "false" | "0" => false,
+                            _ => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("invalid state '{state}': expected 'on' or 'off'"),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!(
+                                        "Error: invalid state '{state}': expected 'on' or 'off'"
+                                    );
+                                }
+                                std::process::exit(1);
+                            }
+                        };
+                        match agora_core::game_deploy::set_content_own_copy(
+                            ctx,
+                            &instance_id,
+                            &item_id,
+                            own_copy,
+                        ) {
+                            Ok(()) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "own_copy_set",
+                                        "instance_id": instance_id,
+                                        "item_id": item_id,
+                                        "own_copy": own_copy,
+                                    });
+                                    println!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    let s = if own_copy { "on" } else { "off" };
+                                    println!(
+                                        "Set own-copy to {s} for content '{item_id}' in instance '{instance_id}'."
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("{e}"),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
                 },
                 GameInstanceCmd::Deploy {
                     instance_id,
@@ -6191,6 +6288,7 @@ async fn run_command(
                             linked,
                             copied,
                             copied_bytes,
+                            config_copied,
                             harvest,
                             plugins,
                         }) => {
@@ -6201,6 +6299,7 @@ async fn run_command(
                                     "linked": linked,
                                     "copied": copied,
                                     "copied_bytes": copied_bytes,
+                                    "config_copied": config_copied,
                                     "harvest": harvest,
                                     "plugins": plugins,
                                 });
@@ -6209,6 +6308,11 @@ async fn run_command(
                                 println!(
                                     "Deployed instance '{instance_id}': {linked} linked, {copied} copied ({copied_bytes} bytes)."
                                 );
+                                if config_copied > 0 {
+                                    println!(
+                                        "{config_copied} small config files copied so the game can write them."
+                                    );
+                                }
                                 if let Some(h) = harvest {
                                     if !h.is_empty() {
                                         println!(
@@ -9306,6 +9410,36 @@ mod tests {
                 assert_eq!(item_id, "item123");
                 assert_eq!(into.as_deref(), Some("Data"));
                 assert_eq!(from.as_deref(), Some("MyMod"));
+            }
+            _ => panic!("wrong command variant"),
+        }
+    }
+
+    #[test]
+    fn games_instance_content_own_copy_parses() {
+        use crate::{GameInstanceCmd, GamesCmd, InstanceContentCmd};
+        let cli = Cli::try_parse_from([
+            "agora", "games", "instance", "content", "own-copy", "my-inst", "item123", "on",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Commands::Games {
+                action:
+                    GamesCmd::Instance {
+                        action:
+                            GameInstanceCmd::Content {
+                                action:
+                                    InstanceContentCmd::OwnCopy {
+                                        instance_id,
+                                        item_id,
+                                        state,
+                                    },
+                            },
+                    },
+            } => {
+                assert_eq!(instance_id, "my-inst");
+                assert_eq!(item_id, "item123");
+                assert_eq!(state, "on");
             }
             _ => panic!("wrong command variant"),
         }

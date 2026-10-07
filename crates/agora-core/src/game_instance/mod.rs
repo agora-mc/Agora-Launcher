@@ -571,10 +571,12 @@ pub struct LaunchOptions {
 }
 
 /// The rung a game definition starts from when nobody has chosen one (MASTER_SPEC §26.5).
+///
+/// Both `VirtualFileSystem` and `Redirect` default to `DeployMode::Virtual` (there is no
+/// Redirect backend yet; until there is, the VFS is the rung that never refuses a write).
 fn default_deploy_mode(definition: &GameDefinition) -> DeployMode {
     match definition.deployment {
-        DeploymentStrategy::VirtualFileSystem => DeployMode::Virtual,
-        DeploymentStrategy::Redirect => DeployMode::Links,
+        DeploymentStrategy::VirtualFileSystem | DeploymentStrategy::Redirect => DeployMode::Virtual,
     }
 }
 

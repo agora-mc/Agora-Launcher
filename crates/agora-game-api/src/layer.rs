@@ -112,6 +112,8 @@ pub struct Layer {
     /// Relative paths hidden from lower layers; lower bytes are never deleted.
     #[serde(default)]
     pub whiteouts: Vec<RelPath>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_copy: bool,
 }
 
 impl Layer {
@@ -311,6 +313,7 @@ mod tests {
             source_path: RelPath::default(),
             source,
             whiteouts: Vec::new(),
+            own_copy: false,
         }
     }
 

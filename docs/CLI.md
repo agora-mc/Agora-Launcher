@@ -189,6 +189,7 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games instance content enable <instance> <item>` | Enable a content layer on an instance |
 | `agora games instance content disable <instance> <item>` | Disable a content layer on an instance |
 | `agora games instance content move <instance> <item> <position>` | Move a content layer to a 1-based position |
+| `agora games instance content own-copy <instance> <item> on|off` | Configure whether all files deployed by a content layer are copies rather than links |
 | `agora games instance deploy <instance> [--copies\|--deployment virtual\|links\|copies]` | Deploy an instance's content layers to its game folder, as the instance's chosen rung, else the mode a launch would use |
 | `agora games instance undeploy <instance>` | Harvest game writes and tear down an instance deployment |
 | `agora games instance plugins <instance>` | List the instance's plugin list: each plugin's state, and whether Agora manages it (a content layer deploys it) or you wrote the line |

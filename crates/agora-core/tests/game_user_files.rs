@@ -134,6 +134,7 @@ fn test_skyrim_definition() -> GameDefinition {
         plugin_list: None,
         launch_alternatives: Vec::new(),
         content_layout: None,
+        copy_patterns: Vec::new(),
     }
 }
 

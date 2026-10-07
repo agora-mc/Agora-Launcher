@@ -376,6 +376,8 @@ pub struct GameDefinition {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_writes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy_patterns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excluded_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_list: Option<PluginListRule>,
@@ -399,6 +401,20 @@ pub struct LaunchAlternative {
     pub executable: GamePath,
     pub reason: String,
 }
+
+/// Default copy patterns applied to every game in Links mode (small text files at most 1 MiB).
+pub const DEFAULT_COPY_PATTERNS: &[&str] = &[
+    "**/*.ini",
+    "**/*.cfg",
+    "**/*.json",
+    "**/*.toml",
+    "**/*.xml",
+    "**/*.yaml",
+    "**/*.yml",
+    "**/*.conf",
+    "**/*.config",
+    "**/*.properties",
+];
 
 impl GameDefinition {
     /// Whether native code is legitimate at `path` (relative to the install root).
@@ -435,6 +451,22 @@ impl GameDefinition {
         self.declared_writes
             .iter()
             .any(|pattern| glob_match(&pattern.to_ascii_lowercase(), &normalized))
+    }
+
+    /// Whether `path` (relative to the runtime root) matches either core default copy patterns
+    /// or the game definition's copy patterns. Runs on normalized path, case-insensitively.
+    pub fn is_copy_pattern(&self, path: &str) -> bool {
+        let Ok(rel) = RelPath::new(path) else {
+            return false;
+        };
+        let normalized = rel.as_str().to_ascii_lowercase();
+        DEFAULT_COPY_PATTERNS
+            .iter()
+            .any(|pattern| glob_match(&pattern.to_ascii_lowercase(), &normalized))
+            || self
+                .copy_patterns
+                .iter()
+                .any(|pattern| glob_match(&pattern.to_ascii_lowercase(), &normalized))
     }
 
     /// Whether `path` (relative to the install root) matches an excluded path pattern.
@@ -795,6 +827,7 @@ mod tests {
             excluded_paths: vec![],
             plugin_list: None,
             launch_alternatives: Vec::new(),
+            copy_patterns: Vec::new(),
         };
 
         // Normal valid paths
@@ -838,6 +871,7 @@ mod tests {
             excluded_paths: vec![],
             plugin_list: None,
             launch_alternatives: Vec::new(),
+            copy_patterns: Vec::new(),
         };
 
         // Matches exact and mixed cases
@@ -879,6 +913,7 @@ mod tests {
             excluded_paths: vec![],
             plugin_list: None,
             launch_alternatives: Vec::new(),
+            copy_patterns: Vec::new(),
         };
 
         assert!(def.is_declared_write("d3dx9_42.log"));
@@ -915,6 +950,7 @@ mod tests {
             excluded_paths: vec!["Data/SSEEdit Backups/**".into()],
             plugin_list: None,
             launch_alternatives: Vec::new(),
+            copy_patterns: Vec::new(),
         };
 
         assert!(def.is_excluded("Data/SSEEdit Backups/x.esm.backup"));
@@ -922,6 +958,54 @@ mod tests {
         assert!(def.is_excluded("DATA\\SSEEDIT BACKUPS\\SUB\\Y.ESM.BACKUP"));
         assert!(!def.is_excluded("Data/Skyrim.esm"));
         assert!(!def.is_excluded("SkyrimSE.exe"));
+    }
+
+    #[test]
+    fn copy_patterns_match_defaults_and_custom_case_insensitively() {
+        let def = GameDefinition {
+            id: GameId::new("valheim").unwrap(),
+            name: "Valheim".into(),
+            stores: vec![],
+            version_sources: vec![],
+            deployment: DeploymentStrategy::VirtualFileSystem,
+            content_rules: vec![],
+            content_layout: None,
+            native_code_patterns: vec![],
+            framework_ids: vec![],
+            tool_ids: vec![],
+            launch: None,
+            log_paths: vec![],
+            crash_paths: vec![],
+            user_files: vec![],
+            save_paths: vec![],
+            linked_archive_patterns: vec![],
+            declared_writes: vec![],
+            excluded_paths: vec![],
+            plugin_list: None,
+            launch_alternatives: Vec::new(),
+            copy_patterns: vec!["**/*.dat".into()],
+        };
+
+        // Core defaults
+        assert!(def.is_copy_pattern("BepInEx/config/BepInEx.cfg"));
+        assert!(def.is_copy_pattern("settings.ini"));
+        assert!(def.is_copy_pattern("SETTINGS.INI"));
+        assert!(def.is_copy_pattern("Mod\\config.json"));
+        assert!(def.is_copy_pattern("mod.toml"));
+        assert!(def.is_copy_pattern("sub/file.xml"));
+        assert!(def.is_copy_pattern("a/b/c.yaml"));
+        assert!(def.is_copy_pattern("c.yml"));
+        assert!(def.is_copy_pattern("foo.conf"));
+        assert!(def.is_copy_pattern("bar.config"));
+        assert!(def.is_copy_pattern("server.properties"));
+
+        // Custom game copy_patterns
+        assert!(def.is_copy_pattern("data/save.dat"));
+        assert!(def.is_copy_pattern("DATA/SAVE.DAT"));
+
+        // Non-matches
+        assert!(!def.is_copy_pattern("plugin.dll"));
+        assert!(!def.is_copy_pattern("Data/mod.esp"));
     }
 
     #[test]
