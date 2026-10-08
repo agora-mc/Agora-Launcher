@@ -33,6 +33,33 @@ pub struct GameInstanceManifest {
     /// definition and the machine, which may step down (announced); a chosen rung never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<crate::game_deploy::DeployMode>,
+    /// Whether the instance's saves are the game's shared folder or its own (MASTER_SPEC §26.5).
+    /// Absent in older manifests, which read as `Shared`.
+    #[serde(default, skip_serializing_if = "SavesChoice::is_shared")]
+    pub saves: SavesChoice,
+}
+
+/// Where an instance's saves are: the game's shared save folder, or a folder of its own that the
+/// game's own setting redirects to (`SaveLocationRule`). Switching never moves save files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavesChoice {
+    #[default]
+    Shared,
+    Own,
+}
+
+impl SavesChoice {
+    pub fn is_shared(&self) -> bool {
+        matches!(self, SavesChoice::Shared)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SavesChoice::Shared => "shared",
+            SavesChoice::Own => "own",
+        }
+    }
 }
 
 impl GameInstanceManifest {
@@ -53,6 +80,7 @@ impl GameInstanceManifest {
             frameworks: Vec::new(),
             layers: LayerStack::default(),
             deployment: None,
+            saves: SavesChoice::Shared,
         }
     }
 }
@@ -313,6 +341,7 @@ pub fn create_with_options(
         frameworks: Vec::new(),
         layers: LayerStack::default(),
         deployment: None,
+        saves: SavesChoice::Shared,
     };
 
     let manifest_path = instance_dir.join("instance_manifest.json");
@@ -911,6 +940,9 @@ fn prepare_deployed(
     )?;
 
     let outcome = crate::game_deploy::deploy(ctx, id, definition, rung.mode)?;
+    // The deploy has synced the plugin list, so this is the order the game will read. Nothing has
+    // been swapped in yet: a refused launch leaves the user's files as they were.
+    let load_order_findings = check_load_order(ctx, id, definition, options.launch_anyway)?;
 
     let game_dir = crate::game_deploy::deployment_dir(ctx, id)?
         .ok_or_else(|| InstanceError::Other("deployed game directory not found".into()))?;
@@ -990,7 +1022,28 @@ fn prepare_deployed(
         notice: rung.notice,
         alternative,
         runtime_findings: findings,
+        load_order_findings,
     })
+}
+
+/// The load order findings a launch carries, after the plugin list is synced. A refusing finding
+/// refuses with [`LaunchError::LoadOrderProblems`] unless `launch_anyway`. A game with no plugin
+/// list has no load order to check.
+fn check_load_order(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+    launch_anyway: bool,
+) -> Result<Vec<crate::game_load_order::Finding>, InstanceError> {
+    if definition.plugin_list.is_none() {
+        return Ok(Vec::new());
+    }
+    let findings = crate::game_load_order::check(ctx, id, definition)
+        .map_err(|e| InstanceError::Other(format!("cannot check the plugin load order: {e}")))?;
+    Ok(crate::game_launch::refuse_load_order(
+        findings,
+        launch_anyway,
+    )?)
 }
 
 /// Start a prepared launch. When it runs under the virtual file system and that cannot start,

@@ -47,6 +47,7 @@ fn make_test_definition(recipe: Option<LaunchRecipe>) -> GameDefinition {
         excluded_paths: vec![],
         plugin_list: None,
         runtime_files: Vec::new(),
+        save_location: Vec::new(),
         launch_alternatives: Vec::new(),
         content_layout: None,
         copy_patterns: Vec::new(),

@@ -143,6 +143,21 @@ pub enum MasterProblem {
 }
 
 impl Finding {
+    /// Whether a launch refuses for this finding (MASTER_SPEC §26.6). A master that is missing or
+    /// inactive, a master loop, and too many plugins refuse: the game crashes or cannot start.
+    /// A late master only warns: a setup that loads a plugin before its master still starts (the
+    /// Phase 3 run of p3-modded did), though the plugin's references may resolve wrongly. An
+    /// unreadable header and a plugin listed twice only warn too.
+    pub fn refuses_launch(&self) -> bool {
+        match self {
+            Finding::MasterNotEarlier { problem, .. } => *problem != MasterProblem::Later,
+            Finding::MasterCycle { .. }
+            | Finding::TooManyFullPlugins { .. }
+            | Finding::TooManyLightPlugins { .. } => true,
+            Finding::UnreadableHeader { .. } | Finding::DuplicateListing { .. } => false,
+        }
+    }
+
     /// The finding as one sentence for a person.
     pub fn message(&self) -> String {
         match self {
@@ -175,6 +190,15 @@ impl Finding {
             }
         }
     }
+}
+
+/// The findings as one line for a person, each problem named, in the order given.
+pub fn describe_findings(findings: &[Finding]) -> String {
+    findings
+        .iter()
+        .map(Finding::message)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// One move a sort made. Positions are 1-based positions in the list, as shown to the user.

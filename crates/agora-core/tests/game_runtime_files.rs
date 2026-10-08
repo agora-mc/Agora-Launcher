@@ -75,6 +75,7 @@ fn make_test_definition() -> GameDefinition {
         plugin_list: None,
         launch_alternatives: Vec::new(),
         runtime_files: vec![skse_rule()],
+        save_location: Vec::new(),
         content_layout: None,
         copy_patterns: Vec::new(),
     }

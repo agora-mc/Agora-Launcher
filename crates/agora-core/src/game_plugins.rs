@@ -581,7 +581,7 @@ pub fn list(
 }
 
 /// The store an instance runs under, when it can be told.
-fn instance_store(ctx: &Ctx, instance_id: &str) -> Result<Option<StoreId>, PluginListError> {
+pub fn instance_store(ctx: &Ctx, instance_id: &str) -> Result<Option<StoreId>, PluginListError> {
     let manifest = crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
         crate::game_instance::InstanceError::NotFound(id) => PluginListError::InstanceNotFound(id),
         other => PluginListError::Other(other.to_string()),

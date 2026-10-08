@@ -60,6 +60,10 @@ pub enum GameRegistryError {
     UndefinedGameInTool { tool_id: ToolId, game_id: GameId },
     #[error("game {game_id} plugin_list.user_file '{user_file}' names no user_files mapping")]
     PluginListUserFileNotFound { game_id: GameId, user_file: RelPath },
+    #[error("game {game_id} save_location.ini '{user_file}' names no user_files mapping for one of its stores")]
+    SaveLocationUserFileNotFound { game_id: GameId, user_file: RelPath },
+    #[error("game {game_id} has an invalid save_location: {reason}")]
+    InvalidSaveLocation { game_id: GameId, reason: String },
     #[error("game {game_id} has an invalid plugin_list: {reason}")]
     InvalidPluginList { game_id: GameId, reason: String },
     #[error("game {game_id} has an invalid launch alternative: {reason}")]
@@ -221,6 +225,41 @@ impl GameRegistryBuilder {
                             reason: format!("implicit plugin '{name}' is not a plugin file name"),
                         });
                     }
+                }
+            }
+        }
+
+        // 7b. A save location must be a setting the game's own per-user file holds, for every store
+        // it names, or an instance's save choice would write a file the game never reads.
+        for game in &def.games {
+            for rule in &game.save_location {
+                let stores: Vec<StoreId> = if rule.stores.is_empty() {
+                    game.stores.iter().map(|s| s.store.clone()).collect()
+                } else {
+                    rule.stores.clone()
+                };
+                for store in &stores {
+                    let held = game
+                        .user_files
+                        .iter()
+                        .any(|uf| uf.instance_path == rule.ini && uf.applies_to_store(store));
+                    if !held {
+                        return Err(GameRegistryError::SaveLocationUserFileNotFound {
+                            game_id: game.id.clone(),
+                            user_file: rule.ini.clone(),
+                        });
+                    }
+                }
+                let own_is_usable = !rule.own_value.trim().is_empty()
+                    && !rule.own_value.contains(['\r', '\n'])
+                    && rule.own_value.contains("{instance}");
+                if rule.section.trim().is_empty() || rule.key.trim().is_empty() || !own_is_usable {
+                    return Err(GameRegistryError::InvalidSaveLocation {
+                        game_id: game.id.clone(),
+                        reason: "the section and key must be named, and own_value must be one \
+                                 line that contains {instance}"
+                            .to_string(),
+                    });
                 }
             }
         }
@@ -644,6 +683,7 @@ pub mod test_support {
                 content_layout: None,
                 plugin_list: None,
                 runtime_files: Vec::new(),
+                save_location: Vec::new(),
                 launch_alternatives: Vec::new(),
                 copy_patterns: Vec::new(),
             }],

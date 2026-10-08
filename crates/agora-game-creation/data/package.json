@@ -184,6 +184,46 @@
           ]
         }
       ],
+      "save_location": [
+        {
+          "ini": "user/Skyrim.ini",
+          "section": "General",
+          "key": "SLocalSavePath",
+          "own_value": "Saves\\Agora\\{instance}\\",
+          "shared_dir": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition/Saves"
+          },
+          "relative_to": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition"
+          },
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "ini": "user/Skyrim.ini",
+          "section": "General",
+          "key": "SLocalSavePath",
+          "own_value": "Saves\\Agora\\{instance}\\",
+          "shared_dir": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG/Saves"
+          },
+          "relative_to": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG"
+          },
+          "stores": [
+            "gog"
+          ]
+        }
+      ],
       "save_paths": [],
       "linked_archive_patterns": [
         "Data/*.bsa",

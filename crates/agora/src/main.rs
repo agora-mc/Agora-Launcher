@@ -419,11 +419,38 @@ enum GameInstanceCmd {
         /// Instance ID to undeploy.
         instance_id: String,
     },
-    /// Check the framework files against the game version, without launching. Exits 1 when a
-    /// framework was built for another version: the same check a launch makes.
+    /// Check the framework files against the game version, and the plugin load order, without
+    /// launching. Exits 1 when a framework was built for another version or the load order would
+    /// stop the game: the same checks a launch makes.
     Check {
         /// Instance ID to check.
         instance_id: String,
+    },
+    /// Read and change the game's INI files as the instance keeps them. With no file, lists the
+    /// files; with a file, lists its keys; with a section and key, gets the value; with a value,
+    /// sets it; with --unset, removes the key.
+    Ini {
+        /// Instance ID.
+        instance_id: String,
+        /// The game's file, as the instance names it, e.g. user/Skyrim.ini.
+        file: Option<String>,
+        /// The section, e.g. General.
+        section: Option<String>,
+        /// The key, e.g. SLocalSavePath.
+        key: Option<String>,
+        /// The value to set.
+        value: Option<String>,
+        /// Remove the key instead of getting or setting it.
+        #[arg(long)]
+        unset: bool,
+    },
+    /// Show or change whether the instance's saves are the game's shared folder or its own. With no
+    /// choice, shows it. Switching never moves a save file.
+    Saves {
+        /// Instance ID.
+        instance_id: String,
+        /// own or shared. Omit to show the current choice.
+        choice: Option<String>,
     },
     /// Show or change which plugins an instance's plugin list activates.
     #[command(args_conflicts_with_subcommands = true)]
@@ -489,7 +516,7 @@ enum InstancePluginsCmd {
         /// Plugin file name, e.g. SkyUI_SE.esp.
         plugin: String,
     },
-    /// Print the load order findings. Exits 1 when there are any.
+    /// Print the load order findings. Exits 1 only when a launch would refuse; warnings exit 0.
     Check {
         /// Instance ID.
         instance_id: String,
@@ -5403,6 +5430,31 @@ async fn run_command(
                                 }
                                 std::process::exit(1);
                             }
+                            Err(agora_core::game_instance::InstanceError::LaunchError(
+                                agora_core::game_launch::LaunchError::LoadOrderProblems {
+                                    findings,
+                                },
+                            )) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": "load_order_problems",
+                                        "instance_id": instance_id,
+                                        "findings": findings,
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!(
+                                        "Instance '{instance_id}' has plugin load order problems that would stop the game:"
+                                    );
+                                    print_load_order_findings(&findings);
+                                    eprintln!(
+                                        "Run 'agora games instance plugins sort {instance_id}' to fix master order, or pass --launch-anyway to start the game anyway."
+                                    );
+                                }
+                                std::process::exit(1);
+                            }
                             Err(
                                 e @ agora_core::game_instance::InstanceError::VfsUnavailable {
                                     next: Some(next),
@@ -5613,6 +5665,18 @@ async fn run_command(
                             );
                             print_runtime_findings(&prepared.runtime_findings);
                         }
+                        if !json && !prepared.load_order_findings.is_empty() {
+                            eprintln!(
+                                "Warning: {} plugin load order finding(s):",
+                                prepared.load_order_findings.len()
+                            );
+                            print_load_order_findings(&prepared.load_order_findings);
+                            if let Some(hint) =
+                                sort_hint(&instance_id, &prepared.load_order_findings)
+                            {
+                                eprintln!("{hint}");
+                            }
+                        }
 
                         let env_map: std::collections::BTreeMap<String, String> = prepared
                             .resolved
@@ -5638,6 +5702,7 @@ async fn run_command(
                                     "env": env_map,
                                     "warnings": prepared.warnings,
                                     "runtime_findings": prepared.runtime_findings,
+                                    "load_order_findings": prepared.load_order_findings,
                                     "deployment": prepared.deployment.map(|m| m.as_str()),
                                     "notice": prepared.notice,
                                     "alternative": prepared.alternative,
@@ -5741,6 +5806,7 @@ async fn run_command(
                                     "env": env_map,
                                     "warnings": prepared.warnings,
                                     "runtime_findings": prepared.runtime_findings,
+                                    "load_order_findings": prepared.load_order_findings,
                                     "deployment": prepared.deployment.map(|m| m.as_str()),
                                     "notice": prepared.notice,
                                     "processes": exit_report.processes,
@@ -6672,14 +6738,30 @@ async fn run_command(
                     };
                     let pinned =
                         matches!(record.base, agora_game_api::BaseReference::Pinned { .. });
-                    // Only a framework built for another version fails the check. A rule that
-                    // cannot be checked is listed, as a warning.
-                    let refuses = findings
+                    // The plugin list is synced at launch, so its order is checked for a pinned
+                    // instance of a game that keeps one. An unpinned instance has no synced list.
+                    let load_order: Vec<agora_core::game_load_order::Finding> =
+                        if pinned && game_def.plugin_list.is_some() {
+                            match agora_core::game_load_order::check(ctx, &instance_id, game_def) {
+                                Ok(found) => found,
+                                Err(e) => fail(format!("{e}")),
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                    // Only a framework built for another version, or a load order that would stop
+                    // the game, fails the check. A rule that cannot be checked is listed, as a
+                    // warning, and so are an unreadable header and a plugin listed twice.
+                    let framework_refuses = findings
                         .iter()
                         .any(agora_game_api::RuntimeFileFinding::refuses_launch);
+                    let order_refuses = load_order
+                        .iter()
+                        .any(agora_core::game_load_order::Finding::refuses_launch);
+                    let refuses = framework_refuses || order_refuses;
                     let status = if refuses {
                         "findings"
-                    } else if findings.is_empty() {
+                    } else if findings.is_empty() && load_order.is_empty() {
                         "ok"
                     } else {
                         "warnings"
@@ -6690,6 +6772,7 @@ async fn run_command(
                             "instance_id": instance_id,
                             "checked": pinned,
                             "findings": findings,
+                            "load_order_findings": load_order,
                             "exitCode": if refuses { 1 } else { 0 },
                         });
                         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -6697,20 +6780,86 @@ async fn run_command(
                         println!(
                             "Instance '{instance_id}' runs from its install folder, which has no framework check."
                         );
-                    } else if findings.is_empty() {
-                        println!("No framework problems found in instance '{instance_id}'.");
                     } else {
-                        println!(
-                            "Instance '{instance_id}' has {} framework problem(s):",
-                            findings.len()
-                        );
-                        for line in runtime_finding_lines(&findings) {
-                            println!("{line}");
+                        if findings.is_empty() {
+                            println!("No framework problems found in instance '{instance_id}'.");
+                        } else {
+                            println!(
+                                "Instance '{instance_id}' has {} framework problem(s):",
+                                findings.len()
+                            );
+                            for line in runtime_finding_lines(&findings) {
+                                println!("{line}");
+                            }
+                        }
+                        if game_def.plugin_list.is_some() {
+                            if load_order.is_empty() {
+                                println!(
+                                    "No load order problems found in instance '{instance_id}'."
+                                );
+                            } else {
+                                println!(
+                                    "Instance '{instance_id}' has {} load order finding(s):",
+                                    load_order.len()
+                                );
+                                for finding in &load_order {
+                                    println!("- {}", finding.message());
+                                }
+                                if let Some(hint) = sort_hint(&instance_id, &load_order) {
+                                    println!("{hint}");
+                                }
+                            }
                         }
                     }
                     if refuses {
                         std::process::exit(1);
                     }
+                }
+                GameInstanceCmd::Ini {
+                    instance_id,
+                    file,
+                    section,
+                    key,
+                    value,
+                    unset,
+                } => {
+                    let record = match agora_core::game_instance::get(ctx, &instance_id)? {
+                        Some(r) => r,
+                        None => {
+                            ini_fail(json, format!("Instance '{instance_id}' not found."));
+                        }
+                    };
+                    let game_def = ctx.games.game(&record.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", record.game)
+                    })?;
+                    ini_command(
+                        ctx,
+                        json,
+                        &instance_id,
+                        game_def,
+                        IniRequest {
+                            file,
+                            section,
+                            key,
+                            value,
+                            unset,
+                        },
+                    )?;
+                }
+                GameInstanceCmd::Saves {
+                    instance_id,
+                    choice,
+                } => {
+                    let record = match agora_core::game_instance::get(ctx, &instance_id)? {
+                        Some(r) => r,
+                        None => {
+                            ini_fail(json, format!("Instance '{instance_id}' not found."));
+                        }
+                    };
+                    let game_def = ctx.games.game(&record.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", record.game)
+                    })?;
+                    saves_command(ctx, json, &instance_id, game_def, choice.as_deref())?;
                 }
                 GameInstanceCmd::Plugins {
                     instance_id: None,
@@ -6950,6 +7099,7 @@ async fn run_command(
                             "env": env_map,
                             "warnings": prepared.warnings,
                             "runtime_findings": prepared.runtime_findings,
+                            "load_order_findings": prepared.load_order_findings,
                         });
                         println!("{}", serde_json::to_string_pretty(&out)?);
                     } else {
@@ -7014,6 +7164,7 @@ async fn run_command(
                             "env": env_map,
                             "warnings": prepared.warnings,
                             "runtime_findings": prepared.runtime_findings,
+                            "load_order_findings": prepared.load_order_findings,
                             "processes": exit_report.processes,
                             "relaunched_outside": exit_report.relaunched_outside,
                             "game_writes": ver.game_writes,
@@ -7335,6 +7486,374 @@ impl InstancePluginsCmd {
     }
 }
 
+/// A failure in the `ini` and `saves` commands: the message as JSON or as text, and exit 1.
+fn ini_fail(json: bool, message: String) -> ! {
+    if json {
+        let out = serde_json::json!({
+            "status": "error",
+            "error": message,
+            "exitCode": 1,
+        });
+        eprintln!("{}", serde_json::to_string_pretty(&out).unwrap_or(message));
+    } else {
+        eprintln!("Error: {message}");
+    }
+    std::process::exit(1);
+}
+
+/// The arguments of `games instance ini`, after the instance.
+struct IniRequest {
+    file: Option<String>,
+    section: Option<String>,
+    key: Option<String>,
+    value: Option<String>,
+    unset: bool,
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+/// `games instance ini`: list the game's files for an instance, list a file's keys, get, set or
+/// remove one key. Reads never create the instance's copy; a change does, from the game's file.
+fn ini_command(
+    ctx: &agora_core::ctx::Ctx,
+    json: bool,
+    instance_id: &str,
+    game_def: &agora_game_api::GameDefinition,
+    request: IniRequest,
+) -> anyhow::Result<()> {
+    use agora_core::game_ini;
+
+    let IniRequest {
+        file,
+        section,
+        key,
+        value,
+        unset,
+    } = request;
+    let fail = |message: String| -> ! { ini_fail(json, message) };
+    let usage =
+        "usage: agora games instance ini <instance> <file> [<section> [<key> [<value>]]] [--unset]";
+
+    let Some(file) = file else {
+        if section.is_some() || key.is_some() || value.is_some() || unset {
+            fail(format!("name a file. {usage}"));
+        }
+        let files = match game_ini::list_files(ctx, instance_id, game_def) {
+            Ok(files) => files,
+            Err(e) => fail(e.to_string()),
+        };
+        if json {
+            println!("{}", serde_json::to_string_pretty(&files)?);
+        } else if files.is_empty() {
+            println!("The game keeps no per-user files for this instance's store.");
+        } else {
+            for f in &files {
+                println!(
+                    "{}  copy: {}  game file: {} ({})",
+                    f.instance_path,
+                    yes_no(f.copy_exists),
+                    f.game_file.display(),
+                    if f.game_file_exists {
+                        "exists"
+                    } else {
+                        "missing"
+                    }
+                );
+            }
+        }
+        return Ok(());
+    };
+
+    let read = match game_ini::read(ctx, instance_id, game_def, &file) {
+        Ok(read) => read,
+        Err(e) => fail(e.to_string()),
+    };
+
+    let Some(section) = section else {
+        if key.is_some() || value.is_some() || unset {
+            fail(format!("name a section. {usage}"));
+        }
+        let entries = read.document.entries();
+        print_ini_entries(json, &read.instance_path, read.source, &entries)?;
+        return Ok(());
+    };
+
+    let Some(key) = key else {
+        if value.is_some() || unset {
+            fail(format!("name a key. {usage}"));
+        }
+        let entries: Vec<_> = read
+            .document
+            .entries()
+            .into_iter()
+            .filter(|e| e.section.eq_ignore_ascii_case(&section))
+            .collect();
+        print_ini_entries(json, &read.instance_path, read.source, &entries)?;
+        return Ok(());
+    };
+
+    if unset {
+        if value.is_some() {
+            fail("--unset takes no value".to_string());
+        }
+        let changed = match game_ini::unset_value(ctx, instance_id, game_def, &file, &section, &key)
+        {
+            Ok(changed) => changed,
+            Err(e) => fail(e.to_string()),
+        };
+        if json {
+            let out = serde_json::json!({
+                "status": "ok",
+                "instance_id": instance_id,
+                "file": file,
+                "section": section,
+                "key": key,
+                "changed": changed,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else if changed {
+            println!("Removed '{key}' from [{section}] in {file} for instance '{instance_id}'.");
+        } else {
+            println!("'{key}' was not set in [{section}] of {file}; nothing changed.");
+        }
+        return Ok(());
+    }
+
+    let Some(value) = value else {
+        // A read: the value alone on stdout for a script, or a JSON object.
+        let found = read.document.get(&section, &key);
+        if json {
+            let out = serde_json::json!({
+                "file": read.instance_path,
+                "section": section,
+                "key": key,
+                "value": found,
+                "source": read.source,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else if let Some(found) = &found {
+            println!("{found}");
+        } else {
+            eprintln!("'{key}' is not set in [{section}] of {file}.");
+        }
+        if found.is_none() {
+            std::process::exit(1);
+        }
+        return Ok(());
+    };
+
+    let changed =
+        match game_ini::set_value(ctx, instance_id, game_def, &file, &section, &key, &value) {
+            Ok(changed) => changed,
+            Err(e) => fail(e.to_string()),
+        };
+    if json {
+        let out = serde_json::json!({
+            "status": "ok",
+            "instance_id": instance_id,
+            "file": file,
+            "section": section,
+            "key": key,
+            "value": value,
+            "changed": changed,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else if changed {
+        println!("Set '{key}' in [{section}] of {file} for instance '{instance_id}'.");
+    } else {
+        println!("'{key}' in [{section}] of {file} already has that value; nothing changed.");
+    }
+    Ok(())
+}
+
+fn print_ini_entries(
+    json: bool,
+    file: &str,
+    source: agora_core::game_ini::IniSource,
+    entries: &[agora_core::game_ini::IniEntry],
+) -> anyhow::Result<()> {
+    if json {
+        let out = serde_json::json!({
+            "file": file,
+            "source": source,
+            "entries": entries,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    let origin = match source {
+        agora_core::game_ini::IniSource::Copy => "the instance's copy",
+        agora_core::game_ini::IniSource::GameFile => {
+            "the game's file (the instance has no copy yet)"
+        }
+        agora_core::game_ini::IniSource::Nothing => "nothing: the file does not exist yet",
+    };
+    println!("{file}, from {origin}:");
+    for e in entries {
+        println!("[{}] {} = {}", e.section, e.key, e.value);
+    }
+    Ok(())
+}
+
+/// One folder's saves, for a line of text: the count and the newest save's time.
+fn folder_summary(folder: &agora_core::game_saves::SaveFolder) -> String {
+    if !folder.exists {
+        return "the folder does not exist yet".to_string();
+    }
+    match (&folder.newest, folder.saves) {
+        (_, 0) => "no saves".to_string(),
+        (Some(newest), n) => format!("{n} save{}, newest {newest}", if n == 1 { "" } else { "s" }),
+        (None, n) => format!("{n} save{}", if n == 1 { "" } else { "s" }),
+    }
+}
+
+/// `games instance saves`: show the instance's save choice, or make it `own` or `shared`.
+fn saves_command(
+    ctx: &agora_core::ctx::Ctx,
+    json: bool,
+    instance_id: &str,
+    game_def: &agora_game_api::GameDefinition,
+    choice: Option<&str>,
+) -> anyhow::Result<()> {
+    use agora_core::game_instance::SavesChoice;
+    use agora_core::game_saves::{self, SettingChange};
+
+    let fail = |message: String| -> ! { ini_fail(json, message) };
+    let wanted = match choice {
+        None => None,
+        Some("own") => Some(SavesChoice::Own),
+        Some("shared") => Some(SavesChoice::Shared),
+        Some(other) => fail(format!("'{other}' is not a save choice: use own or shared")),
+    };
+
+    let Some(wanted) = wanted else {
+        let status = match game_saves::status(ctx, instance_id, game_def) {
+            Ok(status) => status,
+            Err(e) => fail(e.to_string()),
+        };
+        if json {
+            println!("{}", serde_json::to_string_pretty(&status)?);
+            return Ok(());
+        }
+        let kept = match status.choice {
+            SavesChoice::Shared => "the game's shared save folder",
+            SavesChoice::Own => "saves of its own",
+        };
+        println!("Instance '{instance_id}' keeps {kept}.");
+        println!(
+            "In use: {} ({}).",
+            status.in_use.path.display(),
+            folder_summary(&status.in_use)
+        );
+        println!(
+            "Other folder: {} ({}). Switching never moves saves.",
+            status.other.path.display(),
+            folder_summary(&status.other)
+        );
+        let set_to = status.setting_value.as_deref().unwrap_or("not set");
+        println!(
+            "The game's setting {} {} is {set_to} (from {}).",
+            status.setting_file,
+            status.setting,
+            match status.setting_source {
+                agora_core::game_ini::IniSource::Copy => "the instance's copy",
+                agora_core::game_ini::IniSource::GameFile => "the game's file",
+                agora_core::game_ini::IniSource::Nothing => "no file yet",
+            }
+        );
+        return Ok(());
+    };
+
+    let change = match game_saves::set_choice(ctx, instance_id, game_def, wanted) {
+        Ok(change) => change,
+        Err(e) => fail(e.to_string()),
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&change)?);
+        return Ok(());
+    }
+    if change.previous == change.choice {
+        println!(
+            "Instance '{instance_id}' already keeps {} saves.",
+            change.choice.as_str()
+        );
+    } else {
+        println!(
+            "Instance '{instance_id}' now keeps {} saves.",
+            change.choice.as_str()
+        );
+    }
+    match &change.setting {
+        SettingChange::Set { value } => {
+            println!("The game's save setting now names {value}.");
+        }
+        SettingChange::Unchanged => {
+            println!("The game's save setting already named that folder.");
+        }
+        SettingChange::Restored { value } => {
+            println!("The game's save setting is back to {value}, as it was before.");
+        }
+        SettingChange::Removed => {
+            println!("The game's save setting was removed; it was not set before.");
+        }
+        SettingChange::LeftAlone { now } => {
+            let now = now.as_deref().unwrap_or("nothing");
+            println!(
+                "The game's save setting no longer holds the value Agora set (it holds {now}), so it was left as it is. Check it by hand."
+            );
+        }
+        SettingChange::NothingRecorded => {
+            println!(
+                "Nothing was recorded for this instance, so the game's save setting was left as it is."
+            );
+        }
+    }
+    println!(
+        "The game reads and writes saves in {} ({}).",
+        change.in_use.path.display(),
+        folder_summary(&change.in_use)
+    );
+    println!(
+        "The saves in {} ({}) stay where they are; nothing was moved, copied or deleted.",
+        change.other.path.display(),
+        folder_summary(&change.other)
+    );
+    Ok(())
+}
+
+/// The load order findings a launch prints or refuses with, one per line.
+fn print_load_order_findings(findings: &[agora_core::game_load_order::Finding]) {
+    for finding in findings {
+        eprintln!("  - {}", finding.message());
+    }
+}
+
+/// The line that says how to fix a late master, when the findings have one. The game can start
+/// with a plugin before its master, but the plugin's references may resolve wrongly, and
+/// `plugins sort` moves the master up.
+fn sort_hint(
+    instance_id: &str,
+    findings: &[agora_core::game_load_order::Finding],
+) -> Option<String> {
+    let late = findings.iter().any(|f| {
+        matches!(
+            f,
+            agora_core::game_load_order::Finding::MasterNotEarlier { .. }
+        )
+    });
+    late.then(|| {
+        format!(
+            "Warning: a plugin loads before its master. 'agora games instance plugins sort {instance_id}' fixes the order, since the plugin's references may resolve wrongly until it does."
+        )
+    })
+}
+
 /// The instance's effective load order, one plugin per line: position, state, the master and
 /// light flags (`?` when the header was not read), the lock, who put the line there, and the name.
 fn print_load_order(instance_id: &str, order: &agora_core::game_load_order::LoadOrder) {
@@ -7545,12 +8064,21 @@ fn plugins_load_order_command(
         }
         InstancePluginsCmd::Check { .. } => match load_order::check(ctx, &instance_id, game_def) {
             Ok(findings) => {
+                // Only a finding a launch refuses for exits 1; warnings are printed and exit 0.
+                let refuses = findings.iter().any(load_order::Finding::refuses_launch);
+                let status = if refuses {
+                    "findings"
+                } else if findings.is_empty() {
+                    "ok"
+                } else {
+                    "warnings"
+                };
                 if json {
                     let out = serde_json::json!({
-                        "status": if findings.is_empty() { "ok" } else { "findings" },
+                        "status": status,
                         "instance_id": instance_id,
                         "findings": findings,
-                        "exitCode": if findings.is_empty() { 0 } else { 1 },
+                        "exitCode": if refuses { 1 } else { 0 },
                     });
                     println!("{}", serde_json::to_string_pretty(&out)?);
                 } else if findings.is_empty() {
@@ -7559,8 +8087,11 @@ fn plugins_load_order_command(
                     for f in &findings {
                         println!("- {}", f.message());
                     }
+                    if let Some(hint) = sort_hint(&instance_id, &findings) {
+                        println!("{hint}");
+                    }
                 }
-                if !findings.is_empty() {
+                if refuses {
                     std::process::exit(1);
                 }
             }

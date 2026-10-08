@@ -13,6 +13,7 @@ use agora_game_api::{
 use serde::{Deserialize, Serialize};
 
 use crate::game_base::{verify_base, BaseManifest, BaseProblem, VerifyDepth};
+use crate::game_load_order::{describe_findings, Finding};
 use crate::process_identity::{self, ProcessIdentity};
 
 mod vfs;
@@ -55,6 +56,13 @@ pub enum LaunchError {
     /// A framework in the game's files was built for another runtime version (MASTER_SPEC §26.6).
     #[error("frameworks do not match this game's version: {}", describe_runtime_findings(.findings))]
     RuntimeMismatch { findings: Vec<RuntimeFileFinding> },
+    /// The plugin list breaks the game's load order rules (MASTER_SPEC §26.6): the game would crash
+    /// or refuse to load. `agora games instance plugins sort <instance>` fixes a master's order.
+    #[error(
+        "the plugin load order would stop the game: {}. `agora games instance plugins sort <instance>` fixes master order",
+        describe_findings(.findings)
+    )]
+    LoadOrderProblems { findings: Vec<Finding> },
     #[error("root '{0}' is not configured")]
     RootNotConfigured(String),
     #[error("user data location '{0:?}' could not be resolved")]
@@ -88,6 +96,9 @@ pub struct PreparedLaunch {
     pub alternative: Option<AppliedAlternative>,
     /// Framework findings that `launch_anyway` let through. Empty when the launch was clean.
     pub runtime_findings: Vec<RuntimeFileFinding>,
+    /// Load order findings to show the user: the warnings always, and the refusing findings too
+    /// when `launch_anyway` let them through. Empty when the load order is clean.
+    pub load_order_findings: Vec<Finding>,
 }
 
 impl PreparedLaunch {
@@ -107,7 +118,25 @@ impl PreparedLaunch {
             notice: None,
             alternative,
             runtime_findings: Vec::new(),
+            load_order_findings: Vec::new(),
         }
+    }
+}
+
+/// Refuse a launch whose plugin list breaks the game's load order rules, unless `launch_anyway` is
+/// set. Only the refusing findings refuse (a missing or inactive master, a master loop, too many
+/// plugins); the others (a late master, an unreadable header, a plugin listed twice) come back as
+/// warnings.
+/// `findings` come from [`crate::game_load_order::check`] after the plugin list is synced.
+pub fn refuse_load_order(
+    findings: Vec<Finding>,
+    launch_anyway: bool,
+) -> Result<Vec<Finding>, LaunchError> {
+    let refuses = findings.iter().any(Finding::refuses_launch);
+    if refuses && !launch_anyway {
+        Err(LaunchError::LoadOrderProblems { findings })
+    } else {
+        Ok(findings)
     }
 }
 

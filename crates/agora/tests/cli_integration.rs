@@ -301,6 +301,8 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "instance", "plugins", "lock"],
     &["games", "instance", "plugins", "unlock"],
     &["games", "instance", "plugins", "check"],
+    &["games", "instance", "ini"],
+    &["games", "instance", "saves"],
     &["games", "launch"],
     &["games", "user-files"],
     &["games", "user-files", "status"],
@@ -3370,6 +3372,18 @@ fn games_instance_content_and_deploy_cli() {
     // The plugin list commands fail closed on an instance that is not there.
     for args in [
         &["games", "instance", "plugins", "no-such-inst"][..],
+        &["games", "instance", "ini", "no-such-inst"][..],
+        &[
+            "games",
+            "instance",
+            "ini",
+            "no-such-inst",
+            "user/Skyrim.ini",
+            "General",
+            "k",
+        ][..],
+        &["games", "instance", "saves", "no-such-inst"][..],
+        &["games", "instance", "saves", "no-such-inst", "own"][..],
         &[
             "games",
             "instance",
@@ -3936,8 +3950,12 @@ fn games_instance_check_passes_a_runtime_with_its_own_frameworks() {
     let out_json = run_agora_json(&fixture.data_dir, &["games", "instance", "check", &id]);
     assert_eq!(out_json.status.code(), Some(0));
     let json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
-    assert_eq!(json["status"], "ok");
     assert_eq!(json["findings"].as_array().map(Vec::len), Some(0));
+    // The fixture's Skyrim.esm is not a real plugin, so the load order warns that its header cannot
+    // be read. That is a warning: it never fails the check.
+    assert_eq!(json["status"], "warnings");
+    assert_eq!(json["load_order_findings"][0]["kind"], "unreadable_header");
+    assert_eq!(json["load_order_findings"][0]["plugin"], "Skyrim.esm");
 }
 
 #[test]
@@ -3963,4 +3981,182 @@ fn games_instance_check_lists_a_rule_it_cannot_check_but_exits_zero() {
     let json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
     assert_eq!(json["status"], "warnings");
     assert_eq!(json["findings"][0]["problem"]["kind"], "cannot_check");
+}
+
+#[test]
+fn games_instance_ini_and_saves_round_trip_through_the_cli() {
+    // The game's files live in a temporary user-data root, never the real Documents folder: the
+    // child process is pointed at it.
+    let fixture = skyrim_fixture("1.6.1170.0", &[]);
+    let id = fixture.instance_id.clone();
+    let real_ini = fixture
+        .user_data
+        .join("documents")
+        .join("My Games")
+        .join("Skyrim Special Edition")
+        .join("Skyrim.ini");
+    std::fs::create_dir_all(real_ini.parent().unwrap()).unwrap();
+    let original = "[General]\r\nsLanguage=ENGLISH\r\n[Display]\r\nfGamma=1.0\r\n";
+    std::fs::write(&real_ini, original).unwrap();
+
+    let run = |args: &[&str]| {
+        let mut cmd = agora_command(&fixture.data_dir, args);
+        cmd.env("AGORA_TEST_USER_DATA_ROOT", &fixture.user_data);
+        run_command(cmd, args)
+    };
+    let text = |out: &std::process::Output| String::from_utf8_lossy(&out.stdout).into_owned();
+
+    let listed = run(&["games", "instance", "ini", &id]);
+    assert_eq!(listed.status.code(), Some(0));
+    assert!(
+        text(&listed).contains("user/Skyrim.ini"),
+        "{}",
+        text(&listed)
+    );
+    assert!(text(&listed).contains("copy: no"), "{}", text(&listed));
+
+    let missing = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "General",
+        "SLocalSavePath",
+    ]);
+    assert_eq!(
+        missing.status.code(),
+        Some(1),
+        "a key that is not set exits 1"
+    );
+
+    let set = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "Display",
+        "fGamma",
+        "2.2",
+    ]);
+    assert_eq!(set.status.code(), Some(0));
+    let got = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "display",
+        "fgamma",
+    ]);
+    assert_eq!(text(&got).trim(), "2.2");
+
+    let saves = run(&["games", "instance", "saves", &id]);
+    assert_eq!(saves.status.code(), Some(0));
+    assert!(text(&saves).contains("shared"), "{}", text(&saves));
+
+    let own = run(&["games", "instance", "saves", &id, "own"]);
+    assert_eq!(
+        own.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&own.stderr)
+    );
+    assert!(text(&own).contains("stay where they are"), "{}", text(&own));
+    let own_value = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "General",
+        "SLocalSavePath",
+    ]);
+    assert_eq!(own_value.status.code(), Some(0));
+    assert!(
+        text(&own_value).trim().starts_with(r"Saves\Agora\"),
+        "{}",
+        text(&own_value)
+    );
+
+    let json_shared = run(&["--json", "games", "instance", "saves", &id, "shared"]);
+    assert_eq!(json_shared.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&json_shared.stdout).unwrap();
+    assert_eq!(json["choice"], "shared");
+    assert_eq!(json["previous"], "own");
+    assert_eq!(json["setting"]["action"], "removed");
+
+    let gone = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "General",
+        "SLocalSavePath",
+    ]);
+    assert_eq!(
+        gone.status.code(),
+        Some(1),
+        "shared removed the key it added"
+    );
+
+    let bad = run(&["games", "instance", "saves", &id, "fastest"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("not a save choice"));
+
+    let unset = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "Display",
+        "fGamma",
+        "--unset",
+    ]);
+    assert_eq!(unset.status.code(), Some(0));
+
+    assert_eq!(
+        std::fs::read_to_string(&real_ini).unwrap(),
+        original,
+        "the game's own file was never edited"
+    );
+}
+
+#[test]
+fn the_shipped_skyrim_package_gives_each_store_its_own_save_location() {
+    use agora_game_api::StoreId;
+
+    let package = agora_game_creation::game_package();
+    let skyrim = package
+        .definition()
+        .games
+        .iter()
+        .find(|g| g.id.as_str() == "skyrim-se")
+        .expect("the package defines skyrim-se");
+    let steam = skyrim
+        .save_location
+        .iter()
+        .find(|r| r.applies_to_store(&StoreId::steam()))
+        .expect("steam has a save location");
+    let gog = skyrim
+        .save_location
+        .iter()
+        .find(|r| r.applies_to_store(&StoreId::gog()))
+        .expect("gog has a save location");
+    assert_eq!(steam.ini.as_str(), "user/Skyrim.ini");
+    assert_eq!(steam.section, "General");
+    assert_eq!(steam.key, "SLocalSavePath");
+    assert_eq!(steam.own_value, r"Saves\Agora\{instance}\");
+    assert_ne!(steam.shared_dir, gog.shared_dir);
+    // GOG's folder is named as its own user files name it.
+    assert!(
+        serde_json::to_string(&gog.shared_dir)
+            .unwrap()
+            .contains("Skyrim Special Edition GOG/Saves"),
+        "{:?}",
+        gog.shared_dir
+    );
 }

@@ -238,6 +238,35 @@ impl UserFileMapping {
     }
 }
 
+/// Where a game keeps its saves, and the per-user setting that moves them into an instance's own
+/// folder (MASTER_SPEC §26.5, *Saves are the user's choice per instance*).
+///
+/// The setting is a `key` under `section` of the per-user file `ini`. Its `own_value` names a folder
+/// relative to `relative_to`; `{instance}` in it is the instance's save folder name. The shared
+/// folder, `shared_dir`, is where the game keeps its saves when the setting is not there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveLocationRule {
+    /// The per-user file (an `instance_path`, such as `user/Skyrim.ini`) holding the setting.
+    pub ini: RelPath,
+    pub section: String,
+    pub key: String,
+    /// The value that gives the instance its own saves, e.g. `Saves\Agora\{instance}\`.
+    pub own_value: String,
+    /// The shared save folder, for listing the saves there.
+    pub shared_dir: GamePath,
+    /// The folder `own_value` is relative to.
+    pub relative_to: GamePath,
+    /// The stores this rule applies to; empty means every store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stores: Vec<StoreId>,
+}
+
+impl SaveLocationRule {
+    pub fn applies_to_store(&self, store: &StoreId) -> bool {
+        self.stores.is_empty() || self.stores.contains(store)
+    }
+}
+
 /// Host-resolved roots. Every `path` is relative to its root and checked by core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "root", rename_all = "snake_case")]
@@ -388,6 +417,10 @@ pub struct GameDefinition {
     /// Files a framework ships once per game version (MASTER_SPEC §26.6), checked before launch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_files: Vec<RuntimeFileRule>,
+    /// Where the game keeps its saves and how an instance gets its own (MASTER_SPEC §26.5). Empty
+    /// when the game has no such setting; the instance then always shares the game's saves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub save_location: Vec<SaveLocationRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1501,6 +1534,7 @@ mod tests {
             excluded_paths: vec![],
             plugin_list: None,
             runtime_files: Vec::new(),
+            save_location: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: Vec::new(),
         };
@@ -1546,6 +1580,7 @@ mod tests {
             excluded_paths: vec![],
             plugin_list: None,
             runtime_files: Vec::new(),
+            save_location: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: Vec::new(),
         };
@@ -1589,6 +1624,7 @@ mod tests {
             excluded_paths: vec![],
             plugin_list: None,
             runtime_files: Vec::new(),
+            save_location: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: Vec::new(),
         };
@@ -1627,6 +1663,7 @@ mod tests {
             excluded_paths: vec!["Data/SSEEdit Backups/**".into()],
             plugin_list: None,
             runtime_files: Vec::new(),
+            save_location: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: Vec::new(),
         };
@@ -1661,6 +1698,7 @@ mod tests {
             excluded_paths: vec![],
             plugin_list: None,
             runtime_files: Vec::new(),
+            save_location: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: vec!["**/*.dat".into()],
         };

@@ -124,6 +124,7 @@ fn definition() -> GameDefinition {
         excluded_paths: vec![],
         plugin_list: Some(plugin_rule()),
         runtime_files: Vec::new(),
+        save_location: Vec::new(),
         launch_alternatives: vec![LaunchAlternative {
             id: "loader".into(),
             when_present: RelPath::new("loader.exe").unwrap(),
@@ -1136,4 +1137,244 @@ fn probe_sort_keeps_inactive_and_hand_written_lines() {
             .unwrap()
     };
     assert!(pos("Base.esm") < pos("Patch.esp"));
+}
+
+// ---------------------------------------------------------------------------
+// The load order at launch (MASTER_SPEC §26.6)
+// ---------------------------------------------------------------------------
+
+/// Prepare a launch with `launch_anyway` as given, on the harness's machine.
+fn prepare_with(
+    h: &Harness,
+    inst: &GameInstanceRecord,
+    launch_anyway: bool,
+) -> Result<agora_core::game_launch::PreparedLaunch, agora_core::game_instance::InstanceError> {
+    let report = DiscoveryReport {
+        installs: vec![h.install.discovered.clone()],
+        warnings: vec![],
+    };
+    prepare_launch_with(
+        &h.ctx,
+        &inst.instance_id,
+        &h.def,
+        LaunchOptions {
+            launch_anyway,
+            on_vfs_failure: VfsFailure::FallBack,
+            ..Default::default()
+        },
+        &|| report.clone(),
+        &SystemLauncher,
+    )
+}
+
+/// Add a line to the instance's plugin list by hand, the way a user's own line gets there.
+fn append_line(h: &Harness, inst: &GameInstanceRecord, line: &str) {
+    let path = h.copy_path(inst);
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str(line);
+    text.push_str("\r\n");
+    std::fs::write(&path, text).unwrap();
+}
+
+#[test]
+fn a_plugin_whose_master_is_missing_refuses_the_launch_until_launch_anyway() {
+    let h = Harness::with_definition(engine_definition(&[]));
+    let inst = h.instance("missing-master");
+    let patch = h.item(
+        "patch",
+        &[("Data/Patch.esp", &plugin_file(0, &["Base.esm"])[..])],
+    );
+    h.add(&inst, &patch);
+
+    let err = prepare_with(&h, &inst, false).unwrap_err();
+    let agora_core::game_instance::InstanceError::LaunchError(LaunchError::LoadOrderProblems {
+        findings,
+    }) = &err
+    else {
+        panic!("expected a load order refusal, got {err:?}");
+    };
+    assert!(findings.iter().any(|f| matches!(
+        f,
+        agora_core::game_load_order::Finding::MasterNotEarlier {
+            master,
+            problem: agora_core::game_load_order::MasterProblem::Missing,
+            ..
+        } if master == "Base.esm"
+    )));
+    let message = err.to_string();
+    assert!(
+        message.contains("Base.esm") || message.contains("master"),
+        "{message}"
+    );
+    assert!(
+        message.contains("agora games instance plugins sort <instance>"),
+        "{message}"
+    );
+
+    let forced = prepare_with(&h, &inst, true).expect("launch_anyway starts the game");
+    assert!(forced
+        .load_order_findings
+        .iter()
+        .any(agora_core::game_load_order::Finding::refuses_launch));
+}
+
+#[test]
+fn a_late_master_launches_with_a_warning_and_a_sort_would_fix_it() {
+    let (h, inst) = late_master_harness("late-launch");
+
+    // The game starts with a plugin before its master (the Phase 3 run of p3-modded did), so the
+    // launch goes ahead and the warning says so.
+    let prepared = prepare_with(&h, &inst, false).expect("a late master never refuses");
+    assert!(prepared.load_order_findings.iter().any(|f| matches!(
+        f,
+        agora_core::game_load_order::Finding::MasterNotEarlier {
+            problem: agora_core::game_load_order::MasterProblem::Later,
+            ..
+        }
+    )));
+    assert!(!prepared
+        .load_order_findings
+        .iter()
+        .any(agora_core::game_load_order::Finding::refuses_launch));
+
+    game_load_order::sort(&h.ctx, &inst.instance_id, &h.def, false).unwrap();
+    let after = prepare_with(&h, &inst, false).expect("sorted, the launch is clean");
+    assert!(after.load_order_findings.is_empty());
+}
+
+#[test]
+fn a_missing_master_still_refuses_the_launch() {
+    let h = Harness::with_definition(engine_definition(&[]));
+    let inst = h.instance("missing-still");
+    let patch = h.item(
+        "patch",
+        &[("Data/Patch.esp", &plugin_file(0, &["Gone.esm"])[..])],
+    );
+    h.add(&inst, &patch);
+
+    let err = prepare_with(&h, &inst, false).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            agora_core::game_instance::InstanceError::LaunchError(
+                LaunchError::LoadOrderProblems { .. }
+            )
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_duplicate_line_only_warns_and_the_launch_goes_ahead() {
+    let h = Harness::with_definition(engine_definition(&[]));
+    let inst = h.instance("duplicate");
+    let base = h.item("base", &[("Data/Base.esm", &plugin_file(1, &[])[..])]);
+    let patch = h.item(
+        "patch",
+        &[("Data/Patch.esp", &plugin_file(0, &["Base.esm"])[..])],
+    );
+    h.add(&inst, &base);
+    h.add(&inst, &patch);
+    h.deploy(&inst);
+    append_line(&h, &inst, "*Base.esm");
+
+    let prepared = prepare_with(&h, &inst, false).expect("a duplicate line never refuses");
+    assert!(prepared.load_order_findings.iter().any(|f| matches!(
+        f,
+        agora_core::game_load_order::Finding::DuplicateListing { plugin } if plugin == "Base.esm"
+    )));
+    assert!(!prepared
+        .load_order_findings
+        .iter()
+        .any(agora_core::game_load_order::Finding::refuses_launch));
+}
+
+#[test]
+fn the_check_lists_every_finding_and_only_the_missing_master_refuses() {
+    let h = Harness::with_definition(engine_definition(&[]));
+    let inst = h.instance("both-kinds");
+    let base = h.item("base", &[("Data/Base.esm", &plugin_file(1, &[])[..])]);
+    let patch = h.item(
+        "patch",
+        &[("Data/Patch.esp", &plugin_file(0, &["Base.esm"])[..])],
+    );
+    let orphan = h.item(
+        "orphan",
+        &[("Data/Orphan.esp", &plugin_file(0, &["Missing.esm"])[..])],
+    );
+    h.add(&inst, &base);
+    h.add(&inst, &patch);
+    h.add(&inst, &orphan);
+    h.deploy(&inst);
+    append_line(&h, &inst, "*Base.esm");
+
+    let findings = game_load_order::check(&h.ctx, &inst.instance_id, &h.def).unwrap();
+    let refusing: Vec<_> = findings.iter().filter(|f| f.refuses_launch()).collect();
+    let warning: Vec<_> = findings.iter().filter(|f| !f.refuses_launch()).collect();
+    assert_eq!(refusing.len(), 1, "{findings:?}");
+    assert_eq!(warning.len(), 1, "{findings:?}");
+    assert!(matches!(
+        refusing[0],
+        agora_core::game_load_order::Finding::MasterNotEarlier { .. }
+    ));
+    assert!(matches!(
+        warning[0],
+        agora_core::game_load_order::Finding::DuplicateListing { .. }
+    ));
+
+    // The launch refuses for the one that refuses, and names the other as well.
+    let err = prepare_with(&h, &inst, false).unwrap_err();
+    let agora_core::game_instance::InstanceError::LaunchError(LaunchError::LoadOrderProblems {
+        findings: named,
+    }) = err
+    else {
+        panic!("expected a load order refusal");
+    };
+    assert_eq!(named.len(), 2, "{named:?}");
+    assert!(agora_core::game_load_order::describe_findings(&named).contains("more than once"));
+}
+
+#[test]
+fn refuse_load_order_refuses_only_the_refusing_kinds() {
+    use agora_core::game_launch::refuse_load_order;
+    use agora_core::game_load_order::{Finding, MasterProblem};
+
+    let warnings = vec![
+        Finding::DuplicateListing {
+            plugin: "A.esp".into(),
+        },
+        Finding::UnreadableHeader {
+            plugin: "B.esp".into(),
+            reason: "bad".into(),
+        },
+    ];
+    assert_eq!(
+        refuse_load_order(warnings.clone(), false).unwrap(),
+        warnings
+    );
+
+    let cycle = vec![Finding::MasterCycle {
+        plugins: vec!["A.esp".into(), "B.esp".into()],
+    }];
+    assert!(refuse_load_order(cycle.clone(), false).is_err());
+    assert_eq!(refuse_load_order(cycle.clone(), true).unwrap(), cycle);
+
+    // A late master only warns: the game starts with the plugin before its master.
+    let late = vec![Finding::MasterNotEarlier {
+        plugin: "A.esp".into(),
+        master: "B.esm".into(),
+        problem: MasterProblem::Later,
+    }];
+    assert_eq!(refuse_load_order(late.clone(), false).unwrap(), late);
+    let missing = vec![Finding::MasterNotEarlier {
+        plugin: "A.esp".into(),
+        master: "B.esm".into(),
+        problem: MasterProblem::Missing,
+    }];
+    assert!(refuse_load_order(missing, false).is_err());
+    let full = vec![Finding::TooManyFullPlugins {
+        active: 255,
+        limit: 254,
+    }];
+    assert!(refuse_load_order(full, false).is_err());
 }

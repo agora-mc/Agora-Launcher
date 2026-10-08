@@ -1259,6 +1259,7 @@ mod instance {
             excluded_paths: vec![],
             plugin_list: None,
             runtime_files: Vec::new(),
+            save_location: Vec::new(),
             launch_alternatives: Vec::new(),
             content_layout: Some(ContentLayout {
                 data_path: RelPath::new("Data").unwrap(),
