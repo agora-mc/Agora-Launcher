@@ -5666,10 +5666,11 @@ async fn run_command(
                             ) {
                                 Ok(l) => l,
                                 Err(e) => {
-                                    report_user_files_restore(
+                                    let user_files = report_user_files_restore(
                                         agora_core::game_user_files::restore(ctx, game_def, &store),
                                         game_def.id.as_str(),
                                         store.as_str(),
+                                        json,
                                     );
                                     if let agora_core::game_instance::InstanceError::VfsUnavailable {
                                 next: Some(next),
@@ -5687,6 +5688,7 @@ async fn run_command(
                                             "status": "error",
                                             "error": format!("{e}"),
                                             "exitCode": 1,
+                                            "user_files_restored": user_files,
                                         });
                                         eprintln!("{}", serde_json::to_string_pretty(&out)?);
                                     } else {
@@ -5767,6 +5769,7 @@ async fn run_command(
                                     "notice": prepared.notice,
                                     "alternative": prepared.alternative,
                                     "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
+                                    "deploy_summary": deploy_summary_json(prepared.deploy_outcome.as_ref()),
                                 });
                                 println!("{}", serde_json::to_string_pretty(&out)?);
                             } else {
@@ -5821,10 +5824,11 @@ async fn run_command(
                                 std::time::Duration::from_secs(5),
                             );
                             let session_duration = launch_start.elapsed();
-                            report_user_files_restore(
+                            let user_files = report_user_files_restore(
                                 agora_core::game_user_files::restore(ctx, game_def, &store),
                                 game_def.id.as_str(),
                                 store.as_str(),
+                                json,
                             );
                             let after = base_manifest.as_ref().map(|m| {
                                 agora_core::game_base::verify_base(
@@ -5848,6 +5852,12 @@ async fn run_command(
                                 prepared.deployment.and_then(|mode| mode.next_fallback())
                             };
 
+                            // Linked files that end this quickly usually mean a mod refused to run
+                            // from them; the human output hints at the remedies.
+                            let ended_quickly = prepared.deployment
+                                == Some(agora_core::game_deploy::DeployMode::Links)
+                                && session_duration < std::time::Duration::from_secs(30);
+
                             if json {
                                 let out = serde_json::json!({
                                     "status": "exited",
@@ -5858,6 +5868,9 @@ async fn run_command(
                                     "notice": prepared.notice,
                                     "alternative": prepared.alternative,
                                     "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
+                                    "deploy_summary": deploy_summary_json(prepared.deploy_outcome.as_ref()),
+                                    "user_files_restored": user_files,
+                                    "session_ended_quickly": ended_quickly,
                                     "instance_id": instance_id,
                                     "base_id": base_id,
                                     "pid": launched.pid(),
@@ -5909,10 +5922,7 @@ async fn run_command(
                                         print_base_problems(&ver.problems);
                                     }
                                 }
-                                if prepared.deployment
-                                    == Some(agora_core::game_deploy::DeployMode::Links)
-                                    && session_duration < std::time::Duration::from_secs(30)
-                                {
+                                if ended_quickly {
                                     println!();
                                     println!("The session ended quickly. Under linked files a mod that edits its own files is refused.");
                                     println!("Remedies:");
@@ -9159,6 +9169,10 @@ fn open_url_in_browser(url: &str) -> anyhow::Result<()> {
 
 /// Say what happened to the per-user files after a session: a failed restore leaves them swapped
 /// (the journal keeps everything needed), and the user must hear that and how to finish it.
+///
+/// Returns what the launch reports for them: `{restored, changed}`, or `{error}` when the restore
+/// failed. The human line is stdout, so it is printed only without `--json`; the failure warning
+/// is stderr and is printed either way.
 fn report_user_files_restore(
     result: Result<
         agora_core::game_user_files::RestoreReport,
@@ -9166,19 +9180,56 @@ fn report_user_files_restore(
     >,
     game: &str,
     store: &str,
-) {
+    json: bool,
+) -> serde_json::Value {
     match result {
-        Ok(report) if report.files.is_empty() => {}
         Ok(report) => {
             let changed = report.files.iter().filter(|f| f.changed).count();
-            println!(
-                "Restored {} per-user file(s); {changed} changed during the session and were kept in the instance.",
-                report.files.len()
-            );
+            if !json && !report.files.is_empty() {
+                println!(
+                    "Restored {} per-user file(s); {changed} changed during the session and were kept in the instance.",
+                    report.files.len()
+                );
+            }
+            serde_json::json!({ "restored": report.files.len(), "changed": changed })
         }
-        Err(e) => eprintln!(
-            "Warning: the per-user files could not be restored ({e}); they are still swapped in.              Run `agora games user-files restore {game} {store}` once the game has closed."
-        ),
+        Err(e) => {
+            eprintln!(
+                "Warning: the per-user files could not be restored ({e}); they are still swapped in.              Run `agora games user-files restore {game} {store}` once the game has closed."
+            );
+            serde_json::json!({ "error": e.to_string() })
+        }
+    }
+}
+
+/// What a launch's deployment did, as data: the counts the human "Deployed:" lines print.
+fn deploy_summary_json(
+    outcome: Option<&agora_core::game_deploy::DeployOutcome>,
+) -> serde_json::Value {
+    use agora_core::game_deploy::DeployOutcome;
+    match outcome {
+        None => serde_json::Value::Null,
+        Some(DeployOutcome::UpToDate { .. }) => serde_json::json!({ "status": "up_to_date" }),
+        Some(DeployOutcome::Built {
+            linked,
+            copied,
+            copied_bytes,
+            config_copied,
+            harvest,
+            ..
+        }) => serde_json::json!({
+            "status": "built",
+            "linked": linked,
+            "copied": copied,
+            "copied_bytes": copied_bytes,
+            "config_copied": config_copied,
+            "harvest": harvest.as_ref().map(|h| serde_json::json!({
+                "copied_to_writable": h.copied_to_writable.len(),
+                "base_files_changed": h.base_files_changed.len(),
+                "whiteouts_added": h.whiteouts_added.len(),
+                "writable_files_removed": h.writable_files_removed.len(),
+            })),
+        }),
     }
 }
 

@@ -3866,28 +3866,58 @@ fn the_fall_back_flag_runs_from_linked_files_without_asking() {
             "--wait",
         ],
     );
-    // A restore report line may precede the object on stdout.
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let value: serde_json::Value = serde_json::from_str(
-        &stdout[stdout
-            .find(
-                "{
-",
-            )
-            .unwrap()..],
-    )
-    .unwrap_or_else(|e| {
-        panic!(
-            "stdout must end in a JSON object: {e}
-{stdout}"
-        )
-    });
+    // stdout is the one JSON object and nothing else.
+    let value = assert_json_stdout(&out);
     assert_eq!(value["status"], "exited");
     assert_eq!(value["deployment"], "links");
     assert!(value["notice"]
         .as_str()
         .unwrap()
         .contains("running from linked files instead"));
+}
+
+#[test]
+fn a_json_launch_prints_only_one_json_object_on_stdout_with_or_without_wait() {
+    if !cfg!(windows) {
+        // The fake game only runs on Windows.
+        return;
+    }
+    // Without --wait: the launch is reported at once.
+    let fixture = vfs_fixture();
+    let id = fixture.instance_id.clone();
+    let out = run_vfs_fixture(
+        &fixture,
+        &["--json", "games", "instance", "launch", &id, "--fall-back"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let value = assert_json_stdout(&out);
+    assert_eq!(value["status"], "launched");
+    assert_eq!(value["deployment"], "links");
+    assert!(value["deploy_summary"]["status"].is_string(), "{value}");
+
+    // With --wait: the session's per-user files and deployment come back in the object.
+    let fixture = vfs_fixture();
+    let id = fixture.instance_id.clone();
+    let out = run_vfs_fixture(
+        &fixture,
+        &[
+            "--json",
+            "games",
+            "instance",
+            "launch",
+            &id,
+            "--fall-back",
+            "--wait",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let value = assert_json_stdout(&out);
+    assert_eq!(value["status"], "exited");
+    assert!(value["user_files_restored"]["restored"].is_u64(), "{value}");
+    assert!(value["deploy_summary"]["status"].is_string(), "{value}");
+    assert!(value["session_ended_quickly"].is_boolean(), "{value}");
 }
 
 #[test]
