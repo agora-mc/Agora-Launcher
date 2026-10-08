@@ -397,6 +397,19 @@ pub struct PluginListRule {
     pub patterns: Vec<String>,
     pub active_prefix: String,
     pub header: Vec<String>,
+    /// The load-order rules the game's plugin format obeys. `"creation_engine"` turns on the
+    /// masters, light plugin and limit rules of MASTER_SPEC §26.6; any other value is refused
+    /// at registration. Absent means the list only activates plugins, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<String>,
+    /// Plugins the game always loads first, in this order, when they are present in the plugin
+    /// folder. They are not written into the instance's list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implicit: Vec<String>,
+    /// A file (relative to the game's root) naming more always-loaded plugins, one per line, in
+    /// the file's order. Each loads after `implicit`, and only when present in the plugin folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit_list_file: Option<RelPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

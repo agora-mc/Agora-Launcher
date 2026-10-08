@@ -1,5 +1,6 @@
-//! Plugin activation at deploy, the `plugins` listing and toggle, framework loader launch
-//! alternatives, and refusal of rules that could not work (MASTER_SPEC §26.3, §26.6).
+//! Plugin activation at deploy, the `plugins` listing and toggle, the Creation Engine load order
+//! (sort, move, lock), framework loader launch alternatives, and refusal of rules that could not
+//! work (MASTER_SPEC §26.3, §26.6).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -15,7 +16,8 @@ use agora_core::game_instance::{
 };
 use agora_core::game_launch::LaunchError;
 use agora_core::game_launch::SystemLauncher;
-use agora_core::game_plugins::{list, set_active, PluginListError};
+use agora_core::game_load_order::{self, LoadOrderError, MoveTarget};
+use agora_core::game_plugins::{list, set_active, set_locked, PluginListError};
 use agora_core::game_registry::{
     GameRegistry, GameRegistryError, IdentifiedInstall, PackageSource, RuntimeResolution,
 };
@@ -74,6 +76,9 @@ fn plugin_rule() -> PluginListRule {
             "# This file is used by Skyrim to keep track of your downloaded content.".into(),
             "# Please do not modify this file.".into(),
         ],
+        semantics: None,
+        implicit: Vec::new(),
+        implicit_list_file: None,
     }
 }
 
@@ -875,4 +880,260 @@ fn the_first_matching_alternative_wins() {
     h.add(&inst, &item);
     let prepared = h.prepare(&inst, false).unwrap();
     assert_eq!(prepared.alternative.unwrap().id, "other");
+}
+
+// ---------------------------------------------------------------------------
+// Creation Engine load order (MASTER_SPEC §26.6)
+// ---------------------------------------------------------------------------
+
+/// Plugin bytes: a TES4 record with flags and the given masters (see `game_load_order`'s tests).
+fn plugin_file(flags: u32, masters: &[&str]) -> Vec<u8> {
+    fn subrecord(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&u16::try_from(data.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(data);
+    }
+    let mut body = Vec::new();
+    subrecord(&mut body, b"HEDR", &[0u8; 12]);
+    for master in masters {
+        let mut name = master.as_bytes().to_vec();
+        name.push(0);
+        subrecord(&mut body, b"MAST", &name);
+        subrecord(&mut body, b"DATA", &[0u8; 8]);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(b"TES4");
+    out.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&[0u8; 12]);
+    out.extend_from_slice(&body);
+    out
+}
+
+fn engine_definition(implicit: &[&str]) -> GameDefinition {
+    let mut def = definition();
+    let rule = def.plugin_list.as_mut().unwrap();
+    rule.semantics = Some("creation_engine".into());
+    rule.implicit = implicit.iter().map(|s| s.to_string()).collect();
+    def
+}
+
+/// The plugin lines of the instance's copy, without the two header lines.
+fn body(h: &Harness, inst: &GameInstanceRecord) -> Vec<String> {
+    h.lines(inst).into_iter().skip(2).collect()
+}
+
+/// A late master: the patch needs the base, and the base's layer loads after the patch's.
+fn late_master_harness(name: &str) -> (Harness, GameInstanceRecord) {
+    let h = Harness::with_definition(engine_definition(&[]));
+    let inst = h.instance(name);
+    let patch = h.item(
+        "patch",
+        &[("Data/Patch.esp", &plugin_file(0, &["Base.esm"])[..])],
+    );
+    let base = h.item("base", &[("Data/Base.esm", &plugin_file(1, &[])[..])]);
+    h.add(&inst, &patch);
+    h.add(&inst, &base);
+    h.deploy(&inst);
+    (h, inst)
+}
+
+#[test]
+fn sort_moves_a_late_master_up_once_and_a_second_sort_does_nothing() {
+    let (h, inst) = late_master_harness("sorted");
+    assert_eq!(body(&h, &inst), ["*Patch.esp", "*Base.esm"]);
+
+    let dry = game_load_order::sort(&h.ctx, &inst.instance_id, &h.def, true).unwrap();
+    assert_eq!(dry.moves.len(), 1);
+    assert!(!dry.written);
+    assert_eq!(
+        body(&h, &inst),
+        ["*Patch.esp", "*Base.esm"],
+        "a dry run writes nothing"
+    );
+
+    let sorted = game_load_order::sort(&h.ctx, &inst.instance_id, &h.def, false).unwrap();
+    assert!(sorted.written);
+    assert_eq!(body(&h, &inst), ["*Base.esm", "*Patch.esp"]);
+    assert_eq!(h.lines(&inst)[0], HEADER[0]);
+
+    let again = game_load_order::sort(&h.ctx, &inst.instance_id, &h.def, false).unwrap();
+    assert!(again.moves.is_empty() && !again.written);
+    assert!(game_load_order::check(&h.ctx, &inst.instance_id, &h.def)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn a_locked_master_stays_put_and_its_lock_survives_a_redeploy() {
+    let (h, inst) = late_master_harness("locked");
+    assert!(set_locked(&h.ctx, &inst.instance_id, &h.def, "Base.esm", true).unwrap());
+    assert!(!set_locked(&h.ctx, &inst.instance_id, &h.def, "Base.esm", true).unwrap());
+    let listed = list(&h.ctx, &inst.instance_id, &h.def).unwrap();
+    assert!(listed
+        .entries
+        .iter()
+        .any(|e| e.name == "Base.esm" && e.locked));
+
+    // The patch loads above its locked master, and nothing may move the master.
+    let report = game_load_order::sort(&h.ctx, &inst.instance_id, &h.def, false).unwrap();
+    assert!(report.moves.is_empty());
+    assert_eq!(report.blocked.len(), 1);
+    assert_eq!(report.blocked[0].master, "Base.esm");
+    assert_eq!(body(&h, &inst), ["*Patch.esp", "*Base.esm"]);
+
+    // A new layer changes the deployed list, which rewrites the state file: the lock stays.
+    let extra = h.item("extra", &[("Data/Extra.esp", &plugin_file(0, &[])[..])]);
+    h.add(&inst, &extra);
+    h.deploy(&inst);
+    let listed = list(&h.ctx, &inst.instance_id, &h.def).unwrap();
+    assert!(listed
+        .entries
+        .iter()
+        .any(|e| e.name == "Base.esm" && e.locked));
+
+    assert!(set_locked(&h.ctx, &inst.instance_id, &h.def, "Base.esm", false).unwrap());
+    let listed = list(&h.ctx, &inst.instance_id, &h.def).unwrap();
+    assert!(!listed.entries.iter().any(|e| e.locked));
+}
+
+#[test]
+fn a_state_file_from_before_locks_still_loads() {
+    let h = Harness::with_definition(engine_definition(&[]));
+    let inst = h.instance("old-state");
+    let item = h.item("mod", &[("Data/A.esp", &plugin_file(0, &[])[..])]);
+    h.add(&inst, &item);
+    h.deploy(&inst);
+    let state_dir = h
+        .copy_path(&inst)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::fs::write(
+        state_dir.join("plugin_list_state.json"),
+        br#"{"managed": ["A.esp"]}"#,
+    )
+    .unwrap();
+    let listed = list(&h.ctx, &inst.instance_id, &h.def).unwrap();
+    let a = listed.entries.iter().find(|e| e.name == "A.esp").unwrap();
+    assert!(a.managed);
+    assert!(!a.locked);
+}
+
+#[test]
+fn move_places_a_plugin_and_refuses_to_move_a_locked_one() {
+    let (h, inst) = late_master_harness("moved");
+    let extra = h.item("extra", &[("Data/Extra.esp", &plugin_file(0, &[])[..])]);
+    h.add(&inst, &extra);
+    h.deploy(&inst);
+    assert_eq!(body(&h, &inst), ["*Patch.esp", "*Base.esm", "*Extra.esp"]);
+
+    let moved = game_load_order::move_plugin(
+        &h.ctx,
+        &inst.instance_id,
+        &h.def,
+        "Extra.esp",
+        &MoveTarget::Before("Patch.esp".into()),
+    )
+    .unwrap();
+    assert!(moved.written);
+    assert_eq!(body(&h, &inst), ["*Extra.esp", "*Patch.esp", "*Base.esm"]);
+
+    set_locked(&h.ctx, &inst.instance_id, &h.def, "Extra.esp", true).unwrap();
+    let err = game_load_order::move_plugin(
+        &h.ctx,
+        &inst.instance_id,
+        &h.def,
+        "Extra.esp",
+        &MoveTarget::Position(3),
+    )
+    .unwrap_err();
+    assert!(matches!(err, LoadOrderError::Locked(_)), "{err}");
+    assert_eq!(body(&h, &inst), ["*Extra.esp", "*Patch.esp", "*Base.esm"]);
+}
+
+#[test]
+fn a_plugin_the_game_always_loads_is_shown_once_and_is_not_moved() {
+    let h = Harness::with_definition(engine_definition(&["Base.esm"]));
+    let inst = h.instance("implicit");
+    let item = h.item(
+        "base",
+        &[
+            ("Data/Base.esm", &plugin_file(1, &[])[..]),
+            ("Data/Patch.esp", &plugin_file(0, &["Base.esm"])[..]),
+        ],
+    );
+    h.add(&inst, &item);
+    h.deploy(&inst);
+    // The deployed copy still names Base.esm, as the game's own list would.
+    assert_eq!(body(&h, &inst), ["*Base.esm", "*Patch.esp"]);
+
+    let order = game_load_order::order(&h.ctx, &inst.instance_id, &h.def).unwrap();
+    let names: Vec<&str> = order.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["Base.esm", "Patch.esp"]);
+    assert!(order.entries[0].implicit && order.entries[0].master);
+    assert!(order.findings.is_empty(), "{:?}", order.findings);
+
+    let report = game_load_order::sort(&h.ctx, &inst.instance_id, &h.def, false).unwrap();
+    assert!(report.moves.is_empty() && !report.written);
+    assert_eq!(body(&h, &inst), ["*Base.esm", "*Patch.esp"]);
+    let moved = game_load_order::move_plugin(
+        &h.ctx,
+        &inst.instance_id,
+        &h.def,
+        "Base.esm",
+        &MoveTarget::Position(2),
+    )
+    .unwrap_err();
+    assert!(matches!(moved, LoadOrderError::AlwaysLoaded(_)), "{moved}");
+}
+
+// ---- Review probes (Phase 4 slice 1) ----
+
+#[test]
+fn probe_empty_names_never_select_a_plugin() {
+    let (h, inst) = late_master_harness("probe-empty");
+    assert!(set_locked(&h.ctx, &inst.instance_id, &h.def, "", true).is_err());
+    assert!(set_locked(&h.ctx, &inst.instance_id, &h.def, "   ", true).is_err());
+    let to_front = game_load_order::MoveTarget::Position(1);
+    assert!(
+        game_load_order::move_plugin(&h.ctx, &inst.instance_id, &h.def, "", &to_front).is_err()
+    );
+    let before_nothing = game_load_order::MoveTarget::Before(String::new());
+    assert!(game_load_order::move_plugin(
+        &h.ctx,
+        &inst.instance_id,
+        &h.def,
+        "Patch.esp",
+        &before_nothing
+    )
+    .is_err());
+    assert_eq!(
+        body(&h, &inst),
+        ["*Patch.esp", "*Base.esm"],
+        "nothing changed"
+    );
+}
+
+#[test]
+fn probe_sort_keeps_inactive_and_hand_written_lines() {
+    let (h, inst) = late_master_harness("probe-keep");
+    let path = list(&h.ctx, &inst.instance_id, &h.def).unwrap().path;
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str("UserInactive.esp\n*UserActive.esp\n");
+    std::fs::write(&path, text).unwrap();
+    let before: std::collections::BTreeSet<String> = body(&h, &inst).into_iter().collect();
+    game_load_order::sort(&h.ctx, &inst.instance_id, &h.def, false).unwrap();
+    let after: std::collections::BTreeSet<String> = body(&h, &inst).into_iter().collect();
+    assert_eq!(before, after, "sort only reorders lines");
+    let lines = body(&h, &inst);
+    let pos = |n: &str| {
+        lines
+            .iter()
+            .position(|l| l.trim_start_matches('*') == n)
+            .unwrap()
+    };
+    assert!(pos("Base.esm") < pos("Patch.esp"));
 }

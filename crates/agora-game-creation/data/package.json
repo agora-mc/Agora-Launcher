@@ -209,7 +209,16 @@
         "header": [
           "# This file is used by Skyrim to keep track of your downloaded content.",
           "# Please do not modify this file."
-        ]
+        ],
+        "semantics": "creation_engine",
+        "implicit": [
+          "Skyrim.esm",
+          "Update.esm",
+          "Dawnguard.esm",
+          "HearthFires.esm",
+          "Dragonborn.esm"
+        ],
+        "implicit_list_file": "Skyrim.ccc"
       },
       "launch_alternatives": [
         {

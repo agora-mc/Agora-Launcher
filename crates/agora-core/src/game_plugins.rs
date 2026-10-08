@@ -3,13 +3,13 @@
 //! Skyrim-family games load a plugin (`.esp`, `.esm`, `.esl`) only when the game's
 //! `Plugins.txt` names it. A game definition declares that as a
 //! [`PluginListRule`]; this module keeps the instance's copy of the list in step with the
-//! plugins its content layers deploy. Sorting plugins properly is a later phase: this only
-//! activates them.
+//! plugins its content layers deploy. Ordering rules (masters, limits, sorting) belong to
+//! [`crate::game_load_order`], which reads and writes the list through this module.
 //!
 //! The list is an instance's per-user file (`<instance dir>/<user_file>`), swapped in for a
-//! launch session by [`crate::game_user_files`]. Agora records which plugins it managed in
-//! `<instance dir>/plugin_list_state.json`, so a layer that is removed or disabled takes its
-//! lines with it while a line the user wrote themselves stays.
+//! launch session by [`crate::game_user_files`]. Agora records which plugins it managed, and
+//! which the user locked, in `<instance dir>/plugin_list_state.json`, so a layer that is removed
+//! or disabled takes its lines with it while a line the user wrote themselves stays.
 //!
 //! Every failure is an error: an unreadable or unparsable file is never read as "empty".
 
@@ -79,6 +79,10 @@ pub struct PluginEntry {
     pub active: bool,
     /// Whether Agora added this plugin because a content layer deploys it.
     pub managed: bool,
+    /// Whether the user locked this plugin's place in the order (MASTER_SPEC §26.6). Sorting
+    /// and moving never move a locked plugin.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 /// An instance's plugin list, in load order among the listed plugins.
@@ -90,9 +94,12 @@ pub struct PluginList {
     pub entries: Vec<PluginEntry>,
 }
 
+/// `plugin_list_state.json`. A file written before locks existed has only `managed`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ManagedState {
     managed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    locked: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +497,7 @@ pub fn sync_locked(
             &dir,
             &ManagedState {
                 managed: desired.to_vec(),
+                locked: old.locked,
             },
         )?;
     }
@@ -540,11 +548,11 @@ pub fn list(
     })?;
     let dir = instance_dir(ctx, instance_id)?;
     let path = dir.join(rule.user_file.as_str());
-    let managed: std::collections::HashSet<Vec<u8>> = read_state(&dir)?
-        .managed
-        .iter()
-        .map(|n| key(n.as_bytes()))
-        .collect();
+    let state = read_state(&dir)?;
+    let managed: std::collections::HashSet<Vec<u8>> =
+        state.managed.iter().map(|n| key(n.as_bytes())).collect();
+    let locked: std::collections::HashSet<Vec<u8>> =
+        state.locked.iter().map(|n| key(n.as_bytes())).collect();
     let Some(bytes) = read_optional(&path)? else {
         return Ok(PluginList {
             path,
@@ -561,6 +569,7 @@ pub fn list(
                 name: String::from_utf8_lossy(name).into_owned(),
                 active,
                 managed: managed.contains(&key(name)),
+                locked: locked.contains(&key(name)),
             })
         })
         .collect();
@@ -610,15 +619,7 @@ pub fn set_active(
         LockResource::Instance(instance_id.to_string()),
         "plugins-toggle",
     )?;
-    if let Some(store) = instance_store(ctx, instance_id)? {
-        recover_stale_session(ctx, definition, &store)?;
-        // A running session of this instance rewrites its copy of the list when it ends.
-        if let Some(status) = crate::game_user_files::status(ctx, &definition.id, &store) {
-            if status.running && status.instance == instance_id {
-                return Err(PluginListError::InstanceRunning(instance_id.to_string()));
-            }
-        }
-    }
+    ensure_copy_editable(ctx, instance_id, definition)?;
 
     let dir = instance_dir(ctx, instance_id)?;
     let path = dir.join(rule.user_file.as_str());
@@ -652,6 +653,134 @@ pub fn set_active(
     Ok(changed)
 }
 
+/// Refuse to edit an instance's copy of the list while its game runs, after putting back any
+/// session a finished run left behind. The caller holds the instance lock.
+fn ensure_copy_editable(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+) -> Result<(), PluginListError> {
+    if let Some(store) = instance_store(ctx, instance_id)? {
+        recover_stale_session(ctx, definition, &store)?;
+        // A running session of this instance rewrites its copy of the list when it ends.
+        if let Some(status) = crate::game_user_files::status(ctx, &definition.id, &store) {
+            if status.running && status.instance == instance_id {
+                return Err(PluginListError::InstanceRunning(instance_id.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Lock or unlock a listed plugin's place in the order. Returns whether the state changed.
+/// Only the state file is written, so a running game is not a reason to refuse.
+pub fn set_locked(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    name: &str,
+    locked: bool,
+) -> Result<bool, PluginListError> {
+    rule_of(definition)?;
+    let _lock = ctx.lock_manager.acquire(
+        LockResource::Instance(instance_id.to_string()),
+        "plugins-lock",
+    )?;
+    let wanted = key(name.trim().as_bytes());
+    let listed = list(ctx, instance_id, definition)?;
+    let Some(entry) = listed
+        .entries
+        .iter()
+        .find(|e| key(e.name.as_bytes()) == wanted)
+    else {
+        return Err(PluginListError::NotInList(name.to_string()));
+    };
+    let canonical = entry.name.clone();
+    let dir = instance_dir(ctx, instance_id)?;
+    let mut state = read_state(&dir)?;
+    let is_locked = state.locked.iter().any(|n| key(n.as_bytes()) == wanted);
+    if is_locked == locked {
+        return Ok(false);
+    }
+    if locked {
+        state.locked.push(canonical);
+    } else {
+        state.locked.retain(|n| key(n.as_bytes()) != wanted);
+    }
+    write_state(&dir, &state)?;
+    Ok(true)
+}
+
+/// Rewrite the order of an instance's listed plugins. `order` names every plugin line the caller
+/// reorders, in its new order, with each line's active state. A line keeps its own bytes; the
+/// lines `order` does not name (comments, lines for always-loaded plugins) keep their places.
+/// Returns whether the file changed. Refused while the game runs. The caller holds the instance
+/// lock.
+pub fn write_order_locked(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    order: &[(String, bool)],
+) -> Result<bool, PluginListError> {
+    let rule = rule_of(definition)?;
+    ensure_copy_editable(ctx, instance_id, definition)?;
+    let dir = instance_dir(ctx, instance_id)?;
+    let path = dir.join(rule.user_file.as_str());
+    let Some(bytes) = read_optional(&path)? else {
+        if order.is_empty() {
+            return Ok(false);
+        }
+        return Err(PluginListError::Other(format!(
+            "instance '{instance_id}' has no plugin list to reorder"
+        )));
+    };
+    let mut file = ListFile::parse(&bytes);
+    let before = file.lines.clone();
+
+    // Names in the order are lossy strings from `list`, so both sides use the lossy key.
+    let lossy_key = |raw: &[u8]| key(String::from_utf8_lossy(raw).as_bytes());
+    let wanted: std::collections::HashSet<Vec<u8>> =
+        order.iter().map(|(name, _)| key(name.as_bytes())).collect();
+    let mut slots = Vec::new();
+    let mut originals: std::collections::HashMap<Vec<u8>, std::collections::VecDeque<Vec<u8>>> =
+        std::collections::HashMap::new();
+    for (index, line) in file.lines.iter().enumerate() {
+        let Some((_, name)) = plugin_line(line, rule) else {
+            continue;
+        };
+        let k = lossy_key(name);
+        originals
+            .entry(k.clone())
+            .or_default()
+            .push_back(name.to_vec());
+        if wanted.contains(&k) {
+            slots.push(index);
+        }
+    }
+    if slots.len() != order.len() {
+        return Err(PluginListError::Other(format!(
+            "the plugin list of instance '{instance_id}' changed while it was being reordered; nothing was written"
+        )));
+    }
+    for (slot, (name, active)) in slots.into_iter().zip(order) {
+        let k = key(name.as_bytes());
+        let original = originals
+            .get_mut(&k)
+            .and_then(std::collections::VecDeque::pop_front)
+            .ok_or_else(|| {
+                PluginListError::Other(format!(
+                    "the plugin list of instance '{instance_id}' changed while it was being reordered; nothing was written"
+                ))
+            })?;
+        file.lines[slot] = render_line(rule, &original, *active);
+    }
+    if file.lines == before {
+        return Ok(false);
+    }
+    write_atomic(&path, &file.render())?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +793,9 @@ mod tests {
             patterns: vec!["*.esm".into(), "*.esl".into(), "*.esp".into()],
             active_prefix: "*".into(),
             header: vec!["# header".into()],
+            semantics: None,
+            implicit: Vec::new(),
+            implicit_list_file: None,
         }
     }
 

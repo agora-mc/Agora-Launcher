@@ -203,6 +203,25 @@ impl GameRegistryBuilder {
                         reason: "active_prefix must not contain whitespace".to_string(),
                     });
                 }
+                // An unknown rule set would silently turn the load order rules off.
+                if let Some(semantics) = &rule.semantics {
+                    if semantics != crate::game_load_order::CREATION_ENGINE {
+                        return Err(GameRegistryError::InvalidPluginList {
+                            game_id: game.id.clone(),
+                            reason: format!(
+                                "semantics '{semantics}' is not a known load order rule set"
+                            ),
+                        });
+                    }
+                }
+                for name in &rule.implicit {
+                    if name.trim().is_empty() || name.contains(['/', '\\']) {
+                        return Err(GameRegistryError::InvalidPluginList {
+                            game_id: game.id.clone(),
+                            reason: format!("implicit plugin '{name}' is not a plugin file name"),
+                        });
+                    }
+                }
             }
         }
 

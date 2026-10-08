@@ -863,6 +863,16 @@ fn clear_whiteout_marker(writable_dir: &Path, rel: &RelPath) {
 // Deploy and Undeploy
 // ---------------------------------------------------------------------------
 
+/// The file on disk that a planned file's bytes come from: a base file, a content object or a
+/// writable-layer file.
+pub fn source_path(ctx: &Ctx, source: &FileSource) -> PathBuf {
+    match source {
+        FileSource::Base { path, .. } => path.clone(),
+        FileSource::Content { sha256, .. } => ctx.paths.content_object_path(sha256),
+        FileSource::Writable { path } => path.clone(),
+    }
+}
+
 /// Every path the game will see under `mode`, `/`-separated, sorted and without case-only
 /// duplicates: the deployment plan's files, plus the writable layer. The plan leaves the writable
 /// layer out under the virtual file system, which shows it on top of the farm, so it is added
@@ -1080,11 +1090,7 @@ pub fn deploy(
             std::fs::create_dir_all(parent)?;
         }
 
-        let source_path = match &file.source {
-            FileSource::Base { path, .. } => path.clone(),
-            FileSource::Content { sha256, .. } => ctx.paths.content_object_path(sha256),
-            FileSource::Writable { path } => path.clone(),
-        };
+        let source_path = source_path(ctx, &file.source);
 
         let mut actual_placement = file.placement;
         if file.placement == Placement::Link {

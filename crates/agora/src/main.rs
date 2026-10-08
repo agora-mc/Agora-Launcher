@@ -451,6 +451,49 @@ enum InstancePluginsCmd {
         /// Plugin file name, e.g. SkyUI_SE.esp.
         name: String,
     },
+    /// Sort the plugin list so every master comes before the plugins that need it.
+    Sort {
+        /// Instance ID.
+        instance_id: String,
+        /// Print the moves without writing the list.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Move a plugin to a position, or before or after another plugin.
+    Move {
+        /// Instance ID.
+        instance_id: String,
+        /// Plugin file name, e.g. SkyUI_SE.esp.
+        plugin: String,
+        /// Move to this 1-based position in the list (always-loaded plugins count).
+        #[arg(long)]
+        to: Option<usize>,
+        /// Move to just before this plugin.
+        #[arg(long)]
+        before: Option<String>,
+        /// Move to just after this plugin.
+        #[arg(long)]
+        after: Option<String>,
+    },
+    /// Lock a plugin's place, so sort and move leave it where it is.
+    Lock {
+        /// Instance ID.
+        instance_id: String,
+        /// Plugin file name, e.g. SkyUI_SE.esp.
+        plugin: String,
+    },
+    /// Unlock a plugin's place, so sort and move may move it again.
+    Unlock {
+        /// Instance ID.
+        instance_id: String,
+        /// Plugin file name, e.g. SkyUI_SE.esp.
+        plugin: String,
+    },
+    /// Print the load order findings. Exits 1 when there are any.
+    Check {
+        /// Instance ID.
+        instance_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -6670,6 +6713,12 @@ async fn run_command(
                     }
                 }
                 GameInstanceCmd::Plugins {
+                    instance_id: None,
+                    action: Some(order),
+                } if order.is_load_order_command() => {
+                    plugins_load_order_command(ctx, json, order)?;
+                }
+                GameInstanceCmd::Plugins {
                     instance_id,
                     action,
                 } => {
@@ -6709,29 +6758,18 @@ async fn run_command(
                         anyhow::anyhow!("Game definition not found for {}", record.game)
                     })?;
                     match toggle {
-                        None => match agora_core::game_plugins::list(ctx, &instance_id, game_def) {
-                            Ok(list) => {
-                                if json {
-                                    println!("{}", serde_json::to_string_pretty(&list)?);
-                                } else if !list.exists {
-                                    println!(
-                                            "Instance '{instance_id}' has no plugin list yet; it is created when the instance is deployed."
-                                        );
-                                } else if list.entries.is_empty() {
-                                    println!("Instance '{instance_id}' plugin list is empty.");
-                                } else {
-                                    for e in &list.entries {
-                                        println!(
-                                            "{}\t{}\t{}",
-                                            if e.active { "active" } else { "inactive" },
-                                            if e.managed { "managed" } else { "yours" },
-                                            e.name
-                                        );
+                        None => {
+                            match agora_core::game_load_order::order(ctx, &instance_id, game_def) {
+                                Ok(order) => {
+                                    if json {
+                                        println!("{}", serde_json::to_string_pretty(&order)?);
+                                    } else {
+                                        print_load_order(&instance_id, &order);
                                     }
                                 }
+                                Err(e) => fail(e.to_string()),
                             }
-                            Err(e) => fail(e.to_string()),
-                        },
+                        }
                         Some((name, active)) => {
                             match agora_core::game_plugins::set_active(
                                 ctx,
@@ -7281,6 +7319,258 @@ fn print_games_list(
     for u in &inventory.unsupported {
         println!("  - {}", u.name);
     }
+}
+
+impl InstancePluginsCmd {
+    /// Sort, move, lock, unlock and check: the load order commands, not enable or disable.
+    fn is_load_order_command(&self) -> bool {
+        matches!(
+            self,
+            InstancePluginsCmd::Sort { .. }
+                | InstancePluginsCmd::Move { .. }
+                | InstancePluginsCmd::Lock { .. }
+                | InstancePluginsCmd::Unlock { .. }
+                | InstancePluginsCmd::Check { .. }
+        )
+    }
+}
+
+/// The instance's effective load order, one plugin per line: position, state, the master and
+/// light flags (`?` when the header was not read), the lock, who put the line there, and the name.
+fn print_load_order(instance_id: &str, order: &agora_core::game_load_order::LoadOrder) {
+    if !order.exists {
+        println!(
+            "Instance '{instance_id}' has no plugin list yet; it is created when the instance is deployed."
+        );
+    }
+    if order.entries.is_empty() {
+        if order.exists {
+            println!("Instance '{instance_id}' plugin list is empty.");
+        }
+        return;
+    }
+    println!(
+        "{:>3}  {:<8}  M L  {:<6}  {:<7}  name",
+        "#", "state", "lock", "from"
+    );
+    for (index, e) in order.entries.iter().enumerate() {
+        let state = if e.implicit {
+            "always"
+        } else if e.active {
+            "active"
+        } else {
+            "inactive"
+        };
+        let (master, light) = if e.header_read {
+            (
+                if e.master { "M" } else { "-" },
+                if e.light { "L" } else { "-" },
+            )
+        } else {
+            ("?", "?")
+        };
+        let lock = if e.locked { "locked" } else { "" };
+        let from = if e.implicit {
+            "game"
+        } else if e.managed {
+            "managed"
+        } else {
+            "yours"
+        };
+        let note = if !e.present {
+            " (missing)"
+        } else if e.header_error.is_some() {
+            " (unreadable header)"
+        } else {
+            ""
+        };
+        println!(
+            "{:>3}  {:<8}  {} {}  {:<6}  {:<7}  {}{}",
+            index + 1,
+            state,
+            master,
+            light,
+            lock,
+            from,
+            e.name,
+            note
+        );
+    }
+    if order.findings.is_empty() {
+        println!("No findings.");
+    }
+    for finding in &order.findings {
+        println!("! {}", finding.message());
+    }
+}
+
+/// `games instance plugins sort|move|lock|unlock|check`: the load order of a Creation Engine
+/// game's plugin list (MASTER_SPEC §26.6).
+fn plugins_load_order_command(
+    ctx: &agora_core::ctx::Ctx,
+    json: bool,
+    cmd: InstancePluginsCmd,
+) -> anyhow::Result<()> {
+    use agora_core::game_load_order::{self as load_order, MoveTarget};
+
+    let fail = |message: String| -> ! {
+        if json {
+            let out = serde_json::json!({
+                "status": "error",
+                "error": message,
+                "exitCode": 1,
+            });
+            eprintln!("{}", serde_json::to_string_pretty(&out).unwrap_or(message));
+        } else {
+            eprintln!("Error: {message}");
+        }
+        std::process::exit(1);
+    };
+
+    let instance_id = match &cmd {
+        InstancePluginsCmd::Sort { instance_id, .. }
+        | InstancePluginsCmd::Move { instance_id, .. }
+        | InstancePluginsCmd::Lock { instance_id, .. }
+        | InstancePluginsCmd::Unlock { instance_id, .. }
+        | InstancePluginsCmd::Check { instance_id } => instance_id.clone(),
+        InstancePluginsCmd::Enable { .. } | InstancePluginsCmd::Disable { .. } => {
+            fail("not a load order command".to_string())
+        }
+    };
+    let record = match agora_core::game_instance::get(ctx, &instance_id)? {
+        Some(r) => r,
+        None => fail(format!("Instance '{instance_id}' not found.")),
+    };
+    let game_def = ctx
+        .games
+        .game(&record.game)
+        .ok_or_else(|| anyhow::anyhow!("Game definition not found for {}", record.game))?;
+
+    let locking = matches!(cmd, InstancePluginsCmd::Lock { .. });
+    match cmd {
+        InstancePluginsCmd::Sort { dry_run, .. } => {
+            match load_order::sort(ctx, &instance_id, game_def, dry_run) {
+                Ok(report) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    } else {
+                        if report.moves.is_empty() {
+                            println!(
+                                "Nothing to move: every master already comes before the plugins that need it."
+                            );
+                        }
+                        for m in &report.moves {
+                            println!("Move '{}' from position {} to {}.", m.plugin, m.from, m.to);
+                        }
+                        if !report.moves.is_empty() {
+                            println!(
+                                "{}",
+                                if report.written {
+                                    "Plugin list written."
+                                } else {
+                                    "Dry run: nothing was written."
+                                }
+                            );
+                        }
+                        for b in &report.blocked {
+                            println!(
+                                "Cannot fix: '{}' loads above its master '{}', and that master is locked or always loaded.",
+                                b.plugin, b.master
+                            );
+                        }
+                    }
+                }
+                Err(e) => fail(e.to_string()),
+            }
+        }
+        InstancePluginsCmd::Move {
+            plugin,
+            to,
+            before,
+            after,
+            ..
+        } => {
+            let target = match (to, before, after) {
+                (Some(position), None, None) => MoveTarget::Position(position),
+                (None, Some(other), None) => MoveTarget::Before(other),
+                (None, None, Some(other)) => MoveTarget::After(other),
+                _ => fail("name one target: --to N, --before PLUGIN or --after PLUGIN".to_string()),
+            };
+            match load_order::move_plugin(ctx, &instance_id, game_def, &plugin, &target) {
+                Ok(report) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    } else if report.written {
+                        println!(
+                            "Moved '{}' from position {} to {}.",
+                            report.plugin, report.from, report.to
+                        );
+                    } else {
+                        println!("'{}' is already at position {}.", report.plugin, report.to);
+                    }
+                }
+                Err(e) => fail(e.to_string()),
+            }
+        }
+        InstancePluginsCmd::Lock { plugin, .. } | InstancePluginsCmd::Unlock { plugin, .. } => {
+            match agora_core::game_plugins::set_locked(
+                ctx,
+                &instance_id,
+                game_def,
+                &plugin,
+                locking,
+            ) {
+                Ok(changed) => {
+                    if json {
+                        let out = serde_json::json!({
+                            "status": "ok",
+                            "instance_id": instance_id,
+                            "plugin": plugin,
+                            "locked": locking,
+                            "changed": changed,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        let word = match (locking, changed) {
+                            (true, true) => "is now locked",
+                            (true, false) => "was already locked",
+                            (false, true) => "is now unlocked",
+                            (false, false) => "was not locked",
+                        };
+                        println!("'{plugin}' {word} in instance '{instance_id}'.");
+                    }
+                }
+                Err(e) => fail(e.to_string()),
+            }
+        }
+        InstancePluginsCmd::Check { .. } => match load_order::check(ctx, &instance_id, game_def) {
+            Ok(findings) => {
+                if json {
+                    let out = serde_json::json!({
+                        "status": if findings.is_empty() { "ok" } else { "findings" },
+                        "instance_id": instance_id,
+                        "findings": findings,
+                        "exitCode": if findings.is_empty() { 0 } else { 1 },
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else if findings.is_empty() {
+                    println!("No findings: the load order satisfies the game's rules.");
+                } else {
+                    for f in &findings {
+                        println!("- {}", f.message());
+                    }
+                }
+                if !findings.is_empty() {
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => fail(e.to_string()),
+        },
+        InstancePluginsCmd::Enable { .. } | InstancePluginsCmd::Disable { .. } => {
+            fail("not a load order command".to_string())
+        }
+    }
+    Ok(())
 }
 
 /// Say what a deploy changed in the instance's plugin list.

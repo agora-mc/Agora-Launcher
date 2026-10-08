@@ -193,9 +193,14 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games instance content own-copy <instance> <item> on|off` | Configure whether all files deployed by a content layer are copies rather than links |
 | `agora games instance deploy <instance> [--copies\|--deployment virtual\|links\|copies]` | Deploy an instance's content layers to its game folder, as the instance's chosen rung, else the mode a launch would use |
 | `agora games instance undeploy <instance>` | Harvest game writes and tear down an instance deployment |
-| `agora games instance plugins <instance>` | List the instance's plugin list: each plugin's state, and whether Agora manages it (a content layer deploys it) or you wrote the line |
+| `agora games instance plugins <instance> [--json]` | List the instance's load order: each plugin's position, state, master (`M`) and light (`L`) flags, lock, whether Agora manages it (a content layer deploys it) or you wrote the line, and the findings. Always-loaded plugins are marked `always` |
 | `agora games instance plugins enable <instance> <plugin>` | Activate a plugin in the instance's plugin list |
 | `agora games instance plugins disable <instance> <plugin>` | Deactivate a plugin; it stays listed and a redeploy leaves it that way |
+| `agora games instance plugins sort <instance> [--dry-run]` | Sort the list so every master comes before the plugins that need it, with as few moves as possible. Locked plugins do not move; `--dry-run` prints the moves and writes nothing |
+| `agora games instance plugins move <instance> <plugin> (--to N \| --before P \| --after P)` | Move a plugin to a 1-based position, or just before or after another plugin. Locked plugins do not move |
+| `agora games instance plugins lock <instance> <plugin>` | Lock a plugin's place, so sort and move leave it where it is |
+| `agora games instance plugins unlock <instance> <plugin>` | Unlock a plugin's place |
+| `agora games instance plugins check <instance> [--json]` | Print the load order findings (a master that does not come first, a master loop, an unreadable header, a plugin listed twice, too many plugins). Exits 1 when there are any |
 | `agora games user-files status [<game>]` | List per-user file swap sessions in progress |
 | `agora games user-files restore <game> <store>` | Restore original per-user files from a finished session |
 
@@ -205,6 +210,14 @@ the lines of layers you take away. A plugin you deactivated stays deactivated, a
 wrote yourself are never removed. The game's own masters are never listed. `--wait` follows
 every process running from the instance's game folder, so a loader that starts the game and
 exits does not end the wait early.
+
+For Skyrim Special Edition the list also follows the Creation Engine's load order rules. The
+game always loads its own masters and the Creation Club plugins named in `Skyrim.ccc` first, so
+those are shown as `always` and are never written into your list. A plugin that needs a master
+must load after it, and a plugin whose header cannot be read is reported by name. `plugins check`
+prints these findings. `plugins sort` moves masters up with as few moves as it can, and never
+moves a locked plugin. A plugin that loads above a locked master it cannot get past is reported as
+blocked: the only fix is to move that plugin down below the master, which sort does not do.
 
 ### Catalog
 

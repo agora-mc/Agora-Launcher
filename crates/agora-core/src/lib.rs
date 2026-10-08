@@ -32,6 +32,7 @@ pub mod game_discovery;
 pub mod game_hooks;
 pub mod game_instance;
 pub mod game_launch;
+pub mod game_load_order;
 pub mod game_plugins;
 pub mod game_registry;
 pub mod game_user_files;
