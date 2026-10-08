@@ -35,6 +35,7 @@ fn dummy_package_def(game_id: &str) -> PackageDefinition {
             declared_writes: vec![],
             excluded_paths: vec![],
             plugin_list: None,
+            runtime_files: Vec::new(),
             launch_alternatives: Vec::new(),
             content_layout: None,
             copy_patterns: Vec::new(),

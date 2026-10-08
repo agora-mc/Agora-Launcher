@@ -624,6 +624,7 @@ pub mod test_support {
                 excluded_paths: Vec::new(),
                 content_layout: None,
                 plugin_list: None,
+                runtime_files: Vec::new(),
                 launch_alternatives: Vec::new(),
                 copy_patterns: Vec::new(),
             }],

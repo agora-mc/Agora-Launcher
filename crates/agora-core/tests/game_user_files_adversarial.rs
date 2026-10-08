@@ -133,6 +133,7 @@ fn test_skyrim_definition() -> GameDefinition {
         declared_writes: vec![],
         excluded_paths: vec![],
         plugin_list: None,
+        runtime_files: Vec::new(),
         launch_alternatives: Vec::new(),
         content_layout: None,
         copy_patterns: Vec::new(),

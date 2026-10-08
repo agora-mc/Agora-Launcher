@@ -281,6 +281,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "instance", "create"],
     &["games", "instance", "list"],
     &["games", "instance", "launch"],
+    &["games", "instance", "check"],
     &["games", "instance", "delete"],
     &["games", "instance", "content"],
     &["games", "instance", "content", "add"],
@@ -3621,6 +3622,12 @@ struct VfsFixture {
 }
 
 fn vfs_fixture() -> VfsFixture {
+    skyrim_fixture("1.6.1170.0", &[])
+}
+
+/// A Skyrim SE instance (no content) whose runtime is `version`. Each of `extra_files`, a path
+/// relative to the install folder, is written into the install before the instance is created.
+fn skyrim_fixture(version: &str, extra_files: &[&str]) -> VfsFixture {
     use agora_core::game_discovery::{DiscoveredInstall, InstallCapabilities};
     use agora_core::game_registry::{GameRegistry, IdentifiedInstall, PackageSource};
     use agora_game_api::{GameId, InstallId, InstallKind, RuntimeIdentity, StoreId};
@@ -3639,6 +3646,11 @@ fn vfs_fixture() -> VfsFixture {
         std::fs::write(install_dir.join("SkyrimSE.exe"), b"fake game binary").unwrap();
     }
     std::fs::write(install_dir.join("Data").join("Skyrim.esm"), b"ESM").unwrap();
+    for extra in extra_files {
+        let path = install_dir.join(extra);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fake framework file").unwrap();
+    }
 
     let mut builder = GameRegistry::builder();
     builder
@@ -3657,7 +3669,7 @@ fn vfs_fixture() -> VfsFixture {
     let runtime = RuntimeIdentity {
         game: GameId::new("skyrim-se").unwrap(),
         store: store.clone(),
-        version: "1.6.1170".into(),
+        version: version.into(),
         build: None,
     };
     let volume =
@@ -3863,4 +3875,87 @@ fn launch_help_offers_fall_back() {
     let out = run_agora(&data_dir, &["games", "instance", "launch", "--help"]);
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("--fall-back"));
+}
+
+#[test]
+fn games_instance_check_names_a_framework_built_for_another_version() {
+    // SKSE for 1.6.1179 sits in a game that is 1.6.1170.0: the check refuses and names SKSE.
+    let fixture = skyrim_fixture("1.6.1170.0", &["skse64_1_6_1179.dll"]);
+    let id = fixture.instance_id.clone();
+
+    let out = run_agora(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Skyrim Script Extender (SKSE)"), "{stdout}");
+    assert!(stdout.contains("skse64_1_6_1170.dll"), "{stdout}");
+    assert!(stdout.contains("skse64_1_6_1179.dll"), "{stdout}");
+
+    let out_json = run_agora_json(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(out_json.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
+    assert_eq!(json["status"], "findings");
+    assert_eq!(json["findings"][0]["rule_id"], "skse");
+    assert_eq!(json["findings"][0]["problem"]["kind"], "wrong_version");
+    assert_eq!(json["findings"][0]["found"][0], "skse64_1_6_1179.dll");
+
+    // A launch makes the same check and refuses before it starts anything.
+    let out_launch = run_agora(
+        &fixture.data_dir,
+        &["games", "instance", "launch", &id, "--deployment", "links"],
+    );
+    assert_eq!(out_launch.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out_launch.stderr);
+    assert!(stderr.contains("Skyrim Script Extender (SKSE)"), "{stderr}");
+    assert!(stderr.contains("--launch-anyway"), "{stderr}");
+}
+
+#[test]
+fn games_instance_check_passes_a_runtime_with_its_own_frameworks() {
+    let fixture = skyrim_fixture("1.6.1170.0", &["skse64_1_6_1170.dll"]);
+    let id = fixture.instance_id.clone();
+
+    let out = run_agora(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("No framework problems"));
+
+    let out_json = run_agora_json(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(out_json.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["findings"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn games_instance_check_lists_a_rule_it_cannot_check_but_exits_zero() {
+    // A three-part version cannot fill the Address Library rule's {4}: a definition-side
+    // finding, listed as a warning. It does not fail the check.
+    let fixture = skyrim_fixture("1.6.1170", &[]);
+    let id = fixture.instance_id.clone();
+
+    let out = run_agora(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cannot be checked"), "{stdout}");
+    assert!(stdout.contains("component 4"), "{stdout}");
+
+    let out_json = run_agora_json(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(out_json.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
+    assert_eq!(json["status"], "warnings");
+    assert_eq!(json["findings"][0]["problem"]["kind"], "cannot_check");
 }

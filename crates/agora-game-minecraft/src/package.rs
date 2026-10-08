@@ -40,6 +40,7 @@ pub fn game_package() -> Arc<dyn GamePackage> {
                     declared_writes: Vec::new(),
                     excluded_paths: Vec::new(),
                     plugin_list: None,
+                    runtime_files: Vec::new(),
                     launch_alternatives: Vec::new(),
                     content_layout: None,
                     copy_patterns: Vec::new(),

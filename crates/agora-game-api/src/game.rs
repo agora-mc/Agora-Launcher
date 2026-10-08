@@ -385,6 +385,9 @@ pub struct GameDefinition {
     pub plugin_list: Option<PluginListRule>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub launch_alternatives: Vec<LaunchAlternative>,
+    /// Files a framework ships once per game version (MASTER_SPEC §26.6), checked before launch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_files: Vec<RuntimeFileRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,6 +405,241 @@ pub struct LaunchAlternative {
     pub when_present: RelPath,
     pub executable: GamePath,
     pub reason: String,
+}
+
+/// A file a framework ships once per game version (MASTER_SPEC §26.6). When the game's files hold
+/// some of the family but not the one this runtime needs, the launch is refused with a
+/// [`RuntimeFileFinding`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeFileRule {
+    /// Stable identifier, e.g. `address-library`.
+    pub id: String,
+    /// Display name, e.g. `Address Library for SKSE Plugins`.
+    pub name: String,
+    /// Case-insensitive glob over deployed paths, `/`-separated, e.g. `Data/SKSE/Plugins/versionlib-*.bin`.
+    pub family: String,
+    /// The path this runtime needs. `{1}`..`{9}` are the dot-separated components of the runtime
+    /// version, `{version}` the whole of it.
+    pub expected: String,
+    /// Version globs the rule applies to (e.g. `1.6.*`); empty means every version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applies_to: Vec<String>,
+    /// What to do, shown with the finding; `{version}` is substituted.
+    pub repair: String,
+}
+
+/// The most family file names one finding lists.
+pub const RUNTIME_FILE_FINDING_MAX_FOUND: usize = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeFileProblem {
+    /// Files of the family are present, but not the one this runtime needs.
+    WrongVersion,
+    /// The rule cannot be evaluated against this runtime. That is a bad definition, and it is
+    /// shown as a finding rather than skipped.
+    CannotCheck { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeFileFinding {
+    pub rule_id: String,
+    pub rule_name: String,
+    /// The path this runtime needs, with the version substituted. For a rule that cannot be
+    /// checked, the template as written.
+    pub expected: String,
+    /// Up to [`RUNTIME_FILE_FINDING_MAX_FOUND`] family files found, by file name.
+    pub found: Vec<String>,
+    /// What to do, with `{version}` substituted.
+    pub repair: String,
+    pub problem: RuntimeFileProblem,
+}
+
+impl RuntimeFileFinding {
+    /// Only a framework built for another version refuses a launch. A rule that cannot be checked
+    /// is a definition bug: it is carried as a warning, never a refusal.
+    pub fn refuses_launch(&self) -> bool {
+        matches!(self.problem, RuntimeFileProblem::WrongVersion)
+    }
+
+    /// One line for a person: what is wrong, what was found, and the repair.
+    pub fn summary(&self) -> String {
+        match &self.problem {
+            RuntimeFileProblem::WrongVersion => {
+                let found = if self.found.is_empty() {
+                    "no file of its family".to_string()
+                } else if self.found.len() >= RUNTIME_FILE_FINDING_MAX_FOUND {
+                    format!("{}, ...", self.found.join(", "))
+                } else {
+                    self.found.join(", ")
+                };
+                format!(
+                    "{} ({}) needs {} but the game has {}. Repair: {}",
+                    self.rule_name, self.rule_id, self.expected, found, self.repair
+                )
+            }
+            RuntimeFileProblem::CannotCheck { reason } => {
+                format!(
+                    "{} ({}) cannot be checked: {reason}",
+                    self.rule_name, self.rule_id
+                )
+            }
+        }
+    }
+}
+
+/// Every finding's [`RuntimeFileFinding::summary`], joined for one message.
+pub fn describe_runtime_findings(findings: &[RuntimeFileFinding]) -> String {
+    findings
+        .iter()
+        .map(RuntimeFileFinding::summary)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Check `rules` against the runtime `version` and the paths the game will see.
+///
+/// Pure: `deployed_paths` are `/`-separated paths relative to the game root, and matching is
+/// case-insensitive. A rule that does not apply to `version` gives nothing. A rule whose family is
+/// absent gives nothing (the framework is not installed, or the game is vanilla), and so does a
+/// rule whose expected path is present. A rule that cannot be evaluated gives a
+/// [`RuntimeFileProblem::CannotCheck`] finding, never a wrong-version one.
+pub fn check_runtime_files<S: AsRef<str>>(
+    rules: &[RuntimeFileRule],
+    version: &str,
+    deployed_paths: &[S],
+) -> Vec<RuntimeFileFinding> {
+    let mut findings = Vec::new();
+    for rule in rules {
+        if !rule.applies_to.is_empty()
+            && !rule
+                .applies_to
+                .iter()
+                .any(|pattern| runtime_path_matches(pattern, version))
+        {
+            continue;
+        }
+
+        let expected = match expected_runtime_path(rule, version) {
+            Ok(expected) => expected,
+            Err(reason) => {
+                findings.push(cannot_check(rule, &reason));
+                continue;
+            }
+        };
+
+        let mut family_files: Vec<&str> = deployed_paths
+            .iter()
+            .map(AsRef::as_ref)
+            .filter(|path| runtime_path_matches(&rule.family, path))
+            .collect();
+        if family_files.is_empty() {
+            continue;
+        }
+        if deployed_paths
+            .iter()
+            .any(|path| path.as_ref().eq_ignore_ascii_case(&expected))
+        {
+            continue;
+        }
+
+        family_files.sort_by_key(|path| path.to_ascii_lowercase());
+        family_files.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        let found = family_files
+            .iter()
+            .take(RUNTIME_FILE_FINDING_MAX_FOUND)
+            .map(|path| path.rsplit('/').next().unwrap_or(path).to_string())
+            .collect();
+        findings.push(RuntimeFileFinding {
+            rule_id: rule.id.clone(),
+            rule_name: rule.name.clone(),
+            expected,
+            found,
+            repair: rule.repair.replace("{version}", version),
+            problem: RuntimeFileProblem::WrongVersion,
+        });
+    }
+    findings
+}
+
+/// The path `rule` expects for `version`, or why the rule cannot say.
+fn expected_runtime_path(rule: &RuntimeFileRule, version: &str) -> Result<String, String> {
+    if rule.family.trim().is_empty() {
+        return Err("its family is empty".to_string());
+    }
+    if rule.expected.trim().is_empty() {
+        return Err("its expected path is empty".to_string());
+    }
+    expand_runtime_template(&rule.expected, version)
+}
+
+fn cannot_check(rule: &RuntimeFileRule, reason: &str) -> RuntimeFileFinding {
+    RuntimeFileFinding {
+        rule_id: rule.id.clone(),
+        rule_name: rule.name.clone(),
+        expected: rule.expected.clone(),
+        found: Vec::new(),
+        repair: rule.repair.clone(),
+        problem: RuntimeFileProblem::CannotCheck {
+            reason: reason.to_string(),
+        },
+    }
+}
+
+/// Case-insensitive match of a pattern against a path or a version. A pattern without `*` must be
+/// equal to the text; one with `*` is matched by [`glob_match`].
+fn runtime_path_matches(pattern: &str, text: &str) -> bool {
+    let pattern = pattern.to_ascii_lowercase();
+    let text = text.to_ascii_lowercase();
+    if pattern.contains('*') {
+        glob_match(&pattern, &text)
+    } else {
+        pattern == text
+    }
+}
+
+/// Substitute `{1}`..`{9}` (the dot-separated components of `version`) and `{version}` into a
+/// runtime file template. Any other placeholder, a missing component or an unbalanced brace is an
+/// error that says what is wrong.
+fn expand_runtime_template(template: &str, version: &str) -> Result<String, String> {
+    if version.trim().is_empty() {
+        return Err("the runtime has no version".to_string());
+    }
+    let components: Vec<&str> = version.split('.').collect();
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let Some(close_offset) = rest[open..].find('}') else {
+            return Err(format!("'{template}' has a '{{' with no matching '}}'"));
+        };
+        let close = open + close_offset;
+        out.push_str(&rest[..open]);
+        let key = &rest[open + 1..close];
+        if key == "version" {
+            out.push_str(version);
+        } else {
+            let index = match key.parse::<usize>() {
+                Ok(n) if (1..=9).contains(&n) => n,
+                _ => {
+                    return Err(format!(
+                        "'{{{key}}}' is not a placeholder (use {{1}} to {{9}}, or {{version}})"
+                    ))
+                }
+            };
+            let Some(component) = components.get(index - 1) else {
+                return Err(format!(
+                    "runtime version {version} has no component {index}"
+                ));
+            };
+            out.push_str(component);
+        }
+        rest = &rest[close + 1..];
+    }
+    if rest.contains('}') {
+        return Err(format!("'{template}' has a '}}' with no matching '{{'"));
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 /// Default copy patterns applied to every game in Links mode (small text files at most 1 MiB).
@@ -946,6 +1184,219 @@ pub enum LoadOrderRule {
 }
 
 #[cfg(test)]
+mod runtime_file_tests {
+    use super::*;
+
+    /// The three rules Skyrim SE declares in `agora-game-creation/data/package.json`.
+    fn skyrim_rules() -> Vec<RuntimeFileRule> {
+        vec![
+            RuntimeFileRule {
+                id: "skse".into(),
+                name: "Skyrim Script Extender (SKSE)".into(),
+                family: "skse64_*.dll".into(),
+                expected: "skse64_{1}_{2}_{3}.dll".into(),
+                applies_to: vec![],
+                repair: "Install the SKSE build for Skyrim {version} from skse.silverlock.org"
+                    .into(),
+            },
+            RuntimeFileRule {
+                id: "address-library".into(),
+                name: "Address Library for SKSE Plugins".into(),
+                family: "Data/SKSE/Plugins/version*-*.bin".into(),
+                expected: "Data/SKSE/Plugins/versionlib-{1}-{2}-{3}-{4}.bin".into(),
+                applies_to: vec!["1.6.*".into()],
+                repair: "Install the Address Library build for Skyrim {version}".into(),
+            },
+            RuntimeFileRule {
+                id: "address-library-se".into(),
+                name: "Address Library for SKSE Plugins".into(),
+                family: "Data/SKSE/Plugins/version*-*.bin".into(),
+                expected: "Data/SKSE/Plugins/version-{1}-{2}-{3}-{4}.bin".into(),
+                applies_to: vec!["1.5.*".into()],
+                repair: "Install the Address Library build for Skyrim {version}".into(),
+            },
+        ]
+    }
+
+    /// Paths of the working Skyrim SE 1.6.1170.0 instance: the SKSE and Address Library files.
+    fn skyrim_1_6_1170_files() -> Vec<&'static str> {
+        vec![
+            "SkyrimSE.exe",
+            "skse64_1_6_1170.dll",
+            "skse64_loader.exe",
+            "Data/Skyrim.esm",
+            "Data/SKSE/Plugins/versionlib-1-6-1170-0.bin",
+            "Data/SKSE/Plugins/versionlib-1-6-1170-0-1.bin",
+        ]
+    }
+
+    fn ids(findings: &[RuntimeFileFinding]) -> Vec<&str> {
+        findings.iter().map(|f| f.rule_id.as_str()).collect()
+    }
+
+    #[test]
+    fn the_matching_runtime_gives_no_findings() {
+        let findings = check_runtime_files(&skyrim_rules(), "1.6.1170.0", &skyrim_1_6_1170_files());
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn a_newer_runtime_names_skse_and_the_address_library_it_lacks() {
+        let findings = check_runtime_files(&skyrim_rules(), "1.6.1179.0", &skyrim_1_6_1170_files());
+        assert_eq!(ids(&findings), vec!["skse", "address-library"]);
+
+        let skse = &findings[0];
+        assert_eq!(skse.expected, "skse64_1_6_1179.dll");
+        assert_eq!(skse.found, vec!["skse64_1_6_1170.dll"]);
+        assert_eq!(skse.problem, RuntimeFileProblem::WrongVersion);
+        assert_eq!(
+            skse.repair,
+            "Install the SKSE build for Skyrim 1.6.1179.0 from skse.silverlock.org"
+        );
+
+        let library = &findings[1];
+        assert_eq!(
+            library.expected,
+            "Data/SKSE/Plugins/versionlib-1-6-1179-0.bin"
+        );
+        // Sorted by path: "-0-1.bin" sorts before "-0.bin" because '-' is before '.'.
+        assert_eq!(
+            library.found,
+            vec!["versionlib-1-6-1170-0-1.bin", "versionlib-1-6-1170-0.bin"]
+        );
+    }
+
+    #[test]
+    fn the_older_runtime_names_skse_and_the_1_5_address_library() {
+        let findings = check_runtime_files(&skyrim_rules(), "1.5.97.0", &skyrim_1_6_1170_files());
+        assert_eq!(ids(&findings), vec!["skse", "address-library-se"]);
+        assert_eq!(
+            findings[1].expected,
+            "Data/SKSE/Plugins/version-1-5-97-0.bin"
+        );
+    }
+
+    #[test]
+    fn matching_ignores_case() {
+        let files = [
+            "SKSE64_1_6_1170.DLL",
+            "data/skse/plugins/VERSIONLIB-1-6-1170-0.BIN",
+        ];
+        assert!(check_runtime_files(&skyrim_rules(), "1.6.1170.0", &files).is_empty());
+
+        let findings = check_runtime_files(&skyrim_rules(), "1.6.1179.0", &files);
+        assert_eq!(ids(&findings), vec!["skse", "address-library"]);
+        assert_eq!(findings[0].found, vec!["SKSE64_1_6_1170.DLL"]);
+    }
+
+    #[test]
+    fn no_family_files_gives_no_findings_for_a_vanilla_game() {
+        let files = ["SkyrimSE.exe", "Data/Skyrim.esm"];
+        assert!(check_runtime_files(&skyrim_rules(), "1.6.1179.0", &files).is_empty());
+        let none: [&str; 0] = [];
+        assert!(check_runtime_files(&skyrim_rules(), "1.6.1179.0", &none).is_empty());
+    }
+
+    #[test]
+    fn a_three_part_version_cannot_fill_component_four() {
+        let findings = check_runtime_files(&skyrim_rules(), "1.6.1170", &skyrim_1_6_1170_files());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let finding = &findings[0];
+        assert_eq!(finding.rule_id, "address-library");
+        assert_eq!(
+            finding.expected,
+            "Data/SKSE/Plugins/versionlib-{1}-{2}-{3}-{4}.bin"
+        );
+        assert!(finding.found.is_empty());
+        match &finding.problem {
+            RuntimeFileProblem::CannotCheck { reason } => {
+                assert!(reason.contains("component 4"), "{reason}")
+            }
+            other => panic!("expected CannotCheck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_family_or_expected_path_is_reported_as_unchecked() {
+        let mut rules = skyrim_rules();
+        rules[0].family = "  ".into();
+        rules[1].expected = String::new();
+        let findings = check_runtime_files(&rules, "1.6.1170.0", &skyrim_1_6_1170_files());
+        assert_eq!(ids(&findings), vec!["skse", "address-library"]);
+        assert!(findings
+            .iter()
+            .all(|f| matches!(f.problem, RuntimeFileProblem::CannotCheck { .. })));
+    }
+
+    #[test]
+    fn a_rule_whose_applies_to_excludes_the_version_is_silent() {
+        // The game has only the 1.5 library. The 1.5 rule does not apply to a 1.6 runtime, so it
+        // says nothing; the 1.6 rule shares the family, finds the 1.5 file and names it.
+        let files = ["Data/SKSE/Plugins/version-1-5-97-0.bin"];
+        let findings = check_runtime_files(&skyrim_rules(), "1.6.1170.0", &files);
+        assert_eq!(ids(&findings), vec!["address-library"]);
+        assert_eq!(findings[0].found, vec!["version-1-5-97-0.bin"]);
+
+        // A broken rule that does not apply to this version is not reported either.
+        let mut rules = skyrim_rules();
+        rules[1].family = String::new();
+        rules[1].applies_to = vec!["1.5.*".into()];
+        let findings = check_runtime_files(&rules, "1.6.1170.0", &skyrim_1_6_1170_files());
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn unknown_placeholders_and_unbalanced_braces_are_reported() {
+        let mut rules = skyrim_rules();
+        rules[0].expected = "skse64_{0}_{2}.dll".into();
+        rules[2].expected = "Data/{version".into();
+        let files = [
+            "skse64_1_6_1170.dll",
+            "Data/SKSE/Plugins/version-1-5-97-0.bin",
+        ];
+        let findings = check_runtime_files(&rules, "1.5.97.0", &files);
+        assert_eq!(ids(&findings), vec!["skse", "address-library-se"]);
+        for finding in &findings {
+            assert!(matches!(
+                finding.problem,
+                RuntimeFileProblem::CannotCheck { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn summary_names_the_framework_what_was_found_and_the_repair() {
+        let findings = check_runtime_files(&skyrim_rules(), "1.6.1179.0", &skyrim_1_6_1170_files());
+        let text = describe_runtime_findings(&findings);
+        assert!(text.contains("Skyrim Script Extender (SKSE)"), "{text}");
+        assert!(text.contains("skse64_1_6_1170.dll"), "{text}");
+        assert!(
+            text.contains("Repair: Install the SKSE build for Skyrim 1.6.1179.0"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_finding_lists_at_most_five_family_files() {
+        let names: Vec<String> = (0..8)
+            .map(|i| format!("Data/SKSE/Plugins/version-{i}.bin"))
+            .collect();
+        let rules = vec![RuntimeFileRule {
+            id: "lib".into(),
+            name: "Library".into(),
+            family: "Data/SKSE/Plugins/version*.bin".into(),
+            expected: "Data/SKSE/Plugins/versionlib-{1}-{2}-{3}-{4}.bin".into(),
+            applies_to: vec![],
+            repair: "Install it".into(),
+        }];
+        let findings = check_runtime_files(&rules, "1.6.1179.0", &names);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].found.len(), RUNTIME_FILE_FINDING_MAX_FOUND);
+        assert!(findings[0].summary().contains(", ..."));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1036,6 +1487,7 @@ mod tests {
             declared_writes: vec![],
             excluded_paths: vec![],
             plugin_list: None,
+            runtime_files: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: Vec::new(),
         };
@@ -1080,6 +1532,7 @@ mod tests {
             declared_writes: vec![],
             excluded_paths: vec![],
             plugin_list: None,
+            runtime_files: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: Vec::new(),
         };
@@ -1122,6 +1575,7 @@ mod tests {
             declared_writes: vec!["d3dx9_42.log".into(), "logs/*.log".into()],
             excluded_paths: vec![],
             plugin_list: None,
+            runtime_files: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: Vec::new(),
         };
@@ -1159,6 +1613,7 @@ mod tests {
             declared_writes: vec![],
             excluded_paths: vec!["Data/SSEEdit Backups/**".into()],
             plugin_list: None,
+            runtime_files: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: Vec::new(),
         };
@@ -1192,6 +1647,7 @@ mod tests {
             declared_writes: vec![],
             excluded_paths: vec![],
             plugin_list: None,
+            runtime_files: Vec::new(),
             launch_alternatives: Vec::new(),
             copy_patterns: vec!["**/*.dat".into()],
         };

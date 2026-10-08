@@ -6,7 +6,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use agora_game_api::{GameDefinition, GamePath, LaunchRecipe, LaunchValue, UserDataLocation};
+use agora_game_api::{
+    check_runtime_files, describe_runtime_findings, GameDefinition, GamePath, LaunchRecipe,
+    LaunchValue, RuntimeFileFinding, UserDataLocation,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::game_base::{verify_base, BaseManifest, BaseProblem, VerifyDepth};
@@ -49,6 +52,9 @@ pub enum LaunchError {
     NoRecipe,
     #[error("base is damaged ({} problem(s))", problems.len())]
     BaseDamaged { problems: Vec<BaseProblem> },
+    /// A framework in the game's files was built for another runtime version (MASTER_SPEC §26.6).
+    #[error("frameworks do not match this game's version: {}", describe_runtime_findings(.findings))]
+    RuntimeMismatch { findings: Vec<RuntimeFileFinding> },
     #[error("root '{0}' is not configured")]
     RootNotConfigured(String),
     #[error("user data location '{0:?}' could not be resolved")]
@@ -80,6 +86,8 @@ pub struct PreparedLaunch {
     pub notice: Option<String>,
     /// The launch alternative that replaced the recipe's executable, if one did.
     pub alternative: Option<AppliedAlternative>,
+    /// Framework findings that `launch_anyway` let through. Empty when the launch was clean.
+    pub runtime_findings: Vec<RuntimeFileFinding>,
 }
 
 impl PreparedLaunch {
@@ -98,8 +106,34 @@ impl PreparedLaunch {
             vfs: None,
             notice: None,
             alternative,
+            runtime_findings: Vec::new(),
         }
     }
+}
+
+/// Refuse a launch that has a framework built for another version, unless `launch_anyway` is set.
+/// Any other finding (a rule that cannot be checked) never refuses: it comes back as a warning.
+/// `findings` come from [`check_runtime_files`] over the files the game will see.
+pub fn refuse_runtime_mismatch(
+    findings: Vec<RuntimeFileFinding>,
+    launch_anyway: bool,
+) -> Result<Vec<RuntimeFileFinding>, LaunchError> {
+    let refuses = findings.iter().any(RuntimeFileFinding::refuses_launch);
+    if refuses && !launch_anyway {
+        Err(LaunchError::RuntimeMismatch { findings })
+    } else {
+        Ok(findings)
+    }
+}
+
+/// The runtime-file findings for a runtime at `version` over `paths` (the files the game will
+/// see). One function for launch and for `games instance check`, so they cannot disagree.
+pub fn runtime_findings<S: AsRef<str>>(
+    definition: &GameDefinition,
+    version: &str,
+    paths: &[S],
+) -> Vec<RuntimeFileFinding> {
+    check_runtime_files(&definition.runtime_files, version, paths)
 }
 
 /// A launch alternative (a framework's loader) that was used instead of the recipe's own
@@ -369,6 +403,12 @@ pub fn prepare_base_launch_with(
     }
     let warnings = ver.problems;
 
+    let base_paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+    let findings = refuse_runtime_mismatch(
+        runtime_findings(definition, &manifest.runtime.version, &base_paths),
+        launch_anyway,
+    )?;
+
     let roots = LaunchRoots {
         runtime: manifest.location.clone(),
         install: Some(manifest.source_location.clone()),
@@ -402,7 +442,9 @@ pub fn prepare_base_launch_with(
         }
     }
 
-    Ok(PreparedLaunch::undeployed(resolved, warnings, alternative))
+    let mut prepared = PreparedLaunch::undeployed(resolved, warnings, alternative);
+    prepared.runtime_findings = findings;
+    Ok(prepared)
 }
 
 // ---------------------------------------------------------------------------

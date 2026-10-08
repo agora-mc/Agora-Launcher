@@ -65,6 +65,7 @@ fn valheim_definition() -> GameDefinition {
         copy_patterns: vec![],
         excluded_paths: vec![],
         plugin_list: None,
+        runtime_files: Vec::new(),
         launch_alternatives: Vec::new(),
         content_layout: Some(ContentLayout {
             data_path: RelPath::default(),

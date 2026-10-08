@@ -419,6 +419,12 @@ enum GameInstanceCmd {
         /// Instance ID to undeploy.
         instance_id: String,
     },
+    /// Check the framework files against the game version, without launching. Exits 1 when a
+    /// framework was built for another version: the same check a launch makes.
+    Check {
+        /// Instance ID to check.
+        instance_id: String,
+    },
     /// Show or change which plugins an instance's plugin list activates.
     #[command(args_conflicts_with_subcommands = true)]
     Plugins {
@@ -5331,6 +5337,29 @@ async fn run_command(
                                 }
                                 std::process::exit(1);
                             }
+                            Err(agora_core::game_instance::InstanceError::LaunchError(
+                                agora_core::game_launch::LaunchError::RuntimeMismatch { findings },
+                            )) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": "runtime_mismatch",
+                                        "instance_id": instance_id,
+                                        "findings": findings,
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!(
+                                        "Instance '{instance_id}' has framework(s) built for another game version:"
+                                    );
+                                    print_runtime_findings(&findings);
+                                    eprintln!(
+                                        "Run 'agora games instance check {instance_id}' to see this again, or pass --launch-anyway to start the game anyway."
+                                    );
+                                }
+                                std::process::exit(1);
+                            }
                             Err(
                                 e @ agora_core::game_instance::InstanceError::VfsUnavailable {
                                     next: Some(next),
@@ -5534,6 +5563,14 @@ async fn run_command(
 
                         let _ = agora_core::game_instance::record_launch(ctx, &instance_id);
 
+                        if !json && !prepared.runtime_findings.is_empty() {
+                            eprintln!(
+                                "Warning: Launching past {} framework check finding(s):",
+                                prepared.runtime_findings.len()
+                            );
+                            print_runtime_findings(&prepared.runtime_findings);
+                        }
+
                         let env_map: std::collections::BTreeMap<String, String> = prepared
                             .resolved
                             .env
@@ -5557,6 +5594,7 @@ async fn run_command(
                                     "cwd": prepared.resolved.cwd,
                                     "env": env_map,
                                     "warnings": prepared.warnings,
+                                    "runtime_findings": prepared.runtime_findings,
                                     "deployment": prepared.deployment.map(|m| m.as_str()),
                                     "notice": prepared.notice,
                                     "alternative": prepared.alternative,
@@ -5659,6 +5697,7 @@ async fn run_command(
                                     "cwd": prepared.resolved.cwd,
                                     "env": env_map,
                                     "warnings": prepared.warnings,
+                                    "runtime_findings": prepared.runtime_findings,
                                     "deployment": prepared.deployment.map(|m| m.as_str()),
                                     "notice": prepared.notice,
                                     "processes": exit_report.processes,
@@ -6559,6 +6598,77 @@ async fn run_command(
                         }
                     }
                 }
+                GameInstanceCmd::Check { instance_id } => {
+                    let fail = |message: String| -> ! {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "error",
+                                "error": message,
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out).unwrap_or(message));
+                        } else {
+                            eprintln!("Error: {message}");
+                        }
+                        std::process::exit(1);
+                    };
+                    let record = match agora_core::game_instance::get(ctx, &instance_id)? {
+                        Some(r) => r,
+                        None => fail(format!("Instance '{instance_id}' not found.")),
+                    };
+                    let game_def = ctx.games.game(&record.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", record.game)
+                    })?;
+                    let findings = match agora_core::game_instance::runtime_findings(
+                        ctx,
+                        &instance_id,
+                        game_def,
+                    ) {
+                        Ok(findings) => findings,
+                        Err(e) => fail(format!("{e}")),
+                    };
+                    let pinned =
+                        matches!(record.base, agora_game_api::BaseReference::Pinned { .. });
+                    // Only a framework built for another version fails the check. A rule that
+                    // cannot be checked is listed, as a warning.
+                    let refuses = findings
+                        .iter()
+                        .any(agora_game_api::RuntimeFileFinding::refuses_launch);
+                    let status = if refuses {
+                        "findings"
+                    } else if findings.is_empty() {
+                        "ok"
+                    } else {
+                        "warnings"
+                    };
+                    if json {
+                        let out = serde_json::json!({
+                            "status": status,
+                            "instance_id": instance_id,
+                            "checked": pinned,
+                            "findings": findings,
+                            "exitCode": if refuses { 1 } else { 0 },
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else if !pinned {
+                        println!(
+                            "Instance '{instance_id}' runs from its install folder, which has no framework check."
+                        );
+                    } else if findings.is_empty() {
+                        println!("No framework problems found in instance '{instance_id}'.");
+                    } else {
+                        println!(
+                            "Instance '{instance_id}' has {} framework problem(s):",
+                            findings.len()
+                        );
+                        for line in runtime_finding_lines(&findings) {
+                            println!("{line}");
+                        }
+                    }
+                    if refuses {
+                        std::process::exit(1);
+                    }
+                }
                 GameInstanceCmd::Plugins {
                     instance_id,
                     action,
@@ -6703,6 +6813,25 @@ async fn run_command(
                         }
                         std::process::exit(1);
                     }
+                    Err(agora_core::game_launch::LaunchError::RuntimeMismatch { findings }) => {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "error",
+                                "error": "runtime_mismatch",
+                                "base_id": base_id,
+                                "findings": findings,
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!(
+                                "Base '{base_id}' has framework(s) built for another game version:"
+                            );
+                            print_runtime_findings(&findings);
+                            eprintln!("Pass --launch-anyway to start the game anyway.");
+                        }
+                        std::process::exit(1);
+                    }
                     Err(agora_core::game_launch::LaunchError::NoRecipe) => {
                         if json {
                             let out = serde_json::json!({
@@ -6731,6 +6860,14 @@ async fn run_command(
                         std::process::exit(1);
                     }
                 };
+
+                if !json && !prepared.runtime_findings.is_empty() {
+                    eprintln!(
+                        "Warning: Launching past {} framework check finding(s):",
+                        prepared.runtime_findings.len()
+                    );
+                    print_runtime_findings(&prepared.runtime_findings);
+                }
 
                 let mut launched = match agora_core::game_launch::launch(&prepared) {
                     Ok(l) => l,
@@ -6774,6 +6911,7 @@ async fn run_command(
                             "cwd": prepared.resolved.cwd,
                             "env": env_map,
                             "warnings": prepared.warnings,
+                            "runtime_findings": prepared.runtime_findings,
                         });
                         println!("{}", serde_json::to_string_pretty(&out)?);
                     } else {
@@ -6837,6 +6975,7 @@ async fn run_command(
                             "cwd": prepared.resolved.cwd,
                             "env": env_map,
                             "warnings": prepared.warnings,
+                            "runtime_findings": prepared.runtime_findings,
                             "processes": exit_report.processes,
                             "relaunched_outside": exit_report.relaunched_outside,
                             "game_writes": ver.game_writes,
@@ -7276,6 +7415,42 @@ fn offer_restart_after_vfs_ended(
     eprintln!("  {}    (this launch only)", retry[0]);
     eprintln!("  {}    (every launch)", retry[1]);
     Ok(false)
+}
+
+/// One line per framework finding, indented under the caller's heading. The repair goes on the
+/// line after what is wrong, so a person can act on it.
+fn runtime_finding_lines(findings: &[agora_game_api::RuntimeFileFinding]) -> Vec<String> {
+    use agora_game_api::RuntimeFileProblem;
+    let mut lines = Vec::new();
+    for finding in findings {
+        match &finding.problem {
+            RuntimeFileProblem::WrongVersion => {
+                let found = if finding.found.is_empty() {
+                    "no file of its family".to_string()
+                } else {
+                    finding.found.join(", ")
+                };
+                lines.push(format!(
+                    "  - {} ({}): needs {}, the game has {}",
+                    finding.rule_name, finding.rule_id, finding.expected, found
+                ));
+                lines.push(format!("    Repair: {}", finding.repair));
+            }
+            RuntimeFileProblem::CannotCheck { reason } => {
+                lines.push(format!(
+                    "  - {} ({}): cannot be checked: {reason}",
+                    finding.rule_name, finding.rule_id
+                ));
+            }
+        }
+    }
+    lines
+}
+
+fn print_runtime_findings(findings: &[agora_game_api::RuntimeFileFinding]) {
+    for line in runtime_finding_lines(findings) {
+        eprintln!("{line}");
+    }
 }
 
 fn print_base_problems(problems: &[agora_core::game_base::BaseProblem]) {

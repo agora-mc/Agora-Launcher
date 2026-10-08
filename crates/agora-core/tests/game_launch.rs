@@ -46,6 +46,7 @@ fn make_test_definition(recipe: Option<LaunchRecipe>) -> GameDefinition {
         declared_writes: vec!["d3dx9_42.log".into()],
         excluded_paths: vec![],
         plugin_list: None,
+        runtime_files: Vec::new(),
         launch_alternatives: Vec::new(),
         content_layout: None,
         copy_patterns: Vec::new(),

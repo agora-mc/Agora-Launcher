@@ -221,6 +221,35 @@
           },
           "reason": "SKSE is installed, so the game starts through its loader"
         }
+      ],
+      "runtime_files": [
+        {
+          "id": "skse",
+          "name": "Skyrim Script Extender (SKSE)",
+          "family": "skse64_*.dll",
+          "expected": "skse64_{1}_{2}_{3}.dll",
+          "repair": "Install the SKSE build for Skyrim {version} from skse.silverlock.org"
+        },
+        {
+          "id": "address-library",
+          "name": "Address Library for SKSE Plugins",
+          "family": "Data/SKSE/Plugins/version*-*.bin",
+          "expected": "Data/SKSE/Plugins/versionlib-{1}-{2}-{3}-{4}.bin",
+          "applies_to": [
+            "1.6.*"
+          ],
+          "repair": "Install the Address Library build for Skyrim {version} (the versionlib file for that version) into Data/SKSE/Plugins"
+        },
+        {
+          "id": "address-library-se",
+          "name": "Address Library for SKSE Plugins",
+          "family": "Data/SKSE/Plugins/version*-*.bin",
+          "expected": "Data/SKSE/Plugins/version-{1}-{2}-{3}-{4}.bin",
+          "applies_to": [
+            "1.5.*"
+          ],
+          "repair": "Install the Address Library build for Skyrim {version} (the version-*.bin file for that version) into Data/SKSE/Plugins"
+        }
       ]
     }
   ],

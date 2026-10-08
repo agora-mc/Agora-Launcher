@@ -162,4 +162,90 @@ mod tests {
         assert!(game.crash_paths.is_empty());
         assert!(game.save_paths.is_empty());
     }
+
+    /// The three runtime-file rules the embedded Skyrim SE definition declares.
+    fn skyrim_runtime_rules() -> Vec<agora_game_api::RuntimeFileRule> {
+        game_package().definition().games[0].runtime_files.clone()
+    }
+
+    /// Paths, `/`-separated and relative to `root`, of every file under `root`. Read-only.
+    fn files_under(root: &std::path::Path) -> Vec<String> {
+        fn visit(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("read the folder") {
+                let path = entry.expect("read a directory entry").path();
+                if path.is_dir() {
+                    visit(root, &path, out);
+                } else {
+                    let rel = path.strip_prefix(root).expect("path under root");
+                    let parts: Vec<String> = rel
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect();
+                    out.push(parts.join("/"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        visit(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn skyrim_runtime_rules_match_the_skse_and_address_library_files_of_1_6_1170() {
+        let rules = skyrim_runtime_rules();
+        assert_eq!(
+            rules.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["skse", "address-library", "address-library-se"]
+        );
+
+        // The working Skyrim SE 1.6.1170.0 instance, with names as they are on disk.
+        let files = [
+            "SkyrimSE.exe",
+            "skse64_1_6_1170.dll",
+            "skse64_loader.exe",
+            "skse64_readme.txt",
+            "Data/SKSE/Plugins/versionlib-1-6-1170-0.bin",
+            "Data/SKSE/Plugins/versionlib-1-6-1170-0-1.bin",
+            "Data/Scripts/PO3_SKSEFunctions.pex",
+        ];
+        assert!(agora_game_api::check_runtime_files(&rules, "1.6.1170.0", &files).is_empty());
+
+        // The same files against a newer runtime: SKSE and the 1.6 library are both missing.
+        let findings = agora_game_api::check_runtime_files(&rules, "1.6.1179.0", &files);
+        let ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
+        assert_eq!(ids, vec!["skse", "address-library"]);
+
+        // Against 1.5.97.0: SKSE and the 1.5 library are missing.
+        let findings = agora_game_api::check_runtime_files(&rules, "1.5.97.0", &files);
+        let ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
+        assert_eq!(ids, vec!["skse", "address-library-se"]);
+    }
+
+    /// Read-only check of the real Skyrim SE deployment folder from the P3 benchmark. It prints what
+    /// the rules say; run it with `cargo test -p agora-game-creation -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "reads the real deployment folder under D:\\Agora-bench\\p3-done"]
+    fn real_skyrim_deployment_folder_checks_out_against_its_runtime() {
+        let root = std::path::Path::new(r"D:\Agora-bench\p3-done\bases\deployments\p3-modded\game");
+        assert!(root.is_dir(), "missing {}", root.display());
+        let files = files_under(root);
+        println!("{} files under {}", files.len(), root.display());
+        let rules = skyrim_runtime_rules();
+
+        let at_1_6_1170 = agora_game_api::check_runtime_files(&rules, "1.6.1170.0", &files);
+        println!("1.6.1170.0: {} finding(s)", at_1_6_1170.len());
+        for finding in &at_1_6_1170 {
+            println!("  {}", finding.summary());
+        }
+        assert!(at_1_6_1170.is_empty(), "{at_1_6_1170:?}");
+
+        let at_1_6_1179 = agora_game_api::check_runtime_files(&rules, "1.6.1179.0", &files);
+        println!("1.6.1179.0: {} finding(s)", at_1_6_1179.len());
+        for finding in &at_1_6_1179 {
+            println!("  {}", finding.summary());
+        }
+        let ids: Vec<&str> = at_1_6_1179.iter().map(|f| f.rule_id.as_str()).collect();
+        assert_eq!(ids, vec!["skse", "address-library"]);
+    }
 }

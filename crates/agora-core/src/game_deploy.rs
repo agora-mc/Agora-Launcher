@@ -863,6 +863,42 @@ fn clear_whiteout_marker(writable_dir: &Path, rel: &RelPath) {
 // Deploy and Undeploy
 // ---------------------------------------------------------------------------
 
+/// Every path the game will see under `mode`, `/`-separated, sorted and without case-only
+/// duplicates: the deployment plan's files, plus the writable layer. The plan leaves the writable
+/// layer out under the virtual file system, which shows it on top of the farm, so it is added
+/// here. Whiteouts are already applied to the plan, and the writable layer's own files are never
+/// hidden by them.
+pub fn visible_paths(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+) -> Result<Vec<String>, DeployError> {
+    let plan = plan(ctx, instance_id, definition, mode)?;
+    let mut paths: Vec<String> = plan
+        .files
+        .iter()
+        .map(|file| file.path.as_str().to_string())
+        .collect();
+    let instance_dir = ctx
+        .paths
+        .instance_dir(instance_id)
+        .map_err(|e| DeployError::Other(e.to_string()))?;
+    let writable_dir = instance_dir.join("writable");
+    if writable_dir.exists() {
+        let mut writable_files = Vec::new();
+        walk_writable_dir(&writable_dir, Path::new(""), &mut writable_files)?;
+        paths.extend(
+            writable_files
+                .into_iter()
+                .map(|file| file.path.as_str().to_string()),
+        );
+    }
+    paths.sort_by_key(|path| path.to_ascii_lowercase());
+    paths.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    Ok(paths)
+}
+
 pub fn deployment_dir(ctx: &Ctx, instance_id: &str) -> Result<Option<PathBuf>, DeployError> {
     let manifest = match crate::game_instance::get_manifest(ctx, instance_id) {
         Ok(m) => m,

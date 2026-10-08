@@ -660,6 +660,63 @@ pub fn deploy_mode_for(
     })
 }
 
+/// The rung a launch of this pinned instance deploys on, or `None` when it runs from its base with
+/// nothing deployed. `chosen` is the launch's own override, else the instance's choice.
+///
+/// A game that needs the virtual file system runs under it even with nothing deployed on top of
+/// its base: on a linked base only the VFS keeps its writes out of the store install. Other games
+/// with no content run from their base, unless the user chose a rung.
+fn deploys_on_launch(
+    manifest: &GameInstanceManifest,
+    definition: &GameDefinition,
+    chosen: Option<DeployMode>,
+) -> Option<DeployMode> {
+    let has_deployment_layers = manifest.layers.iter().any(|l| {
+        (matches!(l.source, agora_game_api::LayerSource::Content { .. }) && l.enabled)
+            || matches!(l.source, agora_game_api::LayerSource::Writable { .. })
+    });
+    if has_deployment_layers
+        || chosen.is_some()
+        || default_deploy_mode(definition) == DeployMode::Virtual
+    {
+        Some(chosen.unwrap_or_else(|| default_deploy_mode(definition)))
+    } else {
+        None
+    }
+}
+
+/// The runtime-file findings a launch of this instance would refuse or carry, computed the way
+/// launch computes them, without deploying or starting anything.
+///
+/// An unpinned instance runs from its install folder with nothing to verify, so it has no
+/// findings here, the same as at launch.
+pub fn runtime_findings(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+) -> Result<Vec<agora_game_api::RuntimeFileFinding>, InstanceError> {
+    let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
+    let BaseReference::Pinned { id: base_id, .. } = record.base else {
+        return Ok(Vec::new());
+    };
+    let manifest = get_manifest(ctx, id)?;
+    let manifest_path = ctx.paths.base_manifest_path(&base_id);
+    if !manifest_path.exists() {
+        return Err(InstanceError::BaseNotFound(base_id));
+    }
+    let content = std::fs::read_to_string(&manifest_path)?;
+    let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
+    let paths: Vec<String> = match deploys_on_launch(&manifest, definition, manifest.deployment) {
+        Some(mode) => crate::game_deploy::visible_paths(ctx, id, definition, mode)?,
+        None => base_manifest.files.iter().map(|f| f.path.clone()).collect(),
+    };
+    Ok(crate::game_launch::runtime_findings(
+        definition,
+        &base_manifest.runtime.version,
+        &paths,
+    ))
+}
+
 /// Prepare launch for a generic game instance.
 pub fn prepare_launch(
     ctx: &Ctx,
@@ -717,21 +774,9 @@ pub fn prepare_launch_with(
     let manifest = get_manifest(ctx, id)?;
     match record.base {
         BaseReference::Pinned { id: base_id, .. } => {
-            let has_deployment_layers = manifest.layers.iter().any(|l| {
-                (matches!(l.source, agora_game_api::LayerSource::Content { .. }) && l.enabled)
-                    || matches!(l.source, agora_game_api::LayerSource::Writable { .. })
-            });
             let chosen = options.deployment.or(manifest.deployment);
 
-            // A game that needs the virtual file system runs under it even with nothing deployed
-            // on top of its base: on a linked base only the VFS keeps its writes out of the
-            // store install. Other games with no content run from their base, unless the user
-            // chose a rung.
-            if has_deployment_layers
-                || chosen.is_some()
-                || default_deploy_mode(definition) == DeployMode::Virtual
-            {
-                let wanted = chosen.unwrap_or_else(|| default_deploy_mode(definition));
+            if let Some(wanted) = deploys_on_launch(&manifest, definition, chosen) {
                 let rung = match wanted {
                     DeployMode::Virtual => match launcher.locate_vfs_dll() {
                         Ok(dll) => Rung {
@@ -850,17 +895,25 @@ fn prepare_deployed(
     base_id: &str,
     rung: Rung,
 ) -> Result<PreparedLaunch, InstanceError> {
-    let outcome = crate::game_deploy::deploy(ctx, id, definition, rung.mode)?;
-
-    let game_dir = crate::game_deploy::deployment_dir(ctx, id)?
-        .ok_or_else(|| InstanceError::Other("deployed game directory not found".into()))?;
-
     let manifest_path = ctx.paths.base_manifest_path(base_id);
     if !manifest_path.exists() {
         return Err(InstanceError::BaseNotFound(base_id.to_string()));
     }
     let content = std::fs::read_to_string(&manifest_path)?;
     let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
+
+    // Checked before anything is deployed: the plan says which files the game will see, so a
+    // refused launch leaves nothing newly built.
+    let visible = crate::game_deploy::visible_paths(ctx, id, definition, rung.mode)?;
+    let findings = crate::game_launch::refuse_runtime_mismatch(
+        crate::game_launch::runtime_findings(definition, &base_manifest.runtime.version, &visible),
+        options.launch_anyway,
+    )?;
+
+    let outcome = crate::game_deploy::deploy(ctx, id, definition, rung.mode)?;
+
+    let game_dir = crate::game_deploy::deployment_dir(ctx, id)?
+        .ok_or_else(|| InstanceError::Other("deployed game directory not found".into()))?;
 
     let ver = crate::game_base::verify_base(
         &base_manifest,
@@ -936,6 +989,7 @@ fn prepare_deployed(
         vfs,
         notice: rung.notice,
         alternative,
+        runtime_findings: findings,
     })
 }
 

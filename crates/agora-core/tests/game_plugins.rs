@@ -118,6 +118,7 @@ fn definition() -> GameDefinition {
         declared_writes: vec![],
         excluded_paths: vec![],
         plugin_list: Some(plugin_rule()),
+        runtime_files: Vec::new(),
         launch_alternatives: vec![LaunchAlternative {
             id: "loader".into(),
             when_present: RelPath::new("loader.exe").unwrap(),
