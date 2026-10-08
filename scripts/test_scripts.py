@@ -21,6 +21,7 @@ import deploy_release_assets
 import refresh_loader_manifests
 import validate_loader_catalog_delta
 import build_docs_web as bdw
+import pin_hashes
 
 
 def _response(read_side_effect=None, read_value=b"data"):
@@ -1916,6 +1917,49 @@ class TestBuildDocsWebStripTitle(unittest.TestCase):
 
     def test_empty_is_unchanged(self):
         self.assertEqual(bdw.strip_title(""), "")
+
+
+class TestPinHashesOtherGames(unittest.TestCase):
+    """pin_hashes accepts a direct_hash entry for another game (MASTER_SPEC §26.8)."""
+
+    def _entry(self, **overrides):
+        entry = {
+            "id": "skyrim-archive-mod",
+            "game": "skyrim-se",
+            "content_type": "mod",
+            "download_strategy": "direct_hash",
+            "source_identifier": "https://example.com/files/Mod-1.0.7z",
+            "sha256": "0" * 64,
+            "game_compatibility": [{"stores": ["steam"], "game_versions": ["1.6.1170.0"]}],
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_other_game_entry_passes_without_compatible_versions(self):
+        self.assertEqual(
+            pin_hashes._validate_direct_hash_contract(self._entry()),
+            "https://example.com/files/Mod-1.0.7z",
+        )
+
+    def test_other_game_entry_needs_game_compatibility(self):
+        entry = self._entry()
+        del entry["game_compatibility"]
+        with self.assertRaises(SystemExit) as caught:
+            pin_hashes._validate_direct_hash_contract(entry)
+        self.assertIn("game_compatibility", str(caught.exception.code))
+
+    def test_other_game_entry_still_needs_an_https_filename(self):
+        with self.assertRaises(SystemExit):
+            pin_hashes._validate_direct_hash_contract(
+                self._entry(source_identifier="https://example.com/download?id=12")
+            )
+
+    def test_minecraft_entry_still_needs_compatible_versions(self):
+        entry = self._entry(game="minecraft", source_identifier="https://example.com/files/m-1.0.jar")
+        del entry["game_compatibility"]
+        with self.assertRaises(SystemExit) as caught:
+            pin_hashes._validate_direct_hash_contract(entry)
+        self.assertIn("compatible_versions", str(caught.exception.code))
 
 
 if __name__ == "__main__":

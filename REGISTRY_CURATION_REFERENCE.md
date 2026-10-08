@@ -22,6 +22,7 @@ registry/
 ├── datapacks/         ← Datapacks
 ├── worlds/            ← Pre-built worlds
 ├── pack-overrides/    ← (Optional) zip bundles of configs for a pack
+├── games/             ← Entries for other games: games/<game>/mods/ (see "Catalog entries for other games")
 ├── governance/        ← Cross-cutting policy files (see §5)
 │   ├── known_conflicts.json
 │   ├── poll_blacklist.json
@@ -674,3 +675,133 @@ For mods with no Modrinth presence (pure GitHub-release mods whose slug doesn't 
 8. **Inventing a strategy** like `"curseforge"` — only `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, and `provider_pack` are supported.
 9. **Using a URL as the identifier for `github_release`** — it must be `owner/repo` format (e.g. `CaffeineMC/sodium`), not a full URL.
 10. **Forgetting `sha256` on a `direct_hash` mod** — it's required for all strategies; for `direct_hash` it's the only integrity guarantee and must be manually provided.
+
+---
+
+## Catalog entries for other games
+
+Entries for games other than Minecraft live under `registry/games/<game>/mods/`, one JSON file per
+entry, for example `registry/games/skyrim-se/mods/crash-logger.json`. Minecraft entries are
+unchanged and stay in `registry/mods/`. The rules below are enforced by the compiler, and every
+refusal names the file and the field (MASTER_SPEC §26.8).
+
+### Where the entries are stored
+
+Entries for other games are written to their own table, `game_catalog_items`, and never to
+`registry_items`. `registry_items` and the schema version are unchanged, so existing clients keep
+receiving catalog updates, and they never select the new table. The table holds `id`, `game`,
+`name`, `author`, `content_type`, `download_strategy`, `source_identifier`, `sha256`,
+`download_sources_json`, `game_compatibility_json`, `description`, `license_id`, `page_url`,
+`icon_url`, `status` and `date_added`.
+
+Not carried over, because they are Minecraft catalog features and none is an install input for
+another game yet: votes and net score, governance (immunity, comments), categories, curator notes,
+gallery, the Modrinth body and source-update time, changelogs, `compatible_versions` and
+`modrinth_id`.
+
+### The game and its folder
+
+- The manifest must say `"game": "<game>"`, and that must match the folder it sits in. A folder
+  whose name is not a game that a game package defines is a compile error.
+- A Minecraft manifest has no `game` field and means `minecraft`. A Minecraft manifest may also say
+  `"game": "minecraft"`. Only `mods/` is open for other games at present, and an entry for another
+  game must have `"content_type": "mod"`.
+- The games a manifest may name are the ones game packages declare: `skyrim-se` from
+  `crates/agora-game-creation/data/package.json`, and the games under `packages/tracers/*/games/`.
+- Item ids are unique across all games. Two entries with the same `id` fail the build, and the error
+  names both files.
+
+### Compatibility: `game_compatibility`
+
+An entry for another game replaces `compatible_versions` with `game_compatibility`, a non-empty
+array. Each element has these fields:
+
+| Field | Required | Rule |
+|---|---|---|
+| `stores` | Yes | Non-empty. Each store must be one the game declares (for `skyrim-se`: `steam` and `gog`). |
+| `game_versions` | Yes | Non-empty. Each entry is an exact version such as `1.6.1179.0`, or a `*` glob on whole dot-separated components such as `1.6.1170.*`. Versions are opaque, so there are no ranges. |
+| `requires` | No | Frameworks the game declares, each `{"framework": "<id>", "min_version": "<dotted numbers>"}`. `min_version` is optional, and every component must be a number. |
+| `asset` | For `github_release` | The release asset to pick, as a name pattern such as `CrashLogger-*.7z`. Required whenever the entry has a `github_release` source, and forbidden on a `direct_hash`-only entry. |
+
+Unknown keys are refused, so a misspelt field fails the build instead of being ignored.
+
+An entry for another game must not carry `compatible_versions`, `mod_dependencies`,
+`package_signatures`, `mod_jar_aliases` or `modrinth_id`. A Minecraft entry must not carry
+`game_compatibility`.
+
+### Strategies
+
+Only `github_release` and `direct_hash` are available for another game. `modrinth_id`, `technic_pack`,
+`curated_pack` and `provider_pack` are Minecraft-only, and using one is a compile error.
+
+- **`direct_hash`** keeps the Minecraft contract: an `https://` URL whose last path segment is the
+  file name (`.jar`, `.zip`, `.7z` and `.rar` are all accepted), a mandatory `sha256`, and no
+  `latest`. The Minecraft `compatible_versions` requirement is replaced by `game_compatibility`.
+- **`github_release`** takes `owner/repo` as its identifier and needs `asset` on every compatibility
+  entry. The hash is verified at install from the GitHub asset's digest, as Minecraft's is.
+- `scripts/pin_hashes.py` accepts these manifests, and pins the hash of a `direct_hash` entry in
+  place, as it does for Minecraft.
+
+### Example: a `github_release` entry
+
+```json
+{
+  "id": "crash-logger",
+  "name": "CrashLogger",
+  "content_type": "mod",
+  "author": "example-author",
+  "license": "MIT",
+  "game": "skyrim-se",
+  "download_strategy": "github_release",
+  "source_identifier": "example-author/crash-logger",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "game_compatibility": [
+    {
+      "stores": ["steam", "gog"],
+      "game_versions": ["1.6.1170.*", "1.6.1179.0"],
+      "requires": [{ "framework": "skse", "min_version": "2.2.6" }],
+      "asset": "CrashLogger-*.7z"
+    }
+  ],
+  "curator_note": "Writes a crash log for every failed launch.",
+  "base_categories": ["tools"],
+  "community_categories": []
+}
+```
+
+The `sha256` shown is a placeholder. The compiler requires the field, and the install checks the
+GitHub asset's digest against it.
+
+### Example: a `direct_hash` entry
+
+```json
+{
+  "id": "skyrim-archive-mod",
+  "name": "Archive Mod",
+  "content_type": "mod",
+  "author": "Developer Name",
+  "license": "LicenseRef-Proprietary",
+  "game": "skyrim-se",
+  "download_strategy": "direct_hash",
+  "source_identifier": "https://developer.com/releases/Mod-1.0.7z",
+  "sha256": "a1b2c3d4e5f6...(64 lowercase hex chars)",
+  "game_compatibility": [
+    { "stores": ["steam"], "game_versions": ["1.6.1170.0"] }
+  ],
+  "curator_note": "",
+  "base_categories": ["content"]
+}
+```
+
+A `direct_hash` entry names no `asset`, because its URL already names the file. The hash is pinned
+by hand, as for Minecraft, and must stay the same for every mirror.
+
+### Frameworks
+
+A framework in `requires` must be declared by the game's package: a top-level `frameworks` entry
+whose `game` is that game, and listed in the game's `framework_ids`. An undeclared framework is a
+compile error.
+
+The Skyrim SE package declares `skse` (Skyrim Script Extender, version 2.2.6). Its
+`supported_runtimes` is empty, because the game's `runtime_files` already enforce which SKSE build
+matches which Skyrim runtime. The example above compiles against the real package.

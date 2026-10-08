@@ -1962,6 +1962,33 @@ def create_tables(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # Entries for games other than Minecraft (MASTER_SPEC §26.8). A separate
+    # table, so registry_items keeps its Minecraft-only shape and an older
+    # client, which never reads this table, cannot list them in Minecraft's browse.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS game_catalog_items (
+            id TEXT PRIMARY KEY,
+            game TEXT NOT NULL,
+            name TEXT NOT NULL,
+            author TEXT,
+            content_type TEXT NOT NULL,
+            download_strategy TEXT NOT NULL,
+            source_identifier TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            download_sources_json TEXT NOT NULL DEFAULT '[]',
+            game_compatibility_json TEXT NOT NULL,
+            description TEXT,
+            license_id TEXT,
+            page_url TEXT,
+            icon_url TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            date_added TEXT
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_game_catalog_items_game ON game_catalog_items(game)"
+    )
+
     for index_sql in CREATE_INDEXES:
         cursor.execute(index_sql)
 
@@ -2120,20 +2147,8 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
     return strategy
 
 
-def validate_pinned_source(
-    item_id: str,
-    strategy: str,
-    source: str,
-    declared: Any,
-) -> None:
-    """Enforce the hand-pinned contract for one ``direct_hash``/``technic_pack``
-    source.
-
-    Applied per *source* rather than per *item* so that a manifest listing
-    several download sources gets every pinned entry checked, not just the
-    preferred one. A fallback that only fails once the preferred source is down
-    is worse than no fallback at all.
-    """
+def _validate_pinned_url(item_id: str, strategy: str, source: str) -> None:
+    """The URL rules every pinned source obeys, whatever game it is for."""
     if strategy == "provider_pack":
         if not PROVIDER_PACK_IDENTIFIER.fullmatch(source):
             logger.error(
@@ -2174,6 +2189,23 @@ def validate_pinned_source(
             source,
         )
         raise SystemExit(1)
+
+
+def validate_pinned_source(
+    item_id: str,
+    strategy: str,
+    source: str,
+    declared: Any,
+) -> None:
+    """Enforce the hand-pinned contract for one ``direct_hash``/``technic_pack``
+    source.
+
+    Applied per *source* rather than per *item* so that a manifest listing
+    several download sources gets every pinned entry checked, not just the
+    preferred one. A fallback that only fails once the preferred source is down
+    is worse than no fallback at all.
+    """
+    _validate_pinned_url(item_id, strategy, source)
 
     if not declared:
         logger.error(
@@ -2238,6 +2270,8 @@ def normalize_download_sources(item: dict[str, Any]) -> list[dict[str, str]]:
     same contract as a pinned primary, and a duplicate ``(strategy,
     identifier)`` pair is dropped rather than retried twice.
     """
+    if is_other_game(item):
+        return _canonical_other_game_sources(item)
     item_id = item.get("id", "<unknown>")
     raw = item.get("download_sources")
 
@@ -2362,6 +2396,326 @@ def normalize_download_sources(item: dict[str, Any]) -> list[dict[str, str]]:
     return sources
 
 
+# ---------------------------------------------------------------------------
+# Catalog entries for other games (MASTER_SPEC §26.8)
+# ---------------------------------------------------------------------------
+
+MINECRAFT_GAME = "minecraft"
+
+# Strategies an entry for another game may use. The Minecraft-only strategies
+# (modrinth_id, technic_pack, curated_pack, provider_pack) do not apply.
+OTHER_GAME_STRATEGIES = frozenset({"github_release", "direct_hash"})
+
+# Fields that only mean something for Minecraft. An entry for another game
+# states its compatibility in game_compatibility instead. modrinth_id is
+# refused too: it would add a Modrinth source to a game Modrinth does not host.
+OTHER_GAME_FORBIDDEN_FIELDS = (
+    "compatible_versions",
+    "mod_dependencies",
+    "package_signatures",
+    "mod_jar_aliases",
+    "modrinth_id",
+)
+
+# Mods only for now. Packs and the other kinds stay Minecraft-only until a
+# game needs them.
+OTHER_GAME_KINDS = ("mods",)
+
+# Where game packages live. Read as data; nothing in them is executed.
+GAME_PACKAGE_FILES = ("crates/agora-game-creation/data/package.json",)
+GAME_PACKAGE_GLOBS = ("packages/tracers/*/games/package.json",)
+
+_GAME_VERSION_RE = re.compile(r"(?:[0-9]+|\*)(?:\.(?:[0-9]+|\*))*")
+_NUMERIC_VERSION_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*")
+_OWNER_REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
+_GAME_COMPAT_KEYS = frozenset({"stores", "game_versions", "requires", "asset"})
+_GAME_REQUIRE_KEYS = frozenset({"framework", "min_version"})
+
+
+@dataclass(frozen=True)
+class GameDeclaration:
+    """What a game package declares about one game: its stores and frameworks."""
+
+    id: str
+    stores: frozenset[str]
+    frameworks: frozenset[str]
+
+
+def game_package_paths() -> list[Path]:
+    paths = [REPO_ROOT / rel for rel in GAME_PACKAGE_FILES]
+    for pattern in GAME_PACKAGE_GLOBS:
+        paths.extend(sorted(REPO_ROOT.glob(pattern)))
+    return paths
+
+
+def load_game_declarations(package_paths: list[Path] | None = None) -> dict[str, GameDeclaration]:
+    """Read the games that game packages declare, keyed by game id.
+
+    A game's stores are its ``stores[].store`` values. Its frameworks are the
+    package's top-level ``frameworks`` whose ``game`` is that game, plus the
+    game's own ``framework_ids``.
+    """
+    declared: dict[str, GameDeclaration] = {}
+    paths = game_package_paths() if package_paths is None else package_paths
+    for path in paths:
+        try:
+            package = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"Cannot read game package {path}: {exc}") from exc
+        package_frameworks = [
+            fw for fw in package.get("frameworks", []) if isinstance(fw, dict) and fw.get("id")
+        ]
+        for game in package.get("games", []):
+            if not isinstance(game, dict):
+                raise SystemExit(f"{path}: every game must be an object")
+            game_id = str(game.get("id", "")).strip()
+            if not game_id:
+                raise SystemExit(f"{path}: a game has no id")
+            if game_id == MINECRAFT_GAME or game_id in declared:
+                raise SystemExit(
+                    f"{path}: game id {game_id!r} is declared more than once, "
+                    "or is reserved for Minecraft"
+                )
+            stores = frozenset(
+                str(store["store"])
+                for store in game.get("stores", [])
+                if isinstance(store, dict) and store.get("store")
+            )
+            frameworks = {
+                str(fw["id"])
+                for fw in package_frameworks
+                if str(fw.get("game", game_id)) == game_id
+            }
+            frameworks.update(str(framework) for framework in game.get("framework_ids", []))
+            declared[game_id] = GameDeclaration(game_id, stores, frozenset(frameworks))
+    return declared
+
+
+def is_other_game(item: dict[str, Any]) -> bool:
+    return item.get("game", MINECRAFT_GAME) != MINECRAFT_GAME
+
+
+def load_game_manifests(
+    declarations: dict[str, GameDeclaration],
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Load every manifest under ``registry/games/<game>/<kind>/``.
+
+    The folder names the game, and the manifest's ``game`` must say the same
+    thing. Archived entries are skipped, as everywhere else.
+    """
+    root = REGISTRY_DIR / "games"
+    results: list[tuple[Path, dict[str, Any]]] = []
+    if not root.exists():
+        return results
+    for path in sorted(root.rglob("*.json")):
+        parts = path.relative_to(root).parts
+        if "archived" in parts:
+            continue
+        if len(parts) != 3:
+            raise SystemExit(
+                f"{path}: entries for other games live at registry/games/<game>/<kind>/<id>.json"
+            )
+        game_id, kind = parts[0], parts[1]
+        if game_id not in declarations:
+            raise SystemExit(f"{path}: {game_id!r} is not a game that any game package defines")
+        if kind not in OTHER_GAME_KINDS:
+            raise SystemExit(
+                f"{path}: only {', '.join(OTHER_GAME_KINDS)} entries are accepted for other games, "
+                f"not {kind!r}"
+            )
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                item = json.load(fh)
+        except (json.JSONDecodeError, OSError) as exc:
+            raise SystemExit(f"{path}: cannot read manifest: {exc}") from exc
+        if not isinstance(item, dict):
+            raise SystemExit(f"{path}: a manifest must be a JSON object")
+        if item.get("game") != game_id:
+            raise SystemExit(
+                f'{path}: "game" must be {game_id!r} to match its folder, got {item.get("game")!r}'
+            )
+        results.append((path, item))
+    return results
+
+
+def check_game_scope(
+    path: Path,
+    item: dict[str, Any],
+    declarations: dict[str, GameDeclaration],
+) -> None:
+    """Enforce which game an entry is for, and which fields that game allows.
+
+    Every failure names the file and the field. Minecraft entries must not
+    carry ``game_compatibility``; entries for another game must carry it and
+    none of the Minecraft-only fields.
+    """
+    in_games_dir = path.is_relative_to(REGISTRY_DIR / "games")
+    game = item.get("game", MINECRAFT_GAME)
+    if not in_games_dir:
+        if game != MINECRAFT_GAME:
+            raise SystemExit(
+                f'{path}: "game" is {game!r}, but entries for other games live under '
+                f"registry/games/{game}/<kind>/"
+            )
+        if "game_compatibility" in item:
+            raise SystemExit(
+                f'{path}: "game_compatibility" is only for entries of other games; '
+                "Minecraft entries use compatible_versions"
+            )
+        return
+
+    if game not in declarations:
+        raise SystemExit(f"{path}: {game!r} is not a game that any game package defines")
+    decl = declarations[game]
+    for field_name in OTHER_GAME_FORBIDDEN_FIELDS:
+        if field_name in item:
+            raise SystemExit(
+                f'{path}: "{field_name}" is Minecraft-only and cannot appear on an entry for {game}'
+            )
+    if item.get("content_type") != "mod":
+        raise SystemExit(f'{path}: an entry for {game} must have content_type "mod"')
+    sha256 = item.get("sha256")
+    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+        raise SystemExit(f"{path}: sha256 must be exactly 64 hex characters")
+    item["_manifest_path"] = str(path)
+    # Strategies first, so a Modrinth or unknown strategy is named as such
+    # rather than tripping an asset rule that only makes sense for GitHub.
+    _canonical_other_game_sources(item)
+    _validate_game_compatibility(path, item, decl)
+
+
+def _validate_game_compatibility(path: Path, item: dict[str, Any], decl: GameDeclaration) -> None:
+    where = f"{path}: game_compatibility"
+    entries = item.get("game_compatibility")
+    if not isinstance(entries, list) or not entries:
+        raise SystemExit(f"{where} must be a non-empty array")
+
+    raw_sources = item.get("download_sources")
+    if raw_sources is None:
+        raw_sources = [{"strategy": item.get("download_strategy")}]
+    if not isinstance(raw_sources, list):
+        raise SystemExit(f"{path}: download_sources must be an array")
+    # An asset picks one file out of a GitHub release, so any GitHub source
+    # needs it. A direct_hash mirror serves the same bytes and names its file
+    # in the URL, so it never takes one.
+    needs_asset = any(
+        isinstance(source, dict) and source.get("strategy") == "github_release"
+        for source in raw_sources
+    )
+
+    for index, entry in enumerate(entries):
+        label = f"{where}[{index}]"
+        if not isinstance(entry, dict):
+            raise SystemExit(f"{label} must be an object")
+        unknown = sorted(str(key) for key in set(entry) - _GAME_COMPAT_KEYS)
+        if unknown:
+            raise SystemExit(f"{label} has unknown key(s): {', '.join(unknown)}")
+
+        stores = entry.get("stores")
+        if not isinstance(stores, list) or not stores:
+            raise SystemExit(f"{label}.stores must be a non-empty array")
+        for store in stores:
+            if not isinstance(store, str) or store not in decl.stores:
+                raise SystemExit(
+                    f"{label}.stores names {store!r}, which {decl.id} does not declare "
+                    f"(declared: {', '.join(sorted(decl.stores)) or 'none'})"
+                )
+
+        versions = entry.get("game_versions")
+        if not isinstance(versions, list) or not versions:
+            raise SystemExit(f"{label}.game_versions must be a non-empty array")
+        for version in versions:
+            if not isinstance(version, str) or not _GAME_VERSION_RE.fullmatch(version):
+                raise SystemExit(
+                    f"{label}.game_versions entry {version!r} must be an exact version such as "
+                    "1.6.1179.0, or a glob on whole components such as 1.6.1170.*"
+                )
+
+        requires = entry.get("requires", [])
+        if not isinstance(requires, list):
+            raise SystemExit(f"{label}.requires must be an array")
+        for requirement in requires:
+            req_label = f"{label}.requires"
+            if not isinstance(requirement, dict):
+                raise SystemExit(f"{req_label} entries must be objects")
+            unknown = sorted(str(key) for key in set(requirement) - _GAME_REQUIRE_KEYS)
+            if unknown:
+                raise SystemExit(f"{req_label} has unknown key(s): {', '.join(unknown)}")
+            framework = requirement.get("framework")
+            if not isinstance(framework, str) or framework not in decl.frameworks:
+                raise SystemExit(
+                    f"{req_label} names framework {framework!r}, which {decl.id} does not declare "
+                    f"(declared: {', '.join(sorted(decl.frameworks)) or 'none'})"
+                )
+            if "min_version" in requirement:
+                min_version = requirement["min_version"]
+                if not isinstance(min_version, str) or not _NUMERIC_VERSION_RE.fullmatch(min_version):
+                    raise SystemExit(
+                        f"{req_label} min_version {min_version!r} must be dot-separated numbers "
+                        "such as 2.2.6"
+                    )
+
+        if needs_asset:
+            asset = entry.get("asset")
+            if not isinstance(asset, str) or not asset.strip() or "/" in asset or "\\" in asset:
+                raise SystemExit(
+                    f"{label}.asset is required for github_release: the release asset to pick, "
+                    "such as CrashLogger-*.7z"
+                )
+        elif "asset" in entry:
+            raise SystemExit(
+                f"{label}.asset is only for github_release; a direct_hash entry names its file "
+                "in the URL"
+            )
+
+
+def _canonical_other_game_sources(item: dict[str, Any]) -> list[dict[str, str]]:
+    """Validate and canonicalize the download sources of an entry for another game.
+
+    Only github_release and direct_hash are accepted. Each direct_hash source
+    gets the same URL rules as Minecraft's, without the Minecraft
+    compatible_versions requirement, which the entry does not have.
+    """
+    label = item.get("_manifest_path", item.get("id", "<unknown>"))
+    raw = item.get("download_sources")
+    if raw is None:
+        raw = [{"strategy": item.get("download_strategy"), "identifier": item.get("source_identifier", "")}]
+    if not isinstance(raw, list) or not raw:
+        raise SystemExit(f"{label}: download_sources must be a non-empty array")
+
+    sources: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise SystemExit(f"{label}: each download_sources entry must be an object")
+        strategy = entry.get("strategy")
+        if not isinstance(strategy, str) or strategy not in OTHER_GAME_STRATEGIES:
+            raise SystemExit(
+                f"{label}: strategy {strategy!r} is not available for {item.get('game')}; "
+                "use github_release or direct_hash"
+            )
+        identifier = str(entry.get("identifier", "")).strip()
+        if not identifier:
+            raise SystemExit(f"{label}: download_sources entry {entry!r} has no identifier")
+        if strategy == "direct_hash":
+            _validate_pinned_url(label, strategy, identifier)
+        elif not _OWNER_REPO_RE.fullmatch(identifier):
+            raise SystemExit(f"{label}: github_release identifier must be owner/repo, got {identifier!r}")
+        sources.append({"strategy": strategy, "identifier": identifier})
+
+    if item.get("download_sources") is not None:
+        legacy_strategy = item.get("download_strategy")
+        if legacy_strategy is not None and legacy_strategy != sources[0]["strategy"]:
+            raise SystemExit(
+                f"{label}: download_strategy {legacy_strategy!r} disagrees with "
+                f"download_sources[0].strategy {sources[0]['strategy']!r}"
+            )
+
+    item["download_sources"] = sources
+    item["download_strategy"] = sources[0]["strategy"]
+    item["source_identifier"] = sources[0]["identifier"]
+    return sources
+
+
 def default_compatible_versions(item: dict[str, Any]) -> list[dict[str, str]]:
     """Return a sensible compatibility fallback when none is provided.
 
@@ -2426,6 +2780,44 @@ def manifest_date_added(path: Path) -> str:
     # Fallback for untracked files during local development.
     mtime = path.stat().st_mtime
     return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+
+
+def insert_game_catalog_item(conn: sqlite3.Connection, item: dict[str, Any], path: Path) -> None:
+    """Insert one entry for another game into game_catalog_items.
+
+    Only what an installer needs is stored. Votes, governance, categories,
+    curator notes and changelogs are Minecraft catalog features and are not
+    written for other games yet.
+    """
+    download_sources = normalize_download_sources(item)
+    sha256 = validate_sha256(item.get("sha256"))
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO game_catalog_items (
+            id, game, name, author, content_type, download_strategy, source_identifier,
+            sha256, download_sources_json, game_compatibility_json, description,
+            license_id, page_url, icon_url, status, date_added
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+        """,
+        (
+            item["id"],
+            item["game"],
+            item["name"],
+            item.get("author"),
+            item.get("content_type", "mod"),
+            item["download_strategy"],
+            item["source_identifier"],
+            sha256,
+            json.dumps(download_sources, separators=(",", ":")),
+            json.dumps(item["game_compatibility"], separators=(",", ":")),
+            item.get("description"),
+            item.get("license"),
+            item.get("page_url"),
+            item.get("icon_url"),
+            manifest_date_added(path),
+        ),
+    )
 
 
 def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: Path) -> None:
@@ -3764,6 +4156,11 @@ def compile_registry(
     all_items: list[tuple[Path, dict[str, Any]]] = []
     for dir_name in CONTENT_DIRS:
         all_items.extend(load_json_files(REGISTRY_DIR / dir_name))
+    # Entries for other games (registry/games/<game>/mods/), §26.8. They are kept
+    # apart from the Minecraft items: hydration, governance and the Minecraft
+    # tables never see them, and they land in game_catalog_items instead.
+    game_declarations = load_game_declarations()
+    game_items = load_game_manifests(game_declarations)
 
     # Identity must be canonical before hydration and governance. Keep the
     # legacy alias readable for existing registries, but never let downstream
@@ -3779,6 +4176,28 @@ def compile_registry(
                 "%s uses deprecated top-level pack_id; migrate to id + content_type='pack'.",
                 path,
             )
+
+    # Which game each entry is for, and the fields that game allows. Runs
+    # before download sources are canonicalized so every error names its file.
+    for path, item in all_items:
+        check_game_scope(path, item, game_declarations)
+    for path, item in game_items:
+        check_game_scope(path, item, game_declarations)
+
+    # Item ids are global across games: one id, one entry.
+    seen_ids: dict[str, Path] = {}
+    for path, item in all_items + game_items:
+        item_id = str(item.get("id", ""))
+        if item_id in seen_ids:
+            raise SystemExit(f"Duplicate catalog id {item_id!r}: {seen_ids[item_id]} and {path}")
+        seen_ids[item_id] = path
+
+    for path, item in game_items:
+        try:
+            normalize_download_sources(item)
+        except SystemExit:
+            logger.error("Invalid download sources in %s", path)
+            raise
 
     # Download sources must be canonical before hydration: the hydrators pick
     # a Modrinth project id off download_strategy/modrinth_id, and both of
@@ -3915,6 +4334,9 @@ def compile_registry(
             else:
                 other_count += 1
     logger.info("Inserted %d mod(s), %d pack(s), %d other item(s)", mod_count, pack_count, other_count)
+    for path, data in game_items:
+        insert_game_catalog_item(conn, data, path)
+    logger.info("Inserted %d entr(ies) for other games", len(game_items))
 
     # Per-version changelogs — must run after registry_items so FK is satisfied.
     try:

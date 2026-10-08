@@ -268,6 +268,8 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "base", "list"],
     &["games", "base", "verify"],
     &["games", "base", "remove"],
+    &["games", "catalog"],
+    &["games", "catalog", "list"],
     &["games", "content"],
     &["games", "content", "add"],
     &["games", "content", "list"],
@@ -4159,4 +4161,127 @@ fn the_shipped_skyrim_package_gives_each_store_its_own_save_location() {
         "{:?}",
         gog.shared_dir
     );
+}
+
+// ---------------------------------------------------------------------------
+// Catalog entries for other games (MASTER_SPEC §26.8)
+// ---------------------------------------------------------------------------
+
+/// A registry database as the compiler writes it: schema 9, with the other
+/// games' entries in `game_catalog_items`. One Skyrim SE entry whose
+/// compatibility names stores, versions, SKSE and an asset.
+///
+/// Written outside the data directory and handed to the debug build through
+/// `AGORA_DEV_REGISTRY_DB`, because a cached registry without an Ed25519
+/// signature is quarantined and no test can sign one.
+fn write_catalog_fixture(db_path: &Path) {
+    let sha = "a".repeat(64);
+    let skyrim_compat = r#"[{"stores":["steam","gog"],"game_versions":["1.6.1170.*"],"requires":[{"framework":"skse","min_version":"2.2.6"}],"asset":"CrashLogger-*.7z"}]"#;
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version (version) VALUES (9);
+         CREATE TABLE game_catalog_items (
+            id TEXT PRIMARY KEY, game TEXT NOT NULL, name TEXT NOT NULL,
+            author TEXT, content_type TEXT NOT NULL, download_strategy TEXT NOT NULL,
+            source_identifier TEXT NOT NULL, sha256 TEXT NOT NULL,
+            download_sources_json TEXT NOT NULL DEFAULT '[]',
+            game_compatibility_json TEXT NOT NULL, description TEXT,
+            license_id TEXT, page_url TEXT, icon_url TEXT,
+            status TEXT NOT NULL DEFAULT 'active', date_added TEXT
+         );
+         INSERT INTO game_catalog_items (id, game, name, content_type, download_strategy,
+            source_identifier, sha256, download_sources_json, game_compatibility_json, license_id)
+         VALUES ('crash-logger', 'skyrim-se', 'CrashLogger', 'mod', 'github_release',
+            'example-author/crash-logger', '{sha}',
+            '[{{\"strategy\":\"github_release\",\"identifier\":\"example-author/crash-logger\"}}]',
+            '{}', 'MIT');",
+        skyrim_compat.replace('\'', "''")
+    ))
+    .unwrap();
+}
+
+/// Run agora against the fixture registry, with `--json` when asked.
+fn run_agora_with_catalog(
+    data_dir: &Path,
+    catalog_db: &Path,
+    json: bool,
+    args: &[&str],
+) -> std::process::Output {
+    let mut full_args: Vec<&str> = Vec::new();
+    if json {
+        full_args.push("--json");
+    }
+    full_args.extend_from_slice(args);
+    let mut cmd = agora_command(data_dir, &full_args);
+    cmd.env("AGORA_DEV_REGISTRY_DB", catalog_db);
+    run_command(cmd, &full_args)
+}
+
+#[test]
+fn games_catalog_list_shows_the_other_game_entries_human_and_json() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let catalog = tempfile::tempdir().unwrap();
+    let catalog_db = catalog.path().join("registry.db");
+    write_catalog_fixture(&catalog_db);
+
+    let output = run_agora_with_catalog(
+        &data_dir,
+        &catalog_db,
+        false,
+        &["games", "catalog", "list", "skyrim-se"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("crash-logger"), "{stdout}");
+    assert!(stdout.contains("steam/gog"), "{stdout}");
+    assert!(
+        !stdout.contains("sodium"),
+        "Minecraft entries are not listed for Skyrim:\n{stdout}"
+    );
+
+    let json_output = run_agora_with_catalog(
+        &data_dir,
+        &catalog_db,
+        true,
+        &["games", "catalog", "list", "skyrim-se"],
+    );
+    assert!(
+        json_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let entries: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    let entries = entries.as_array().expect("a JSON array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"], "crash-logger");
+    assert_eq!(
+        entries[0]["game_compatibility"][0]["asset"],
+        "CrashLogger-*.7z"
+    );
+    assert_eq!(
+        entries[0]["game_compatibility"][0]["requires"][0]["min_version"],
+        "2.2.6"
+    );
+}
+
+#[test]
+fn games_catalog_list_refuses_minecraft_and_unknown_games() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let catalog = tempfile::tempdir().unwrap();
+    let catalog_db = catalog.path().join("registry.db");
+    write_catalog_fixture(&catalog_db);
+    for game in ["minecraft", "no-such-game"] {
+        let output = run_agora_with_catalog(
+            &data_dir,
+            &catalog_db,
+            false,
+            &["games", "catalog", "list", game],
+        );
+        assert!(!output.status.success(), "{game} should be refused");
+    }
 }

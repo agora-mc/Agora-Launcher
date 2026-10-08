@@ -156,7 +156,18 @@ mod tests {
 
         // Empty lists
         assert!(game.content_rules.is_empty());
-        assert!(game.framework_ids.is_empty());
+        // SKSE is the one framework Skyrim SE declares (MASTER_SPEC §26.11).
+        assert_eq!(
+            game.framework_ids,
+            vec![agora_game_api::FrameworkId::new("skse").unwrap()]
+        );
+        assert_eq!(def.frameworks.len(), 1);
+        assert_eq!(
+            def.frameworks[0].id,
+            agora_game_api::FrameworkId::new("skse").unwrap()
+        );
+        assert_eq!(def.frameworks[0].game, GameId::new("skyrim-se").unwrap());
+        assert_eq!(def.frameworks[0].name, "Skyrim Script Extender");
         assert!(game.tool_ids.is_empty());
         assert!(game.log_paths.is_empty());
         assert!(game.crash_paths.is_empty());

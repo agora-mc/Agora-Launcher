@@ -70,7 +70,9 @@
       "native_code_patterns": [
         "Data/SKSE/Plugins/*.dll"
       ],
-      "framework_ids": [],
+      "framework_ids": [
+        "skse"
+      ],
       "tool_ids": [],
       "launch": {
         "executable": {
@@ -302,6 +304,17 @@
       ]
     }
   ],
-  "frameworks": [],
+  "frameworks": [
+    {
+      "id": "skse",
+      "game": "skyrim-se",
+      "name": "Skyrim Script Extender",
+      "version": "2.2.6",
+      "supported_runtimes": [],
+      "required_frameworks": [],
+      "content": [],
+      "launch": null
+    }
+  ],
   "tools": []
 }

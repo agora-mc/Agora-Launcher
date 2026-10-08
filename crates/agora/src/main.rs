@@ -297,6 +297,11 @@ enum GamesCmd {
         #[command(subcommand)]
         action: ContentCmd,
     },
+    /// Browse the catalog entries for games other than Minecraft.
+    Catalog {
+        #[command(subcommand)]
+        action: CatalogCmd,
+    },
     /// Manage game instances.
     Instance {
         #[command(subcommand)]
@@ -611,6 +616,15 @@ enum BaseCmd {
     Remove {
         /// Base ID to remove.
         base_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum CatalogCmd {
+    /// List the catalog entries for one game, such as skyrim-se.
+    List {
+        /// The game id, as `agora games list` shows it.
+        game: String,
     },
 }
 
@@ -4861,6 +4875,52 @@ async fn run_command(
                         Err(e) => {
                             anyhow::bail!("{e}");
                         }
+                    }
+                }
+            },
+            GamesCmd::Catalog { action } => match action {
+                CatalogCmd::List { game } => {
+                    if game == "minecraft" {
+                        anyhow::bail!(
+                            "Minecraft's catalog is browsed with 'agora mods search', not here."
+                        );
+                    }
+                    let known = agora_game_api::GameId::new(&game)
+                        .ok()
+                        .and_then(|id| ctx.games.game(&id))
+                        .is_some();
+                    if !known {
+                        anyhow::bail!(
+                            "Unknown game '{game}'. 'agora games list' shows the supported games."
+                        );
+                    }
+                    let svc = RegistryService::new(ctx.clone());
+                    let entries = svc.list_game_items(&game)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&entries)?);
+                    } else {
+                        let rows: Vec<Vec<String>> = entries
+                            .iter()
+                            .map(|entry| {
+                                vec![
+                                    entry.id.clone(),
+                                    entry.name.clone(),
+                                    entry
+                                        .game_compatibility
+                                        .iter()
+                                        .map(|compat| compat.stores.join("/"))
+                                        .collect::<Vec<_>>()
+                                        .join("; "),
+                                    entry
+                                        .game_compatibility
+                                        .iter()
+                                        .map(|compat| compat.game_versions.join(","))
+                                        .collect::<Vec<_>>()
+                                        .join("; "),
+                                ]
+                            })
+                            .collect();
+                        print_table(&["ID", "Name", "Stores", "Game versions"], &rows);
                     }
                 }
             },

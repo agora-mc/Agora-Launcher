@@ -166,6 +166,7 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 |---|---|
 | `agora games discover` | List game installs across supported stores |
 | `agora games list` | List supported games and their identified installs |
+| `agora games catalog list <game> [--json]` | List the curated catalog entries for one game other than Minecraft, such as `skyrim-se`, with their stores, game versions and frameworks (MASTER_SPEC §26.8) |
 | `agora games base build <install-id> [--mode linked\|copied]` | Build a pinned base from an identified install (default mode: linked) |
 | `agora games base list` | List all pinned bases and their availability |
 | `agora games base verify <base-id> [--full]` | Verify base integrity (quick cheap check by default, full hashes all files) |

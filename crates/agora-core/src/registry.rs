@@ -221,6 +221,12 @@ impl RegistryService {
         crate::db::registry_connection(&path).map_err(|_| LauncherError::RegistryMissing)
     }
 
+    /// Catalog entries for another game, with their compatibility parsed.
+    pub fn list_game_items(&self, game: &str) -> LauncherResult<Vec<GameCatalogItem>> {
+        let conn = self.connection()?;
+        list_game_items(&conn, game)
+    }
+
     /// Fetch a single registry item by ID.
     pub fn get_item_by_id(&self, item_id: &str) -> LauncherResult<Option<RegistryItem>> {
         let conn = self.connection()?;
@@ -656,6 +662,138 @@ pub fn check_dev_registry_env_set() -> bool {
     {
         false
     }
+}
+
+// ---------------------------------------------------------------------------
+// Catalog entries for other games (MASTER_SPEC §26.8)
+// ---------------------------------------------------------------------------
+
+/// One compatibility entry of an entry for another game, as the compiler wrote it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameCompatibility {
+    pub stores: Vec<String>,
+    /// Exact game versions, or `*` globs on whole dot-separated components.
+    pub game_versions: Vec<String>,
+    #[serde(default)]
+    pub requires: Vec<FrameworkRequirement>,
+    /// The release asset to pick. Present only for `github_release` entries.
+    #[serde(default)]
+    pub asset: Option<String>,
+}
+
+/// A framework an entry needs, with an optional minimum version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameworkRequirement {
+    pub framework: String,
+    #[serde(default)]
+    pub min_version: Option<String>,
+}
+
+/// An entry for another game, read from `game_catalog_items`.
+///
+/// Only what an installer needs is carried. Votes, governance, categories and
+/// curator notes are not stored for other games yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameCatalogItem {
+    pub id: String,
+    pub game: String,
+    pub name: String,
+    pub author: Option<String>,
+    pub content_type: String,
+    /// The preferred source's strategy, mirrored from `download_sources[0]`.
+    pub download_strategy: String,
+    pub source_identifier: String,
+    pub sha256: String,
+    /// Ordered download sources, best first.
+    pub download_sources: Vec<DownloadSource>,
+    pub game_compatibility: Vec<GameCompatibility>,
+    pub description: Option<String>,
+    pub license_id: Option<String>,
+    pub page_url: Option<String>,
+    pub icon_url: Option<String>,
+    pub status: String,
+    pub date_added: Option<String>,
+}
+
+/// Whether the registry has the `game_catalog_items` table. A registry without
+/// it, which every registry before this table was, has no other games.
+fn has_game_catalog(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'game_catalog_items'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
+/// The catalog entries for `game`, by name. `"minecraft"` yields nothing here,
+/// because Minecraft has its own browse path, and so does a registry without
+/// the table.
+pub fn list_game_items(conn: &Connection, game: &str) -> LauncherResult<Vec<GameCatalogItem>> {
+    if game == "minecraft" || !has_game_catalog(conn) {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, game, name, author, content_type, download_strategy,
+                    source_identifier, sha256, download_sources_json,
+                    game_compatibility_json, description, license_id, page_url,
+                    icon_url, status, date_added
+             FROM game_catalog_items WHERE game = ?1 ORDER BY name ASC, id ASC",
+        )
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_INVALID_QUERY".to_string(),
+            message: e.to_string(),
+        })?;
+    let rows = stmt
+        .query_map([game], |row| {
+            Ok((
+                GameCatalogItem {
+                    id: row.get(0)?,
+                    game: row.get(1)?,
+                    name: row.get(2)?,
+                    author: row.get(3)?,
+                    content_type: row.get(4)?,
+                    download_strategy: row.get(5)?,
+                    source_identifier: row.get(6)?,
+                    sha256: row.get(7)?,
+                    download_sources: Vec::new(),
+                    game_compatibility: Vec::new(),
+                    description: row.get(10)?,
+                    license_id: row.get(11)?,
+                    page_url: row.get(12)?,
+                    icon_url: row.get(13)?,
+                    status: row.get(14)?,
+                    date_added: row.get(15)?,
+                },
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        })
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_INVALID_QUERY".to_string(),
+            message: e.to_string(),
+        })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (mut item, sources_json, compatibility_json) =
+            row.map_err(|e| LauncherError::Generic {
+                code: "ERR_INVALID_QUERY".to_string(),
+                message: e.to_string(),
+            })?;
+        let invalid = |column: &str, error: serde_json::Error| LauncherError::Generic {
+            code: "ERR_REGISTRY_GAME_CATALOG".to_string(),
+            message: format!("{}: {column} is not valid: {error}", item.id),
+        };
+        item.download_sources =
+            serde_json::from_str(&sources_json).map_err(|e| invalid("download_sources_json", e))?;
+        item.game_compatibility = serde_json::from_str(&compatibility_json)
+            .map_err(|e| invalid("game_compatibility_json", e))?;
+        out.push(item);
+    }
+    Ok(out)
 }
 
 /// Canonical column list for `registry_items` selects that feed `row_to_item`.
@@ -3691,5 +3829,185 @@ mod tests {
         // Graceful degradation: missing registry → false
         let result = svc.is_under_review("anything").unwrap();
         assert!(!result);
+    }
+}
+
+#[cfg(test)]
+mod game_catalog_tests {
+    //! Catalog entries for other games (MASTER_SPEC §26.8) live in their own
+    //! table. Minecraft's readers never see that table, and a registry without
+    //! it has no other games.
+    use super::*;
+
+    const SKYRIM_COMPAT: &str = r#"[{"stores":["steam","gog"],"game_versions":["1.6.1170.*","1.6.1179.0"],"requires":[{"framework":"skse","min_version":"2.2.6"}],"asset":"CrashLogger-*.7z"}]"#;
+    const SKYRIM_DIRECT_COMPAT: &str = r#"[{"stores":["steam"],"game_versions":["1.6.1170.0"]}]"#;
+
+    fn registry_with_catalog(with_table: bool) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE registry_items (
+                id TEXT PRIMARY KEY, name TEXT, content_type TEXT,
+                download_strategy TEXT, source_identifier TEXT, sha256 TEXT,
+                upvotes INTEGER, downvotes INTEGER, net_score INTEGER,
+                velocity REAL, status TEXT, is_immune INTEGER,
+                immunity_reason TEXT, allow_comments INTEGER, icon_url TEXT,
+                gallery_urls_json TEXT, date_added TEXT,
+                compatible_versions_json TEXT, description TEXT,
+                body_markdown TEXT, page_url TEXT, license_id TEXT,
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
+            );
+            CREATE TABLE categories (id TEXT PRIMARY KEY, display_name TEXT, is_community INTEGER);
+            CREATE TABLE item_categories (item_id TEXT, category_id TEXT);
+            CREATE TABLE curator_reviews (item_id TEXT PRIMARY KEY, curator_note TEXT, top_reviews_json TEXT);",
+        )
+        .unwrap();
+        if with_table {
+            conn.execute_batch(
+                "CREATE TABLE game_catalog_items (
+                    id TEXT PRIMARY KEY, game TEXT NOT NULL, name TEXT NOT NULL,
+                    author TEXT, content_type TEXT NOT NULL, download_strategy TEXT NOT NULL,
+                    source_identifier TEXT NOT NULL, sha256 TEXT NOT NULL,
+                    download_sources_json TEXT NOT NULL DEFAULT '[]',
+                    game_compatibility_json TEXT NOT NULL, description TEXT,
+                    license_id TEXT, page_url TEXT, icon_url TEXT,
+                    status TEXT NOT NULL DEFAULT 'active', date_added TEXT
+                );",
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn insert_minecraft(conn: &Connection, id: &str, net: i64) {
+        conn.execute(
+            "INSERT INTO registry_items (id, name, content_type, download_strategy, source_identifier,
+                sha256, upvotes, downvotes, net_score, velocity, status, is_immune, allow_comments,
+                compatible_versions_json, download_sources_json)
+             VALUES (?1, ?1, 'mod', 'github_release', 'owner/repo', ?2, 0, 0, ?3, 0.0, 'active', 0, 1,
+                '[{\"mc_version\":\"1.21\",\"loader\":\"fabric\",\"mod_version\":\"1.0\"}]',
+                '[{\"strategy\":\"github_release\",\"identifier\":\"owner/repo\"}]')",
+            rusqlite::params![id, "a".repeat(64), net],
+        )
+        .unwrap();
+    }
+
+    fn insert_other(conn: &Connection, id: &str, game: &str, compat: &str) {
+        conn.execute(
+            "INSERT INTO game_catalog_items (id, game, name, content_type, download_strategy,
+                source_identifier, sha256, download_sources_json, game_compatibility_json, license_id)
+             VALUES (?1, ?2, ?1, 'mod', 'github_release', 'owner/repo', ?3,
+                '[{\"strategy\":\"github_release\",\"identifier\":\"owner/repo\"}]', ?4, 'MIT')",
+            rusqlite::params![id, game, "b".repeat(64), compat],
+        )
+        .unwrap();
+    }
+
+    fn seeded() -> Connection {
+        let conn = registry_with_catalog(true);
+        insert_minecraft(&conn, "sodium", 9);
+        insert_other(&conn, "crash-logger", "skyrim-se", SKYRIM_COMPAT);
+        insert_other(&conn, "skyrim-archive", "skyrim-se", SKYRIM_DIRECT_COMPAT);
+        conn
+    }
+
+    fn every_strategy() -> Vec<String> {
+        ["github_release", "direct_hash", "modrinth_id"]
+            .iter()
+            .map(|strategy| strategy.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn list_game_items_returns_the_skyrim_entries_with_compatibility_parsed() {
+        let conn = seeded();
+        let items = list_game_items(&conn, "skyrim-se").unwrap();
+        let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["crash-logger", "skyrim-archive"]);
+        assert!(items
+            .iter()
+            .all(|item| item.game == "skyrim-se" && item.status == "active"));
+
+        let logger = &items[0];
+        assert_eq!(logger.download_sources[0].strategy, "github_release");
+        let compat = &logger.game_compatibility[0];
+        assert_eq!(compat.stores, vec!["steam", "gog"]);
+        assert_eq!(compat.game_versions, vec!["1.6.1170.*", "1.6.1179.0"]);
+        assert_eq!(
+            compat.requires,
+            vec![FrameworkRequirement {
+                framework: "skse".into(),
+                min_version: Some("2.2.6".into()),
+            }]
+        );
+        assert_eq!(compat.asset.as_deref(), Some("CrashLogger-*.7z"));
+        assert_eq!(items[1].game_compatibility[0].asset, None);
+    }
+
+    #[test]
+    fn list_game_items_is_empty_for_minecraft_and_for_games_with_no_entries() {
+        let conn = seeded();
+        assert!(list_game_items(&conn, "minecraft").unwrap().is_empty());
+        assert!(list_game_items(&conn, "valheim").unwrap().is_empty());
+    }
+
+    #[test]
+    fn minecraft_readers_never_see_an_other_game_entry() {
+        let conn = seeded();
+        let browsed = browse_items(
+            &conn,
+            None,
+            None,
+            &SortOption::NetScore,
+            &every_strategy(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
+        let ids: Vec<&str> = browsed.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["sodium"]);
+        assert!(get_item_by_id(&conn, "crash-logger").unwrap().is_none());
+        assert!(get_item_by_id(&conn, "sodium").unwrap().is_some());
+        let found =
+            get_items_by_ids(&conn, &["crash-logger".to_string(), "sodium".to_string()]).unwrap();
+        assert_eq!(
+            found.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["sodium"]
+        );
+    }
+
+    #[test]
+    fn a_registry_without_the_table_has_no_other_games_and_still_browses() {
+        let conn = registry_with_catalog(false);
+        insert_minecraft(&conn, "sodium", 9);
+        assert!(list_game_items(&conn, "skyrim-se").unwrap().is_empty());
+        let browsed = browse_items(
+            &conn,
+            None,
+            None,
+            &SortOption::NetScore,
+            &every_strategy(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
+        assert_eq!(browsed.len(), 1);
+    }
+
+    #[test]
+    fn unreadable_game_compatibility_is_a_named_error() {
+        let conn = registry_with_catalog(true);
+        insert_other(&conn, "broken", "skyrim-se", "{not json");
+        match list_game_items(&conn, "skyrim-se") {
+            Err(LauncherError::Generic { code, message }) => {
+                assert_eq!(code, "ERR_REGISTRY_GAME_CATALOG");
+                assert!(message.starts_with("broken:"), "{message}");
+            }
+            other => panic!("expected a named error, got {other:?}"),
+        }
     }
 }

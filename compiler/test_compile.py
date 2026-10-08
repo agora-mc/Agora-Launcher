@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -1460,6 +1461,455 @@ class TestLoadKnownConflicts(unittest.TestCase):
              "version_grammar": "Maven", "a_versions": ["[1.0,2.0)"]},
         ])
         self.assertEqual(rows[0][4], "maven")
+
+
+# ---------------------------------------------------------------------------
+# Catalog entries for other games (MASTER_SPEC §26.8, REGISTRY_CURATION_REFERENCE)
+# ---------------------------------------------------------------------------
+
+# A stand-in for a game package. The real Skyrim package declares no frameworks
+# yet, so the fixture declares SKSE to exercise a satisfiable requirement.
+FIXTURE_PACKAGE = {
+    "id": "agora.test-creation",
+    "games": [
+        {
+            "id": "skyrim-se",
+            "stores": [{"store": "steam", "product": "1"}, {"store": "gog", "product": "2"}],
+            "framework_ids": [],
+        }
+    ],
+    "frameworks": [
+        {"id": "skse", "game": "skyrim-se", "name": "SKSE", "version": "2.2.6"},
+    ],
+}
+
+
+def _skyrim_github_entry(item_id="crash-logger"):
+    return {
+        "id": item_id,
+        "name": "CrashLogger",
+        "content_type": "mod",
+        "author": "Example",
+        "license": "MIT",
+        "game": "skyrim-se",
+        "download_strategy": "github_release",
+        "source_identifier": "example-author/crash-logger",
+        "sha256": "a" * 64,
+        "game_compatibility": [
+            {
+                "stores": ["steam", "gog"],
+                "game_versions": ["1.6.1170.*", "1.6.1179.0"],
+                "requires": [{"framework": "skse", "min_version": "2.2.6"}],
+                "asset": "CrashLogger-*.7z",
+            }
+        ],
+        "curator_note": "Logs crashes.",
+        "base_categories": ["tools"],
+    }
+
+
+def _skyrim_direct_entry(item_id="skyrim-archive-mod", url="https://example.com/files/Mod-1.0.zip"):
+    return {
+        "id": item_id,
+        "name": "Archive Mod",
+        "content_type": "mod",
+        "author": "Example",
+        "license": "LicenseRef-Proprietary",
+        "game": "skyrim-se",
+        "download_strategy": "direct_hash",
+        "source_identifier": url,
+        "sha256": "b" * 64,
+        "game_compatibility": [{"stores": ["steam"], "game_versions": ["1.6.1170.0"]}],
+        "curator_note": "",
+        "base_categories": ["content"],
+    }
+
+
+def _minecraft_direct_entry(item_id="minecraft-pinned-mod"):
+    return {
+        "id": item_id,
+        "name": "Pinned Mod",
+        "content_type": "mod",
+        "author": "Example",
+        "license": "LicenseRef-Proprietary",
+        "download_strategy": "direct_hash",
+        "source_identifier": "https://example.com/files/pinned-1.0.0.jar",
+        "sha256": "c" * 64,
+        "compatible_versions": [
+            {"mc_version": "1.21", "loader": "fabric", "mod_version": "1.0.0"},
+        ],
+        "curator_note": "",
+        "base_categories": ["content"],
+    }
+
+
+class OtherGameDeclarationTests(unittest.TestCase):
+    """What the game packages declare, read from their JSON."""
+
+    def test_real_packages_declare_skyrim_and_the_tracer_games(self):
+        declared = _compile.load_game_declarations()
+        self.assertEqual(declared["skyrim-se"].stores, frozenset({"steam", "gog"}))
+        self.assertEqual(declared["valheim"].stores, frozenset({"steam"}))
+        self.assertEqual(declared["witcher-3"].stores, frozenset({"gog"}))
+        self.assertNotIn("minecraft", declared)
+
+    def test_minecraft_cannot_be_declared_by_a_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp) / "package.json"
+            package.write_text(json.dumps({"games": [{"id": "minecraft", "stores": []}]}), encoding="utf-8")
+            with self.assertRaises(SystemExit) as caught:
+                _compile.load_game_declarations([package])
+        self.assertIn("minecraft", str(caught.exception.code))
+
+    def test_a_game_declared_twice_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp) / "a.json", Path(tmp) / "b.json"
+            game = {"games": [{"id": "skyrim-se", "stores": []}]}
+            first.write_text(json.dumps(game), encoding="utf-8")
+            second.write_text(json.dumps(game), encoding="utf-8")
+            with self.assertRaises(SystemExit) as caught:
+                _compile.load_game_declarations([first, second])
+        self.assertIn("skyrim-se", str(caught.exception.code))
+
+
+class OtherGameEntryTests(unittest.TestCase):
+    """Entries for other games compile through the real pipeline. Every rule they
+    break is refused, and the refusal names the file and the field."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.registry = self.tmp / "registry"
+        self.registry.mkdir()
+        self.package = self.tmp / "package.json"
+        self.package.write_text(json.dumps(FIXTURE_PACKAGE), encoding="utf-8")
+        patches = [
+            mock.patch.object(_compile, "REGISTRY_DIR", self.registry),
+            mock.patch.object(_compile, "game_package_paths", lambda: [self.package]),
+            mock.patch.object(_compile, "_hydrate_modrinth_metadata", lambda items: None),
+            mock.patch.object(_compile, "_hydrate_modrinth_versions", lambda items: None),
+            mock.patch.object(_compile, "_hydrate_version_changelogs", lambda items: []),
+            mock.patch.object(_compile, "_load_github_token", lambda: None),
+            mock.patch.object(
+                _compile, "manifest_date_added", lambda path: "2026-01-01T00:00:00+00:00"
+            ),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def reset_registry(self):
+        shutil.rmtree(self.registry)
+        self.registry.mkdir()
+
+    def write(self, rel, data):
+        path = self.registry / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def skyrim_entry_at(self, data, rel=None):
+        return self.write(rel or f"games/skyrim-se/mods/{data['id']}.json", data)
+
+    def compile(self):
+        out = self.tmp / "out" / "registry.db"
+        _compile.compile_registry(out, skip_sign=True, no_governance_write=True, governance_mode_str="off")
+        return out
+
+    def _rows_of(self, out, table):
+        conn = sqlite3.connect(str(out))
+        conn.row_factory = sqlite3.Row
+        try:
+            return {row["id"]: dict(row) for row in conn.execute(f"SELECT * FROM {table}")}
+        finally:
+            conn.close()
+
+    def game_rows(self, out):
+        """Entries for other games, from game_catalog_items."""
+        return self._rows_of(out, "game_catalog_items")
+
+    def minecraft_rows(self, out):
+        """Minecraft entries, from registry_items."""
+        return self._rows_of(out, "registry_items")
+
+    def assertRefused(self, *needles):
+        """The compile must exit. The refusal, whether raised with its message or
+        logged first (the Minecraft URL checks log then exit 1), must name each needle."""
+        logged = []
+        handler = logging.Handler(level=logging.ERROR)
+        handler.emit = lambda record: logged.append(record.getMessage())
+        compiler_logger = logging.getLogger("compiler")
+        compiler_logger.addHandler(handler)
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                self.compile()
+        finally:
+            compiler_logger.removeHandler(handler)
+        message = " ".join([str(caught.exception.code), *logged])
+        for needle in needles:
+            self.assertIn(needle, message)
+        return message
+
+    # -- valid entries -------------------------------------------------------
+
+    def test_valid_github_and_direct_hash_entries_compile(self):
+        self.skyrim_entry_at(_skyrim_github_entry())
+        self.skyrim_entry_at(_skyrim_direct_entry())
+        out = self.compile()
+        rows = self.game_rows(out)
+
+        github = rows["crash-logger"]
+        self.assertEqual(github["game"], "skyrim-se")
+        self.assertEqual(github["download_strategy"], "github_release")
+        self.assertEqual(github["status"], "active")
+        self.assertEqual(github["license_id"], "MIT")
+        compat = json.loads(github["game_compatibility_json"])
+        self.assertEqual(compat[0]["asset"], "CrashLogger-*.7z")
+        self.assertEqual(compat[0]["requires"], [{"framework": "skse", "min_version": "2.2.6"}])
+        self.assertEqual(
+            json.loads(github["download_sources_json"]),
+            [{"strategy": "github_release", "identifier": "example-author/crash-logger"}],
+        )
+
+        direct = rows["skyrim-archive-mod"]
+        self.assertEqual(direct["game"], "skyrim-se")
+        self.assertEqual(direct["download_strategy"], "direct_hash")
+        self.assertNotIn("asset", json.loads(direct["game_compatibility_json"])[0])
+
+    def test_other_game_entries_stay_out_of_registry_items(self):
+        self.skyrim_entry_at(_skyrim_github_entry())
+        out = self.compile()
+        self.assertNotIn("crash-logger", self.minecraft_rows(out))
+        conn = sqlite3.connect(str(out))
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(registry_items)")}
+        finally:
+            conn.close()
+        self.assertNotIn("game", columns)
+        self.assertNotIn("game_compatibility_json", columns)
+
+    def test_archive_names_are_accepted_for_direct_hash(self):
+        for index, name in enumerate(("Mod-1.0.7z", "Mod-1.0.zip", "Mod-1.0.rar")):
+            self.skyrim_entry_at(
+                _skyrim_direct_entry(item_id=f"archive-{index}", url=f"https://example.com/files/{name}")
+            )
+        rows = self.game_rows(self.compile())
+        self.assertEqual({"archive-0", "archive-1", "archive-2"}, set(rows))
+
+    def test_minecraft_entry_may_name_its_game(self):
+        entry = _minecraft_direct_entry()
+        entry["game"] = "minecraft"
+        self.write("mods/minecraft-pinned-mod.json", entry)
+        out = self.compile()
+        self.assertIn("minecraft-pinned-mod", self.minecraft_rows(out))
+        self.assertNotIn("minecraft-pinned-mod", self.game_rows(out))
+
+    def test_compiled_schema_version_is_the_compiler_constant(self):
+        self.skyrim_entry_at(_skyrim_github_entry())
+        conn = sqlite3.connect(str(self.compile()))
+        try:
+            version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(version, _compile.SCHEMA_VERSION)
+        # Schema 9 stays: registry_items is unchanged, and the new table is additive.
+        self.assertEqual(_compile.SCHEMA_VERSION, 9)
+
+    # -- folder and game ----------------------------------------------------
+
+    def test_an_entry_whose_game_disagrees_with_its_folder_is_refused(self):
+        entry = _skyrim_github_entry()
+        entry["game"] = "valheim"
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", '"game" must be', "skyrim-se")
+
+    def test_a_folder_for_an_undeclared_game_is_refused(self):
+        entry = _skyrim_github_entry()
+        entry["game"] = "not-a-game"
+        self.write("games/not-a-game/mods/crash-logger.json", entry)
+        self.assertRefused("crash-logger.json", "not-a-game")
+
+    def test_an_other_game_entry_outside_the_games_folder_is_refused(self):
+        self.write("mods/crash-logger.json", _skyrim_github_entry())
+        self.assertRefused("crash-logger.json", '"game" is', "registry/games/skyrim-se")
+
+    def test_a_minecraft_folder_entry_may_not_carry_game_compatibility(self):
+        entry = _minecraft_direct_entry()
+        entry["game_compatibility"] = [{"stores": ["steam"], "game_versions": ["1.0"]}]
+        self.write("mods/minecraft-pinned-mod.json", entry)
+        self.assertRefused("minecraft-pinned-mod.json", '"game_compatibility"')
+
+    def test_an_other_game_packs_folder_is_refused(self):
+        self.write("games/skyrim-se/packs/crash-logger.json", _skyrim_github_entry())
+        self.assertRefused("packs", "only mods entries")
+
+    # -- compatibility ------------------------------------------------------
+
+    def test_unknown_store_is_refused(self):
+        entry = _skyrim_github_entry()
+        entry["game_compatibility"][0]["stores"] = ["epic"]
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "game_compatibility[0].stores", "'epic'")
+
+    def test_unknown_framework_is_refused(self):
+        entry = _skyrim_github_entry()
+        entry["game_compatibility"][0]["requires"] = [{"framework": "nvse", "min_version": "1.0"}]
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "requires", "'nvse'")
+
+    def test_empty_arrays_are_refused(self):
+        cases = {
+            "game_compatibility": lambda e: e.update(game_compatibility=[]),
+            "stores": lambda e: e["game_compatibility"][0].update(stores=[]),
+            "game_versions": lambda e: e["game_compatibility"][0].update(game_versions=[]),
+        }
+        for field_name, break_entry in cases.items():
+            with self.subTest(field=field_name):
+                self.reset_registry()
+                entry = _skyrim_github_entry()
+                break_entry(entry)
+                self.skyrim_entry_at(entry)
+                self.assertRefused("crash-logger.json", field_name)
+
+    def test_non_numeric_min_version_is_refused(self):
+        entry = _skyrim_github_entry()
+        entry["game_compatibility"][0]["requires"] = [{"framework": "skse", "min_version": "2.2.6b"}]
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "min_version", "'2.2.6b'")
+
+    def test_game_version_globs_must_cover_whole_components(self):
+        for bad in ("1.6.11*", "1.6.1170.0-1", "1.6.1170.x", ""):
+            with self.subTest(version=bad):
+                self.reset_registry()
+                entry = _skyrim_github_entry()
+                entry["game_compatibility"][0]["game_versions"] = [bad]
+                self.skyrim_entry_at(entry)
+                self.assertRefused("crash-logger.json", "game_versions")
+
+    def test_a_github_entry_needs_an_asset(self):
+        entry = _skyrim_github_entry()
+        del entry["game_compatibility"][0]["asset"]
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "game_compatibility[0].asset", "required")
+
+    def test_a_direct_hash_entry_may_not_name_an_asset(self):
+        entry = _skyrim_direct_entry()
+        entry["game_compatibility"][0]["asset"] = "Mod-*.zip"
+        self.skyrim_entry_at(entry)
+        self.assertRefused("skyrim-archive-mod.json", "game_compatibility[0].asset", "only for github_release")
+
+    def test_unknown_compatibility_keys_are_refused(self):
+        entry = _skyrim_github_entry()
+        entry["game_compatibility"][0]["game_version"] = ["1.6.1170.0"]
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "game_version")
+
+    # -- Minecraft-only fields and strategies ---------------------------------
+
+    def test_minecraft_only_fields_are_refused_on_other_game_entries(self):
+        extras = {
+            "compatible_versions": [{"mc_version": "1.21", "loader": "fabric", "mod_version": "1.0"}],
+            "mod_dependencies": {"required": ["fabric-api"]},
+            "package_signatures": ["com.example.mod"],
+            "mod_jar_aliases": ["example"],
+            "modrinth_id": "AAAAAAAA",
+        }
+        for field_name, value in extras.items():
+            with self.subTest(field=field_name):
+                self.reset_registry()
+                entry = _skyrim_github_entry()
+                entry[field_name] = value
+                self.skyrim_entry_at(entry)
+                self.assertRefused("crash-logger.json", f'"{field_name}"')
+
+    def test_modrinth_strategy_is_refused_for_another_game(self):
+        entry = _skyrim_github_entry()
+        entry["download_strategy"] = "modrinth_id"
+        entry["source_identifier"] = "AAAAAAAA"
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "'modrinth_id'", "github_release or direct_hash")
+
+    def test_a_github_identifier_must_be_owner_and_repo(self):
+        entry = _skyrim_github_entry()
+        entry["source_identifier"] = "just-a-name"
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "owner/repo")
+
+    def test_a_direct_hash_url_must_be_https(self):
+        self.skyrim_entry_at(_skyrim_direct_entry(url="http://example.com/files/Mod-1.0.zip"))
+        self.assertRefused("skyrim-archive-mod.json", "https://")
+
+    def test_sha256_is_required_on_other_game_entries(self):
+        entry = _skyrim_github_entry()
+        entry["sha256"] = "not-a-hash"
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "sha256")
+
+    # -- identity -----------------------------------------------------------
+
+    def test_an_id_used_by_two_games_is_refused_naming_both_files(self):
+        self.write("mods/shared-id.json", _minecraft_direct_entry("shared-id"))
+        self.skyrim_entry_at(_skyrim_github_entry("shared-id"))
+        message = self.assertRefused("Duplicate catalog id 'shared-id'", "shared-id.json")
+        self.assertEqual(message.count("shared-id.json"), 2)
+
+
+class RealSkyrimPackageEntryTests(unittest.TestCase):
+    """The brief's SKSE example compiles against the real Skyrim package, which
+    declares SKSE (MASTER_SPEC §26.8). Nothing here patches the game packages."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.registry = self.tmp / "registry"
+        self.registry.mkdir()
+        patches = [
+            mock.patch.object(_compile, "REGISTRY_DIR", self.registry),
+            mock.patch.object(_compile, "_hydrate_modrinth_metadata", lambda items: None),
+            mock.patch.object(_compile, "_hydrate_modrinth_versions", lambda items: None),
+            mock.patch.object(_compile, "_hydrate_version_changelogs", lambda items: []),
+            mock.patch.object(_compile, "_load_github_token", lambda: None),
+            mock.patch.object(
+                _compile, "manifest_date_added", lambda path: "2026-01-01T00:00:00+00:00"
+            ),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def write_entry(self, data):
+        path = self.registry / "games" / "skyrim-se" / "mods" / f"{data['id']}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def compile_rows(self):
+        out = self.tmp / "out" / "registry.db"
+        _compile.compile_registry(out, skip_sign=True, no_governance_write=True, governance_mode_str="off")
+        conn = sqlite3.connect(str(out))
+        conn.row_factory = sqlite3.Row
+        try:
+            return {row["id"]: dict(row) for row in conn.execute("SELECT * FROM game_catalog_items")}
+        finally:
+            conn.close()
+
+    def test_the_real_package_declares_skse(self):
+        declared = _compile.load_game_declarations()
+        self.assertIn("skse", declared["skyrim-se"].frameworks)
+
+    def test_the_brief_example_compiles_against_the_real_package(self):
+        self.write_entry(_skyrim_github_entry())
+        rows = self.compile_rows()
+        compat = json.loads(rows["crash-logger"]["game_compatibility_json"])
+        self.assertEqual(compat[0]["requires"], [{"framework": "skse", "min_version": "2.2.6"}])
+        self.assertEqual(compat[0]["stores"], ["steam", "gog"])
+
+    def test_an_undeclared_framework_is_still_refused_against_the_real_package(self):
+        entry = _skyrim_github_entry()
+        entry["game_compatibility"][0]["requires"] = [{"framework": "nvse", "min_version": "1.0"}]
+        self.write_entry(entry)
+        with self.assertRaises(SystemExit) as caught:
+            self.compile_rows()
+        self.assertIn("'nvse'", str(caught.exception.code))
 
 
 if __name__ == "__main__":

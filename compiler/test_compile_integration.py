@@ -10,14 +10,18 @@ Run with:  python compiler/test_compile_integration.py -v
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import pathlib
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +353,147 @@ class TestGovernanceEventsTable(_CompileFixtures):
             self.assertIsNotNone(row)
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Other games do not disturb the pre-existing tables (MASTER_SPEC §26.8)
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+_WALL_CLOCK_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)?")
+
+SKYRIM_FIXTURE = {
+    "id": "crash-logger",
+    "name": "CrashLogger",
+    "content_type": "mod",
+    "author": "Example",
+    "license": "MIT",
+    "game": "skyrim-se",
+    "download_strategy": "github_release",
+    "source_identifier": "example-author/crash-logger",
+    "sha256": "a" * 64,
+    "game_compatibility": [
+        {
+            "stores": ["steam", "gog"],
+            "game_versions": ["1.6.1170.*", "1.6.1179.0"],
+            "requires": [{"framework": "skse", "min_version": "2.2.6"}],
+            "asset": "CrashLogger-*.7z",
+        }
+    ],
+    "curator_note": "Logs crashes.",
+    "base_categories": ["tools"],
+}
+
+
+def _stable(value):
+    """A cell as it should be compared: wall-clock stamps (the audit log's, the
+    runtime catalog's generated_at) are masked, since they differ on every run."""
+    if isinstance(value, str):
+        return _WALL_CLOCK_RE.sub("<timestamp>", value)
+    return value
+
+
+def compile_registry_rows(compile_module, registry_root: pathlib.Path, out_dir: pathlib.Path) -> dict:
+    """Compile *registry_root* and return every table's rows.
+
+    Hydration (Modrinth, GitHub), the git-log manifest date and the GitHub token
+    are stubbed, so the output depends only on the manifests and the compiler.
+    """
+    stubs = {
+        "_hydrate_modrinth_metadata": lambda items: None,
+        "_hydrate_modrinth_versions": lambda items: None,
+        "_hydrate_version_changelogs": lambda items: [],
+        "_load_github_token": lambda: None,
+        "manifest_date_added": lambda path: "2026-01-01T00:00:00+00:00",
+    }
+    with contextlib.ExitStack() as stack:
+        for name, fake in stubs.items():
+            stack.enter_context(mock.patch.object(compile_module, name, fake))
+        compile_module.compile_registry(
+            out_dir / "registry.db",
+            skip_sign=True,
+            no_governance_write=True,
+            governance_mode_str="off",
+            registry_root=str(registry_root),
+        )
+    return dump_table_rows(out_dir / "registry.db")
+
+
+def dump_table_rows(db_path: pathlib.Path) -> dict:
+    """Every table's rows, sorted, with wall-clock stamps masked."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        dump = {}
+        for table in tables:
+            select = ", ".join(
+                f'"{row[1]}"' for row in conn.execute(f'PRAGMA table_info("{table}")')
+            )
+            rows = [
+                [_stable(cell) for cell in row]
+                for row in conn.execute(f'SELECT {select} FROM "{table}"')
+            ]
+            dump[table] = sorted(rows, key=lambda row: json.dumps(row))
+        return dump
+    finally:
+        conn.close()
+
+
+class TestOtherGamesLeavePreExistingTablesAlone(unittest.TestCase):
+    """Compiling the real registry/ with a Skyrim entry added changes only the
+    new game_catalog_items table. Every pre-existing table is identical."""
+
+    @staticmethod
+    def _compile_module():
+        sys.path.insert(0, str(REPO_ROOT / "compiler"))
+        import compile as compile_module  # noqa: E402
+
+        return compile_module
+
+    def test_skyrim_entry_changes_only_game_catalog_items(self):
+        compile_module = self._compile_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            without = root / "without" / "registry"
+            with_skyrim = root / "with" / "registry"
+            shutil.copytree(REPO_ROOT / "registry", without)
+            shutil.copytree(REPO_ROOT / "registry", with_skyrim)
+            entry_dir = with_skyrim / "games" / "skyrim-se" / "mods"
+            entry_dir.mkdir(parents=True)
+            (entry_dir / "crash-logger.json").write_text(
+                json.dumps(SKYRIM_FIXTURE), encoding="utf-8"
+            )
+
+            before = compile_registry_rows(compile_module, without, root / "out-without")
+            after = compile_registry_rows(compile_module, with_skyrim, root / "out-with")
+
+        self.assertEqual(sorted(before), sorted(after), "table sets differ")
+        for table in before:
+            if table == "game_catalog_items":
+                continue
+            self.assertEqual(before[table], after[table], f"{table} changed")
+        self.assertEqual(before["game_catalog_items"], [])
+        self.assertEqual([row[0] for row in after["game_catalog_items"]], ["crash-logger"])
+
+    def test_registry_items_keeps_its_schema_9_columns(self):
+        compile_module = self._compile_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            compile_registry_rows(compile_module, REPO_ROOT / "registry", pathlib.Path(tmp))
+            conn = sqlite3.connect(str(pathlib.Path(tmp) / "registry.db"))
+            try:
+                columns = [row[1] for row in conn.execute("PRAGMA table_info(registry_items)")]
+                version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+            finally:
+                conn.close()
+        self.assertNotIn("game", columns)
+        self.assertNotIn("game_compatibility_json", columns)
+        self.assertEqual(version, 9)
 
 
 if __name__ == "__main__":
