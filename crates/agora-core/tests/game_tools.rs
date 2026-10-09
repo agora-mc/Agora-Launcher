@@ -37,8 +37,8 @@ use agora_core::game_tools::{
 use agora_core::game_user_files::{record_process, swap_in};
 use agora_core::process_identity;
 use agora_game_api::{
-    BaseReference, DeploymentStrategy, GameDefinition, GameId, GamePackage, GamePath,
-    InputFingerprint, InstallId, InstallKind, LaunchRecipe, LaunchValue, LayerSource,
+    BaseReference, DeploymentStrategy, FailureMarker, GameDefinition, GameId, GamePackage,
+    GamePath, InputFingerprint, InstallId, InstallKind, LaunchRecipe, LaunchValue, LayerSource,
     PackageDefinition, PluginListRule, RelPath, RuntimeIdentity, StoreId, StoreIdentifier,
     ToolDefinition, ToolId, UserDataLocation, UserFileMapping, UserFileStrategy,
 };
@@ -168,6 +168,8 @@ fn tool(id: &str, name: &str, args: &[&str]) -> ToolDefinition {
         relevant_settings: Vec::new(),
         after_tools: Vec::new(),
         uses_install_path: false,
+        required_outputs: Vec::new(),
+        failure_markers: Vec::new(),
     }
 }
 
@@ -1699,6 +1701,8 @@ use agora_core::game_tool_swap::{self as swap, SwapError, SwapJournal};
 fn swap_tool(id: &str, name: &str, args: &[&str]) -> ToolDefinition {
     ToolDefinition {
         uses_install_path: true,
+        required_outputs: Vec::new(),
+        failure_markers: Vec::new(),
         ..tool(id, name, args)
     }
 }
@@ -2140,4 +2144,495 @@ fn a_recovery_with_nothing_pending_changes_nothing() {
     assert!(swap::recover_game(&f.ctx, &f.def).unwrap().is_empty());
     assert!(swap::recover_all(&f.ctx).is_empty());
     assert_eq!(snapshot(&real_data(&f)), before);
+}
+
+// ---------------------------------------------------------------------------
+// Output checks: a run that exits 0 is still discarded when it misses a required output or
+// writes a failure marker (MASTER_SPEC §26.9, slice 4d).
+// ---------------------------------------------------------------------------
+
+/// A tool named `id` that runs `args`, with the output checks it declares.
+fn checked(
+    id: &str,
+    args: &[&str],
+    required: &[&str],
+    markers: Vec<FailureMarker>,
+) -> ToolDefinition {
+    let mut t = tool(id, "Checked", args);
+    t.required_outputs = required.iter().map(|r| r.to_string()).collect();
+    t.failure_markers = markers;
+    t
+}
+
+/// A failure marker for `file`, which must contain `text`.
+fn marker(file: &str, text: &str) -> FailureMarker {
+    FailureMarker {
+        file: RelPath::new(file).unwrap(),
+        contains: text.into(),
+    }
+}
+
+#[test]
+fn a_run_that_exits_zero_but_deletes_a_required_output_is_discarded() {
+    let f = fixture(vec![checked(
+        "checked",
+        // cmd skips every `&`-chained command after a false `if`, so the conditional comes last.
+        &[
+            "/c",
+            "echo",
+            "made>",
+            r"Data\required.txt",
+            "&",
+            "if",
+            "defined",
+            "AGORA_TEST_DELETE",
+            "del",
+            r"Data\required.txt",
+        ],
+        &["Data/required.txt"],
+        Vec::new(),
+    )]);
+    let launcher = StagingLauncher::new();
+    let first = f.run_as("checked", &launcher, CaptureMode::Links).unwrap();
+    assert!(first.promoted, "{first:?}");
+    assert!(f
+        .generation_dir("checked", "1")
+        .join("Data/required.txt")
+        .is_file());
+
+    let out = f
+        .run_as(
+            "checked",
+            &launcher.with_env("AGORA_TEST_DELETE", "1"),
+            CaptureMode::Links,
+        )
+        .expect("a discarded run is an outcome, not an error");
+
+    assert!(!out.promoted, "{out:?}");
+    assert_eq!(out.exit_code, Some(0));
+    let reason = out.failure.clone().expect("the outcome says why");
+    assert!(
+        reason.contains("required output 'Data/required.txt'"),
+        "{reason}"
+    );
+    assert_eq!(out.current.as_deref(), Some("1"));
+    assert_eq!(f.generated("checked").unwrap().0, "1");
+    assert!(f.generation_dir("checked", "1").is_dir());
+    let failed = out.failed_folder.expect("the discarded run is kept");
+    assert!(failed.is_dir(), "{}", failed.display());
+}
+
+#[test]
+fn a_run_that_exits_zero_but_writes_a_failure_marker_is_discarded() {
+    let f = fixture(vec![checked(
+        "logger",
+        &["/c", "echo", "%AGORA_TEST_LOG%", ">", r"Data\PatchLog.txt"],
+        &[],
+        vec![marker("Data/PatchLog.txt", "Failed to generate behavior")],
+    )]);
+
+    let out = f
+        .run_as(
+            "logger",
+            &StagingLauncher::new().with_env("AGORA_TEST_LOG", "Failed to generate behavior"),
+            CaptureMode::Links,
+        )
+        .unwrap();
+
+    assert!(!out.promoted, "{out:?}");
+    assert_eq!(out.exit_code, Some(0));
+    let reason = out.failure.clone().expect("the outcome says why");
+    assert!(reason.contains("Data/PatchLog.txt"), "{reason}");
+    assert!(reason.contains("Failed to generate behavior"), "{reason}");
+    assert!(f.generated("logger").is_none());
+    let failed = out.failed_folder.expect("the discarded run is kept");
+    assert!(failed.join("Data/PatchLog.txt").is_file());
+}
+
+#[test]
+fn a_run_that_keeps_its_required_outputs_and_writes_no_marker_is_promoted() {
+    let f = fixture(vec![checked(
+        "logger",
+        &[
+            "/c",
+            "echo",
+            "made>",
+            r"Data\required.txt",
+            "&",
+            "echo",
+            "%AGORA_TEST_LOG%",
+            ">",
+            r"Data\PatchLog.txt",
+        ],
+        &["Data/required.txt"],
+        vec![marker("Data/PatchLog.txt", "Failed to generate behavior")],
+    )]);
+
+    let out = f
+        .run_as(
+            "logger",
+            &StagingLauncher::new().with_env("AGORA_TEST_LOG", "all good"),
+            CaptureMode::Links,
+        )
+        .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.failure, None);
+    assert_eq!(out.current.as_deref(), Some("1"));
+    let gen = f.generation_dir("logger", "1");
+    assert!(gen.join("Data/required.txt").is_file());
+    assert!(gen.join("Data/PatchLog.txt").is_file());
+}
+
+#[test]
+fn a_failure_marker_is_searched_only_in_files_the_run_wrote() {
+    // The marker's text is in a mod's file that the run does not write, so the run is promoted.
+    let f = fixture(vec![checked(
+        "quiet",
+        &["/c", "echo", "fine", ">", r"Data\other.txt"],
+        &[],
+        vec![marker("Data/PatchLog.txt", "Failed to generate behavior")],
+    )]);
+    f.add_mod(
+        "Old log",
+        &[("Data/PatchLog.txt", b"Failed to generate behavior\r\n")],
+    );
+
+    let out = f
+        .run_as("quiet", &StagingLauncher::new(), CaptureMode::Links)
+        .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+}
+
+#[test]
+fn a_nonzero_exit_is_discarded_and_the_outcome_says_which_code() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+
+    let out = f
+        .run_as(
+            "nemesis",
+            &StagingLauncher::new().with_env("AGORA_TEST_FAIL", "1"),
+            CaptureMode::Links,
+        )
+        .unwrap();
+
+    assert!(!out.promoted, "{out:?}");
+    assert_eq!(out.failure.as_deref(), Some("the tool exited with code 3"));
+}
+
+// ---------------------------------------------------------------------------
+// A tool's own mod is copied for its run (MASTER_SPEC §26.9, slice 4d).
+// ---------------------------------------------------------------------------
+
+/// The bytes of the 64-bit `cmd.exe`, which a test puts in a mod as the tool's executable.
+fn cmd_exe() -> Vec<u8> {
+    std::fs::read(r"C:\Windows\System32\cmd.exe").unwrap()
+}
+
+/// `tool` with its executable at `exe`, a path under the runtime root.
+fn at_exe(mut tool: ToolDefinition, exe: &str) -> ToolDefinition {
+    tool.launch.executable = GamePath::Runtime {
+        path: RelPath::new(exe).unwrap(),
+    };
+    tool
+}
+
+/// The id of the layer a content item was added as.
+fn content_layer_id(f: &Fixture, item: &str) -> String {
+    get_manifest(&f.ctx, f.id())
+        .unwrap()
+        .layers
+        .layers()
+        .iter()
+        .find_map(|layer| match &layer.source {
+            LayerSource::Content { content } if content.as_str() == item => {
+                Some(layer.id.as_str().to_string())
+            }
+            _ => None,
+        })
+        .expect("the content item is a layer of the instance")
+}
+
+#[test]
+fn under_links_a_tool_overwrites_a_file_in_its_own_mod_and_the_mod_is_unchanged() {
+    let cmd = cmd_exe();
+    let f = fixture(vec![at_exe(
+        tool(
+            "owner",
+            "Owner",
+            &["/c", "echo", "changed", ">", r"Data\Tool\own.txt"],
+        ),
+        "Data/Tool/Tool.exe",
+    )]);
+    let item = f.add_mod(
+        "Owner mod",
+        &[
+            ("Data/Tool/Tool.exe", cmd.as_slice()),
+            ("Data/Tool/own.txt", b"original"),
+        ],
+    );
+    let layer = content_layer_id(&f, &item);
+    let before = f.content_bytes(&item, "Data/Tool/own.txt");
+
+    let out = f
+        .run_as("owner", &StagingLauncher::new(), CaptureMode::Links)
+        .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.copied_layer.as_deref(), Some(layer.as_str()));
+    assert!(
+        out.written.contains(&"Data/Tool/own.txt".to_string()),
+        "{:?}",
+        out.written
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.generation_dir("owner", "1").join("Data/Tool/own.txt"))
+            .unwrap()
+            .trim(),
+        "changed"
+    );
+    assert_eq!(f.content_bytes(&item, "Data/Tool/own.txt"), before);
+    assert!(names(&f.writable_dir()).is_empty());
+    assert!(!f.deployed_game_dir().exists());
+}
+
+#[test]
+fn under_swap_a_tool_overwrites_a_file_in_its_own_mod_and_the_mod_and_real_data_are_unchanged() {
+    let cmd = cmd_exe();
+    let f = fixture(vec![at_exe(
+        swap_tool(
+            "owner",
+            "Owner",
+            &["/c", "echo", "changed", ">", r"Data\Tool\own.txt"],
+        ),
+        "Data/Tool/Tool.exe",
+    )]);
+    let item = f.add_mod(
+        "Owner mod",
+        &[
+            ("Data/Tool/Tool.exe", cmd.as_slice()),
+            ("Data/Tool/own.txt", b"original"),
+        ],
+    );
+    let layer = content_layer_id(&f, &item);
+    let before_mod = f.content_bytes(&item, "Data/Tool/own.txt");
+    let before_real = snapshot(&real_data(&f));
+
+    let out = f
+        .run_as("owner", &StagingLauncher::new(), CaptureMode::Swap)
+        .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.capture, CaptureMethod::Swap);
+    assert_eq!(out.copied_layer.as_deref(), Some(layer.as_str()));
+    assert_eq!(
+        std::fs::read_to_string(f.generation_dir("owner", "1").join("Data/Tool/own.txt"))
+            .unwrap()
+            .trim(),
+        "changed"
+    );
+    assert_eq!(f.content_bytes(&item, "Data/Tool/own.txt"), before_mod);
+    assert_eq!(snapshot(&real_data(&f)), before_real);
+    assert!(!journal_file(&f).exists());
+}
+
+#[test]
+fn a_tool_that_overwrites_a_file_in_another_mod_is_still_refused_under_links() {
+    let cmd = cmd_exe();
+    let f = fixture(vec![at_exe(
+        tool(
+            "owner",
+            "Owner",
+            &["/c", "echo", "changed", ">", r"Data\Other\x.txt"],
+        ),
+        "Data/Tool/Tool.exe",
+    )]);
+    f.add_mod("Owner mod", &[("Data/Tool/Tool.exe", cmd.as_slice())]);
+    let other = f.add_mod("Other mod", &[("Data/Other/x.txt", b"keep")]);
+    let before = f.content_bytes(&other, "Data/Other/x.txt");
+
+    // Whether the content store's ACL refuses the write (the run is not promoted) or lets it through
+    // (the change check refuses it), the other mod's object keeps its bytes.
+    match f.run_as("owner", &StagingLauncher::new(), CaptureMode::Links) {
+        Ok(out) => assert!(!out.promoted, "{out:?}"),
+        Err(ToolError::LinkedFileChanged { paths, .. }) => {
+            assert_eq!(paths, vec!["Data/Other/x.txt".to_string()]);
+        }
+        Err(other) => panic!("{other:?}"),
+    }
+    assert!(f.generated("owner").is_none());
+    assert_eq!(f.content_bytes(&other, "Data/Other/x.txt"), before);
+}
+
+#[test]
+fn the_executable_is_copied_from_the_layer_that_wins_its_path() {
+    let cmd = cmd_exe();
+    let f = fixture(vec![at_exe(
+        tool(
+            "owner",
+            "Owner",
+            &["/c", "echo", "changed", ">", r"Data\Tool\own.txt"],
+        ),
+        "Data/Tool/Tool.exe",
+    )]);
+    let lower = f.add_mod(
+        "Lower",
+        &[
+            ("Data/Tool/Tool.exe", cmd.as_slice()),
+            ("Data/Tool/own.txt", b"lower"),
+        ],
+    );
+    // Added later, so it sits above the lower mod and wins the executable's path.
+    let upper = f.add_mod(
+        "Upper",
+        &[
+            ("Data/Tool/Tool.exe", cmd.as_slice()),
+            ("Data/Tool/own.txt", b"upper"),
+        ],
+    );
+    let winner = content_layer_id(&f, &upper);
+    let loser = content_layer_id(&f, &lower);
+    assert_eq!(
+        planned(&f.plan(DeployMode::Links), "Data/Tool/Tool.exe")
+            .unwrap()
+            .layer_id,
+        winner
+    );
+
+    let out = f
+        .run_as("owner", &StagingLauncher::new(), CaptureMode::Links)
+        .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.copied_layer.as_deref(), Some(winner.as_str()));
+    assert_ne!(out.copied_layer.as_deref(), Some(loser.as_str()));
+}
+
+#[test]
+fn under_the_vfs_no_content_layer_is_copied_for_a_run() {
+    // The VFS copies up on write, so the fake launcher's VFS route copies nothing for the tool's mod.
+    let cmd = cmd_exe();
+    let f = fixture(vec![at_exe(
+        writes_or_fails("nemesis"),
+        "Data/Tool/Tool.exe",
+    )]);
+    f.add_mod("Owner mod", &[("Data/Tool/Tool.exe", cmd.as_slice())]);
+
+    let out = f.run("nemesis", &StagingLauncher::new()).unwrap();
+
+    assert_eq!(out.capture, CaptureMethod::Vfs);
+    assert_eq!(out.copied_layer, None);
+}
+
+#[test]
+fn a_run_that_drops_a_required_output_from_the_game_is_discarded_even_though_it_exits_zero() {
+    // The shape of the real incident: generation 1 has the behaviour file; the next run exits 0 and
+    // writes only its logs. Promotion would leave the game without the file, so the run is discarded.
+    // cmd skips the `&`-chained commands after a false `if`, so the conditional comes last.
+    let f = fixture(vec![checked(
+        "behaviour",
+        &[
+            "/c",
+            "echo",
+            "%AGORA_TEST_LOG%",
+            ">",
+            r"Data\PatchLog.txt",
+            "&",
+            "if",
+            "not",
+            "defined",
+            "AGORA_TEST_LOGS_ONLY",
+            "echo",
+            "made>",
+            r"Data\0_master.hkx",
+        ],
+        &["Data/0_master.hkx"],
+        Vec::new(),
+    )]);
+    let first = f
+        .run_as(
+            "behaviour",
+            &StagingLauncher::new().with_env("AGORA_TEST_LOG", "all good"),
+            CaptureMode::Links,
+        )
+        .unwrap();
+    assert!(first.promoted, "{first:?}");
+    assert!(f
+        .generation_dir("behaviour", "1")
+        .join("Data/0_master.hkx")
+        .is_file());
+
+    let out = f
+        .run_as(
+            "behaviour",
+            &StagingLauncher::new()
+                .with_env("AGORA_TEST_LOG", "all good")
+                .with_env("AGORA_TEST_LOGS_ONLY", "1"),
+            CaptureMode::Links,
+        )
+        .unwrap();
+
+    assert!(!out.promoted, "{out:?}");
+    assert_eq!(out.exit_code, Some(0));
+    let reason = out.failure.clone().expect("the outcome says why");
+    assert!(
+        reason.contains("required output 'Data/0_master.hkx'"),
+        "{reason}"
+    );
+    assert_eq!(f.generated("behaviour").unwrap().0, "1");
+    assert!(f
+        .generation_dir("behaviour", "1")
+        .join("Data/0_master.hkx")
+        .is_file());
+}
+
+#[test]
+fn a_required_output_a_content_mod_provides_passes_though_the_run_does_not_write_it() {
+    let f = fixture(vec![checked(
+        "logger",
+        &["/c", "echo", "log", ">", r"Data\log.txt"],
+        &["Data/mod_provided.txt"],
+        Vec::new(),
+    )]);
+    f.add_mod("Provider", &[("Data/mod_provided.txt", b"from the mod")]);
+
+    let out = f
+        .run_as("logger", &StagingLauncher::new(), CaptureMode::Links)
+        .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.failure, None);
+    assert_eq!(out.current.as_deref(), Some("1"));
+}
+
+#[test]
+fn a_run_that_deletes_a_required_output_a_mod_provided_is_discarded() {
+    let f = fixture(vec![checked(
+        "deleter",
+        &[
+            "/c",
+            "echo",
+            "log>",
+            r"Data\log.txt",
+            "&",
+            "del",
+            r"Data\mod_provided.txt",
+        ],
+        &["Data/mod_provided.txt"],
+        Vec::new(),
+    )]);
+    f.add_mod("Provider", &[("Data/mod_provided.txt", b"from the mod")]);
+
+    let out = f
+        .run_as("deleter", &StagingLauncher::new(), CaptureMode::Links)
+        .unwrap();
+
+    assert!(!out.promoted, "{out:?}");
+    let reason = out.failure.clone().expect("the outcome says why");
+    assert!(
+        reason.contains("required output 'Data/mod_provided.txt'"),
+        "{reason}"
+    );
+    assert!(f.generated("deleter").is_none());
 }

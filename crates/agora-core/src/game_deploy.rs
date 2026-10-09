@@ -99,6 +99,9 @@ pub struct PlannedFile {
     pub size: u64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_config_copy: bool,
+    /// The layer whose file this is: the winner among the layers that hold the path.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub layer_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,10 +398,63 @@ pub fn plan(
     definition: &GameDefinition,
     mode: DeployMode,
 ) -> Result<DeploymentPlan, DeployError> {
-    let manifest = crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
-        crate::game_instance::InstanceError::NotFound(id) => DeployError::InstanceNotFound(id),
-        other => DeployError::Other(other.to_string()),
-    })?;
+    plan_with_copy(ctx, instance_id, definition, mode, None)
+}
+
+/// [`plan`], with one content layer deployed as if its `own_copy` were on: its files are copies in
+/// every mode. A tool's own mod is planned this way for the tool's run only (MASTER_SPEC §26.9).
+pub(crate) fn plan_with_copy(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+    copy_layer: Option<&str>,
+) -> Result<DeploymentPlan, DeployError> {
+    plan_inner(ctx, instance_id, definition, mode, copy_layer, None)
+}
+
+/// A run's would-be output, planned in place of one tool's current output (MASTER_SPEC §26.9). The
+/// manifest is the stack the game would have once the run is promoted, and `folder` is the run's
+/// staging folder, which holds the files of the tool's generated layer.
+pub(crate) struct WouldBe<'a> {
+    pub manifest: crate::game_instance::GameInstanceManifest,
+    pub tool: &'a str,
+    pub folder: PathBuf,
+}
+
+/// The files the game would read if `would_be` were promoted. Planned as links, with the writable
+/// layer left out: the game's own writes are not the tool's output.
+pub(crate) fn plan_would_be(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    would_be: WouldBe<'_>,
+) -> Result<DeploymentPlan, DeployError> {
+    plan_inner(
+        ctx,
+        instance_id,
+        definition,
+        DeployMode::Links,
+        None,
+        Some(would_be),
+    )
+}
+
+fn plan_inner(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+    copy_layer: Option<&str>,
+    would_be: Option<WouldBe<'_>>,
+) -> Result<DeploymentPlan, DeployError> {
+    let manifest = match &would_be {
+        Some(w) => w.manifest.clone(),
+        None => crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
+            crate::game_instance::InstanceError::NotFound(id) => DeployError::InstanceNotFound(id),
+            other => DeployError::Other(other.to_string()),
+        })?,
+    };
 
     let base_id = match &manifest.base {
         BaseReference::Pinned { id, .. } => id.clone(),
@@ -524,7 +580,7 @@ pub fn plan(
                 layers.push(LayerContribution {
                     layer_id: layer.id.as_str().to_string(),
                     files: content_files,
-                    own_copy: layer.own_copy,
+                    own_copy: layer.own_copy || copy_layer == Some(layer.id.as_str()),
                     whiteouts: Vec::new(),
                 });
             }
@@ -543,21 +599,32 @@ pub fn plan(
         if !layer.enabled {
             continue;
         }
-        let folder = crate::game_tools::generation_dir(&instance_dir, tool.as_str(), generation)
-            .map_err(DeployError::Other)?;
-        if !folder.is_dir() {
-            return Err(DeployError::GeneratedLayerMissing {
-                tool: tool.to_string(),
-                generation: generation.clone(),
-                path: folder,
-            });
-        }
+        // A would-be output is read from its staging folder, whose root may hold the VFS's whiteout
+        // markers: those are not files of the output.
+        let staged = matches!(&would_be, Some(w) if w.tool == tool.as_str());
+        let folder = match &would_be {
+            Some(w) if staged => w.folder.clone(),
+            _ => {
+                let folder =
+                    crate::game_tools::generation_dir(&instance_dir, tool.as_str(), generation)
+                        .map_err(DeployError::Other)?;
+                if !folder.is_dir() {
+                    return Err(DeployError::GeneratedLayerMissing {
+                        tool: tool.to_string(),
+                        generation: generation.clone(),
+                        path: folder,
+                    });
+                }
+                folder
+            }
+        };
         let mut generated_files = Vec::new();
         walk_generated_dir(
             &folder,
             Path::new(""),
             tool.as_str(),
             generation,
+            staged,
             &mut generated_files,
         )?;
         layers.push(LayerContribution {
@@ -576,7 +643,7 @@ pub fn plan(
     let writable_dir = instance_dir.join("writable");
     // Under the VFS the writable layer is shown on top of the farm, not placed in it, so the
     // farm (and its fingerprint) does not change when the game writes.
-    if mode != DeployMode::Virtual && writable_dir.exists() {
+    if would_be.is_none() && mode != DeployMode::Virtual && writable_dir.exists() {
         let mut writable_files = Vec::new();
         walk_writable_dir(&writable_dir, Path::new(""), &mut writable_files)?;
         if !writable_files.is_empty() {
@@ -685,7 +752,12 @@ pub fn plan(
     }
     // The VFS records a deletion as a marker in the writable layer; it hides lower files in every
     // mode. A writable file that is still there (the game recreated the path) is not hidden.
-    for marker in read_whiteout_markers(&writable_dir)? {
+    let writable_markers = if would_be.is_some() {
+        Vec::new()
+    } else {
+        read_whiteout_markers(&writable_dir)?
+    };
+    for marker in writable_markers {
         let prefix = format!("{marker}/");
         candidates.retain(|key, cand| {
             matches!(cand.source, FileSource::Writable { .. })
@@ -807,7 +879,7 @@ pub fn plan(
         if !cand.hidden_layers.is_empty() {
             overrides.push(Override {
                 path: cand.path.clone(),
-                winner: cand.layer_id,
+                winner: cand.layer_id.clone(),
                 hidden: cand.hidden_layers,
             });
         }
@@ -818,6 +890,7 @@ pub fn plan(
             placement,
             size: cand.size,
             is_config_copy,
+            layer_id: cand.layer_id,
         });
     }
 
@@ -846,6 +919,7 @@ fn walk_generated_dir(
     rel: &Path,
     tool: &str,
     generation: &str,
+    staged: bool,
     out: &mut Vec<LayerFileEntry>,
 ) -> Result<(), DeployError> {
     let cur = if rel.as_os_str().is_empty() {
@@ -860,9 +934,15 @@ fn walk_generated_dir(
         if is_reparse_point_or_symlink(&meta) {
             continue;
         }
+        if staged
+            && rel.as_os_str().is_empty()
+            && entry.file_name() == crate::game_tools::WHITEOUT_DIR
+        {
+            continue;
+        }
         let child_rel = rel.join(entry.file_name());
         if meta.is_dir() {
-            walk_generated_dir(root, &child_rel, tool, generation, out)?;
+            walk_generated_dir(root, &child_rel, tool, generation, staged, out)?;
         } else if meta.is_file() {
             let rel_str = child_rel.to_string_lossy().replace('\\', "/");
             let rel_path = RelPath::new(rel_str).map_err(|e| {
@@ -1111,6 +1191,19 @@ pub(crate) fn deploy_locked(
     definition: &GameDefinition,
     mode: DeployMode,
 ) -> Result<DeployOutcome, DeployError> {
+    deploy_locked_with_copy(ctx, instance_id, definition, mode, None)
+}
+
+/// [`deploy_locked`], with one content layer deployed as copies (see [`plan_with_copy`]). The
+/// deployment's fingerprint records the copies, so a deployment made this way is not mistaken for
+/// the ordinary one. The caller discards it when its run is over.
+pub(crate) fn deploy_locked_with_copy(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+    copy_layer: Option<&str>,
+) -> Result<DeployOutcome, DeployError> {
     let manifest = crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
         crate::game_instance::InstanceError::NotFound(id) => DeployError::InstanceNotFound(id),
         other => DeployError::Other(other.to_string()),
@@ -1148,7 +1241,7 @@ pub(crate) fn deploy_locked(
         }
     }
 
-    let mut current_plan = plan(ctx, instance_id, definition, mode)?;
+    let mut current_plan = plan_with_copy(ctx, instance_id, definition, mode, copy_layer)?;
 
     // Check if current deployment is up to date
     if record_path.exists() && game_dir.exists() {
@@ -1216,7 +1309,7 @@ pub(crate) fn deploy_locked(
         let rep = harvest_internal(ctx, instance_id, &deployment_dir, &manifest)?;
         // If anything was harvested into the writable layer, re-compute the plan
         if !rep.is_empty() {
-            current_plan = plan(ctx, instance_id, definition, mode)?;
+            current_plan = plan_with_copy(ctx, instance_id, definition, mode, copy_layer)?;
         }
         Some(rep)
     } else {

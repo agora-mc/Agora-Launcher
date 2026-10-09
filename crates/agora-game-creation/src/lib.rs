@@ -210,6 +210,28 @@ mod tests {
         );
         assert!(nemesis.relevant_settings.is_empty());
         assert!(nemesis.after_tools.is_empty());
+        // Nemesis's output checks (MASTER_SPEC §26.9, slice 4d): the three behaviour files a run must
+        // leave, and the line its PatchLog gets when it fails although it exits 0. BodySlide declares
+        // neither: it builds what the user picks.
+        assert_eq!(
+            nemesis.required_outputs,
+            vec![
+                "Data/meshes/actors/character/behaviors/0_master.hkx".to_string(),
+                "Data/meshes/actors/character/characters/defaultmale.hkx".to_string(),
+                "Data/meshes/actors/character/characters female/defaultfemale.hkx".to_string(),
+            ]
+        );
+        assert_eq!(nemesis.failure_markers.len(), 1);
+        assert_eq!(
+            nemesis.failure_markers[0].file.as_str(),
+            "Data/Nemesis_Engine/PatchLog.txt"
+        );
+        assert_eq!(
+            nemesis.failure_markers[0].contains,
+            "Failed to generate behavior"
+        );
+        assert!(bodyslide.required_outputs.is_empty());
+        assert!(bodyslide.failure_markers.is_empty());
         assert!(game.log_paths.is_empty());
         assert!(game.crash_paths.is_empty());
         assert!(game.save_paths.is_empty());
@@ -299,5 +321,49 @@ mod tests {
         }
         let ids: Vec<&str> = at_1_6_1179.iter().map(|f| f.rule_id.as_str()).collect();
         assert_eq!(ids, vec!["skse", "address-library"]);
+    }
+
+    /// Read-only check of the Nemesis run that failed on 2026-10-09 (MASTER_SPEC §26.9, slice 4d). The
+    /// behaviour files the package requires are in generation 1, under the names and casing on disk;
+    /// the failure marker is in generation 2, the run that exited 0 and failed. Run with
+    /// `cargo test -p agora-game-creation -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "reads the real Nemesis output under D:\\Agora-bench\\p3-done"]
+    fn real_nemesis_generation_one_has_the_declared_outputs_and_generation_two_the_marker() {
+        let package = game_package();
+        let nemesis = package
+            .definition()
+            .tools
+            .iter()
+            .find(|t| t.id.as_str() == "nemesis")
+            .expect("the package declares nemesis");
+        let root = std::path::Path::new(
+            r"D:\Agora-bench\p3-done\instances\grounded-apocalypse-mo2-import-6d97f2\generated\nemesis",
+        );
+        assert!(root.is_dir(), "missing {}", root.display());
+
+        let generation_one = files_under(&root.join("1"));
+        println!("{} files in generation 1", generation_one.len());
+        for pattern in &nemesis.required_outputs {
+            let wanted = pattern.to_ascii_lowercase();
+            let found = generation_one
+                .iter()
+                .any(|file| agora_game_api::glob_match(&wanted, &file.to_ascii_lowercase()));
+            println!(
+                "required {pattern}: {}",
+                if found { "found" } else { "MISSING" }
+            );
+            assert!(found, "{pattern} is not in generation 1");
+        }
+
+        let marker = &nemesis.failure_markers[0];
+        let text = std::fs::read_to_string(root.join("2").join(marker.file.as_str()))
+            .expect("generation 2 has the marker's file");
+        assert!(
+            text.contains(&marker.contains),
+            "{} does not contain '{}'",
+            marker.file.as_str(),
+            marker.contains
+        );
     }
 }

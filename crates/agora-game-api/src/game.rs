@@ -1254,6 +1254,24 @@ pub struct ToolDefinition {
     /// in an `overwrite` folder are this tool's output (MASTER_SPEC §26.10).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_patterns: Vec<String>,
+    /// Game-relative, case-insensitive glob patterns that must each match at least one file in the
+    /// output a run would produce: the previous generation, plus the run's writes, minus its
+    /// deletions. A run that exits 0 but misses one is discarded (MASTER_SPEC §26.9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_outputs: Vec<String>,
+    /// Text that marks a failed run even when it exits 0. A run that wrote the file and left the text
+    /// in it is discarded (MASTER_SPEC §26.9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_markers: Vec<FailureMarker>,
+}
+
+/// A file a tool writes to report a failure, and the text that says so.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureMarker {
+    /// The file, relative to the runtime root (e.g. `Data/Nemesis_Engine/PatchLog.txt`).
+    pub file: RelPath,
+    /// The text whose presence in that file means the run failed.
+    pub contains: String,
 }
 
 /// This is plugin/module order, distinct from the order of content layers.

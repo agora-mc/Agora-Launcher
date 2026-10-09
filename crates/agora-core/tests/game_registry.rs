@@ -276,6 +276,8 @@ fn registry_rejects_undefined_game_in_tool_leaving_registry_unchanged() {
         relevant_settings: vec![],
         after_tools: vec![],
         uses_install_path: false,
+        required_outputs: Vec::new(),
+        failure_markers: Vec::new(),
     };
     let pkg = make_package(
         "pkg-bad-tool",

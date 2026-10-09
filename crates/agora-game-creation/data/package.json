@@ -352,6 +352,17 @@
         "Data/scripts/FNIS.pex",
         "Data/scripts/FNIS_aa.pex",
         "Data/scripts/Nemesis_AA_Core.pex"
+      ],
+      "required_outputs": [
+        "Data/meshes/actors/character/behaviors/0_master.hkx",
+        "Data/meshes/actors/character/characters/defaultmale.hkx",
+        "Data/meshes/actors/character/characters female/defaultfemale.hkx"
+      ],
+      "failure_markers": [
+        {
+          "file": "Data/Nemesis_Engine/PatchLog.txt",
+          "contains": "Failed to generate behavior"
+        }
       ]
     },
     {

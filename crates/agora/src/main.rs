@@ -8368,6 +8368,11 @@ fn print_tool_run(outcome: &agora_core::game_tools::RunOutcome) {
             "{} was cancelled. Its output was discarded, and generation {current} stays in effect.",
             outcome.name
         );
+    } else if let (Some(0), Some(reason)) = (outcome.exit_code, outcome.failure.as_deref()) {
+        println!(
+            "{} exited with code 0, but its output failed a check: {reason}. Its output was discarded, and generation {current} stays in effect.",
+            outcome.name
+        );
     } else {
         let code = outcome
             .exit_code
@@ -8375,6 +8380,12 @@ fn print_tool_run(outcome: &agora_core::game_tools::RunOutcome) {
             .unwrap_or_else(|| "no exit code".to_string());
         println!(
             "{} failed ({code}) after writing {written} file(s). Its output was discarded, and generation {current} stays in effect.",
+            outcome.name
+        );
+    }
+    if let Some(layer) = &outcome.copied_layer {
+        println!(
+            "{}'s own mod ({layer}) was copied for this run, so the tool could rewrite its own files. The mod itself is unchanged.",
             outcome.name
         );
     }

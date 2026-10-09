@@ -3,9 +3,9 @@
 //! A game's package declares tools: programs that read the installed mods and write files the game
 //! needs, such as Nemesis's behaviour files. Core runs a tool under the instance's virtual file
 //! system, so everything it writes lands in a staging folder, never in a mod or in the game's own
-//! writable layer. A run that exits 0 is promoted: its folder becomes the tool's next generation,
-//! and the instance's generated layer for the tool points at it. Any other run is discarded and the
-//! current generation stays in effect.
+//! writable layer. A run that exits 0 and passes its output checks is promoted: its folder becomes
+//! the tool's next generation, and the instance's generated layer for the tool points at it. Any
+//! other run is discarded and the current generation stays in effect.
 //!
 //! On disk, a tool's output lives in `<instance>/generated/<tool>/`:
 //! - `<n>/` is a generation: exactly what one successful run wrote, with its deletions kept as
@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use agora_game_api::{
-    BaseReference, GameDefinition, InputFingerprint, Layer, LayerId, LayerSource, LayerStack,
-    RelPath, StoreId, ToolDefinition, ToolId,
+    glob_match, BaseReference, GameDefinition, GamePath, InputFingerprint, Layer, LayerId,
+    LayerSource, LayerStack, RelPath, StoreId, ToolDefinition, ToolId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,8 +29,8 @@ use crate::ctx::Ctx;
 use crate::event_sink::CancellationToken;
 use crate::game_base::BaseManifest;
 use crate::game_deploy::{
-    compare_farm, deploy_locked, discard_deployment, read_deployment_record, source_path,
-    DeployMode, DeploymentRecord, FarmChange, Placement,
+    compare_farm, deploy_locked, deploy_locked_with_copy, discard_deployment,
+    read_deployment_record, source_path, DeployMode, DeploymentRecord, FarmChange, Placement,
 };
 use crate::game_ini;
 use crate::game_instance::GameInstanceManifest;
@@ -47,10 +47,14 @@ use crate::lock_manager::LockResource;
 pub const FAILED_RUNS_KEPT: usize = 3;
 /// Written paths a run reports in full; the rest are counted.
 pub const REPORTED_PATHS: usize = 20;
+/// The largest file a failure marker is searched in: a bigger file is not searched (MASTER_SPEC §26.9).
+pub const MARKER_SEARCH_LIMIT: u64 = 16 * 1024 * 1024;
 
-const WHITEOUT_DIR: &str = ".agvfs-wh";
+pub(crate) const WHITEOUT_DIR: &str = ".agvfs-wh";
 const WHITEOUT_SUFFIX: &str = ".wh";
 const STATE_FILE: &str = "state.json";
+/// The generation a would-be output is planned under. It names no folder: the staging folder is used.
+const WOULD_BE_GENERATION: &str = "would-be";
 const VFS_CONFIG: &str = "tool-config.json";
 const POLL: Duration = Duration::from_millis(250);
 /// How long no process may run from a tool's folder before its run counts as over.
@@ -237,6 +241,15 @@ pub struct RunOutcome {
     pub cancelled: bool,
     /// Where a discarded run was kept.
     pub failed_folder: Option<PathBuf>,
+    /// Why the run was discarded, when it was: the exit code, or the output check it failed and the
+    /// file or text that failed it (MASTER_SPEC §26.9). `None` for a promoted run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    /// The content layer whose files were copied for this run, because it provides the tool's
+    /// executable: the tool may then rewrite its own files (MASTER_SPEC §26.9). `None` when no
+    /// content layer was copied, as under the virtual file system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copied_layer: Option<String>,
     /// What changed under the real install folder during the run, outside what Agora captured: a
     /// report, never a refusal (MASTER_SPEC §26.9). Under a swap, `Data` is the link, so its writes
     /// are captured and not listed here.
@@ -1191,6 +1204,30 @@ fn run_under_vfs(
     Ok(out)
 }
 
+/// The content layer that provides a tool's executable, when one does: the layer whose file wins the
+/// executable's path among the layers that hold it (MASTER_SPEC §26.9). That layer is copied for the
+/// tool's run, so the tool can rewrite its own files. `None` when the executable is not a content
+/// layer's file (a base file, or the instance's own output) or the recipe names no runtime path.
+fn executable_layer(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+) -> Result<Option<String>, ToolError> {
+    let GamePath::Runtime { path } = &tool.launch.executable else {
+        return Ok(None);
+    };
+    let planned = crate::game_deploy::plan(ctx, instance_id, definition, DeployMode::Links)?;
+    let winner = planned
+        .files
+        .iter()
+        .find(|file| file.path.as_str().eq_ignore_ascii_case(path.as_str()));
+    Ok(winner.and_then(|file| match file.source {
+        crate::game_deploy::FileSource::Content { .. } => Some(file.layer_id.clone()),
+        _ => None,
+    }))
+}
+
 /// A run captured from a linked deployment (MASTER_SPEC §26.9). The instance is deployed in Links
 /// mode, which records each file's placement, size and source: that record is the "before". The tool
 /// runs in the game's folder, and what it changed is compared with the record. New files and changed
@@ -1220,7 +1257,14 @@ fn run_from_links(
         .ok_or_else(|| ToolError::Other("the deployment has no folder".into()))?
         .to_path_buf();
 
-    deploy_locked(ctx, instance_id, definition, DeployMode::Links)?;
+    let copied = executable_layer(ctx, instance_id, definition, tool)?;
+    deploy_locked_with_copy(
+        ctx,
+        instance_id,
+        definition,
+        DeployMode::Links,
+        copied.as_deref(),
+    )?;
     let before = read_deployment_record(&deployment_dir)?;
     let fingerprint = input_fingerprint(ctx, instance_id, definition, tool)?;
 
@@ -1284,6 +1328,7 @@ fn run_from_links(
         CaptureMethod::Links,
         reason,
     );
+    out.copied_layer = copied;
     out.install_changes = installed;
     Ok(out)
 }
@@ -1326,7 +1371,14 @@ fn run_by_swap(
     // Refused before anything is deployed or moved.
     game_tool_swap::preflight(&install, &game_dir, &real_data, &aside)?;
 
-    deploy_locked(ctx, instance_id, definition, DeployMode::Links)?;
+    let copied = executable_layer(ctx, instance_id, definition, tool)?;
+    deploy_locked_with_copy(
+        ctx,
+        instance_id,
+        definition,
+        DeployMode::Links,
+        copied.as_deref(),
+    )?;
     let before = read_deployment_record(&deployment_dir)?;
     let fingerprint = input_fingerprint(ctx, instance_id, definition, tool)?;
 
@@ -1444,6 +1496,7 @@ fn run_by_swap(
         CaptureMethod::Swap,
         reason,
     );
+    out.copied_layer = copied;
     out.install_changes = installed;
     Ok(out)
 }
@@ -1503,6 +1556,8 @@ fn outcome(
         exit_code: exit.code,
         cancelled: exit.cancelled,
         failed_folder: settled.failed_folder,
+        failure: settled.failure,
+        copied_layer: None,
         install_changes: InstallChanges::default(),
     }
 }
@@ -1611,9 +1666,12 @@ struct Settled {
     previous: Option<String>,
     deleted: Vec<RelPath>,
     failed_folder: Option<PathBuf>,
+    failure: Option<String>,
 }
 
-/// Promote a run that exited 0, or discard any other run, and say what the output is now.
+/// Promote a run that exited 0 and passed its output checks, or discard any other run, and say what
+/// the output is now. A run that exits 0 is still discarded when a required output is missing or a
+/// failure marker is in a file it wrote (MASTER_SPEC §26.9).
 #[allow(clippy::too_many_arguments)]
 fn settle_run(
     ctx: &Ctx,
@@ -1627,7 +1685,17 @@ fn settle_run(
     exit: &TreeExit,
 ) -> Result<Settled, ToolError> {
     let written = written_files(staging)?;
-    let promoted = exit.code == Some(0) && !exit.cancelled;
+    let failure = if exit.cancelled {
+        Some("the run was cancelled".to_string())
+    } else if exit.code != Some(0) {
+        Some(match exit.code {
+            Some(code) => format!("the tool exited with code {code}"),
+            None => "the tool exited with no exit code".to_string(),
+        })
+    } else {
+        output_check(ctx, instance_id, definition, tool, staging, &written)?
+    };
+    let promoted = failure.is_none();
     if promoted {
         let (current, previous, deleted) = promote(
             ctx,
@@ -1645,6 +1713,7 @@ fn settle_run(
             previous,
             deleted,
             failed_folder: None,
+            failure: None,
         });
     }
     let failed = discard(dir, staging, run)?;
@@ -1655,7 +1724,119 @@ fn settle_run(
         previous: read_record(dir)?.previous.map(|g| g.generation),
         deleted: Vec::new(),
         failed_folder: Some(failed),
+        failure,
     })
+}
+
+/// The files the game would read once `tool`'s run is promoted, lower-cased and `/`-separated
+/// (MASTER_SPEC §26.9). The stack is the instance's, with the tool's generated layer holding the run's
+/// staging folder and the run's whiteouts. The layers above that layer are left out, the writable
+/// layer among them: the game's own writes are not the tool's output. The planner does the work, so
+/// what it hides or places is what the game would see.
+///
+/// The inner `Err` is a reason the output cannot be deployed at all (for example a file that is a
+/// folder in another layer). That fails the run's checks; an outer `Err` is a failure to read the
+/// instance.
+fn would_be_files(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    staging: &Path,
+) -> Result<Result<Vec<String>, String>, ToolError> {
+    let deletions = read_markers(staging)?;
+    let mut manifest = load_manifest(ctx, instance_id)?;
+    let mut layers = manifest.layers.layers().to_vec();
+    match generated_position(&layers, tool.id.as_str()) {
+        Some(i) => {
+            layers[i].source = LayerSource::Generated {
+                tool: tool.id.clone(),
+                generation: WOULD_BE_GENERATION.to_string(),
+                inputs: InputFingerprint::Unknown,
+            };
+            layers[i].whiteouts = deletions;
+        }
+        None => layers.push(generated_layer(
+            &tool.id,
+            WOULD_BE_GENERATION,
+            InputFingerprint::Unknown,
+            deletions,
+        )?),
+    }
+    let layers = arrange(ctx, definition, layers);
+    let end = generated_position(&layers, tool.id.as_str()).unwrap_or(layers.len());
+    manifest.layers = LayerStack::new(layers.into_iter().take(end + 1).collect())?;
+
+    let would_be = crate::game_deploy::WouldBe {
+        manifest,
+        tool: tool.id.as_str(),
+        folder: staging.to_path_buf(),
+    };
+    match crate::game_deploy::plan_would_be(ctx, instance_id, definition, would_be) {
+        Ok(plan) => Ok(Ok(plan
+            .files
+            .iter()
+            .map(|file| file.path.as_str().to_ascii_lowercase())
+            .collect())),
+        Err(e) => Ok(Err(format!(
+            "the output the run would produce cannot be deployed: {e}"
+        ))),
+    }
+}
+
+/// The checks a run that exited 0 must pass (MASTER_SPEC §26.9): every required output is a file the
+/// game would read once the run is promoted, and no failure marker is in a file the run wrote.
+/// Returns why the run failed, or `None` when it passed. Nothing is planned when the tool declares no
+/// required outputs, and nothing is read when it declares no markers.
+fn output_check(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    staging: &Path,
+    written: &[String],
+) -> Result<Option<String>, ToolError> {
+    if !tool.required_outputs.is_empty() {
+        let files = match would_be_files(ctx, instance_id, definition, tool, staging)? {
+            Ok(files) => files,
+            Err(reason) => return Ok(Some(reason)),
+        };
+        for pattern in &tool.required_outputs {
+            let wanted = pattern.to_ascii_lowercase();
+            if !files.iter().any(|key| glob_match(&wanted, key)) {
+                return Ok(Some(format!(
+                    "required output '{pattern}' is missing from the output the run would produce"
+                )));
+            }
+        }
+    }
+
+    for marker in &tool.failure_markers {
+        if marker.contains.is_empty() {
+            continue;
+        }
+        let wanted = marker.file.as_str().to_ascii_lowercase();
+        let Some(rel) = written
+            .iter()
+            .find(|rel| rel.to_ascii_lowercase() == wanted)
+        else {
+            continue;
+        };
+        let path = rel
+            .split('/')
+            .fold(staging.to_path_buf(), |p, part| p.join(part));
+        if std::fs::metadata(&path)?.len() > MARKER_SEARCH_LIMIT {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&std::fs::read(&path)?).into_owned();
+        if text.contains(&marker.contains) {
+            return Ok(Some(format!(
+                "{rel} contains '{}', which marks a failed run",
+                marker.contains
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// The generation a tool's layer points at now. Read through the manifest on demand: a discarded run
