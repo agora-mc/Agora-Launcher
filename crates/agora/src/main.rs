@@ -465,6 +465,64 @@ enum GameInstanceCmd {
         #[command(subcommand)]
         action: Option<InstancePluginsCmd>,
     },
+    /// Run the tools a game declares (such as Nemesis) and manage the output they write into an
+    /// instance, kept as a generated layer (MASTER_SPEC §26.9).
+    Tools {
+        #[command(subcommand)]
+        action: InstanceToolsCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum InstanceToolsCmd {
+    /// List each tool the game declares, with its current and previous output, and whether that
+    /// output is current, stale or unknown.
+    List {
+        /// Instance ID.
+        instance_id: String,
+    },
+    /// Run a tool in the instance. A run that exits 0 becomes the tool's output; any other run is
+    /// discarded, and the output that was in effect stays.
+    Run {
+        /// Instance ID.
+        instance_id: String,
+        /// Tool ID, e.g. nemesis.
+        tool: String,
+    },
+    /// Make the previous output current again. The game reads it on its next launch.
+    Rollback {
+        /// Instance ID.
+        instance_id: String,
+        /// Tool ID, e.g. nemesis.
+        tool: String,
+    },
+    /// Remove a tool's output from the instance, with its generations.
+    Remove {
+        /// Instance ID.
+        instance_id: String,
+        /// Tool ID, e.g. nemesis.
+        tool: String,
+    },
+    /// Show the files a tool's output added, changed and removed between its previous and current
+    /// generations.
+    Diff {
+        /// Instance ID.
+        instance_id: String,
+        /// Tool ID, e.g. nemesis.
+        tool: String,
+    },
+}
+
+impl InstanceToolsCmd {
+    fn instance_id(&self) -> &str {
+        match self {
+            InstanceToolsCmd::List { instance_id }
+            | InstanceToolsCmd::Run { instance_id, .. }
+            | InstanceToolsCmd::Rollback { instance_id, .. }
+            | InstanceToolsCmd::Remove { instance_id, .. }
+            | InstanceToolsCmd::Diff { instance_id, .. } => instance_id,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -5720,6 +5778,11 @@ async fn run_command(
 
                         let _ = agora_core::game_instance::record_launch(ctx, &instance_id);
 
+                        if !json && !prepared.generated_findings.is_empty() {
+                            for finding in &prepared.generated_findings {
+                                eprintln!("Warning: {}", finding.message);
+                            }
+                        }
                         if !json && !prepared.runtime_findings.is_empty() {
                             eprintln!(
                                 "Warning: Launching past {} framework check finding(s):",
@@ -5765,6 +5828,7 @@ async fn run_command(
                                     "warnings": prepared.warnings,
                                     "runtime_findings": prepared.runtime_findings,
                                     "load_order_findings": prepared.load_order_findings,
+                                    "generated_findings": prepared.generated_findings,
                                     "deployment": prepared.deployment.map(|m| m.as_str()),
                                     "notice": prepared.notice,
                                     "alternative": prepared.alternative,
@@ -5880,6 +5944,7 @@ async fn run_command(
                                     "warnings": prepared.warnings,
                                     "runtime_findings": prepared.runtime_findings,
                                     "load_order_findings": prepared.load_order_findings,
+                                    "generated_findings": prepared.generated_findings,
                                     "deployment": prepared.deployment.map(|m| m.as_str()),
                                     "notice": prepared.notice,
                                     "processes": exit_report.processes,
@@ -6829,9 +6894,18 @@ async fn run_command(
                         .iter()
                         .any(agora_core::game_load_order::Finding::refuses_launch);
                     let refuses = framework_refuses || order_refuses;
+                    // Tool output that is stale or unknown is a warning, never a refusal (§26.9).
+                    let generated: Vec<agora_core::game_tools::OutputFinding> = if pinned {
+                        match agora_core::game_tools::output_findings(ctx, &instance_id, game_def) {
+                            Ok(found) => found,
+                            Err(e) => fail(format!("{e}")),
+                        }
+                    } else {
+                        Vec::new()
+                    };
                     let status = if refuses {
                         "findings"
-                    } else if findings.is_empty() && load_order.is_empty() {
+                    } else if findings.is_empty() && load_order.is_empty() && generated.is_empty() {
                         "ok"
                     } else {
                         "warnings"
@@ -6843,6 +6917,7 @@ async fn run_command(
                             "checked": pinned,
                             "findings": findings,
                             "load_order_findings": load_order,
+                            "generated_findings": generated,
                             "exitCode": if refuses { 1 } else { 0 },
                         });
                         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -6880,6 +6955,9 @@ async fn run_command(
                                 }
                             }
                         }
+                        for finding in &generated {
+                            println!("- {}", finding.message);
+                        }
                     }
                     if refuses {
                         std::process::exit(1);
@@ -6915,6 +6993,9 @@ async fn run_command(
                             unset,
                         },
                     )?;
+                }
+                GameInstanceCmd::Tools { action } => {
+                    instance_tools_command(ctx, json, action)?;
                 }
                 GameInstanceCmd::Saves {
                     instance_id,
@@ -7118,6 +7199,11 @@ async fn run_command(
                     }
                 };
 
+                if !json && !prepared.generated_findings.is_empty() {
+                    for finding in &prepared.generated_findings {
+                        eprintln!("Warning: {}", finding.message);
+                    }
+                }
                 if !json && !prepared.runtime_findings.is_empty() {
                     eprintln!(
                         "Warning: Launching past {} framework check finding(s):",
@@ -7170,6 +7256,7 @@ async fn run_command(
                             "warnings": prepared.warnings,
                             "runtime_findings": prepared.runtime_findings,
                             "load_order_findings": prepared.load_order_findings,
+                            "generated_findings": prepared.generated_findings,
                         });
                         println!("{}", serde_json::to_string_pretty(&out)?);
                     } else {
@@ -7235,6 +7322,7 @@ async fn run_command(
                             "warnings": prepared.warnings,
                             "runtime_findings": prepared.runtime_findings,
                             "load_order_findings": prepared.load_order_findings,
+                            "generated_findings": prepared.generated_findings,
                             "processes": exit_report.processes,
                             "relaunched_outside": exit_report.relaunched_outside,
                             "game_writes": ver.game_writes,
@@ -7553,6 +7641,203 @@ impl InstancePluginsCmd {
                 | InstancePluginsCmd::Unlock { .. }
                 | InstancePluginsCmd::Check { .. }
         )
+    }
+}
+
+/// `games instance tools`: run a tool, or list, roll back, remove or diff the output it wrote. A run
+/// that does not promote its output exits 1, as a failed build should.
+fn instance_tools_command(
+    ctx: &agora_core::ctx::Ctx,
+    json: bool,
+    action: InstanceToolsCmd,
+) -> anyhow::Result<()> {
+    use agora_core::game_tools;
+    use agora_game_api::ToolId;
+
+    let instance_id = action.instance_id().to_string();
+    let record = match agora_core::game_instance::get(ctx, &instance_id)? {
+        Some(r) => r,
+        None => ini_fail(json, format!("Instance '{instance_id}' not found.")),
+    };
+    let game_def = ctx
+        .games
+        .game(&record.game)
+        .ok_or_else(|| anyhow::anyhow!("Game definition not found for {}", record.game))?;
+    let fail = |message: String| -> ! { ini_fail(json, message) };
+    let tool_id = |tool: &str| -> ToolId {
+        ToolId::new(tool).unwrap_or_else(|e| ini_fail(json, e.to_string()))
+    };
+
+    match action {
+        InstanceToolsCmd::List { .. } => {
+            let states = game_tools::list(ctx, &instance_id, game_def)
+                .unwrap_or_else(|e| fail(e.to_string()));
+            if json {
+                let out = serde_json::json!({
+                    "instance_id": instance_id,
+                    "tools": states,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else if states.is_empty() {
+                println!("Game '{}' declares no tools.", game_def.name);
+            } else {
+                for state in &states {
+                    let status = state.status.map(|s| s.as_str()).unwrap_or("not built");
+                    let current = state.current.as_deref().unwrap_or("none");
+                    let previous = state.previous.as_deref().unwrap_or("none");
+                    let declared = if state.declared {
+                        ""
+                    } else {
+                        " (no longer declared by the game)"
+                    };
+                    println!(
+                        "{} ({}): output {status}, generation {current}, previous {previous}{declared}",
+                        state.name, state.tool
+                    );
+                }
+            }
+        }
+        InstanceToolsCmd::Run { tool, .. } => {
+            let tool = tool_id(&tool);
+            let cancel = agora_core::event_sink::CancellationToken::new();
+            let outcome = game_tools::run(
+                ctx,
+                &instance_id,
+                game_def,
+                &tool,
+                &agora_core::game_launch::SystemLauncher,
+                &cancel,
+            )
+            .unwrap_or_else(|e| fail(e.to_string()));
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                print_tool_run(&outcome);
+            }
+            if !outcome.promoted {
+                std::process::exit(1);
+            }
+        }
+        InstanceToolsCmd::Rollback { tool, .. } => {
+            let tool = tool_id(&tool);
+            let state = game_tools::rollback(ctx, &instance_id, game_def, &tool)
+                .unwrap_or_else(|e| fail(e.to_string()));
+            if json {
+                println!("{}", serde_json::to_string_pretty(&state)?);
+            } else {
+                println!(
+                    "{} rolled back: its output is now generation {}, with generation {} kept. The game reads it on its next launch.",
+                    state.name,
+                    state.current.as_deref().unwrap_or("none"),
+                    state.previous.as_deref().unwrap_or("none")
+                );
+            }
+        }
+        InstanceToolsCmd::Remove { tool, .. } => {
+            let tool = tool_id(&tool);
+            let removed = game_tools::remove(ctx, &instance_id, game_def, &tool)
+                .unwrap_or_else(|e| fail(e.to_string()));
+            if json {
+                let out = serde_json::json!({
+                    "instance_id": instance_id,
+                    "tool": tool.to_string(),
+                    "removed_generations": removed,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!(
+                    "Removed {tool} from instance '{instance_id}', with {} generation folder(s).",
+                    removed.len()
+                );
+            }
+        }
+        InstanceToolsCmd::Diff { tool, .. } => {
+            let tool = tool_id(&tool);
+            let report =
+                game_tools::diff(ctx, &instance_id, &tool).unwrap_or_else(|e| fail(e.to_string()));
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "{tool}: generation {} compared with the previous generation {}.",
+                    report.current, report.previous
+                );
+                if report.added.is_empty() && report.changed.is_empty() && report.removed.is_empty()
+                {
+                    println!("No file differs between the two generations.");
+                }
+                for (label, files) in [
+                    ("Added", &report.added),
+                    ("Changed", &report.changed),
+                    ("Removed", &report.removed),
+                ] {
+                    if !files.is_empty() {
+                        println!("{label} ({}):", files.len());
+                        for file in files.iter().take(game_tools::REPORTED_PATHS) {
+                            println!("  {file}");
+                        }
+                        if files.len() > game_tools::REPORTED_PATHS {
+                            println!(
+                                "  ... and {} more",
+                                files.len() - game_tools::REPORTED_PATHS
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What a tool run wrote and what became of it, for people to read.
+fn print_tool_run(outcome: &agora_core::game_tools::RunOutcome) {
+    use agora_core::game_tools::REPORTED_PATHS;
+
+    let current = outcome.current.as_deref().unwrap_or("none");
+    let written = outcome.written.len();
+    if outcome.promoted {
+        let previous = outcome
+            .previous
+            .as_deref()
+            .map(|p| format!(", with generation {p} kept for rollback"))
+            .unwrap_or_default();
+        println!(
+            "{} ran and wrote {written} file(s). Its output is now generation {current}{previous}.",
+            outcome.name
+        );
+    } else if outcome.cancelled {
+        println!(
+            "{} was cancelled. Its output was discarded, and generation {current} stays in effect.",
+            outcome.name
+        );
+    } else {
+        let code = outcome
+            .exit_code
+            .map(|c| format!("exit code {c}"))
+            .unwrap_or_else(|| "no exit code".to_string());
+        println!(
+            "{} failed ({code}) after writing {written} file(s). Its output was discarded, and generation {current} stays in effect.",
+            outcome.name
+        );
+    }
+    for path in outcome.written.iter().take(REPORTED_PATHS) {
+        println!("  {path}");
+    }
+    if written > REPORTED_PATHS {
+        println!("  ... and {} more", written - REPORTED_PATHS);
+    }
+    if !outcome.deleted.is_empty() {
+        println!(
+            "{} file(s) deleted, which the game will no longer see:",
+            outcome.deleted.len()
+        );
+        for path in outcome.deleted.iter().take(REPORTED_PATHS) {
+            println!("  {path}");
+        }
+    }
+    if let Some(folder) = &outcome.failed_folder {
+        println!("The discarded run is kept in {}.", folder.display());
     }
 }
 

@@ -412,6 +412,15 @@ impl GameRegistry {
         self.games.get(id).map(|(idx, _)| &self.packages[*idx].1)
     }
 
+    /// The tool `tool_id` of `game`, as the game's package declares it (MASTER_SPEC §26.9).
+    pub fn tool(&self, game: &GameId, tool_id: &ToolId) -> Option<&agora_game_api::ToolDefinition> {
+        self.package_for(game)?
+            .definition()
+            .tools
+            .iter()
+            .find(|tool| tool.game == *game && tool.id == *tool_id)
+    }
+
     pub fn source_for(&self, id: &GameId) -> Option<&PackageSource> {
         self.games.get(id).map(|(idx, _)| &self.packages[*idx].0)
     }

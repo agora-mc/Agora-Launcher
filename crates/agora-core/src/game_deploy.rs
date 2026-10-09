@@ -115,6 +115,13 @@ pub enum FileSource {
     Writable {
         path: PathBuf,
     },
+    /// A file in a generated layer: the output of one tool run, kept in that generation's folder
+    /// (MASTER_SPEC §26.9).
+    Generated {
+        tool: String,
+        generation: String,
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +236,14 @@ pub enum DeployError {
         file_layer: String,
         folder_path: String,
         folder_layer: String,
+    },
+    /// A generated layer's folder is not on disk. Deployed without it, the game would silently lose
+    /// the tool's output, so it is an error instead of an empty layer (MASTER_SPEC §26.9).
+    #[error("the output of tool '{tool}' (generation {generation}) is missing from {}; rebuild it with `agora games instance tools run <instance> {tool}`", path.display())]
+    GeneratedLayerMissing {
+        tool: String,
+        generation: String,
+        path: PathBuf,
     },
     #[error("cannot deploy while game processes are running from deployment folder (PIDs: {0})")]
     ProcessesRunning(String),
@@ -369,6 +384,9 @@ struct LayerContribution {
     layer_id: String,
     files: Vec<LayerFileEntry>,
     own_copy: bool,
+    /// Paths (lower-cased) this layer deletes from the layers below it. Applied before its own
+    /// files are added, so a tool that deletes and rewrites a path keeps the rewritten file.
+    whiteouts: Vec<String>,
 }
 
 pub fn plan(
@@ -404,6 +422,10 @@ pub fn plan(
         .ok_or_else(|| DeployError::Other("base location has no parent".into()))?;
     let deployment_dir = bases_root.join("deployments").join(instance_id);
     let game_dir = deployment_dir.join("game");
+    let instance_dir = ctx
+        .paths
+        .instance_dir(instance_id)
+        .map_err(|e| DeployError::Other(e.to_string()))?;
 
     let mut layers = Vec::new();
     let mut warnings = Vec::new();
@@ -429,6 +451,7 @@ pub fn plan(
             layer_id: "base".to_string(),
             files: base_files,
             own_copy: false,
+            whiteouts: Vec::new(),
         });
     }
 
@@ -502,16 +525,54 @@ pub fn plan(
                     layer_id: layer.id.as_str().to_string(),
                     files: content_files,
                     own_copy: layer.own_copy,
+                    whiteouts: Vec::new(),
                 });
             }
         }
     }
 
-    // 3. Writable layer files
-    let instance_dir = ctx
-        .paths
-        .instance_dir(instance_id)
-        .map_err(|e| DeployError::Other(e.to_string()))?;
+    // 3. Generated layers, in stack order (MASTER_SPEC §26.9): each one is the output of a tool
+    // run, kept whole in its generation's folder. A folder that is not on disk is an error.
+    for layer in manifest.layers.layers() {
+        let LayerSource::Generated {
+            tool, generation, ..
+        } = &layer.source
+        else {
+            continue;
+        };
+        if !layer.enabled {
+            continue;
+        }
+        let folder = crate::game_tools::generation_dir(&instance_dir, tool.as_str(), generation)
+            .map_err(DeployError::Other)?;
+        if !folder.is_dir() {
+            return Err(DeployError::GeneratedLayerMissing {
+                tool: tool.to_string(),
+                generation: generation.clone(),
+                path: folder,
+            });
+        }
+        let mut generated_files = Vec::new();
+        walk_generated_dir(
+            &folder,
+            Path::new(""),
+            tool.as_str(),
+            generation,
+            &mut generated_files,
+        )?;
+        layers.push(LayerContribution {
+            layer_id: layer.id.as_str().to_string(),
+            files: generated_files,
+            own_copy: layer.own_copy,
+            whiteouts: layer
+                .whiteouts
+                .iter()
+                .map(|w| w.as_str().to_ascii_lowercase())
+                .collect(),
+        });
+    }
+
+    // 4. Writable layer files
     let writable_dir = instance_dir.join("writable");
     // Under the VFS the writable layer is shown on top of the farm, not placed in it, so the
     // farm (and its fingerprint) does not change when the game writes.
@@ -523,11 +584,12 @@ pub fn plan(
                 layer_id: "writable".to_string(),
                 files: writable_files,
                 own_copy: false,
+                whiteouts: Vec::new(),
             });
         }
     }
 
-    // 4. Check for File-versus-Folder conflicts across layers
+    // 5. Check for File-versus-Folder conflicts across layers
     // A path that is a file in one layer and a folder in another is an error naming both paths and layers.
     {
         #[derive(Clone)]
@@ -564,7 +626,7 @@ pub fn plan(
         }
     }
 
-    // 5. Build winning map and record overrides
+    // 6. Build winning map and record overrides
     struct Candidate {
         path: RelPath,
         source: FileSource,
@@ -577,6 +639,10 @@ pub fn plan(
 
     let mut candidates: BTreeMap<String, Candidate> = BTreeMap::new();
     for l in layers {
+        for marker in &l.whiteouts {
+            let prefix = format!("{marker}/");
+            candidates.retain(|key, _| !(*key == *marker || key.starts_with(&prefix)));
+        }
         for f in l.files {
             let key = f.path.as_str().to_ascii_lowercase();
             if let Some(existing) = candidates.get_mut(&key) {
@@ -608,7 +674,7 @@ pub fn plan(
         }
     }
 
-    // 6. Remove whiteouts from writable layer
+    // 7. Remove whiteouts from writable layer
     for layer in manifest.layers.layers() {
         if matches!(layer.source, LayerSource::Writable { .. }) {
             for wh in &layer.whiteouts {
@@ -627,30 +693,49 @@ pub fn plan(
         });
     }
 
-    // 7. Determine placement & compute fingerprint
+    // 8. Determine placement & compute fingerprint
     let detector = VolumeDetector::new();
     let deploy_vol = detector.get_volume_info(&game_dir);
 
     let mut planned_files = Vec::with_capacity(candidates.len());
     let mut overrides = Vec::new();
     let mut fingerprint_lines = Vec::with_capacity(candidates.len());
+    // The generation is part of the farm's identity, so promoting or rolling back a tool's output
+    // rebuilds the deployment even where the bytes happen to match.
+    for layer in manifest.layers.layers() {
+        if let (
+            true,
+            LayerSource::Generated {
+                tool, generation, ..
+            },
+        ) = (layer.enabled, &layer.source)
+        {
+            fingerprint_lines.push(format!("generated-layer\t{tool}\t{generation}\n"));
+        }
+    }
 
     for (_key, cand) in candidates {
+        // A generated layer's files are copies in every mode, as the writable layer's are.
+        let generated = matches!(cand.source, FileSource::Generated { .. });
         let is_config_copy = mode == DeployMode::Links
             && cand.size <= 1024 * 1024
             && definition.is_copy_pattern(cand.path.as_str())
             && !definition.is_declared_write(cand.path.as_str())
             && !cand.own_copy
+            && !generated
             && !matches!(cand.source, FileSource::Writable { .. });
 
         let placement = match mode {
+            _ if generated => Placement::Copy,
             DeployMode::Copies => Placement::Copy,
             DeployMode::Virtual => {
                 if cand.own_copy || definition.is_declared_write(cand.path.as_str()) {
                     Placement::Copy
                 } else {
                     match &cand.source {
-                        FileSource::Writable { .. } => Placement::Copy,
+                        FileSource::Writable { .. } | FileSource::Generated { .. } => {
+                            Placement::Copy
+                        }
                         FileSource::Base { .. } => Placement::Link,
                         FileSource::Content { sha256, .. } => {
                             let obj_path = ctx.paths.content_object_path(sha256);
@@ -680,7 +765,9 @@ pub fn plan(
                     Placement::Copy
                 } else {
                     match &cand.source {
-                        FileSource::Writable { .. } => Placement::Copy,
+                        FileSource::Writable { .. } | FileSource::Generated { .. } => {
+                            Placement::Copy
+                        }
                         FileSource::Base { .. } => Placement::Link,
                         FileSource::Content { sha256, .. } => {
                             let obj_path = ctx.paths.content_object_path(sha256);
@@ -713,6 +800,11 @@ pub fn plan(
                 cand.size,
                 cand.modified_unix_ms
             ),
+            FileSource::Generated {
+                tool,
+                generation,
+                path,
+            } => format!("generated:{tool}:{generation}:{}", path.display()),
         };
 
         let placement_desc = match placement {
@@ -760,6 +852,50 @@ pub fn plan(
         fingerprint,
         warnings,
     })
+}
+
+/// Every file of one generation's folder, as a generated layer's files. A missing folder was
+/// checked by the caller; a folder with nothing in it is an empty layer, which is a valid output.
+fn walk_generated_dir(
+    root: &Path,
+    rel: &Path,
+    tool: &str,
+    generation: &str,
+    out: &mut Vec<LayerFileEntry>,
+) -> Result<(), DeployError> {
+    let cur = if rel.as_os_str().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel)
+    };
+    for entry in std::fs::read_dir(&cur)? {
+        let entry = entry?;
+        let abs_path = entry.path();
+        let meta = std::fs::symlink_metadata(&abs_path)?;
+        if is_reparse_point_or_symlink(&meta) {
+            continue;
+        }
+        let child_rel = rel.join(entry.file_name());
+        if meta.is_dir() {
+            walk_generated_dir(root, &child_rel, tool, generation, out)?;
+        } else if meta.is_file() {
+            let rel_str = child_rel.to_string_lossy().replace('\\', "/");
+            let rel_path = RelPath::new(rel_str).map_err(|e| {
+                DeployError::Other(format!("invalid path in generated output: {e}"))
+            })?;
+            out.push(LayerFileEntry {
+                path: rel_path,
+                source: FileSource::Generated {
+                    tool: tool.to_string(),
+                    generation: generation.to_string(),
+                    path: abs_path.clone(),
+                },
+                size: meta.len(),
+                modified_unix_ms: get_modified_unix_ms(&meta),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn walk_writable_dir(
@@ -870,6 +1006,7 @@ pub fn source_path(ctx: &Ctx, source: &FileSource) -> PathBuf {
         FileSource::Base { path, .. } => path.clone(),
         FileSource::Content { sha256, .. } => ctx.paths.content_object_path(sha256),
         FileSource::Writable { path } => path.clone(),
+        FileSource::Generated { path, .. } => path.clone(),
     }
 }
 
@@ -949,7 +1086,17 @@ pub fn deploy(
     let _lock = ctx
         .lock_manager
         .acquire(LockResource::Instance(instance_id.to_string()), "deploy")?;
+    deploy_locked(ctx, instance_id, definition, mode)
+}
 
+/// [`deploy`] for a caller that already holds the instance's lock: a tool run holds it for the
+/// whole run, and the lock is not re-entrant.
+pub(crate) fn deploy_locked(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+) -> Result<DeployOutcome, DeployError> {
     let manifest = crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
         crate::game_instance::InstanceError::NotFound(id) => DeployError::InstanceNotFound(id),
         other => DeployError::Other(other.to_string()),

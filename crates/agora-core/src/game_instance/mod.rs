@@ -702,6 +702,7 @@ fn deploys_on_launch(
 ) -> Option<DeployMode> {
     let has_deployment_layers = manifest.layers.iter().any(|l| {
         (matches!(l.source, agora_game_api::LayerSource::Content { .. }) && l.enabled)
+            || (matches!(l.source, agora_game_api::LayerSource::Generated { .. }) && l.enabled)
             || matches!(l.source, agora_game_api::LayerSource::Writable { .. })
     });
     if has_deployment_layers
@@ -943,6 +944,9 @@ fn prepare_deployed(
     // The deploy has synced the plugin list, so this is the order the game will read. Nothing has
     // been swapped in yet: a refused launch leaves the user's files as they were.
     let load_order_findings = check_load_order(ctx, id, definition, options.launch_anyway)?;
+    // Stale or unknown tool output is a warning: the launch goes on (MASTER_SPEC §26.9).
+    let generated_findings = crate::game_tools::output_findings(ctx, id, definition)
+        .map_err(|e| InstanceError::Other(e.to_string()))?;
 
     let game_dir = crate::game_deploy::deployment_dir(ctx, id)?
         .ok_or_else(|| InstanceError::Other("deployed game directory not found".into()))?;
@@ -1023,6 +1027,7 @@ fn prepare_deployed(
         alternative,
         runtime_findings: findings,
         load_order_findings,
+        generated_findings,
     })
 }
 

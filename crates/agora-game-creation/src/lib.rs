@@ -168,7 +168,31 @@ mod tests {
         );
         assert_eq!(def.frameworks[0].game, GameId::new("skyrim-se").unwrap());
         assert_eq!(def.frameworks[0].name, "Skyrim Script Extender");
-        assert!(game.tool_ids.is_empty());
+        // Nemesis is the one tool Skyrim SE declares (MASTER_SPEC §26.9): its engine sits in the
+        // deployed Nemesis mod folder and runs from there.
+        assert_eq!(
+            game.tool_ids,
+            vec![agora_game_api::ToolId::new("nemesis").unwrap()]
+        );
+        assert_eq!(def.tools.len(), 1);
+        let nemesis = &def.tools[0];
+        assert_eq!(nemesis.id, agora_game_api::ToolId::new("nemesis").unwrap());
+        assert_eq!(nemesis.game, GameId::new("skyrim-se").unwrap());
+        assert_eq!(
+            nemesis.launch.executable,
+            GamePath::Runtime {
+                path: RelPath::new("Data/Nemesis_Engine/Nemesis Unlimited Behavior Engine.exe")
+                    .unwrap()
+            }
+        );
+        assert_eq!(
+            nemesis.launch.working_directory,
+            GamePath::Runtime {
+                path: RelPath::new("Data/Nemesis_Engine").unwrap()
+            }
+        );
+        assert!(nemesis.relevant_settings.is_empty());
+        assert!(nemesis.after_tools.is_empty());
         assert!(game.log_paths.is_empty());
         assert!(game.crash_paths.is_empty());
         assert!(game.save_paths.is_empty());

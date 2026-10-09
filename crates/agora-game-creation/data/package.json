@@ -73,7 +73,9 @@
       "framework_ids": [
         "skse"
       ],
-      "tool_ids": [],
+      "tool_ids": [
+        "nemesis"
+      ],
       "launch": {
         "executable": {
           "root": "runtime",
@@ -316,5 +318,25 @@
       "launch": null
     }
   ],
-  "tools": []
+  "tools": [
+    {
+      "id": "nemesis",
+      "game": "skyrim-se",
+      "name": "Nemesis",
+      "launch": {
+        "executable": {
+          "root": "runtime",
+          "path": "Data/Nemesis_Engine/Nemesis Unlimited Behavior Engine.exe"
+        },
+        "arguments": [],
+        "environment": {},
+        "working_directory": {
+          "root": "runtime",
+          "path": "Data/Nemesis_Engine"
+        }
+      },
+      "relevant_settings": [],
+      "after_tools": []
+    }
+  ]
 }

@@ -99,6 +99,8 @@ pub struct PreparedLaunch {
     /// Load order findings to show the user: the warnings always, and the refusing findings too
     /// when `launch_anyway` let them through. Empty when the load order is clean.
     pub load_order_findings: Vec<Finding>,
+    /// Tool output that is stale or unknown (MASTER_SPEC §26.9). Warnings only, never a refusal.
+    pub generated_findings: Vec<crate::game_tools::OutputFinding>,
 }
 
 impl PreparedLaunch {
@@ -119,6 +121,7 @@ impl PreparedLaunch {
             alternative,
             runtime_findings: Vec::new(),
             load_order_findings: Vec::new(),
+            generated_findings: Vec::new(),
         }
     }
 }

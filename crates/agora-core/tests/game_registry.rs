@@ -8,8 +8,8 @@ use agora_core::game_registry::{
 };
 use agora_game_api::{
     DeploymentStrategy, FrameworkDefinition, FrameworkId, GameDefinition, GameId, GamePackage,
-    InstallCapabilities, InstallKind, LayerId, PackageDefinition, RelPath, StoreId,
-    StoreIdentifier, ToolDefinition, ToolId, VersionSource,
+    InstallCapabilities, InstallKind, PackageDefinition, RelPath, StoreId, StoreIdentifier,
+    ToolDefinition, ToolId, VersionSource,
 };
 
 struct TestPackage(PackageDefinition);
@@ -270,9 +270,7 @@ fn registry_rejects_undefined_game_in_tool_leaving_registry_unchanged() {
         game: GameId::new("undefined-game").unwrap(),
         name: "Tool 1".into(),
         launch: dummy_launch_recipe(),
-        input_layers: vec![],
         relevant_settings: vec![],
-        output_layer: LayerId::new("out").unwrap(),
         after_tools: vec![],
     };
     let pkg = make_package(

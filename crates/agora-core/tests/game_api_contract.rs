@@ -53,8 +53,7 @@ fn declarative_skyrim_and_valheim_packages_need_no_discovered_install_ids() {
             }],
             "tools": [{
                 "id": "patcher", "game": game, "name": "Patcher", "launch": launch,
-                "input_layers": ["mod-1"], "relevant_settings": ["animation"],
-                "output_layer": "patcher-output", "after_tools": ["body-builder"]
+                "relevant_settings": ["animation"], "after_tools": ["body-builder"]
             }]
         });
         let package = DeclarativePackage(serde_json::from_value(definition.clone()).unwrap());

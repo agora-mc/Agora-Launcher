@@ -1194,16 +1194,26 @@ pub struct InstalledFramework {
     pub layers: Vec<LayerId>,
 }
 
+/// A program the game's package declares that reads the installed mods and writes files the game
+/// needs (MASTER_SPEC §26.9). Core runs it under the instance's virtual file system and keeps what
+/// it wrote as a generated layer.
+///
+/// The tool reads whatever the instance's stack shows it, so there is no list of input layers. Its
+/// output is always a generated layer named by its id, so there is no output layer either.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub id: ToolId,
     pub game: GameId,
+    /// What the tool is called to a person, e.g. "Nemesis".
     pub name: String,
     pub launch: LaunchRecipe,
-    pub input_layers: Vec<LayerId>,
+    /// INI settings, as `file:section:key` (e.g. `user/Skyrim.ini:General:SLocalSavePath`), whose
+    /// values the tool's output depends on. A change makes the output stale.
+    #[serde(default)]
     pub relevant_settings: Vec<String>,
-    pub output_layer: LayerId,
+    /// Tools whose generated output sits below this tool's: this tool's files win over theirs.
     /// Generated output precedence is independent of plugin load order.
+    #[serde(default)]
     pub after_tools: Vec<ToolId>,
 }
 
