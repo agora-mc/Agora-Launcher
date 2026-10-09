@@ -73,7 +73,16 @@ pub struct InstalledMod {
     #[serde(default)]
     pub source_url: Option<String>,
     pub version: Option<String>,
+    /// SHA-256 of the bytes installed. Always the real digest of the file, so
+    /// it is also what a later download of the same release file is compared
+    /// with when `hash_verified` is false.
     pub sha256: String,
+    /// Whether `sha256` was checked against a hash the source published. `false`
+    /// means the source published no checksum: the user was told Agora could
+    /// not verify the file before it was installed. Entries written before this
+    /// field existed were installed under the fail-closed rules, so they are true.
+    #[serde(default = "default_true")]
+    pub hash_verified: bool,
     pub installed_at: String,
     #[serde(default)]
     pub java_packages: Vec<String>,
@@ -761,6 +770,7 @@ mod tests {
                 source_url: Some("https://example.com/rt-mod.jar".to_string()),
                 version: Some("1.0.0".to_string()),
                 sha256: "sha123".to_string(),
+                hash_verified: true,
                 installed_at: "2024-06-01T12:00:00Z".to_string(),
                 java_packages: vec!["com.example.mod".to_string()],
                 mod_jar_id: Some("jar-1".to_string()),

@@ -36,6 +36,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
+use agora_core::artifact_hash::{first_unmet, ConfirmableHash, HashOrigin};
+use agora_core::error::HashConfirmation;
 use agora_core::task_scheduler::{BlockingPriority, TaskScheduler};
 
 // Reuse types from dependency_ops to avoid duplication.
@@ -140,13 +142,25 @@ pub enum ArtifactSource {
 // 6. Hash spec — stores multiple algorithms for defense in depth
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HashSpec {
-    /// Ordered by preference (strongest first). At least one entry required.
+    /// Hashes the file's source published (or, for `direct_hash`, the manifest
+    /// hash that identifies its one file). Ordered by preference (strongest
+    /// first). Every value must match, and a mismatch is never overridable.
     /// SHA-256 is mandatory for curated items; SHA-1 accepted for Modrinth
     /// backward compatibility only if accompanied by a stronger hash.
     pub values: Vec<HashedValue>,
+    /// Expectations the user can override with a confirmation: a curator pin
+    /// for this release file, or the hash recorded when it was installed
+    /// before. See `agora_core::artifact_hash`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confirmable: Vec<ConfirmableHash>,
+    /// The source published no checksum for this file, so `values` is empty and
+    /// the bytes can only be recorded, not verified. Set for curated GitHub and
+    /// Modrinth files only.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unpublished: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -535,6 +549,12 @@ fn is_false(value: &bool) -> bool {
 pub struct PlanOverrides {
     pub allow_replace: bool,
     pub skip_health_scan: bool,
+    /// The user confirmed a download that does not match a curator pin or the
+    /// hash recorded on an earlier install (ERR_HASH_CONFIRMATION_REQUIRED),
+    /// and asks Agora to install it anyway. Never overrides a mismatch against
+    /// the hash the source published.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub accept_hash_confirmation: bool,
     /// Permit the resolver to retry a failed exact/compatible version lookup
     /// using the nearest available candidate after explicit user approval.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -826,6 +846,9 @@ pub enum InstallOutcome {
         error: String,
         rollback_performed: bool,
         snapshot_id: Option<String>,
+        /// Set when the failure is a download that needs the user's
+        /// confirmation before it can be installed.
+        hash_confirmation: Option<HashConfirmation>,
     },
 }
 
@@ -1368,6 +1391,7 @@ impl InstallPipeline {
                 error,
                 rollback_performed,
                 snapshot_id,
+                hash_confirmation: None,
             }
         };
 
@@ -1463,7 +1487,7 @@ impl InstallPipeline {
             bytes_total: plan.disk_estimate.download_bytes,
             message: "Downloading and verifying every artifact…".into(),
         });
-        if let Err(error) = stage_plan_artifacts(plan, &staging_dir, reporter, cancel).await {
+        if let Err(failure) = stage_plan_artifacts(plan, &staging_dir, reporter, cancel).await {
             cleanup_staging_dir(scheduler, &staging_dir).await;
             if cancel.is_cancelled() {
                 return InstallOutcome::Cancelled {
@@ -1471,7 +1495,15 @@ impl InstallPipeline {
                     rollback_performed: false,
                 };
             }
-            return fail(error, None, false);
+            return match failure {
+                StageFailure::Message(error) => fail(error, None, false),
+                StageFailure::Confirmation(confirmation) => InstallOutcome::Failed {
+                    error: failure_message(&confirmation),
+                    rollback_performed: false,
+                    snapshot_id: None,
+                    hash_confirmation: Some(confirmation),
+                },
+            };
         }
         if cancel.is_cancelled() {
             cleanup_staging_dir(scheduler, &staging_dir).await;
@@ -2335,14 +2367,77 @@ fn plan_artifact_change(
         conflicts.push(conflict);
     }
 
+    let mut hashes = artifact_hashes(artifact).clone();
+    if let Some(remembered) = remembered_hash(artifact, installed) {
+        hashes.confirmable.push(remembered);
+    }
+    if hashes.unpublished {
+        warnings.push(PlanWarning {
+            code: "WARN_HASH_UNVERIFIED".into(),
+            message: unverified_hash_message(artifact),
+        });
+    }
     files_to_add.push(FileAdd {
         target_filename: filename.to_string(),
         staging_filename: filename.to_string(),
         artifact: artifact.clone(),
-        hashes: artifact_hashes(artifact).clone(),
+        hashes,
         size: artifact_size(artifact),
         installed_as_dependency,
     });
+}
+
+/// The release a download was published under: its tag for a curated item,
+/// otherwise the source's version id.
+fn recorded_version(download: &ResolvedDownload) -> Option<String> {
+    download
+        .metadata
+        .version
+        .clone()
+        .or_else(|| Some(download.version_id.clone()))
+}
+
+/// The SHA-256 Agora recorded for this same release file on an earlier install
+/// whose source published no checksum. Same registry item, release and asset
+/// name; it is compared with the bytes of the new download.
+fn remembered_hash(
+    artifact: &ResolvedArtifact,
+    installed: &[&agora_core::models::InstalledMod],
+) -> Option<ConfirmableHash> {
+    let ResolvedArtifact::Download(download) = artifact else {
+        return None;
+    };
+    let registry_id = download.metadata.registry_id.as_deref()?;
+    let release = recorded_version(download);
+    installed
+        .iter()
+        .find(|item| {
+            !item.hash_verified
+                && item.registry_id.as_deref() == Some(registry_id)
+                && item.version == release
+                && item.filename == download.filename
+        })
+        .map(|item| ConfirmableHash {
+            origin: HashOrigin::PreviousInstall,
+            sha256: item.sha256.clone(),
+        })
+}
+
+fn unverified_hash_message(artifact: &ResolvedArtifact) -> String {
+    let source = match artifact {
+        ResolvedArtifact::Download(download) => {
+            match download.metadata.download_strategy.as_deref() {
+                Some("github_release") => "GitHub",
+                Some("modrinth_id") => "Modrinth",
+                _ => "The source",
+            }
+        }
+        ResolvedArtifact::LocalFile(_) => "The source",
+    };
+    format!(
+        "{source} published no checksum for {}, so Agora could not verify it.",
+        artifact_filename(artifact)
+    )
 }
 
 /// Filenames (normalized) that one removal operation, or a batch of them,
@@ -2860,8 +2955,12 @@ fn validate_artifact_hashes(artifact: &ResolvedArtifact) -> Result<(), String> {
         })
     };
     let verified = match metadata.source_type {
+        // An unpublished curated file is installed on the user's word that it
+        // is what they asked for; its bytes are recorded as not verified.
         SourceType::Curated => {
-            valid(HashAlgorithm::Sha512, 128) || valid(HashAlgorithm::Sha256, 64)
+            valid(HashAlgorithm::Sha512, 128)
+                || valid(HashAlgorithm::Sha256, 64)
+                || artifact_hashes(artifact).unpublished
         }
         SourceType::Manual => valid(HashAlgorithm::Sha256, 64),
         SourceType::Modrinth => {
@@ -2992,12 +3091,41 @@ fn compute_plan_fingerprint(plan: &ResolvedInstallPlan) -> Result<String, String
     })
 }
 
+/// Why staging stopped. A confirmation is a structured error the user can
+/// retry past; everything else is a message.
+#[derive(Debug)]
+enum StageFailure {
+    Message(String),
+    Confirmation(HashConfirmation),
+}
+
+impl StageFailure {
+    fn message(&self) -> String {
+        match self {
+            StageFailure::Message(message) => message.clone(),
+            StageFailure::Confirmation(confirmation) => failure_message(confirmation),
+        }
+    }
+}
+
+impl From<String> for StageFailure {
+    fn from(message: String) -> Self {
+        StageFailure::Message(message)
+    }
+}
+
+impl From<&str> for StageFailure {
+    fn from(message: &str) -> Self {
+        StageFailure::Message(message.to_string())
+    }
+}
+
 async fn stage_plan_artifacts(
     plan: &ResolvedInstallPlan,
     staging_dir: &Path,
     reporter: &dyn ProgressReporter,
     cancel: &CancellationToken,
-) -> Result<(), String> {
+) -> Result<(), StageFailure> {
     if staging_dir.exists() {
         std::fs::remove_dir_all(staging_dir)
             .map_err(|e| format!("failed to clear previous staging directory: {e}"))?;
@@ -3058,15 +3186,25 @@ async fn stage_plan_artifacts(
             return Err("Install cancelled during staging.".into());
         }
         if file.size != 0 && contents.len() as u64 != file.size {
-            return Err(format!(
+            return Err(StageFailure::from(format!(
                 "artifact size mismatch for {}: expected {}, received {}",
                 file.target_filename,
                 file.size,
                 contents.len()
-            ));
+            )));
         }
-        verify_file_add(&contents, file)
-            .map_err(|e| format!("verification failed for {}: {e}", file.target_filename))?;
+        verify_file_add(
+            &contents,
+            file,
+            plan.intent.overrides.accept_hash_confirmation,
+        )
+        .map_err(|failure| match failure {
+            StageFailure::Message(e) => StageFailure::Message(format!(
+                "verification failed for {}: {e}",
+                file.target_filename
+            )),
+            confirmation @ StageFailure::Confirmation(_) => confirmation,
+        })?;
 
         let target = artifacts_dir.join(&file.staging_filename);
         let partial = artifacts_dir.join(format!("{}.part", file.staging_filename));
@@ -3131,17 +3269,50 @@ async fn stage_provider_download(
     .await
 }
 
-/// Verify a planned file, allowing the one case with nothing to check: a
-/// provider artifact the user accepted as a low security download.
-fn verify_file_add(contents: &[u8], add: &FileAdd) -> Result<(), String> {
+fn failure_message(confirmation: &HashConfirmation) -> String {
+    confirmation.to_string()
+}
+
+/// Verify a planned file.
+///
+/// Two cases have nothing to check against: a provider artifact accepted as a
+/// low security download, and a curated file whose source published no checksum
+/// (`unpublished`). The second is installed on the word of the user who
+/// confirmed it, and its bytes are recorded as not verified.
+///
+/// The source's published hashes always have to match. Curator pins and hashes
+/// remembered from an earlier install ask the user first, unless
+/// `accept_confirmations` is set.
+fn verify_file_add(
+    contents: &[u8],
+    add: &FileAdd,
+    accept_confirmations: bool,
+) -> Result<(), StageFailure> {
     let low_security = artifact_metadata(&add.artifact)
         .provider
         .as_ref()
         .is_some_and(|p| p.low_security);
-    if add.hashes.values.is_empty() && low_security {
+    let nothing_to_check = add.hashes.values.is_empty() && (low_security || add.hashes.unpublished);
+    if !nothing_to_check {
+        verify_bytes(contents, &add.hashes)?;
+    }
+    if accept_confirmations || add.hashes.confirmable.is_empty() {
         return Ok(());
     }
-    verify_bytes(contents, &add.hashes)
+    let actual = agora_core::download::sha256_hex(contents);
+    match first_unmet(&actual, &add.hashes.confirmable) {
+        None => Ok(()),
+        Some(unmet) => Err(StageFailure::Confirmation(HashConfirmation {
+            file: add.target_filename.clone(),
+            release: match &add.artifact {
+                ResolvedArtifact::Download(download) => recorded_version(download),
+                ResolvedArtifact::LocalFile(_) => None,
+            },
+            expected: unmet.sha256.clone(),
+            actual,
+            expected_from: unmet.origin,
+        })),
+    }
 }
 
 fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
@@ -3224,7 +3395,12 @@ fn prepare_manifest(
         }
         let contents = std::fs::read(&staged)
             .map_err(|e| format!("failed to read staged {}: {e}", add.staging_filename))?;
-        verify_file_add(&contents, add)?;
+        verify_file_add(
+            &contents,
+            add,
+            plan.intent.overrides.accept_hash_confirmation,
+        )
+        .map_err(|failure| failure.message())?;
         let metadata = artifact_metadata(&add.artifact);
         let jar = if metadata.content_type == "mod" {
             crate::jar_metadata::parse_jar_metadata_for_loader(&staged, &manifest.loader)
@@ -3271,6 +3447,8 @@ fn prepare_manifest(
                 ResolvedArtifact::LocalFile(_) => None,
             },
             sha256,
+            // Nothing the source published was checked, so the record says so.
+            hash_verified: !add.hashes.values.is_empty(),
             installed_at: chrono::Utc::now().to_rfc3339(),
             java_packages: jar.java_packages,
             mod_jar_id: jar.mod_jar_id.or_else(|| {
@@ -3674,6 +3852,8 @@ impl crate::install_pipeline::ProgressReporter for agora_core::event_sink::Progr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agora_core::download::sha256_hex;
+    use agora_core::models::{InstalledMod, InstanceManifest};
 
     /// Minecraft version of the instance built by `make_instance`.
     /// Shared so the catalog lookup and the instance manifest cannot drift.
@@ -3774,6 +3954,7 @@ mod tests {
                     algorithm: HashAlgorithm::Sha256,
                     value: "abc".into(),
                 }],
+                ..Default::default()
             },
             size: 42,
             filename: "fabric-api.jar".into(),
@@ -3977,7 +4158,7 @@ mod tests {
                     artifact: Box::new(test_artifact(
                         "required-dep",
                         "required.jar",
-                        agora_core::download::sha256_hex(b"required"),
+                        sha256_hex(b"required"),
                         ArtifactSource::LocalFile {
                             path: required_path.to_string_lossy().into_owned(),
                         },
@@ -4024,7 +4205,7 @@ mod tests {
         let manifest_path = instance_dir.join("instance_manifest.json");
         // Asserts on the bytes actually written, so it must not heal.
         // allow-raw-instance-manifest
-        let mut manifest: agora_core::models::InstanceManifest =
+        let mut manifest: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.mods[0].installed_as_dependency = true;
         std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
@@ -4034,7 +4215,7 @@ mod tests {
                 artifact: test_artifact(
                     "corelib",
                     "corelib.jar",
-                    agora_core::download::sha256_hex(contents),
+                    sha256_hex(contents),
                     ArtifactSource::Download {
                         url: "https://example.com/corelib.jar".into(),
                     },
@@ -4095,7 +4276,7 @@ mod tests {
                         artifact: Box::new(test_artifact(
                             "required-dep",
                             "required.jar",
-                            agora_core::download::sha256_hex(b"required"),
+                            sha256_hex(b"required"),
                             ArtifactSource::LocalFile {
                                 path: required_path.to_string_lossy().into_owned(),
                             },
@@ -4115,7 +4296,7 @@ mod tests {
                         artifact: Box::new(test_artifact(
                             "optional-dep",
                             "optional.jar",
-                            agora_core::download::sha256_hex(b"optional"),
+                            sha256_hex(b"optional"),
                             ArtifactSource::LocalFile {
                                 path: optional_path.to_string_lossy().into_owned(),
                             },
@@ -4464,7 +4645,7 @@ mod tests {
             std::fs::read(instance_dir.join("mods").join("manual.jar")).unwrap(),
             b"verified local artifact"
         );
-        let manifest: agora_core::models::InstanceManifest = serde_json::from_slice(
+        let manifest: InstanceManifest = serde_json::from_slice(
             // allow-raw-instance-manifest
             &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
         )
@@ -4586,8 +4767,8 @@ mod tests {
         let instance_dir = make_instance(&tmp);
         let source_path = tmp.path().join("primary.jar");
         std::fs::write(&source_path, b"primary bytes").unwrap();
-        let primary_hash = agora_core::download::sha256_hex(b"primary bytes");
-        let missing_hash = agora_core::download::sha256_hex(b"missing bytes");
+        let primary_hash = sha256_hex(b"primary bytes");
+        let missing_hash = sha256_hex(b"missing bytes");
         let intent = local_intent("primary");
         let prepared = PreparedPlan {
             operation: ResolvedOperation::Install {
@@ -4852,7 +5033,7 @@ mod tests {
                             "alpha",
                             "alpha-2.jar",
                             "2.0",
-                            agora_core::download::sha256_hex(b"alpha new"),
+                            sha256_hex(b"alpha new"),
                             ArtifactSource::LocalFile {
                                 path: alpha_source.to_string_lossy().into_owned(),
                             },
@@ -4865,7 +5046,7 @@ mod tests {
                             "beta",
                             "beta-2.jar",
                             "2.0",
-                            agora_core::download::sha256_hex(b"beta new"),
+                            sha256_hex(b"beta new"),
                             ArtifactSource::LocalFile {
                                 path: beta_source.to_string_lossy().into_owned(),
                             },
@@ -4955,7 +5136,7 @@ mod tests {
                 id,
                 filename,
                 "1.0",
-                agora_core::download::sha256_hex(bytes),
+                sha256_hex(bytes),
                 ArtifactSource::LocalFile {
                     path: source.to_string_lossy().into_owned(),
                 },
@@ -5032,7 +5213,7 @@ mod tests {
                             "alpha",
                             "alpha-2.jar",
                             "2.0",
-                            agora_core::download::sha256_hex(b"alpha new"),
+                            sha256_hex(b"alpha new"),
                             ArtifactSource::LocalFile {
                                 path: alpha_source.to_string_lossy().into_owned(),
                             },
@@ -5045,7 +5226,7 @@ mod tests {
                             "beta",
                             "beta-2.jar",
                             "2.0",
-                            agora_core::download::sha256_hex(b"expected beta bytes"),
+                            sha256_hex(b"expected beta bytes"),
                             ArtifactSource::LocalFile {
                                 path: beta_source.to_string_lossy().into_owned(),
                             },
@@ -5165,7 +5346,7 @@ mod tests {
         let manifest_path = instance_dir.join("instance_manifest.json");
         // Asserts on the bytes actually written, so it must not heal.
         // allow-raw-instance-manifest
-        let mut manifest: agora_core::models::InstanceManifest =
+        let mut manifest: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.is_locked = true;
         std::fs::write(
@@ -5256,7 +5437,7 @@ mod tests {
     fn make_instance(tmp: &tempfile::TempDir) -> std::path::PathBuf {
         let directory = tmp.path().join("instance");
         std::fs::create_dir_all(directory.join("mods")).unwrap();
-        let manifest = agora_core::models::InstanceManifest {
+        let manifest = InstanceManifest {
             manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
             game_data: Default::default(),
             pack_origin: None,
@@ -5309,6 +5490,7 @@ mod tests {
                     algorithm: HashAlgorithm::Sha256,
                     value: sha256,
                 }],
+                ..Default::default()
             },
             size: 0,
             filename: filename.into(),
@@ -5326,7 +5508,10 @@ mod tests {
     }
 
     fn provider_artifact(values: Vec<HashedValue>, low_security: bool) -> FileAdd {
-        let hashes = HashSpec { values };
+        let hashes = HashSpec {
+            values,
+            ..Default::default()
+        };
         let artifact = ResolvedArtifact::Download(ResolvedDownload {
             item_id: "provider:acme.src/x:x".into(),
             version_id: "1".into(),
@@ -5368,13 +5553,13 @@ mod tests {
     fn a_provider_file_without_a_digest_installs_only_as_an_accepted_low_security_download() {
         let accepted = provider_artifact(Vec::new(), true);
         assert!(validate_artifact_hashes(&accepted.artifact).is_ok());
-        assert!(verify_file_add(b"anything", &accepted).is_ok());
+        assert!(verify_file_add(b"anything", &accepted, false).is_ok());
 
         // The same file without the user's opt-in has nothing to check and
         // is refused, rather than silently installed unverified.
         let refused = provider_artifact(Vec::new(), false);
         assert!(validate_artifact_hashes(&refused.artifact).is_err());
-        assert!(verify_file_add(b"anything", &refused).is_err());
+        assert!(verify_file_add(b"anything", &refused, false).is_err());
     }
 
     #[test]
@@ -5388,8 +5573,8 @@ mod tests {
             false,
         );
         assert!(validate_artifact_hashes(&good.artifact).is_ok());
-        assert!(verify_file_add(bytes, &good).is_ok());
-        assert!(verify_file_add(b"tampered", &good).is_err());
+        assert!(verify_file_add(bytes, &good, false).is_ok());
+        assert!(verify_file_add(b"tampered", &good, false).is_err());
     }
 
     #[test]
@@ -5405,6 +5590,7 @@ mod tests {
                     algorithm: HashAlgorithm::Sha512,
                     value: "a".repeat(128),
                 }],
+                ..Default::default()
             },
             size: 1,
             filename: "xaerominimap-fabric-26.2-26.4.2.jar".into(),
@@ -5459,9 +5645,9 @@ mod tests {
         let manifest_path = instance_dir.join("instance_manifest.json");
         // Asserts on the bytes actually written, so it must not heal.
         // allow-raw-instance-manifest
-        let mut manifest: agora_core::models::InstanceManifest =
+        let mut manifest: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-        manifest.mods.push(agora_core::models::InstalledMod {
+        manifest.mods.push(InstalledMod {
             provider: None,
             update_pinned: false,
             pack_managed: false,
@@ -5472,7 +5658,8 @@ mod tests {
             source: "registry".into(),
             source_url: Some(format!("https://example.com/{filename}")),
             version: Some(version.into()),
-            sha256: agora_core::download::sha256_hex(contents),
+            sha256: sha256_hex(contents),
+            hash_verified: true,
             installed_at: "2026-07-12T00:00:00Z".into(),
             java_packages: vec![],
             mod_jar_id: Some(item_id.into()),
@@ -5514,7 +5701,7 @@ mod tests {
         expected_hash: Option<String>,
     ) -> ResolvedInstallPlan {
         let contents = std::fs::read(source_path).unwrap();
-        let hash = expected_hash.unwrap_or_else(|| agora_core::download::sha256_hex(&contents));
+        let hash = expected_hash.unwrap_or_else(|| sha256_hex(&contents));
         let prepared = PreparedPlan {
             operation: ResolvedOperation::Install {
                 artifact: test_artifact(
@@ -5549,7 +5736,7 @@ mod tests {
         overrides: PlanOverrides,
     ) -> ResolvedInstallPlan {
         let contents = std::fs::read(source_path).unwrap();
-        let hash = agora_core::download::sha256_hex(&contents);
+        let hash = sha256_hex(&contents);
         let prepared = PreparedPlan {
             operation: ResolvedOperation::Install {
                 artifact: test_artifact(
@@ -5862,7 +6049,7 @@ mod tests {
         write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
 
         let contents = std::fs::read(&source_path).unwrap();
-        let hash = agora_core::download::sha256_hex(&contents);
+        let hash = sha256_hex(&contents);
         let prepared = PreparedPlan {
             operation: ResolvedOperation::Install {
                 artifact: test_artifact(
@@ -5956,7 +6143,7 @@ mod tests {
         assert!(!instance_dir.join("mods/needy.jar").exists());
         // Asserts on the bytes actually written, so it must not heal.
         // allow-raw-instance-manifest
-        let manifest: agora_core::models::InstanceManifest =
+        let manifest: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(manifest.loader, "fabric");
         assert_eq!(manifest.loader_version, "0.16.0");
@@ -5982,6 +6169,7 @@ mod tests {
                     algorithm: HashAlgorithm::Sha256,
                     value: sha256.into(),
                 }],
+                ..Default::default()
             },
             size: 1,
             filename: filename.into(),
@@ -6525,7 +6713,10 @@ mod tests {
                     source: ArtifactSource::Download {
                         url: "https://example.com/test.jar".into(),
                     },
-                    hashes: HashSpec { values: vec![] },
+                    hashes: HashSpec {
+                        values: vec![],
+                        ..Default::default()
+                    },
                     size: 0,
                     filename: "test.jar".into(),
                     metadata: ArtifactMetadata {
@@ -6587,5 +6778,363 @@ mod tests {
             agora_core::event_sink::ProgressPhase::Staging
         );
         assert_eq!(events[0].plan_id, Some("test-plan".into()));
+    }
+
+    // -- Download confirmation and unverified installs --------------------------
+    //
+    // A curated github_release file. Its bytes come from a local file, so the
+    // test needs no network, but the artifact carries the same metadata a real
+    // GitHub candidate does.
+
+    fn curated_local_artifact(
+        source_path: &Path,
+        filename: &str,
+        release: &str,
+        hashes: HashSpec,
+        registry_id: &str,
+    ) -> ResolvedArtifact {
+        ResolvedArtifact::Download(ResolvedDownload {
+            item_id: registry_id.into(),
+            version_id: release.into(),
+            source: ArtifactSource::LocalFile {
+                path: source_path.to_string_lossy().into_owned(),
+            },
+            hashes,
+            size: 0,
+            filename: filename.into(),
+            metadata: ArtifactMetadata {
+                source_type: SourceType::Curated,
+                registry_id: Some(registry_id.into()),
+                modrinth_id: None,
+                content_type: "mod".into(),
+                version: Some(release.into()),
+                download_strategy: Some("github_release".into()),
+                pinned_host: None,
+                provider: None,
+            },
+        })
+    }
+
+    fn plan_for_artifact(
+        instance_dir: &Path,
+        artifact: ResolvedArtifact,
+        accept_hash_confirmation: bool,
+    ) -> ResolvedInstallPlan {
+        let mut intent = local_intent("xaeros-minimap");
+        intent.overrides.accept_hash_confirmation = accept_hash_confirmation;
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install { artifact },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(intent, instance_dir, prepared, &NoopReporter))
+            .unwrap()
+    }
+
+    fn execute(plan: &ResolvedInstallPlan, instance_dir: &Path) -> InstallOutcome {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.execute_plan(
+                plan,
+                instance_dir,
+                "registry-rev",
+                &NoopReporter,
+                &CancellationToken::new(),
+            ))
+    }
+
+    fn read_installed(instance_dir: &Path) -> Vec<InstalledMod> {
+        let manifest: InstanceManifest = serde_json::from_slice(
+            // allow-raw-instance-manifest
+            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        manifest.mods
+    }
+
+    #[test]
+    fn a_curator_pin_that_differs_from_the_download_is_refused_until_the_user_confirms() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("source.jar");
+        std::fs::write(&source_path, b"the file the source published").unwrap();
+        let published = sha256_hex(b"the file the source published");
+        let pin = "e".repeat(64);
+        let hashes = || HashSpec {
+            values: vec![HashedValue {
+                algorithm: HashAlgorithm::Sha256,
+                value: published.clone(),
+            }],
+            confirmable: vec![ConfirmableHash {
+                origin: HashOrigin::CuratorPin,
+                sha256: pin.clone(),
+            }],
+            unpublished: false,
+        };
+
+        let plan = plan_for_artifact(
+            &instance_dir,
+            curated_local_artifact(
+                &source_path,
+                "xaeros-1.2.0.jar",
+                "v1.2.0",
+                hashes(),
+                "xaeros-minimap",
+            ),
+            false,
+        );
+        match execute(&plan, &instance_dir) {
+            InstallOutcome::Failed {
+                hash_confirmation: Some(detail),
+                rollback_performed: false,
+                ..
+            } => {
+                assert_eq!(detail.file, "xaeros-1.2.0.jar");
+                assert_eq!(detail.release.as_deref(), Some("v1.2.0"));
+                assert_eq!(detail.expected, pin);
+                assert_eq!(detail.actual, published);
+                assert_eq!(detail.expected_from, HashOrigin::CuratorPin);
+            }
+            other => panic!("expected a hash confirmation, got {other:?}"),
+        }
+        assert!(read_installed(&instance_dir).is_empty());
+        assert!(!instance_dir.join("mods").join("xaeros-1.2.0.jar").exists());
+
+        // The user confirms: the same plan, with the override, installs.
+        let plan = plan_for_artifact(
+            &instance_dir,
+            curated_local_artifact(
+                &source_path,
+                "xaeros-1.2.0.jar",
+                "v1.2.0",
+                hashes(),
+                "xaeros-minimap",
+            ),
+            true,
+        );
+        assert!(matches!(
+            execute(&plan, &instance_dir),
+            InstallOutcome::Success { .. }
+        ));
+        let installed = read_installed(&instance_dir);
+        assert_eq!(installed.len(), 1);
+        assert!(
+            installed[0].hash_verified,
+            "the source's digest matched, so the file is still verified"
+        );
+    }
+
+    #[test]
+    fn a_file_whose_source_published_no_checksum_installs_recorded_as_not_verified() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("source.jar");
+        std::fs::write(&source_path, b"an old release asset").unwrap();
+        let hashes = HashSpec {
+            unpublished: true,
+            ..Default::default()
+        };
+        let plan = plan_for_artifact(
+            &instance_dir,
+            curated_local_artifact(
+                &source_path,
+                "xaeros-0.9.jar",
+                "v0.9",
+                hashes,
+                "xaeros-minimap",
+            ),
+            false,
+        );
+        assert!(plan.warnings.iter().any(|warning| {
+            warning.code == "WARN_HASH_UNVERIFIED"
+                && warning.message
+                    == "GitHub published no checksum for xaeros-0.9.jar, so Agora could not verify it."
+        }));
+        assert!(matches!(
+            execute(&plan, &instance_dir),
+            InstallOutcome::Success { .. }
+        ));
+        let installed = read_installed(&instance_dir);
+        assert_eq!(installed.len(), 1);
+        assert!(!installed[0].hash_verified);
+        assert_eq!(
+            installed[0].sha256,
+            sha256_hex(b"an old release asset"),
+            "the bytes' own SHA-256 is recorded, marked as not verified"
+        );
+    }
+
+    #[test]
+    fn a_redownload_of_an_unverified_release_file_with_different_bytes_asks_the_user() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("source.jar");
+        std::fs::write(&source_path, b"first download").unwrap();
+        let first = plan_for_artifact(
+            &instance_dir,
+            curated_local_artifact(
+                &source_path,
+                "xaeros-0.9.jar",
+                "v0.9",
+                HashSpec {
+                    unpublished: true,
+                    ..Default::default()
+                },
+                "xaeros-minimap",
+            ),
+            false,
+        );
+        assert!(matches!(
+            execute(&first, &instance_dir),
+            InstallOutcome::Success { .. }
+        ));
+
+        // The same tag and asset, now with different bytes.
+        std::fs::write(&source_path, b"second download, different bytes").unwrap();
+        let again = || {
+            curated_local_artifact(
+                &source_path,
+                "xaeros-0.9.jar",
+                "v0.9",
+                HashSpec {
+                    unpublished: true,
+                    ..Default::default()
+                },
+                "xaeros-minimap",
+            )
+        };
+        let plan = plan_for_artifact(&instance_dir, again(), false);
+        match execute(&plan, &instance_dir) {
+            InstallOutcome::Failed {
+                hash_confirmation: Some(detail),
+                ..
+            } => {
+                assert_eq!(detail.expected, sha256_hex(b"first download"));
+                assert_eq!(detail.expected_from, HashOrigin::PreviousInstall);
+            }
+            other => panic!("expected the remembered-hash confirmation, got {other:?}"),
+        }
+        assert_eq!(
+            read_installed(&instance_dir)[0].sha256,
+            sha256_hex(b"first download")
+        );
+
+        let plan = plan_for_artifact(&instance_dir, again(), true);
+        assert!(matches!(
+            execute(&plan, &instance_dir),
+            InstallOutcome::Success { .. }
+        ));
+        assert_eq!(
+            read_installed(&instance_dir)[0].sha256,
+            sha256_hex(b"second download, different bytes")
+        );
+    }
+
+    #[test]
+    fn a_published_digest_mismatch_is_never_overridden() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("source.jar");
+        std::fs::write(&source_path, b"bytes").unwrap();
+        let hashes = HashSpec {
+            values: vec![HashedValue {
+                algorithm: HashAlgorithm::Sha256,
+                value: "f".repeat(64),
+            }],
+            ..Default::default()
+        };
+        let plan = plan_for_artifact(
+            &instance_dir,
+            curated_local_artifact(&source_path, "xaeros.jar", "v1", hashes, "xaeros-minimap"),
+            true,
+        );
+        match execute(&plan, &instance_dir) {
+            InstallOutcome::Failed {
+                hash_confirmation,
+                error,
+                ..
+            } => {
+                assert!(
+                    hash_confirmation.is_none(),
+                    "a digest mismatch is a plain failure"
+                );
+                assert!(error.contains("verification failed"), "{error}");
+            }
+            other => panic!("expected a plain failure, got {other:?}"),
+        }
+        assert!(read_installed(&instance_dir).is_empty());
+    }
+
+    #[test]
+    fn a_remembered_hash_from_a_verified_install_is_not_used_as_an_expectation() {
+        let verified = installed_for_memory(
+            "xaeros-minimap",
+            "v0.9",
+            "xaeros-0.9.jar",
+            "1".repeat(64),
+            true,
+        );
+        let artifact = curated_local_artifact(
+            Path::new("unused.jar"),
+            "xaeros-0.9.jar",
+            "v0.9",
+            HashSpec::default(),
+            "xaeros-minimap",
+        );
+        assert!(remembered_hash(&artifact, &[&verified]).is_none());
+
+        let unverified = installed_for_memory(
+            "xaeros-minimap",
+            "v0.9",
+            "xaeros-0.9.jar",
+            "2".repeat(64),
+            false,
+        );
+        let remembered = remembered_hash(&artifact, &[&unverified]).expect("remembered");
+        assert_eq!(remembered.sha256, "2".repeat(64));
+        assert_eq!(remembered.origin, HashOrigin::PreviousInstall);
+        let other_release = curated_local_artifact(
+            Path::new("unused.jar"),
+            "xaeros-0.9.jar",
+            "v0.10",
+            HashSpec::default(),
+            "xaeros-minimap",
+        );
+        assert!(remembered_hash(&other_release, &[&unverified]).is_none());
+    }
+
+    fn installed_for_memory(
+        registry_id: &str,
+        version: &str,
+        filename: &str,
+        sha256: String,
+        hash_verified: bool,
+    ) -> InstalledMod {
+        InstalledMod {
+            provider: None,
+            filename: filename.into(),
+            registry_id: Some(registry_id.into()),
+            modrinth_id: None,
+            source: "registry".into(),
+            source_url: None,
+            version: Some(version.into()),
+            sha256,
+            hash_verified,
+            installed_at: "now".into(),
+            java_packages: vec![],
+            mod_jar_id: None,
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        }
     }
 }

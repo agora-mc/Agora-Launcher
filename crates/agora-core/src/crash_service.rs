@@ -1472,6 +1472,7 @@ mod tests {
                     source_url: None,
                     version: Some("1.0.0".into()),
                     sha256: "abc".into(),
+                    hash_verified: true,
                     installed_at: "2024-01-01T00:00:00Z".into(),
                     java_packages: vec![],
                     mod_jar_id: None,

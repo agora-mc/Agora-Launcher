@@ -1845,6 +1845,50 @@ class OtherGameEntryTests(unittest.TestCase):
         self.skyrim_entry_at(entry)
         self.assertRefused("crash-logger.json", "sha256")
 
+    # -- download hashes and pins ----------------------------------------------
+
+    def test_a_github_entry_for_another_game_compiles_without_sha256(self):
+        entry = _skyrim_github_entry()
+        del entry["sha256"]
+        self.skyrim_entry_at(entry)
+        out = self.compile()
+        self.assertIsNone(self.game_rows(out)["crash-logger"]["sha256"])
+
+    def test_a_direct_hash_entry_for_another_game_still_requires_sha256(self):
+        entry = _skyrim_direct_entry()
+        del entry["sha256"]
+        self.skyrim_entry_at(entry)
+        self.assertRefused("skyrim-archive-mod.json", "sha256", "required")
+
+    def test_a_valid_pin_on_another_game_entry_compiles_and_is_stored(self):
+        entry = _skyrim_github_entry()
+        entry["download_sources"] = [
+            {
+                "strategy": "github_release",
+                "identifier": "example-author/crash-logger",
+                "pins": [{"tag": "v1.0", "asset": "CrashLogger-1.0.7z", "sha256": "D" * 64}],
+            }
+        ]
+        self.skyrim_entry_at(entry)
+        out = self.compile()
+        sources = json.loads(self.game_rows(out)["crash-logger"]["download_sources_json"])
+        self.assertEqual(
+            sources[0]["pins"],
+            [{"tag": "v1.0", "asset": "CrashLogger-1.0.7z", "sha256": "d" * 64}],
+        )
+
+    def test_a_malformed_pin_on_another_game_entry_is_refused(self):
+        entry = _skyrim_github_entry()
+        entry["download_sources"] = [
+            {
+                "strategy": "github_release",
+                "identifier": "example-author/crash-logger",
+                "pins": [{"tag": "v1.0", "asset": "CrashLogger-1.0.7z", "sha256": "short"}],
+            }
+        ]
+        self.skyrim_entry_at(entry)
+        self.assertRefused("crash-logger.json", "pins[0].sha256", "64 hex")
+
     # -- identity -----------------------------------------------------------
 
     def test_an_id_used_by_two_games_is_refused_naming_both_files(self):
@@ -1910,6 +1954,160 @@ class RealSkyrimPackageEntryTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             self.compile_rows()
         self.assertIn("'nvse'", str(caught.exception.code))
+
+
+class DownloadHashPolicyTests(unittest.TestCase):
+    """The manifest sha256 is required only where a pinned source needs it, and
+    curator pins validate. Covers Minecraft entries; other games are in
+    OtherGameEntryTests."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.manifest = self.tmp / "item.json"
+        self.manifest.write_text("{}", encoding="utf-8")
+        patch = mock.patch.object(
+            _compile, "manifest_date_added", lambda path: "2026-01-01T00:00:00+00:00"
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        _compile.create_tables(self.conn)
+
+    def _github_item(self, **overrides):
+        item = {
+            "id": "xaeros-minimap",
+            "name": "Xaero's Minimap",
+            "content_type": "mod",
+            "download_strategy": "github_release",
+            "source_identifier": "owner/repo",
+            "compatible_versions": [
+                {"mc_version": "1.21", "loader": "fabric", "mod_version": "1.2.0"},
+            ],
+        }
+        item.update(overrides)
+        return item
+
+    def _insert(self, item):
+        _compile.insert_registry_item(self.conn, item, self.manifest)
+        return self.conn.execute(
+            "SELECT sha256, download_sources_json FROM registry_items WHERE id = ?",
+            (item["id"],),
+        ).fetchone()
+
+    def test_a_github_release_entry_compiles_without_sha256(self):
+        sha256, _ = self._insert(self._github_item())
+        self.assertIsNone(sha256)
+
+    def test_a_modrinth_entry_compiles_without_sha256(self):
+        item = self._github_item(download_strategy="modrinth_id", source_identifier="AANobbMI")
+        sha256, _ = self._insert(item)
+        self.assertIsNone(sha256)
+
+    def test_a_github_entry_that_states_a_sha256_keeps_it(self):
+        sha256, _ = self._insert(self._github_item(sha256="a" * 64))
+        self.assertEqual(sha256, "a" * 64)
+
+    def test_a_malformed_sha256_is_refused_even_though_it_is_optional(self):
+        with self.assertRaises(SystemExit):
+            self._insert(self._github_item(sha256="not-a-hash"))
+
+    def test_direct_hash_still_requires_sha256(self):
+        item = _minecraft_direct_entry("direct-no-hash")
+        del item["sha256"]
+        with self.assertRaises(SystemExit):
+            self._insert(item)
+
+    def test_a_pinned_fallback_source_requires_sha256_even_on_a_github_primary(self):
+        item = self._github_item(
+            download_sources=[
+                {"strategy": "github_release", "identifier": "owner/repo"},
+                {"strategy": "direct_hash", "identifier": "https://example.com/files/mod-1.2.0.jar"},
+            ],
+        )
+        with self.assertRaises(SystemExit):
+            self._insert(item)
+        item["sha256"] = "b" * 64
+        sha256, _ = self._insert(item)
+        self.assertEqual(sha256, "b" * 64)
+
+    def test_a_valid_pin_is_kept_in_download_sources(self):
+        pin = {"tag": "v1.2.0", "asset": "xaeros-1.2.0.jar", "sha256": "C" * 64}
+        item = self._github_item(
+            download_sources=[{"strategy": "github_release", "identifier": "owner/repo", "pins": [pin]}],
+        )
+        _, sources_json = self._insert(item)
+        sources = json.loads(sources_json)
+        self.assertEqual(
+            sources[0]["pins"],
+            [{"tag": "v1.2.0", "asset": "xaeros-1.2.0.jar", "sha256": "c" * 64}],
+            "pins are stored in canonical (lowercase) form",
+        )
+
+    def test_a_source_without_pins_stores_no_pins_key(self):
+        _, sources_json = self._insert(self._github_item())
+        self.assertNotIn("pins", json.loads(sources_json)[0])
+
+    def test_malformed_pins_are_refused(self):
+        good = {"tag": "v1.2.0", "asset": "xaeros-1.2.0.jar", "sha256": "c" * 64}
+        bad_pins = {
+            "empty tag": {**good, "tag": " "},
+            "empty asset": {**good, "asset": ""},
+            "asset with a path": {**good, "asset": "dir/xaeros.jar"},
+            "short sha256": {**good, "sha256": "c" * 63},
+            "non-hex sha256": {**good, "sha256": "z" * 64},
+            "unknown key": {**good, "size": 10},
+            "missing sha256": {"tag": "v1.2.0", "asset": "xaeros-1.2.0.jar"},
+        }
+        for label, pin in bad_pins.items():
+            with self.subTest(pin=label):
+                item = self._github_item(
+                    download_sources=[
+                        {"strategy": "github_release", "identifier": "owner/repo", "pins": [pin]},
+                    ],
+                )
+                with self.assertRaises(SystemExit):
+                    self._insert(item)
+
+    def test_a_pin_repeated_for_the_same_release_file_is_refused(self):
+        pin = {"tag": "v1.2.0", "asset": "xaeros-1.2.0.jar", "sha256": "c" * 64}
+        item = self._github_item(
+            download_sources=[
+                {"strategy": "github_release", "identifier": "owner/repo", "pins": [pin, dict(pin)]},
+            ],
+        )
+        with self.assertRaises(SystemExit):
+            self._insert(item)
+
+    def test_pins_are_only_for_github_release_sources(self):
+        item = _minecraft_direct_entry("direct-with-pin")
+        del item["sha256"]
+        item["download_sources"] = [
+            {
+                "strategy": "direct_hash",
+                "identifier": "https://example.com/files/pinned-1.0.0.jar",
+                "pins": [{"tag": "v1", "asset": "pinned-1.0.0.jar", "sha256": "c" * 64}],
+            },
+        ]
+        with self.assertRaises(SystemExit):
+            normalize_download_sources_for_test(item)
+
+    def test_the_live_manifests_that_state_a_sha256_still_normalize(self):
+        registry = Path(_compile.REGISTRY_DIR) / "mods"
+        manifests = sorted(registry.glob("*.json"))
+        self.assertTrue(manifests, "the live registry has mod manifests")
+        for path in manifests:
+            with self.subTest(manifest=path.name):
+                item = json.loads(path.read_text(encoding="utf-8"))
+                if item.get("archived") or item.get("status") == "archived":
+                    continue
+                sources = _compile.normalize_download_sources(item)
+                _compile.require_manifest_sha256(item["id"], sources, item.get("sha256"))
+
+
+def normalize_download_sources_for_test(item):
+    return _compile.normalize_download_sources(item)
 
 
 if __name__ == "__main__":

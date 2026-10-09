@@ -180,7 +180,7 @@ README.md                   # Code of Engagement (full text, see §5)
 | `license` | string | SPDX license identifier (e.g., `MIT`, `LGPL-3.0`) |
 | `download_strategy` | string | `github_release` (primary — direct from developer repo), `modrinth_id` (supplementary fallback — via Modrinth API), `direct_hash` (for closed-source/self-hosted) |
 | `source_identifier` | string | GitHub `owner/repo`, Modrinth project ID, or direct URL |
-| `sha256` | string | **Required for all strategies.** SHA-256 hash of the downloadable file. For `github_release`, the compiler populates from release asset metadata. For `modrinth_id`, the compiler populates from the Modrinth API. For `direct_hash`, manually provided by the developer. The launcher rejects any download where the computed hash does not match. |
+| `sha256` | string | **Required for pinned strategies** (`direct_hash`, `technic_pack`, `provider_pack`), where it identifies the one file. Optional otherwise. Never filled in by the compiler: a `github_release` or `modrinth_id` file is checked against the hash its source published (GitHub's asset digest, Modrinth's version hashes), and when the source published none the install says so and records the bytes as not verified. Curator `pins` on a `github_release` source name exact release files and ask the user before a mismatch is installed (`ERR_HASH_CONFIRMATION_REQUIRED`). See `REGISTRY_CURATION_REFERENCE.md` §2. |
 | `package_signatures` | string[] | Java package prefixes for crash log cross-referencing. Note: multiple mods may transitively share package prefixes (e.g., `net.fabricmc`). The crash resolver uses these as an initial filter, then narrows down using class names from the stack trace and the instance's installed mod list. |
 | `base_categories` | string[] | Official curated categories |
 | `community_categories` | string[] | Freeform community tags (dynamic; auto-discovered by compiler) |
@@ -400,7 +400,7 @@ The launcher maintains **two separate SQLite databases**:
 | `content_type` | TEXT | NOT NULL | `mod`, `pack`, `shader`, `resourcepack`, `server`, `datapack`, `world` |
 | `download_strategy` | TEXT | NOT NULL | `github_release` (primary), `modrinth_id` (supplementary), `direct_hash` |
 | `source_identifier` | TEXT | NOT NULL | GitHub `owner/repo`, Modrinth ID, or URL |
-| `sha256` | TEXT | NOT NULL | Hash for verification. Required for all strategies; populated by compiler from GitHub release metadata or Modrinth API |
+| `sha256` | TEXT | NULL | The manifest's hash when it states one. Required for pinned strategies; NULL for `github_release` and `modrinth_id`, whose files are checked against what their source publishes |
 | `upvotes` | INTEGER | DEFAULT 0 | Trust-weighted thumbs-up count from GitHub |
 | `downvotes` | INTEGER | DEFAULT 0 | Trust-weighted thumbs-down count |
 | `net_score` | INTEGER | DEFAULT 0 | Pre-computed: `upvotes - downvotes` |
@@ -2287,7 +2287,7 @@ D:/Agora/
 |   +-- src-tauri/             # Rust backend -- thin facades delegating to agora-core
 |   +-- e2e/                   # Playwright end-to-end tests
 +-- web/                       # Static Next.js public directory (static export)
-+-- scripts/                   # verify_db.py, deploy_release_assets.py, fetch_registry_db.py, refresh_loader_manifests.py
++-- scripts/                   # verify_db.py, deploy_release_assets.py, refresh_loader_manifests.py
 +-- .github/                   # workflows (compile, release-desktop, web-build, e2e), ISSUE_TEMPLATE
 +-- .kilo/                     # Kilo agent config, commands, agent profiles, skills, MASTER_SPEC.md
 +-- AGENTS.md                  # Canonical agent guide
@@ -2374,7 +2374,7 @@ Cross-referenced against section 17 phase definitions:
 | 5 (Governance & Triage) | Done | Triage Center tab, Curator Shield, Flag Review, Transparency Log. |
 | 6 (MCP Server) | Done | All 6 currently-implemented tools functional; per-session auth deferred (B2 approval pending user re-decision). |
 | 7 (Dev Mode sandboxed builds) | Not started | Spec section 11. |
-| 8 (Web directory) | Done | Static Next.js, registry.db fetched at CI build via scripts/fetch_registry_db.py, react-markdown with tightened sanitize schema, CSP header in 
+| 8 (Web directory) | Done | Static Next.js, registry.db fetched at CI build via scripts/fetch_registry_db.py (since deleted; the web build compiles the catalog itself), react-markdown with tightened sanitize schema, CSP header in 
 ext.config.js. |
 | 9 (Polish & Hardening) | Partial | Auto-update done, i18n engine present but ~99 percent of UI strings still hard-coded English (separate cleanup session), code signing not started, telemetry removed (E5), disk pre-check fixed (cross-platform now), atomic writes fixed for instance manifest (A8). |
 

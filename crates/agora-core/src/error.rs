@@ -1,3 +1,41 @@
+use crate::artifact_hash::HashOrigin;
+
+/// A download whose bytes differ from an expectation the user has to confirm:
+/// the curator's pin for that release file, or the hash recorded when it was
+/// installed before. See [`crate::artifact_hash`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HashConfirmation {
+    /// The file that did not match, as the instance would name it.
+    pub file: String,
+    /// The release tag it was published under, when it came from a release.
+    pub release: Option<String>,
+    /// The SHA-256 the expectation named.
+    pub expected: String,
+    /// The SHA-256 of the bytes that were downloaded.
+    pub actual: String,
+    /// Where the expectation came from.
+    pub expected_from: HashOrigin,
+}
+
+impl std::fmt::Display for HashConfirmation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let file = match &self.release {
+            Some(release) => format!("{} from release {release}", self.file),
+            None => self.file.clone(),
+        };
+        let origin = match self.expected_from {
+            HashOrigin::CuratorPin => "pinned curator",
+            HashOrigin::PreviousInstall => "previously installed",
+        };
+        write!(
+            f,
+            "{file} does not match the {origin} hash: expected {}, downloaded {}.",
+            self.expected, self.actual
+        )
+    }
+}
+
 /// Standardized launcher error codes matching the human-centric taxonomy.
 #[derive(Debug, Clone)]
 pub enum LauncherError {
@@ -15,6 +53,10 @@ pub enum LauncherError {
     OverrideSecurityViolation,
     /// ERR_HASH_MISMATCH — Downloaded file does not match its expected hash.
     HashMismatch,
+    /// ERR_HASH_CONFIRMATION_REQUIRED — The download does not match a curator
+    /// pin or a hash recorded on an earlier install. Install only after the
+    /// user confirms, which retries with the install-anyway override.
+    HashConfirmationRequired(HashConfirmation),
     /// ERR_UNTRUSTED_SOURCE — Download rejected: URL is not from an allowed source.
     UntrustedSource,
     /// ERR_DISKFULL — Not enough disk space to complete this operation.
@@ -140,6 +182,9 @@ impl LauncherError {
                 "ERR_OVERRIDE_SECURITY_VIOLATION".to_string()
             }
             LauncherError::HashMismatch => "ERR_HASH_MISMATCH".to_string(),
+            LauncherError::HashConfirmationRequired(_) => {
+                "ERR_HASH_CONFIRMATION_REQUIRED".to_string()
+            }
             LauncherError::UntrustedSource => "ERR_UNTRUSTED_SOURCE".to_string(),
             LauncherError::DiskFull => "ERR_DISKFULL".to_string(),
             LauncherError::AuthExpired => "ERR_AUTH_EXPIRED".to_string(),
@@ -443,6 +488,7 @@ impl std::fmt::Display for LauncherError {
                      Enable runtime downloads in Privacy settings or choose a local Java installation."
                 )
             }
+            LauncherError::HashConfirmationRequired(confirmation) => write!(f, "{confirmation}"),
             LauncherError::Generic { message, .. } => write!(f, "{}", message),
         }
     }
@@ -551,6 +597,17 @@ impl serde::Serialize for LauncherError {
                         "open_privacy",
                         "cancel",
                     ],
+                });
+                map.serialize_entry("details", &details)?;
+            }
+            LauncherError::HashConfirmationRequired(confirmation) => {
+                let details = serde_json::json!({
+                    "file": confirmation.file,
+                    "release": confirmation.release,
+                    "expected": confirmation.expected,
+                    "actual": confirmation.actual,
+                    "expected_from": confirmation.expected_from.as_str(),
+                    "suggested_actions": ["install_anyway", "cancel"],
                 });
                 map.serialize_entry("details", &details)?;
             }

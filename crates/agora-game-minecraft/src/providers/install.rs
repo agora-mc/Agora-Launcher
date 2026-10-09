@@ -83,7 +83,10 @@ fn artifact_from(
         source: ArtifactSource::Download {
             url: plan.file.url.clone(),
         },
-        hashes: HashSpec { values },
+        hashes: HashSpec {
+            values,
+            ..Default::default()
+        },
         size: plan.file.size.unwrap_or(0),
         filename: plan.file.filename.clone(),
         metadata: ArtifactMetadata {
@@ -492,7 +495,12 @@ pub async fn install_catalog_pack(
         ctx,
         registry,
         &item.source_identifier,
-        &item.sha256,
+        item.sha256
+            .as_deref()
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_PINNED_MANIFEST".into(),
+                message: format!("'{}' is a provider pack with no plan digest.", item.name),
+            })?,
         accept_changed,
         name_override,
     )

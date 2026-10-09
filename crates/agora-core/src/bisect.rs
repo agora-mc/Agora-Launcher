@@ -420,6 +420,7 @@ mod tests {
             source_url: None,
             version: None,
             sha256: String::new(),
+            hash_verified: true,
             installed_at: String::new(),
             java_packages: Vec::new(),
             mod_jar_id: Some(filename.trim_end_matches(".jar").to_string()),

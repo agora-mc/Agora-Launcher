@@ -2214,7 +2214,7 @@ pub async fn import_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     source_path: String,
-) -> LauncherResult<String> {
+) -> LauncherResult<mod_install::PackImportResult> {
     mod_install::import_instance_pack(&app, &source_path).await
 }
 
@@ -6119,6 +6119,7 @@ pub async fn import_lockfile(
                     algorithm: HashAlgorithm::Sha256,
                     value: artifact.sha256.clone(),
                 }],
+                ..Default::default()
             },
             size: 0,
             filename: artifact.filename.clone(),
@@ -6399,6 +6400,7 @@ fn resolved_lockfile_artifact(
                 algorithm: HashAlgorithm::Sha256,
                 value: artifact.sha256.clone(),
             }],
+            ..Default::default()
         },
         size: 0,
         filename: artifact.filename.clone(),
@@ -7753,6 +7755,7 @@ mod command_helper_tests {
             source_url: Some("https://example.com/example.jar".into()),
             version: Some("1.0".into()),
             sha256: agora_core::download::sha256_hex(b"example"),
+            hash_verified: true,
             installed_at: "2026-07-12T00:00:00Z".into(),
             java_packages: vec![],
             mod_jar_id: Some("example".into()),

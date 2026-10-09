@@ -566,6 +566,7 @@ mod tests {
             source_url: None,
             version: None,
             sha256: "ab".repeat(32),
+            hash_verified: true,
             installed_at: String::new(),
             java_packages: vec![],
             mod_jar_id: None,

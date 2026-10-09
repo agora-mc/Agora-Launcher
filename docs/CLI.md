@@ -129,6 +129,14 @@ Execute only after reviewing the plan:
 agora mod install sodium <INSTANCE_ID>
 ```
 
+A download whose bytes do not match a curator pin, or the hash Agora recorded when the same release file was installed before, is refused with `ERR_HASH_CONFIRMATION_REQUIRED`. The message names the file, the expected and downloaded SHA-256, and the source of the expectation. Check the file yourself, then install it anyway with `--install-anyway`. A mismatch with the hash the source published cannot be overridden. A file whose source published no checksum installs with a notice, and is recorded as not verified.
+
+```bash
+agora mod install sodium <INSTANCE_ID> --install-anyway
+```
+
+The same flag works on `agora mod update`.
+
 Check health and launch:
 
 ```bash

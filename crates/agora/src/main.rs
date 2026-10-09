@@ -1000,6 +1000,11 @@ enum ModsCmd {
         skip_health_scan: bool,
         #[arg(
             long,
+            help = "Install a file that does not match its curator pin or the hash recorded on an earlier install, after checking it yourself"
+        )]
+        install_anyway: bool,
+        #[arg(
+            long,
             conflicts_with = "exclude_optional",
             help = "Include specific optional dependencies (comma-separated)"
         )]
@@ -1055,6 +1060,11 @@ enum ModsCmd {
         item: String,
         #[arg(short, long, help = "Target version (default: latest)")]
         version: Option<String>,
+        #[arg(
+            long,
+            help = "Install a file that does not match its curator pin or the hash recorded on an earlier install, after checking it yourself"
+        )]
+        install_anyway: bool,
         #[arg(
             long,
             conflicts_with = "exclude_optional",
@@ -1363,6 +1373,7 @@ fn exit_code_from_launcher_error(err: &agora_core::error::LauncherError) -> i32 
         LauncherError::ZipBomb => 30,
         LauncherError::OverrideSecurityViolation => 30,
         LauncherError::HashMismatch => 30,
+        LauncherError::HashConfirmationRequired(_) => 30,
         LauncherError::UntrustedSource => 31,
         LauncherError::DiskFull => 34,
         LauncherError::AuthExpired => 40,
@@ -2743,6 +2754,7 @@ async fn run_command(
                 source,
                 allow_replace,
                 skip_health_scan,
+                install_anyway,
                 include_optional,
                 exclude_optional,
                 replace_conflicts,
@@ -2771,6 +2783,7 @@ async fn run_command(
                     overrides: agora_game_minecraft::install_pipeline::PlanOverrides {
                         allow_replace,
                         skip_health_scan,
+                        accept_hash_confirmation: install_anyway,
                         ..Default::default()
                     },
                 };
@@ -2880,6 +2893,7 @@ async fn run_command(
                     agora_game_minecraft::install_pipeline::InstallOutcome::Failed {
                         error,
                         rollback_performed,
+                        hash_confirmation,
                         ..
                     } => {
                         if json {
@@ -2892,6 +2906,11 @@ async fn run_command(
                                 }))?
                             );
                         } else {
+                            if hash_confirmation.is_some() {
+                                eprintln!(
+                                    "Pass --install-anyway to install it anyway, once you have checked the file."
+                                );
+                            }
                             eprintln!("Install failed: {}", error);
                         }
                         anyhow::bail!("Install failed and rolled back: {}", error);
@@ -3079,6 +3098,7 @@ async fn run_command(
                 instance,
                 item,
                 version,
+                install_anyway,
                 include_optional,
                 exclude_optional,
                 replace_conflicts,
@@ -3099,6 +3119,7 @@ async fn run_command(
                     overrides: agora_game_minecraft::install_pipeline::PlanOverrides {
                         allow_replace: true,
                         skip_health_scan: false,
+                        accept_hash_confirmation: install_anyway,
                         ..Default::default()
                     },
                 };
@@ -3205,6 +3226,7 @@ async fn run_command(
                     agora_game_minecraft::install_pipeline::InstallOutcome::Failed {
                         error,
                         rollback_performed,
+                        hash_confirmation,
                         ..
                     } => {
                         if json {
@@ -3218,6 +3240,11 @@ async fn run_command(
                             );
                         } else {
                             eprintln!("Update failed: {}", error);
+                            if hash_confirmation.is_some() {
+                                eprintln!(
+                                    "Pass --install-anyway to update to it anyway, once you have checked the file."
+                                );
+                            }
                         }
                         anyhow::bail!("Update failed and rolled back: {}", error);
                     }
@@ -9601,6 +9628,7 @@ mod tests {
             source_url: None,
             version: Some("1.0.0".into()),
             sha256: "a".repeat(64),
+            hash_verified: true,
             installed_at: "2024-01-01T00:00:00Z".into(),
             java_packages: vec![],
             mod_jar_id: Some("core-lib".into()),
@@ -9624,6 +9652,7 @@ mod tests {
             source_url: None,
             version: Some("2.0.0".into()),
             sha256: "b".repeat(64),
+            hash_verified: true,
             installed_at: "2024-01-01T00:00:00Z".into(),
             java_packages: vec![],
             mod_jar_id: Some("dependent-mod".into()),
@@ -9659,6 +9688,7 @@ mod tests {
             source_url: None,
             version: None,
             sha256: "c".repeat(64),
+            hash_verified: true,
             installed_at: "2024-01-01T00:00:00Z".into(),
             java_packages: vec![],
             mod_jar_id: None,
@@ -9682,6 +9712,7 @@ mod tests {
             source_url: None,
             version: Some("1.0.0".into()),
             sha256: "d".repeat(64),
+            hash_verified: true,
             installed_at: "2024-01-01T00:00:00Z".into(),
             java_packages: vec![],
             mod_jar_id: Some("other".into()),
@@ -10283,6 +10314,7 @@ mod tests {
                 source_url: None,
                 version: Some("1.0.0".into()),
                 sha256: "a".repeat(64),
+                hash_verified: true,
                 installed_at: "2024-01-01T00:00:00Z".into(),
                 java_packages: vec![],
                 modrinth_id: None,
@@ -10917,7 +10949,10 @@ mod tests {
                     source: ArtifactSource::Download {
                         url: "https://example.com/test.jar".into(),
                     },
-                    hashes: HashSpec { values: vec![] },
+                    hashes: HashSpec {
+                        values: vec![],
+                        ..Default::default()
+                    },
                     size: 0,
                     metadata: ArtifactMetadata {
                         provider: None,
@@ -10977,7 +11012,10 @@ mod tests {
                     source: ArtifactSource::Download {
                         url: "https://example.com/test.jar".into(),
                     },
-                    hashes: HashSpec { values: vec![] },
+                    hashes: HashSpec {
+                        values: vec![],
+                        ..Default::default()
+                    },
                     size: 0,
                     metadata: ArtifactMetadata {
                         provider: None,

@@ -255,6 +255,7 @@ fn inventory_pack_content(
             source_url: modrinth_file.map(|file| file.download_url.clone()),
             version: None,
             sha256: agora_core::download::sha256_hex(&bytes),
+            hash_verified: true,
             installed_at: chrono::Utc::now().to_rfc3339(),
             java_packages: Vec::new(),
             mod_jar_id: None,

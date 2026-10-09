@@ -6,6 +6,71 @@ use crate::paths;
 use crate::registry;
 use std::path::Path;
 
+/// What importing a pack did with the mods it names.
+///
+/// A mod that could not be installed is never dropped silently: it is listed in
+/// `skipped` with the reason, and the frontend shows the whole list after the
+/// import. `unverified` lists installed mods whose source published no checksum.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PackImportResult {
+    pub instance_id: String,
+    pub skipped: Vec<SkippedPackMod>,
+    pub unverified: Vec<String>,
+}
+
+/// One mod a pack named that the import could not install.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedPackMod {
+    /// The file the pack names, or the registry or Modrinth id when it names none.
+    pub name: String,
+    /// The error code, such as ERR_HASH_CONFIRMATION_REQUIRED.
+    pub code: String,
+    /// What the user should know: why the mod was not installed.
+    pub message: String,
+}
+
+impl SkippedPackMod {
+    fn from_error(name: &str, error: &LauncherError) -> Self {
+        Self {
+            name: name.to_string(),
+            code: error.code(),
+            message: error.to_string(),
+        }
+    }
+}
+
+/// Record what one pack mod's install came to in the import result: a failure
+/// is listed with its reason, and an install whose source published no checksum
+/// is listed as unverified. Nothing is dropped.
+fn record_pack_mod(
+    name: &str,
+    strategy: Option<&str>,
+    outcome: LauncherResult<InstalledMod>,
+    skipped: &mut Vec<SkippedPackMod>,
+    unverified: &mut Vec<String>,
+) {
+    match outcome {
+        Ok(installed) => {
+            if !installed.hash_verified {
+                unverified.push(unverified_notice(strategy, &installed.filename));
+            }
+        }
+        Err(error) => skipped.push(SkippedPackMod::from_error(name, &error)),
+    }
+}
+
+/// The sentence shown when a source published no checksum for a file.
+fn unverified_notice(strategy: Option<&str>, file: &str) -> String {
+    let source = match strategy {
+        Some("github_release") => "GitHub",
+        Some("modrinth_id") | Some("modrinth_raw") => "Modrinth",
+        _ => "The source",
+    };
+    format!("{source} published no checksum for {file}, so Agora could not verify it.")
+}
+
 /// Resolve instance info via core InstanceService.
 pub fn load_instance_info(
     app: &tauri::AppHandle,
@@ -187,11 +252,17 @@ pub async fn fetch_github_versions_batch(
 }
 
 /// Install a mod version via core InstallService.
+///
+/// `accept_hash_confirmation` is the user's answer to ERR_HASH_CONFIRMATION_REQUIRED:
+/// it lets a download through that differs from a curator pin or from the hash
+/// recorded on an earlier install. It never lets a mismatch against the hash
+/// the source published through.
 pub async fn install_mod_version(
     app: &tauri::AppHandle,
     instance_id: &str,
     item_id: &str,
     candidate: &ModVersionCandidate,
+    accept_hash_confirmation: bool,
 ) -> LauncherResult<InstalledMod> {
     let ctx = crate::core_context(app)?;
     let item = load_registry_item(app, item_id)?;
@@ -210,21 +281,22 @@ pub async fn install_mod_version(
         .map(str::trim)
         .filter(|strategy| !strategy.is_empty())
         .unwrap_or(item.download_strategy.as_str());
-    let pinned = item.sha256.trim();
+    // The manifest hash identifies the one file of a hand-pinned strategy, so
+    // only those are checked against it. Every other source is checked against
+    // the hash it published for this file, never against the manifest's, which
+    // describes at most one historical file.
     let exp_sha256 = match candidate_strategy {
-        // Hand-pinned: the registry hash is the whole integrity story.
-        "direct_hash" | "technic_pack" => Some(pinned).filter(|hash| !hash.is_empty()),
-        // GitHub publishes a per-asset digest on newer releases and nothing on
-        // older ones. The registry's pinned hash describes one historical file,
-        // so it must not stand in for a version it never described.
-        "github_release" => candidate.sha256.as_deref(),
-        // Otherwise prefer the hash the selected version published, falling
-        // back to the pinned one only when the source published none.
-        _ => candidate
+        "direct_hash" | "technic_pack" => item
             .sha256
             .as_deref()
-            .or(Some(pinned).filter(|hash| !hash.is_empty())),
+            .map(str::trim)
+            .filter(|hash| !hash.is_empty()),
+        _ => candidate.sha256.as_deref(),
     };
+    let pinned = agora_game_minecraft::resolver::curator_pins_for(&item, candidate)
+        .into_iter()
+        .next()
+        .map(|pin| pin.sha256);
     let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
     svc.install_artifact(
         instance_id,
@@ -237,6 +309,8 @@ pub async fn install_mod_version(
         Some(&candidate.version),
         candidate.sha1.as_deref(),
         exp_sha256,
+        pinned.as_deref(),
+        accept_hash_confirmation,
     )
     .await
 }
@@ -334,7 +408,7 @@ pub async fn export_instance_pack(
 pub async fn import_instance_pack(
     app: &tauri::AppHandle,
     source_path: &str,
-) -> LauncherResult<String> {
+) -> LauncherResult<PackImportResult> {
     let lower = source_path.to_ascii_lowercase();
     if lower.ends_with(".mrpack") {
         import_mrpack(app, source_path).await
@@ -348,7 +422,10 @@ pub async fn import_instance_pack(
     }
 }
 
-async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherResult<String> {
+async fn import_mrpack(
+    app: &tauri::AppHandle,
+    source_path: &str,
+) -> LauncherResult<PackImportResult> {
     let ctx = crate::core_context(app)?;
     let svc = agora_game_minecraft::import_service::ImportService::new(ctx);
     let request = agora_game_minecraft::import_service::ImportRequest {
@@ -358,11 +435,17 @@ async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherRes
         symlink_saves: false,
     };
     let result = svc.run_import(request).await?;
-    Ok(result.instance_id)
+    Ok(PackImportResult {
+        instance_id: result.instance_id,
+        ..Default::default()
+    })
 }
 
 /// Import an Agora plain-JSON pack (.agora-pack.json).
-async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> LauncherResult<String> {
+async fn import_agora_json(
+    app: &tauri::AppHandle,
+    source_path: &str,
+) -> LauncherResult<PackImportResult> {
     let ctx = crate::core_context(app)?;
     let text = std::fs::read_to_string(source_path).map_err(|_| LauncherError::Generic {
         code: "ERR_PACK_READ".into(),
@@ -434,6 +517,10 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
         template_id: None,
     };
     instances::create_instance(app.clone(), req).await?;
+    // Every mod the pack names ends up either installed, or listed in the
+    // result with its reason. Nothing is dropped silently.
+    let mut skipped: Vec<SkippedPackMod> = Vec::new();
+    let mut unverified: Vec<String> = Vec::new();
     if let Some(mods_arr) = pack.get("mods").and_then(|m| m.as_array()) {
         for entry in mods_arr {
             if let Some(rid) = entry
@@ -442,9 +529,14 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
                 .filter(|s| !s.is_empty())
             {
                 let filename = entry.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-                let candidates = list_mod_versions(app, &instance_id, rid)
-                    .await
-                    .unwrap_or_default();
+                let label = if filename.is_empty() { rid } else { filename };
+                let candidates = match list_mod_versions(app, &instance_id, rid).await {
+                    Ok(candidates) => candidates,
+                    Err(error) => {
+                        skipped.push(SkippedPackMod::from_error(label, &error));
+                        continue;
+                    }
+                };
                 let candidate = candidates
                     .iter()
                     .find(|c| c.filename == filename)
@@ -454,15 +546,28 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
                             .and_then(|v| v.as_str())
                             .and_then(|v| candidates.iter().find(|c| c.version == v))
                     });
-                if let Some(c) = candidate {
-                    let _ = install_mod_version(app, &instance_id, rid, c).await;
-                }
+                let Some(c) = candidate else {
+                    skipped.push(SkippedPackMod {
+                        name: label.to_string(),
+                        code: "ERR_VERSION_NOT_FOUND".into(),
+                        message: format!("No version of {rid} matches {label} in the registry."),
+                    });
+                    continue;
+                };
+                let outcome = install_mod_version(app, &instance_id, rid, c, false).await;
+                record_pack_mod(
+                    label,
+                    c.source_strategy.as_deref(),
+                    outcome,
+                    &mut skipped,
+                    &mut unverified,
+                );
             } else if let Some(mid) = entry
                 .get("modrinth_id")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.trim().is_empty())
             {
-                let candidates = crate::modrinth_raw::list_raw_modrinth_versions(
+                let candidates = match crate::modrinth_raw::list_raw_modrinth_versions(
                     &ctx.http_clients,
                     app,
                     Some(&instance_id),
@@ -470,16 +575,35 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
                     Some("mod"),
                 )
                 .await
-                .unwrap_or_default();
+                {
+                    Ok(candidates) => candidates,
+                    Err(error) => {
+                        skipped.push(SkippedPackMod::from_error(mid, &error));
+                        continue;
+                    }
+                };
                 let candidate = candidates
                     .iter()
                     .find(|c| c.primary)
                     .or_else(|| candidates.first());
-                if let Some(c) = candidate {
-                    let _ =
-                        crate::modrinth_raw::install_raw_modrinth(app, &instance_id, mid, c, "mod")
-                            .await;
-                }
+                let Some(c) = candidate else {
+                    skipped.push(SkippedPackMod {
+                        name: mid.to_string(),
+                        code: "ERR_VERSION_NOT_FOUND".into(),
+                        message: format!("Modrinth project {mid} has no version to install."),
+                    });
+                    continue;
+                };
+                let outcome =
+                    crate::modrinth_raw::install_raw_modrinth(app, &instance_id, mid, c, "mod")
+                        .await;
+                record_pack_mod(
+                    mid,
+                    Some("modrinth_id"),
+                    outcome,
+                    &mut skipped,
+                    &mut unverified,
+                );
             }
         }
     }
@@ -522,5 +646,87 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
         manifest.manifest_version = agora_core::models::CURRENT_MANIFEST_VERSION;
         agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
     }
-    Ok(instance_id)
+    Ok(PackImportResult {
+        instance_id,
+        skipped,
+        unverified,
+    })
+}
+
+#[cfg(test)]
+mod pack_import_tests {
+    use super::*;
+
+    fn installed(filename: &str, hash_verified: bool) -> InstalledMod {
+        serde_json::from_value(serde_json::json!({
+            "filename": filename,
+            "source": "registry",
+            "sha256": "a".repeat(64),
+            "installed_at": "now",
+            "hash_verified": hash_verified,
+        }))
+        .expect("a minimal installed mod record")
+    }
+
+    #[test]
+    fn a_pack_mod_that_fails_is_reported_with_its_reason_not_dropped() {
+        let mut skipped = Vec::new();
+        let mut unverified = Vec::new();
+        record_pack_mod(
+            "xaeros-1.2.0.jar",
+            Some("github_release"),
+            Err(LauncherError::HashConfirmationRequired(
+                agora_core::error::HashConfirmation {
+                    file: "xaeros-1.2.0.jar".into(),
+                    release: Some("v1.2.0".into()),
+                    expected: "c".repeat(64),
+                    actual: "d".repeat(64),
+                    expected_from: agora_core::artifact_hash::HashOrigin::CuratorPin,
+                },
+            )),
+            &mut skipped,
+            &mut unverified,
+        );
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "xaeros-1.2.0.jar");
+        assert_eq!(skipped[0].code, "ERR_HASH_CONFIRMATION_REQUIRED");
+        assert!(skipped[0].message.contains("xaeros-1.2.0.jar"));
+        assert!(unverified.is_empty());
+    }
+
+    #[test]
+    fn an_install_whose_source_published_no_checksum_is_listed_as_unverified() {
+        let mut skipped = Vec::new();
+        let mut unverified = Vec::new();
+        record_pack_mod(
+            "old.jar",
+            Some("github_release"),
+            Ok(installed("old.jar", false)),
+            &mut skipped,
+            &mut unverified,
+        );
+        assert!(skipped.is_empty());
+        assert_eq!(
+            unverified,
+            vec![
+                "GitHub published no checksum for old.jar, so Agora could not verify it."
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_verified_install_adds_nothing_to_the_report() {
+        let mut skipped = Vec::new();
+        let mut unverified = Vec::new();
+        record_pack_mod(
+            "ok.jar",
+            Some("modrinth_id"),
+            Ok(installed("ok.jar", true)),
+            &mut skipped,
+            &mut unverified,
+        );
+        assert!(skipped.is_empty());
+        assert!(unverified.is_empty());
+    }
 }

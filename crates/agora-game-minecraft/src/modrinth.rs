@@ -1049,6 +1049,7 @@ pub async fn install_raw_modrinth(
     let sha256 = agora_core::download::sha256_hex(&bytes);
     let metadata = parse_jar_metadata(&mod_path);
     let installed_mod = InstalledMod {
+        hash_verified: true,
         provider: None,
         update_pinned: false,
         pack_managed: false,
@@ -1464,6 +1465,8 @@ impl ModrinthService {
             Some(&candidate.version),
             Some(&expected_sha1),
             None,
+            None,
+            false,
         )
         .await
     }

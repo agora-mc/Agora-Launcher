@@ -7,6 +7,7 @@
 //! out of the desktop crate in Phase 1A.
 
 pub mod app_paths;
+pub mod artifact_hash;
 pub mod artifact_receipt;
 pub mod auth;
 pub mod backup;

@@ -354,6 +354,7 @@ mod tests {
             source_url: None,
             version: None,
             sha256: "hash".to_string(),
+            hash_verified: true,
             installed_at: "not-a-timestamp".to_string(),
             java_packages: Vec::new(),
             mod_jar_id: None,

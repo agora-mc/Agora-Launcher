@@ -596,6 +596,7 @@ fn inventory_directory(
             source_url: None,
             version,
             sha256: sha,
+            hash_verified: true,
             installed_at: chrono::Utc::now().to_rfc3339(),
             java_packages,
             mod_jar_id,

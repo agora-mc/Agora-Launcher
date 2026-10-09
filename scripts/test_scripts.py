@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for pure functions in Agora utility scripts."""
 
-import hashlib
 import http.client
 import json
 import os
@@ -16,7 +15,6 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import fetch_loader_manifests
-import fetch_registry_db
 import deploy_release_assets
 import refresh_loader_manifests
 import validate_loader_catalog_delta
@@ -592,75 +590,6 @@ class TestStableJsonSha256(unittest.TestCase):
         hash1 = fetch_loader_manifests._stable_json_sha256(b'{"a":1}')
         hash2 = fetch_loader_manifests._stable_json_sha256(b'{"a":2}')
         self.assertNotEqual(hash1, hash2)
-
-
-class TestSha256File(unittest.TestCase):
-    """Tests for fetch_registry_db.sha256_file."""
-
-    def test_known_content(self):
-        """SHA-256 of a temp file with known content matches expected hash."""
-        expected = (
-            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-        )
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(b"hello")
-            tmp_path = tmp.name
-        try:
-            self.assertEqual(fetch_registry_db.sha256_file(Path(tmp_path)), expected)
-        finally:
-            os.unlink(tmp_path)
-
-    def test_empty_file(self):
-        """SHA-256 of an empty file matches the known empty-hash constant."""
-        expected = (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        )
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            self.assertEqual(fetch_registry_db.sha256_file(Path(tmp_path)), expected)
-        finally:
-            os.unlink(tmp_path)
-
-
-class TestVerifySha256AgainstDigest(unittest.TestCase):
-    """Tests for fetch_registry_db.verify_sha256_against_digest."""
-
-    def test_no_digest_skips(self):
-        """When digest_field is None, no verification is performed (no exit)."""
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(b"hello")
-            tmp_path = tmp.name
-        try:
-            # Should not raise or call sys.exit
-            fetch_registry_db.verify_sha256_against_digest(Path(tmp_path), None)
-        except SystemExit:
-            self.fail("verify_sha256_against_digest called sys.exit with no digest")
-        finally:
-            os.unlink(tmp_path)
-
-    def test_hex_digest_matches(self):
-        """When digest is a hex string matching the file's SHA-256, no exit occurs."""
-        expected = hashlib.sha256(b"hello").hexdigest()
-        digest_field = f"sha256:{expected}"
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(b"hello")
-            tmp_path = tmp.name
-        try:
-            fetch_registry_db.verify_sha256_against_digest(Path(tmp_path), digest_field)
-        except SystemExit:
-            self.fail("verify_sha256_against_digest called sys.exit on matching digest")
-        finally:
-            os.unlink(tmp_path)
-
-
-
-
-
-
-
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1080,6 +1080,7 @@ pub(crate) fn test_mod(
         source_url: None,
         version: Some("1.0.0".to_string()),
         sha256: "aa".repeat(32),
+        hash_verified: true,
         installed_at: chrono::Utc::now().to_rfc3339(),
         java_packages: Vec::new(),
         mod_jar_id: None,

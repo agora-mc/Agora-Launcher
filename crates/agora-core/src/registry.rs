@@ -87,6 +87,19 @@ pub struct DownloadSource {
     /// `technic_pack`, the pack id for `curated_pack`, and
     /// `<provider-id>:<project-id>@<version-id>` for `provider_pack`.
     pub identifier: String,
+    /// Curator pins for exact release files of a `github_release` source. A
+    /// pin is compared only with the file it names (tag and asset).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pins: Vec<SourcePin>,
+}
+
+/// One curator pin on a `github_release` source: the expected SHA-256 of the
+/// asset `asset` in the release tagged `tag`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourcePin {
+    pub tag: String,
+    pub asset: String,
+    pub sha256: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -703,7 +716,9 @@ pub struct GameCatalogItem {
     /// The preferred source's strategy, mirrored from `download_sources[0]`.
     pub download_strategy: String,
     pub source_identifier: String,
-    pub sha256: String,
+    /// The manifest's sha256 when it states one. Never a stand-in for another
+    /// source's file; see [`crate::artifact_hash`].
+    pub sha256: Option<String>,
     /// Ordered download sources, best first.
     pub download_sources: Vec<DownloadSource>,
     pub game_compatibility: Vec<GameCompatibility>,
@@ -819,7 +834,8 @@ pub struct RegistryItem {
     pub content_type: String,
     pub download_strategy: String,
     pub source_identifier: String,
-    pub sha256: String,
+    /// The manifest's sha256 when it states one, otherwise `None`.
+    pub sha256: Option<String>,
     pub upvotes: i64,
     pub downvotes: i64,
     pub net_score: i64,
@@ -892,6 +908,7 @@ impl RegistryItem {
             sources.push(DownloadSource {
                 strategy: self.download_strategy.clone(),
                 identifier: self.source_identifier.clone(),
+                pins: Vec::new(),
             });
             if let Some(modrinth_id) = self
                 .modrinth_id
@@ -903,6 +920,7 @@ impl RegistryItem {
                     sources.push(DownloadSource {
                         strategy: "modrinth_id".into(),
                         identifier: modrinth_id.to_string(),
+                        pins: Vec::new(),
                     });
                 }
             }
@@ -3073,7 +3091,7 @@ mod tests {
             content_type: "mod".into(),
             download_strategy: strategy.into(),
             source_identifier: identifier.into(),
-            sha256: "a".repeat(64),
+            sha256: Some("a".repeat(64)),
             upvotes: 0,
             downvotes: 0,
             net_score: 0,

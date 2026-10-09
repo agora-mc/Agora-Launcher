@@ -1710,7 +1710,10 @@ def create_tables(conn: sqlite3.Connection) -> None:
             -- primary source do not have to parse JSON.
             download_strategy TEXT NOT NULL,
             source_identifier TEXT NOT NULL,
-            sha256 TEXT NOT NULL,
+            -- The manifest's sha256 when it states one, NULL otherwise. An
+            -- install checks the file against what its source published
+            -- (download_sources_json pins, GitHub digests), not this column.
+            sha256 TEXT,
             upvotes INTEGER DEFAULT 0,
             downvotes INTEGER DEFAULT 0,
             net_score INTEGER DEFAULT 0,
@@ -1974,7 +1977,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
             content_type TEXT NOT NULL,
             download_strategy TEXT NOT NULL,
             source_identifier TEXT NOT NULL,
-            sha256 TEXT NOT NULL,
+            sha256 TEXT,
             download_sources_json TEXT NOT NULL DEFAULT '[]',
             game_compatibility_json TEXT NOT NULL,
             description TEXT,
@@ -2070,6 +2073,92 @@ def validate_sha256(raw: Any) -> str:
         logger.error("sha256 must be exactly 64 hex characters: %s", raw)
         raise SystemExit(1)
     return raw
+
+
+def validate_optional_sha256(raw: Any, item_id: str) -> str | None:
+    """The manifest's sha256 when it states one, otherwise None.
+
+    Curators never hash files by hand. For a github_release or modrinth_id
+    entry the install checks the file against what its source published, so
+    the manifest may omit sha256. When it is present it must still be a
+    well-formed hash, and ``require_manifest_sha256`` decides whether it is
+    needed.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", raw):
+        logger.error(
+            "%s: sha256, when present, must be exactly 64 hex characters, got %r", item_id, raw
+        )
+        raise SystemExit(1)
+    return raw
+
+
+def require_manifest_sha256(item_id: str, sources: list[dict[str, Any]], raw: Any) -> None:
+    """Require the manifest's sha256 when any download source is pinned.
+
+    A pinned source (direct_hash, technic_pack, provider_pack) has no upstream
+    to check the file against, so the manifest hash is the only record of which
+    file it is. Every other strategy takes its hash from the source.
+    """
+    pinned = sorted(
+        {source["strategy"] for source in sources if is_pinned_strategy(source["strategy"])}
+    )
+    if pinned and raw is None:
+        logger.error(
+            "%s: sha256 is required because a download source is %s: "
+            "it is the only record of which file that source serves",
+            item_id,
+            ", ".join(pinned),
+        )
+        raise SystemExit(1)
+
+
+def canonical_source_pins(item_id: str, strategy: str, raw: Any) -> list[dict[str, str]]:
+    """Validate a download source's ``pins`` and return them in canonical form.
+
+    A pin names one exact file: a GitHub release ``tag``, the release ``asset``
+    filename, and the ``sha256`` the curator expects that file to have. A pin
+    is compared only with that file. Pins exist only on github_release sources.
+    """
+    if raw is None:
+        return []
+    if strategy != "github_release":
+        logger.error("%s: pins are only for github_release sources, not %s", item_id, strategy)
+        raise SystemExit(1)
+    if not isinstance(raw, list):
+        logger.error("%s: pins must be an array of {tag, asset, sha256} objects", item_id)
+        raise SystemExit(1)
+    pins: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, pin in enumerate(raw):
+        where = f"{item_id}: pins[{index}]"
+        if not isinstance(pin, dict):
+            logger.error("%s must be an object, got %r", where, pin)
+            raise SystemExit(1)
+        unknown = sorted(str(key) for key in set(pin) - {"tag", "asset", "sha256"})
+        if unknown:
+            logger.error("%s has unknown key(s): %s", where, ", ".join(unknown))
+            raise SystemExit(1)
+        tag = pin.get("tag")
+        if not isinstance(tag, str) or not tag.strip():
+            logger.error("%s.tag must be a non-empty release tag", where)
+            raise SystemExit(1)
+        asset = pin.get("asset")
+        if not isinstance(asset, str) or not asset.strip() or "/" in asset or "\\" in asset:
+            logger.error("%s.asset must be a non-empty release asset filename", where)
+            raise SystemExit(1)
+        sha = pin.get("sha256")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+            logger.error("%s.sha256 must be exactly 64 hex characters", where)
+            raise SystemExit(1)
+        key = (tag.strip(), asset.strip())
+        if key in seen:
+            logger.error("%s repeats the pin for release %s, asset %s", where, key[0], key[1])
+            raise SystemExit(1)
+        seen.add(key)
+        pins.append({"tag": key[0], "asset": key[1], "sha256": sha.lower()})
+    return pins
 
 
 # ---------------------------------------------------------------------------
@@ -2318,7 +2407,11 @@ def normalize_download_sources(item: dict[str, Any]) -> list[dict[str, str]]:
                     entry,
                 )
                 raise SystemExit(1)
-            sources.append({"strategy": strategy, "identifier": identifier})
+            source: dict[str, Any] = {"strategy": strategy, "identifier": identifier}
+            pins = canonical_source_pins(item_id, strategy, entry.get("pins"))
+            if pins:
+                source["pins"] = pins
+            sources.append(source)
 
         # download_sources is authoritative when present. A manifest may still
         # spell out the legacy pair, but it must then agree with the preferred
@@ -2574,13 +2667,12 @@ def check_game_scope(
             )
     if item.get("content_type") != "mod":
         raise SystemExit(f'{path}: an entry for {game} must have content_type "mod"')
-    sha256 = item.get("sha256")
-    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
-        raise SystemExit(f"{path}: sha256 must be exactly 64 hex characters")
+    validate_optional_sha256(item.get("sha256"), str(path))
     item["_manifest_path"] = str(path)
     # Strategies first, so a Modrinth or unknown strategy is named as such
     # rather than tripping an asset rule that only makes sense for GitHub.
-    _canonical_other_game_sources(item)
+    sources = _canonical_other_game_sources(item)
+    require_manifest_sha256(str(path), sources, item.get("sha256"))
     _validate_game_compatibility(path, item, decl)
 
 
@@ -2700,7 +2792,11 @@ def _canonical_other_game_sources(item: dict[str, Any]) -> list[dict[str, str]]:
             _validate_pinned_url(label, strategy, identifier)
         elif not _OWNER_REPO_RE.fullmatch(identifier):
             raise SystemExit(f"{label}: github_release identifier must be owner/repo, got {identifier!r}")
-        sources.append({"strategy": strategy, "identifier": identifier})
+        source: dict[str, Any] = {"strategy": strategy, "identifier": identifier}
+        pins = canonical_source_pins(label, strategy, entry.get("pins"))
+        if pins:
+            source["pins"] = pins
+        sources.append(source)
 
     if item.get("download_sources") is not None:
         legacy_strategy = item.get("download_strategy")
@@ -2790,7 +2886,8 @@ def insert_game_catalog_item(conn: sqlite3.Connection, item: dict[str, Any], pat
     written for other games yet.
     """
     download_sources = normalize_download_sources(item)
-    sha256 = validate_sha256(item.get("sha256"))
+    sha256 = validate_optional_sha256(item.get("sha256"), item["id"])
+    require_manifest_sha256(item["id"], download_sources, item.get("sha256"))
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -2830,11 +2927,12 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
     immunity_reason = governance.get("override_justification")
     allow_comments = bool(governance.get("allow_comments", True))
 
-    sha256 = validate_sha256(item.get("sha256"))
     # Idempotent: main() normalizes every item up front so hydration sees the
     # derived fields, but a caller that inserts a hand-built dict still gets a
     # validated source list.
     download_sources = normalize_download_sources(item)
+    sha256 = validate_optional_sha256(item.get("sha256"), item_id)
+    require_manifest_sha256(item_id, download_sources, item.get("sha256"))
     download_strategy = item["download_strategy"]
     gallery = item.get("gallery_urls", [])
     compatible_versions = (

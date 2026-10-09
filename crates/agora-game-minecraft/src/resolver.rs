@@ -18,6 +18,7 @@ use crate::install_pipeline::{
     PreparedPlan, ResolvedArtifact, ResolvedDep, ResolvedDownload, ResolvedLocal,
     ResolvedOperation, SourceType,
 };
+use agora_core::artifact_hash::{ConfirmableHash, HashOrigin};
 use agora_core::ctx::Ctx;
 use agora_core::dependency_ops::{AliasMap, DepSource, Requirement};
 use agora_core::download;
@@ -3003,6 +3004,7 @@ fn pinned_artifact_versions_for_item(
     let source = agora_core::registry::DownloadSource {
         strategy: item.download_strategy.clone(),
         identifier: item.source_identifier.clone(),
+        pins: Vec::new(),
     };
     pinned_artifact_versions_for_source(item, &source, mc_version, loader, allow_http)
 }
@@ -3061,7 +3063,7 @@ fn pinned_artifact_versions_for_source(
             item.id
         ))
     })?;
-    let sha256 = valid_hash(Some(&item.sha256), 64).ok_or_else(|| {
+    let sha256 = valid_hash(item.sha256.as_deref(), 64).ok_or_else(|| {
         invalid(format!(
             "'{}' uses {label} but has no valid pinned sha256.",
             item.id
@@ -3337,10 +3339,40 @@ fn pinned_host_for_candidate(
         .map(str::to_string)
 }
 
+/// What a curated candidate is checked against.
+///
+/// The file's own published hashes (GitHub's asset digest, Modrinth's version
+/// file hashes) are the only ones that verify it. The manifest's `sha256` is
+/// never used here: for a github_release or modrinth_id entry it describes at
+/// most one historical file, and a candidate from another release must not be
+/// judged against it. A `direct_hash` candidate already carries the manifest
+/// hash as its own published hash, because that entry names the one file.
+///
+/// A candidate with no published hash is not an error for GitHub and Modrinth:
+/// it is marked `unpublished`, so the install can say so and record its bytes
+/// as not verified. Curator pins for the exact release file are attached as
+/// confirmable expectations.
 fn curated_hashes(
     item: &agora_core::registry::RegistryItem,
     candidate: &ModVersionCandidate,
 ) -> LauncherResult<HashSpec> {
+    // A hash the source published but that is not a well-formed digest is refused, never dropped:
+    // dropping it would make the file look like one with nothing published, installed unverified.
+    for (value, length, name) in [
+        (candidate.sha512.as_deref(), 128, "SHA-512"),
+        (candidate.sha256.as_deref(), 64, "SHA-256"),
+        (candidate.sha1.as_deref(), 40, "SHA-1"),
+    ] {
+        if value.is_some_and(|v| !v.trim().is_empty()) && valid_hash(value, length).is_none() {
+            return Err(LauncherError::Generic {
+                code: "ERR_HASH_MALFORMED".into(),
+                message: format!(
+                    "The source published a malformed {name} for {} {}, so it cannot be verified.",
+                    item.id, candidate.version
+                ),
+            });
+        }
+    }
     let mut hashes = Vec::new();
     if let Some(sha512) = valid_hash(candidate.sha512.as_deref(), 128) {
         hashes.push(HashedValue {
@@ -3360,24 +3392,51 @@ fn curated_hashes(
             value: sha1,
         });
     }
+    let confirmable = curator_pins_for(item, candidate);
 
-    // A registry item hash may pin one historical artifact. It is only a safe
-    // fallback when the selected candidate published no hashes at all; never
-    // combine it with hashes belonging to a different version.
-    if hashes.is_empty() {
-        let sha256 = valid_hash(Some(&item.sha256), 64).ok_or_else(|| LauncherError::Generic {
+    if !hashes.is_empty() {
+        return Ok(HashSpec {
+            values: hashes,
+            confirmable,
+            unpublished: false,
+        });
+    }
+    match candidate_strategy(item, candidate) {
+        "github_release" | "modrinth_id" => Ok(HashSpec {
+            values: Vec::new(),
+            confirmable,
+            unpublished: true,
+        }),
+        _ => Err(LauncherError::Generic {
             code: "ERR_HASH_UNAVAILABLE".into(),
             message: format!(
                 "No trusted hash is available for {} {}.",
                 item.id, candidate.version
             ),
-        })?;
-        hashes.push(HashedValue {
-            algorithm: HashAlgorithm::Sha256,
-            value: sha256,
-        });
+        }),
     }
-    Ok(HashSpec { values: hashes })
+}
+
+/// The curator's pins for exactly this release file: a pin on a `github_release`
+/// source whose tag and asset are the candidate's. Any other file is not
+/// compared with a pin.
+pub fn curator_pins_for(
+    item: &agora_core::registry::RegistryItem,
+    candidate: &ModVersionCandidate,
+) -> Vec<ConfirmableHash> {
+    if candidate_strategy(item, candidate) != "github_release" {
+        return Vec::new();
+    }
+    item.download_sources()
+        .iter()
+        .filter(|source| source.strategy == "github_release")
+        .flat_map(|source| source.pins.iter())
+        .filter(|pin| pin.tag == candidate.version && pin.asset == candidate.filename)
+        .map(|pin| ConfirmableHash {
+            origin: HashOrigin::CuratorPin,
+            sha256: pin.sha256.clone(),
+        })
+        .collect()
 }
 
 /// Whether a content type is an ordinary mod, whose Modrinth versions are
@@ -3484,7 +3543,10 @@ fn raw_modrinth_artifact(
         source: ArtifactSource::Download {
             url: candidate.download_url.clone(),
         },
-        hashes: HashSpec { values: hashes },
+        hashes: HashSpec {
+            values: hashes,
+            ..Default::default()
+        },
         size: candidate.size.unwrap_or(0),
         filename: candidate.filename.clone(),
         metadata: ArtifactMetadata {
@@ -3546,6 +3608,7 @@ fn resolve_manual_install(
                         algorithm: HashAlgorithm::Sha256,
                         value: sha256,
                     }],
+                    ..Default::default()
                 },
                 size: bytes.len() as u64,
                 filename: filename.to_string(),
@@ -3761,6 +3824,7 @@ fn open_registry_db(path: &std::path::Path) -> LauncherResult<rusqlite::Connecti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agora_core::registry::RegistryItem;
 
     #[test]
     fn test_normalize_requested_version() {
@@ -4057,7 +4121,7 @@ mod tests {
             content_type: "mod".into(),
             download_strategy: "direct_hash".into(),
             source_identifier: url.into(),
-            sha256: "d".repeat(64),
+            sha256: Some("d".repeat(64)),
             upvotes: 0,
             downvotes: 0,
             net_score: 0,
@@ -4279,6 +4343,7 @@ mod tests {
             filename: filename.into(),
             source: "modrinth_raw".into(),
             sha256: "aa".into(),
+            hash_verified: true,
             installed_at: "now".into(),
             enabled: true,
             content_type: content_type.into(),
@@ -4398,7 +4463,7 @@ mod tests {
             "https://example.com/files/mod-1.0.0.jar",
             Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"1.0.0"}]"#),
         );
-        item.sha256 = "not-a-hash".into();
+        item.sha256 = Some("not-a-hash".into());
         assert!(direct_hash_versions_for_item(&item, "1.21", "fabric").is_err());
     }
 
@@ -4470,7 +4535,7 @@ mod tests {
             content_type: "mod".into(),
             download_strategy: "modrinth_id".into(),
             source_identifier: "1bokaNcj".into(),
-            sha256: "a".repeat(64),
+            sha256: Some("a".repeat(64)),
             upvotes: 0,
             downvotes: 0,
             net_score: 0,
@@ -4654,6 +4719,7 @@ mod tests {
                 filename: "a.jar".into(),
                 source: "registry".into(),
                 sha256: "aa".into(),
+                hash_verified: true,
                 installed_at: "now".into(),
                 enabled: true,
                 content_type: "mod".into(),
@@ -4676,6 +4742,7 @@ mod tests {
                 filename: "b.zip".into(),
                 source: "registry".into(),
                 sha256: "bb".into(),
+                hash_verified: true,
                 installed_at: "now".into(),
                 enabled: true,
                 content_type: "resourcepack".into(),
@@ -5031,7 +5098,10 @@ mod tests {
             source: ArtifactSource::Download {
                 url: "https://example.com/terrablender.jar".into(),
             },
-            hashes: HashSpec { values: vec![] },
+            hashes: HashSpec {
+                values: vec![],
+                ..Default::default()
+            },
             size: 100,
             filename: "TerraBlender-fabric-3.3.0.10.jar".into(),
             metadata: ArtifactMetadata {
@@ -5067,7 +5137,10 @@ mod tests {
             source: ArtifactSource::Download {
                 url: "https://example.com/terrablender.jar".into(),
             },
-            hashes: HashSpec { values: vec![] },
+            hashes: HashSpec {
+                values: vec![],
+                ..Default::default()
+            },
             size: 100,
             filename: "TerraBlender-fabric.jar".into(),
             metadata: ArtifactMetadata {
@@ -5169,7 +5242,10 @@ mod tests {
                             source: ArtifactSource::Download {
                                 url: "https://example.com/glitchcore.jar".into(),
                             },
-                            hashes: HashSpec { values: vec![] },
+                            hashes: HashSpec {
+                                values: vec![],
+                                ..Default::default()
+                            },
                             size: 1,
                             filename: "GlitchCore.jar".into(),
                             metadata: ArtifactMetadata {
@@ -5256,5 +5332,132 @@ mod tests {
         assert_eq!(selected.version_id, "best-available");
         let closest = select_closest_raw_modrinth_candidate(&candidates, "1.20.1").unwrap();
         assert_eq!(closest.version_id, "old-pinned");
+    }
+
+    /// A github_release curated item. Its manifest sha256 names one historical
+    /// file, which the policy says must never stand in for another.
+    fn github_item(manifest_sha256: Option<&str>, sources_json: &str) -> RegistryItem {
+        let mut item = direct_hash_item(
+            "https://example.com/unused.jar",
+            Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"1.0.0"}]"#),
+        );
+        item.download_strategy = "github_release".into();
+        item.source_identifier = "owner/repo".into();
+        item.sha256 = manifest_sha256.map(str::to_string);
+        item.download_sources_json = Some(sources_json.into());
+        item
+    }
+
+    fn github_candidate(tag: &str, asset: &str, digest: Option<&str>) -> ModVersionCandidate {
+        ModVersionCandidate {
+            version: tag.into(),
+            filename: asset.into(),
+            download_url: format!("https://github.com/owner/repo/releases/download/{tag}/{asset}"),
+            mc_version: Some("1.21".into()),
+            loader: Some("fabric".into()),
+            release_date: None,
+            is_compatible: true,
+            version_compat: "compatible".into(),
+            is_prerelease: false,
+            sha1: None,
+            sha256: digest.map(str::to_string),
+            sha512: None,
+            size: None,
+            source_strategy: Some("github_release".into()),
+            source_identifier: None,
+        }
+    }
+
+    const PLAIN_SOURCE: &str = r#"[{"strategy":"github_release","identifier":"owner/repo"}]"#;
+
+    #[test]
+    fn a_github_digest_verifies_the_file_and_the_manifest_hash_is_ignored() {
+        let item = github_item(Some(&"a".repeat(64)), PLAIN_SOURCE);
+        let candidate = github_candidate("v1.2.0", "mod-1.2.0.jar", Some(&"b".repeat(64)));
+        let hashes = curated_hashes(&item, &candidate).unwrap();
+        assert_eq!(hashes.values.len(), 1);
+        assert_eq!(hashes.values[0].value, "b".repeat(64));
+        assert!(!hashes.unpublished);
+        assert!(hashes.confirmable.is_empty());
+    }
+
+    #[test]
+    fn a_github_asset_with_no_digest_is_unpublished_and_never_uses_the_manifest_hash() {
+        let item = github_item(Some(&"a".repeat(64)), PLAIN_SOURCE);
+        let candidate = github_candidate("v0.9", "mod-0.9.jar", None);
+        let hashes = curated_hashes(&item, &candidate).unwrap();
+        assert!(
+            hashes.values.is_empty(),
+            "the manifest hash must not verify another file"
+        );
+        assert!(hashes.unpublished);
+        assert!(curated_artifact(&item, &candidate).is_ok());
+    }
+
+    #[test]
+    fn an_empty_or_malformed_hash_is_never_treated_as_verified() {
+        let empty_manifest = github_item(Some(""), PLAIN_SOURCE);
+        let candidate = github_candidate("v0.9", "mod-0.9.jar", None);
+        let hashes = curated_hashes(&empty_manifest, &candidate).unwrap();
+        assert!(hashes.values.is_empty());
+        assert!(hashes.unpublished);
+
+        // A digest the source did publish but that is not a well-formed hash is refused: treating
+        // it as "nothing published" would install the file unverified on a corrupt digest.
+        let malformed_digest = github_candidate("v0.9", "mod-0.9.jar", Some("not-a-hash"));
+        let error = curated_hashes(&empty_manifest, &malformed_digest)
+            .expect_err("a malformed published digest is refused");
+        assert_eq!(error.code(), "ERR_HASH_MALFORMED");
+        let short_digest = github_candidate("v0.9", "mod-0.9.jar", Some(&"ab".repeat(31)));
+        assert!(curated_hashes(&empty_manifest, &short_digest).is_err());
+    }
+
+    #[test]
+    fn a_pin_for_the_same_release_file_is_attached_as_a_confirmable_expectation() {
+        let sources = format!(
+            r#"[{{"strategy":"github_release","identifier":"owner/repo","pins":[{{"tag":"v1.2.0","asset":"mod-1.2.0.jar","sha256":"{}"}}]}}]"#,
+            "c".repeat(64)
+        );
+        let item = github_item(None, &sources);
+        let candidate = github_candidate("v1.2.0", "mod-1.2.0.jar", Some(&"b".repeat(64)));
+        let hashes = curated_hashes(&item, &candidate).unwrap();
+        assert_eq!(
+            hashes.confirmable,
+            vec![ConfirmableHash {
+                origin: HashOrigin::CuratorPin,
+                sha256: "c".repeat(64),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_pin_for_another_tag_is_not_compared_with_this_file() {
+        let sources = format!(
+            r#"[{{"strategy":"github_release","identifier":"owner/repo","pins":[{{"tag":"v1.2.0","asset":"mod-1.2.0.jar","sha256":"{}"}}]}}]"#,
+            "c".repeat(64)
+        );
+        let item = github_item(None, &sources);
+        let other_tag = github_candidate("v1.1.0", "mod-1.2.0.jar", None);
+        let hashes = curated_hashes(&item, &other_tag).unwrap();
+        assert!(hashes.confirmable.is_empty());
+        let other_asset = github_candidate("v1.2.0", "mod-1.2.0-sources.jar", None);
+        assert!(curated_hashes(&item, &other_asset)
+            .unwrap()
+            .confirmable
+            .is_empty());
+    }
+
+    #[test]
+    fn a_direct_hash_candidate_still_verifies_against_its_pinned_hash() {
+        let item = direct_hash_item(
+            "https://example.com/files/self-hosted-mod-1.2.3.jar",
+            Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"1.2.3"}]"#),
+        );
+        let candidates = direct_hash_versions_for_item(&item, "1.21", "fabric").unwrap();
+        let hashes = curated_hashes(&item, &candidates[0]).unwrap();
+        assert_eq!(hashes.values.len(), 1);
+        assert_eq!(hashes.values[0].value, "d".repeat(64));
+        assert!(!hashes.unpublished);
+        assert!(hashes.confirmable.is_empty());
     }
 }

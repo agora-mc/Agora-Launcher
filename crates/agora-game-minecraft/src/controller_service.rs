@@ -247,6 +247,7 @@ mod tests {
             source_url: None,
             version: None,
             sha256: String::new(),
+            hash_verified: true,
             installed_at: String::new(),
             java_packages: vec![],
             mod_jar_id: jar_id.map(str::to_string),

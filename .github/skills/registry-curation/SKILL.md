@@ -8,7 +8,7 @@ Use this skill when adding or reviewing entries under `registry/`, `crash-signat
 
 ## JSON Schema Compliance
 
-Every manifest must match the schemas in `MASTER_SPEC.md` §2. Required fields include `id`, `name`, `content_type`, `author`, `license`, `sha256`, and a statement of where the file comes from: a `download_sources` list of `{strategy, identifier}` objects in preference order, or the legacy `download_strategy` + `source_identifier` pair.
+Every manifest must match the schemas in `MASTER_SPEC.md` §2. Required fields include `id`, `name`, `content_type`, `author`, `license`, and a statement of where the file comes from (`sha256` is required for `direct_hash` and the other pinned strategies, and omitted for `github_release` and `modrinth_id`): a `download_sources` list of `{strategy, identifier}` objects in preference order, or the legacy `download_strategy` + `source_identifier` pair.
 
 ## SPDX Licenses
 

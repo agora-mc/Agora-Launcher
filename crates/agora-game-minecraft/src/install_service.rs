@@ -9,6 +9,7 @@ use crate::install_pipeline::{
     ProgressReporter, ResolvedInstallPlan, ResolvedOperation, ReverseDepInfo,
 };
 use crate::resolver::Resolver;
+use agora_core::artifact_hash::{verify_download, ConfirmableHash, HashOrigin};
 use agora_core::ctx::Ctx;
 use agora_core::dependency_ops::AliasMap;
 use agora_core::error::{LauncherError, LauncherResult};
@@ -194,6 +195,7 @@ impl InstallService {
                     error: format!("Instance not accessible before execution: {error}"),
                     rollback_performed: false,
                     snapshot_id: None,
+                    hash_confirmation: None,
                 };
             }
         };
@@ -343,6 +345,8 @@ impl InstallService {
         version: Option<&str>,
         expected_sha1: Option<&str>,
         expected_sha256: Option<&str>,
+        pinned_sha256: Option<&str>,
+        accept_hash_confirmation: bool,
     ) -> LauncherResult<InstalledMod> {
         self.check_not_locked(instance_id)?;
 
@@ -351,42 +355,57 @@ impl InstallService {
 
         let bytes =
             agora_core::download::download_mod_bytes(&self.ctx.http_clients, download_url).await?;
+        let manifest_path = self.ctx.paths.instance_manifest(instance_id)?;
+        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
 
-        // Verification is mandatory and fails closed, matching the install
-        // pipeline's `verify_bytes`. A candidate whose source published no
-        // usable hash (e.g. an older GitHub release with no asset digest, where
-        // the registry's pinned hash describes a different file) must not be
-        // silently installed unverified.
-        let candidate_sha1 = expected_sha1.unwrap_or("").trim().to_lowercase();
-        let candidate_sha256 = expected_sha256.unwrap_or("").trim().to_lowercase();
-        if !candidate_sha1.is_empty() {
-            let actual_sha1 = agora_core::download::sha1_hex(&bytes);
-            if actual_sha1 != candidate_sha1 {
-                return Err(LauncherError::HashMismatch);
-            }
-        } else if !candidate_sha256.is_empty() {
-            let actual_sha = agora_core::download::sha256_hex(&bytes);
-            if actual_sha != candidate_sha256 {
-                return Err(LauncherError::HashMismatch);
-            }
-        } else {
-            return Err(LauncherError::Generic {
-                code: "ERR_NO_PUBLISHED_HASH".into(),
-                message: format!(
-                    "{filename} cannot be installed: its source published no SHA-1 or SHA-256 \
-                     for this version, so Agora cannot verify the download."
-                ),
+        // Curator pin and the hash remembered from an earlier install both ask
+        // the user before a mismatch is installed. See agora_core::artifact_hash.
+        let mut expectations = Vec::new();
+        if let Some(pin) = pinned_sha256
+            .map(|hash| hash.trim().to_lowercase())
+            .filter(|hash| !hash.is_empty())
+        {
+            expectations.push(ConfirmableHash {
+                origin: HashOrigin::CuratorPin,
+                sha256: pin,
             });
         }
-
-        let installed_sha256 = agora_core::download::sha256_hex(&bytes);
+        if let Some(remembered) = registry_id.and_then(|id| {
+            manifest
+                .mods
+                .iter()
+                .chain(manifest.resourcepacks.iter())
+                .chain(manifest.shaders.iter())
+                .chain(manifest.datapacks.iter())
+                .chain(manifest.worlds.iter())
+                .find(|item| {
+                    !item.hash_verified
+                        && item.registry_id.as_deref() == Some(id)
+                        && item.version.as_deref() == version
+                        && item.filename == filename
+                })
+        }) {
+            expectations.push(ConfirmableHash {
+                origin: HashOrigin::PreviousInstall,
+                sha256: remembered.sha256.clone(),
+            });
+        }
+        let check = verify_download(
+            &bytes,
+            expected_sha1,
+            expected_sha256,
+            &expectations,
+            accept_hash_confirmation,
+            filename,
+            version,
+        )?;
+        let installed_sha256 = check.sha256;
+        let hash_verified = check.verified;
         let target_dir = dir.join(agora_core::helpers::content_subdir(content_type));
         std::fs::create_dir_all(&target_dir).map_err(|_| LauncherError::InstanceCreateFailed)?;
         let item_path = target_dir.join(filename);
         std::fs::write(&item_path, &bytes).map_err(|_| LauncherError::InstanceCreateFailed)?;
 
-        let manifest_path = self.ctx.paths.instance_manifest(instance_id)?;
-        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
         let metadata =
             crate::jar_metadata::parse_jar_metadata_for_loader(&item_path, &manifest.loader);
 
@@ -402,6 +421,7 @@ impl InstallService {
             source_url: Some(download_url.to_string()),
             version: version.map(|s| s.to_string()),
             sha256: installed_sha256,
+            hash_verified,
             installed_at: chrono::Utc::now().to_rfc3339(),
             java_packages: metadata.java_packages,
             mod_jar_id: metadata.mod_jar_id,
@@ -548,6 +568,7 @@ impl InstallService {
 
         let metadata = crate::jar_metadata::parse_jar_metadata_for_loader(&dest, &manifest.loader);
         let installed_mod = InstalledMod {
+            hash_verified: false,
             provider: None,
             update_pinned: false,
             pack_managed: false,
@@ -758,6 +779,7 @@ mod curated_conflict_tests {
             source_url: None,
             version: version.map(str::to_string),
             sha256: String::new(),
+            hash_verified: true,
             installed_at: String::new(),
             java_packages: vec![],
             mod_jar_id: Some(registry_id.into()),
@@ -804,7 +826,10 @@ mod curated_conflict_tests {
                 source: ArtifactSource::Download {
                     url: "https://example.com/x.jar".into(),
                 },
-                hashes: HashSpec { values: vec![] },
+                hashes: HashSpec {
+                    values: vec![],
+                    ..Default::default()
+                },
                 size: 0,
                 filename: format!("{registry_id}.jar"),
                 metadata: ArtifactMetadata {
@@ -818,7 +843,10 @@ mod curated_conflict_tests {
                     pinned_host: None,
                 },
             }),
-            hashes: HashSpec { values: vec![] },
+            hashes: HashSpec {
+                values: vec![],
+                ..Default::default()
+            },
             size: 0,
             installed_as_dependency: false,
         }
