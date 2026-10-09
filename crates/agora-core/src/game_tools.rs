@@ -28,7 +28,10 @@ use sha2::{Digest, Sha256};
 use crate::ctx::Ctx;
 use crate::event_sink::CancellationToken;
 use crate::game_base::BaseManifest;
-use crate::game_deploy::DeployMode;
+use crate::game_deploy::{
+    compare_farm, deploy_locked, discard_deployment, read_deployment_record, source_path,
+    DeployMode, DeploymentRecord, FarmChange, Placement,
+};
 use crate::game_ini;
 use crate::game_instance::GameInstanceManifest;
 use crate::game_launch::{
@@ -65,12 +68,22 @@ pub enum ToolError {
     NoPrevious(String),
     #[error("the game is running from instance '{0}'; close it before running a tool")]
     SessionRunning(String),
-    /// Without the virtual file system a tool cannot run: a link deployment cannot capture a
-    /// tool's writes yet (MASTER_SPEC §26.9 is built in slices).
-    #[error("the virtual file system could not start, and a tool cannot run without it: {reason}. Capturing a tool's writes from a linked deployment is not built yet")]
+    /// The run was asked to capture under the virtual file system (`CaptureMode::Vfs`), and the
+    /// virtual file system could not start. Under `Auto` the run captures from links instead.
+    #[error(
+        "the virtual file system could not start, and this run was asked to use only it: {reason}"
+    )]
     VfsUnavailable {
         reason: String,
         next: Option<DeployMode>,
+    },
+    /// A run captured from links found a linked file changed. A link is the game's copy of a mod's
+    /// own file and is never written in place, so the run is discarded and the paths are named.
+    #[error("{tool} changed linked file(s) in place: {}. A linked file is never written, so the run was discarded", paths.join(", "))]
+    LinkedFileChanged {
+        tool: String,
+        paths: Vec<String>,
+        failed_folder: Option<PathBuf>,
     },
     #[error("{0}")]
     Invalid(String),
@@ -140,6 +153,47 @@ pub struct ToolState {
     pub status: Option<OutputStatus>,
 }
 
+/// How a tool run captures what it writes (MASTER_SPEC §26.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMode {
+    /// Under the virtual file system. A run whose virtual file system cannot start is refused.
+    Vfs,
+    /// From a linked deployment: the tool runs in the game's folder, and what it changed is
+    /// compared with the deployment's record.
+    Links,
+    /// The virtual file system first, and link capture when it cannot start.
+    Auto,
+}
+
+impl CaptureMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureMode::Vfs => "vfs",
+            CaptureMode::Links => "links",
+            CaptureMode::Auto => "auto",
+        }
+    }
+
+    /// Parse a user-facing capture name (`vfs`, `links`, `auto`).
+    pub fn parse(s: &str) -> Option<CaptureMode> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "vfs" => Some(CaptureMode::Vfs),
+            "links" => Some(CaptureMode::Links),
+            "auto" => Some(CaptureMode::Auto),
+            _ => None,
+        }
+    }
+}
+
+/// What captured a run's writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMethod {
+    Vfs,
+    Links,
+}
+
 /// What one run wrote, and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunOutcome {
@@ -147,6 +201,11 @@ pub struct RunOutcome {
     pub name: String,
     /// The run's id, which names its `failed-<run>` folder when it was discarded.
     pub run: String,
+    /// What captured the run's writes.
+    pub capture: CaptureMethod,
+    /// Why the run was captured from links: the virtual file system's failure, or a request for
+    /// links. `None` for a run captured under the virtual file system.
+    pub capture_reason: Option<String>,
     pub promoted: bool,
     /// The generation the output is now: the new one when promoted, else the one that was in effect.
     pub current: Option<String>,
@@ -885,9 +944,12 @@ fn discard(dir: &Path, staging: &Path, run: &str) -> Result<PathBuf, ToolError> 
     Ok(failed)
 }
 
-/// Run a tool in an instance: deploy it in the virtual file system, run the tool under it with its
-/// own staging folder as the writable layer, wait for every process it started, then promote the
-/// output if it exited 0 and discard it otherwise (MASTER_SPEC §26.9).
+/// Run a tool in an instance and capture what it writes (MASTER_SPEC §26.9): under the virtual file
+/// system, or from a linked deployment, as `capture` asks. Then promote the output if the tool exited
+/// 0 and discard it otherwise.
+///
+/// Under `Auto` a run whose virtual file system cannot start is captured from links instead, and the
+/// outcome says why. Under `Vfs` that start failure is returned as [`ToolError::VfsUnavailable`].
 ///
 /// The instance lock is held for the whole run, and the game's user files are swapped in for it, as
 /// for a launch, so the tool and the game never run at once.
@@ -896,6 +958,7 @@ pub fn run(
     instance_id: &str,
     definition: &GameDefinition,
     tool_id: &ToolId,
+    capture: CaptureMode,
     launcher: &dyn Launcher,
     cancel: &CancellationToken,
 ) -> Result<RunOutcome, ToolError> {
@@ -912,23 +975,100 @@ pub fn run(
     let store = base.runtime.store.clone();
     refuse_during_session(ctx, definition, &store)?;
 
-    // Checked before anything is deployed: a tool cannot run without the VFS.
-    let dll = launcher
-        .locate_vfs_dll()
-        .map_err(|reason| ToolError::VfsUnavailable { reason, next: None })?;
-
-    let instance_dir = ctx
-        .paths
-        .instance_dir(instance_id)
-        .map_err(|e| ToolError::Other(e.to_string()))?;
-    let game_dir = deployment_folder(&base, instance_id)?;
-    let writable = instance_dir.join("writable");
+    // Decided before anything is deployed: a run that must use the VFS cannot start without it.
+    let route = match capture {
+        CaptureMode::Links => Route::Links(Some("linked capture was asked for".to_string())),
+        CaptureMode::Vfs | CaptureMode::Auto => match launcher.locate_vfs_dll() {
+            Ok(dll) => Route::Vfs(dll),
+            Err(reason) if capture == CaptureMode::Vfs => {
+                return Err(ToolError::VfsUnavailable { reason, next: None });
+            }
+            Err(reason) => Route::Links(Some(vfs_fallback_reason(&reason))),
+        },
+    };
 
     let _lock = ctx
         .lock_manager
         .acquire(LockResource::Instance(instance_id.to_string()), "tool-run")?;
-    crate::game_deploy::deploy_locked(ctx, instance_id, definition, DeployMode::Virtual)?;
-    let fingerprint = input_fingerprint(ctx, instance_id, definition, &tool)?;
+
+    match route {
+        Route::Vfs(dll) => match run_under_vfs(
+            ctx,
+            instance_id,
+            definition,
+            &tool,
+            tool_id,
+            &base,
+            dll,
+            launcher,
+            cancel,
+        ) {
+            Ok(outcome) => Ok(outcome),
+            Err(ToolError::VfsUnavailable { reason, .. }) if capture == CaptureMode::Auto => {
+                run_from_links(
+                    ctx,
+                    instance_id,
+                    definition,
+                    &tool,
+                    tool_id,
+                    &base,
+                    launcher,
+                    cancel,
+                    Some(vfs_fallback_reason(&reason)),
+                )
+            }
+            Err(e) => Err(e),
+        },
+        Route::Links(reason) => run_from_links(
+            ctx,
+            instance_id,
+            definition,
+            &tool,
+            tool_id,
+            &base,
+            launcher,
+            cancel,
+            reason,
+        ),
+    }
+}
+
+/// Where a tool run goes: under the virtual file system (with its DLL), or from links with the reason.
+enum Route {
+    Vfs(PathBuf),
+    Links(Option<String>),
+}
+
+/// Why a run was captured from links instead of the virtual file system, in the words an outcome
+/// shows: "because <this>".
+fn vfs_fallback_reason(reason: &str) -> String {
+    format!("the virtual file system could not start: {reason}")
+}
+
+/// A run under the virtual file system: the instance is deployed in the VFS, the tool runs with its
+/// staging folder as the writable layer, and its output is settled. The caller holds the lock.
+#[allow(clippy::too_many_arguments)]
+fn run_under_vfs(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    tool_id: &ToolId,
+    base: &BaseManifest,
+    dll: PathBuf,
+    launcher: &dyn Launcher,
+    cancel: &CancellationToken,
+) -> Result<RunOutcome, ToolError> {
+    let store = base.runtime.store.clone();
+    let instance_dir = ctx
+        .paths
+        .instance_dir(instance_id)
+        .map_err(|e| ToolError::Other(e.to_string()))?;
+    let game_dir = deployment_folder(base, instance_id)?;
+    let writable = instance_dir.join("writable");
+
+    deploy_locked(ctx, instance_id, definition, DeployMode::Virtual)?;
+    let fingerprint = input_fingerprint(ctx, instance_id, definition, tool)?;
 
     let roots = LaunchRoots {
         runtime: game_dir.clone(),
@@ -980,7 +1120,7 @@ pub fn run(
         ctx,
         instance_id,
         definition,
-        &tool,
+        tool,
         &dir,
         &staging,
         &run,
@@ -993,10 +1133,124 @@ pub fn run(
     let settled = settled?;
     released?;
 
-    Ok(RunOutcome {
+    Ok(outcome(
+        tool_id,
+        tool,
+        run,
+        &exit,
+        settled,
+        CaptureMethod::Vfs,
+        None,
+    ))
+}
+
+/// A run captured from a linked deployment (MASTER_SPEC §26.9). The instance is deployed in Links
+/// mode, which records each file's placement, size and source: that record is the "before". The tool
+/// runs in the game's folder, and what it changed is compared with the record. New files and changed
+/// copies become the output; deletions become whiteouts; a changed link is an error and the run is
+/// discarded. Then the output settles as a VFS run's does, and the farm is taken away, so the tool's
+/// writes never become the game's writable layer. The caller holds the lock.
+#[allow(clippy::too_many_arguments)]
+fn run_from_links(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    tool_id: &ToolId,
+    base: &BaseManifest,
+    launcher: &dyn Launcher,
+    cancel: &CancellationToken,
+    reason: Option<String>,
+) -> Result<RunOutcome, ToolError> {
+    let store = base.runtime.store.clone();
+    let instance_dir = ctx
+        .paths
+        .instance_dir(instance_id)
+        .map_err(|e| ToolError::Other(e.to_string()))?;
+    let game_dir = deployment_folder(base, instance_id)?;
+    let deployment_dir = game_dir
+        .parent()
+        .ok_or_else(|| ToolError::Other("the deployment has no folder".into()))?
+        .to_path_buf();
+
+    deploy_locked(ctx, instance_id, definition, DeployMode::Links)?;
+    let before = read_deployment_record(&deployment_dir)?;
+    let fingerprint = input_fingerprint(ctx, instance_id, definition, tool)?;
+
+    let roots = LaunchRoots {
+        runtime: game_dir.clone(),
+        install: Some(base.source_location.clone()),
+        base: Some(base.location.clone()),
+    };
+    let resolved = game_launch::resolve_recipe(&tool.launch, &roots)?;
+
+    let dir = tool_dir(&instance_dir, tool_id.as_str());
+    let run = new_run_id();
+    let staging = dir.join(format!("staging-{run}"));
+
+    // No VFS: the tool's working folder is the game's folder, so its writes land in the farm.
+    let mut prepared = PreparedLaunch::undeployed(resolved, Vec::new(), None);
+    prepared.deployment = Some(DeployMode::Links);
+
+    game_user_files::swap_in(ctx, instance_id, definition, &store, &game_dir)?;
+
+    let mut launched = match launcher.launch(&prepared) {
+        Ok(launched) => launched,
+        Err(e) => {
+            release_session(ctx, definition, &store)?;
+            return Err(ToolError::Launch(e));
+        }
+    };
+    let _ = game_user_files::record_process(ctx, &definition.id, &store, launched.identity.clone());
+
+    let exit = wait_for_tree(&game_dir, &mut launched, cancel);
+    let settled = capture_from_links(
+        ctx,
+        instance_id,
+        definition,
+        tool,
+        &dir,
+        &staging,
+        &run,
+        &fingerprint,
+        &game_dir,
+        &before,
+        &exit,
+    );
+    // The farm holds whatever the tool wrote. It goes whatever became of the output, and without a
+    // harvest: the writes were captured above, and the next launch deploys the promoted output.
+    let forgotten = discard_deployment(&deployment_dir, instance_id);
+    let released = release_session(ctx, definition, &store);
+    let settled = settled?;
+    forgotten?;
+    released?;
+
+    Ok(outcome(
+        tool_id,
+        tool,
+        run,
+        &exit,
+        settled,
+        CaptureMethod::Links,
+        reason,
+    ))
+}
+
+fn outcome(
+    tool_id: &ToolId,
+    tool: &ToolDefinition,
+    run: String,
+    exit: &TreeExit,
+    settled: Settled,
+    capture: CaptureMethod,
+    capture_reason: Option<String>,
+) -> RunOutcome {
+    RunOutcome {
         tool: tool_id.to_string(),
         name: tool.name.clone(),
         run,
+        capture,
+        capture_reason,
         promoted: settled.promoted,
         current: settled.current,
         previous: settled.previous,
@@ -1009,7 +1263,103 @@ pub fn run(
         exit_code: exit.code,
         cancelled: exit.cancelled,
         failed_folder: settled.failed_folder,
-    })
+    }
+}
+
+/// Write the staging folder of a link-captured run from the difference between the farm and its
+/// record, then settle it. A changed link is refused: the run is discarded and the paths named.
+#[allow(clippy::too_many_arguments)]
+fn capture_from_links(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    dir: &Path,
+    staging: &Path,
+    run: &str,
+    fingerprint: &str,
+    game_dir: &Path,
+    before: &DeploymentRecord,
+    exit: &TreeExit,
+) -> Result<Settled, ToolError> {
+    std::fs::create_dir_all(staging)?;
+    // A copy is changed when its bytes differ, not when its time moves: a tool that rewrites the same
+    // bytes changed nothing. A link is the content object itself, so a write through it shows in its
+    // size and time, and the copy in the source cannot be compared with it.
+    let diff = compare_farm(game_dir, before, &mut |file, recorded| {
+        if file.size != recorded.size {
+            return Ok(true);
+        }
+        if file.modified_unix_ms == recorded.modified_unix_ms {
+            return Ok(false);
+        }
+        if recorded.placement == Placement::Link {
+            return Ok(true);
+        }
+        let source = source_path(ctx, &recorded.source);
+        Ok(std::fs::read(&file.abs_path)? != std::fs::read(&source)?)
+    })?;
+
+    let linked: Vec<String> = diff
+        .changes
+        .iter()
+        .filter_map(|change| match change {
+            FarmChange::Changed { recorded, file } if recorded.placement == Placement::Link => {
+                Some(file.rel_path.as_str().to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    if !linked.is_empty() {
+        let failed = discard(dir, staging, run)?;
+        return Err(ToolError::LinkedFileChanged {
+            tool: tool.id.to_string(),
+            paths: linked,
+            failed_folder: Some(failed),
+        });
+    }
+
+    for change in diff.changes {
+        let file = match change {
+            FarmChange::Changed { file, .. } | FarmChange::Added(file) => file,
+        };
+        let dest = crate::game_ini::join_rel(staging, file.rel_path.as_str());
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&file.abs_path, &dest)?;
+    }
+    for recorded in &diff.missing {
+        write_whiteout(staging, &recorded.path)?;
+    }
+
+    settle_run(
+        ctx,
+        instance_id,
+        definition,
+        tool,
+        dir,
+        staging,
+        run,
+        fingerprint,
+        exit,
+    )
+}
+
+/// The VFS's deletion marker for `rel` in a staging folder: `<staging>\.agvfs-wh\<rel>.wh`, the same
+/// marker the VFS writes when a tool deletes a file.
+fn write_whiteout(staging: &Path, rel: &RelPath) -> Result<(), ToolError> {
+    let mut marker = staging
+        .join(WHITEOUT_DIR)
+        .join(rel.as_str())
+        .into_os_string();
+    marker.push(WHITEOUT_SUFFIX);
+    let marker = PathBuf::from(marker);
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&marker, b"")?;
+    Ok(())
 }
 
 /// What became of a finished run's output.

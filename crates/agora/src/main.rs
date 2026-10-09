@@ -528,6 +528,10 @@ enum InstanceToolsCmd {
         instance_id: String,
         /// Tool ID, e.g. nemesis.
         tool: String,
+        /// How the run's writes are captured: `auto` (the virtual file system, or linked files when it
+        /// cannot start), `vfs` (the virtual file system only), or `links` (linked files only).
+        #[arg(long, default_value = "auto", value_name = "auto|vfs|links")]
+        capture: String,
     },
     /// Make the previous output current again. The game reads it on its next launch.
     Rollback {
@@ -8120,14 +8124,20 @@ fn instance_tools_command(
                 }
             }
         }
-        InstanceToolsCmd::Run { tool, .. } => {
+        InstanceToolsCmd::Run { tool, capture, .. } => {
             let tool = tool_id(&tool);
+            let capture = game_tools::CaptureMode::parse(&capture).unwrap_or_else(|| {
+                fail(format!(
+                    "--capture must be auto, vfs or links, not '{capture}'"
+                ))
+            });
             let cancel = agora_core::event_sink::CancellationToken::new();
             let outcome = game_tools::run(
                 ctx,
                 &instance_id,
                 game_def,
                 &tool,
+                capture,
                 &agora_core::game_launch::SystemLauncher,
                 &cancel,
             )
@@ -8257,6 +8267,17 @@ fn print_tool_run(outcome: &agora_core::game_tools::RunOutcome) {
         );
         for path in outcome.deleted.iter().take(REPORTED_PATHS) {
             println!("  {path}");
+        }
+    }
+    match (outcome.capture, outcome.capture_reason.as_deref()) {
+        (agora_core::game_tools::CaptureMethod::Links, Some(reason)) => {
+            println!("Its writes were captured from linked files, because {reason}.");
+        }
+        (agora_core::game_tools::CaptureMethod::Links, None) => {
+            println!("Its writes were captured from linked files.");
+        }
+        (agora_core::game_tools::CaptureMethod::Vfs, _) => {
+            println!("Its writes were captured under the virtual file system.");
         }
     }
     if let Some(folder) = &outcome.failed_folder {

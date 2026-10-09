@@ -31,14 +31,16 @@ use agora_core::game_load_order::{self, MoveTarget};
 use agora_core::game_registry::{
     GameRegistry, IdentifiedInstall, PackageSource, RuntimeResolution,
 };
-use agora_core::game_tools::{self, OutputStatus, RunOutcome, ToolError};
+use agora_core::game_tools::{
+    self, CaptureMethod, CaptureMode, OutputStatus, RunOutcome, ToolError,
+};
 use agora_core::game_user_files::{record_process, swap_in};
 use agora_core::process_identity;
 use agora_game_api::{
-    DeploymentStrategy, GameDefinition, GameId, GamePackage, GamePath, InputFingerprint, InstallId,
-    InstallKind, LaunchRecipe, LaunchValue, LayerSource, PackageDefinition, PluginListRule,
-    RelPath, RuntimeIdentity, StoreId, StoreIdentifier, ToolDefinition, ToolId, UserDataLocation,
-    UserFileMapping, UserFileStrategy,
+    BaseReference, DeploymentStrategy, GameDefinition, GameId, GamePackage, GamePath,
+    InputFingerprint, InstallId, InstallKind, LaunchRecipe, LaunchValue, LayerSource,
+    PackageDefinition, PluginListRule, RelPath, RuntimeIdentity, StoreId, StoreIdentifier,
+    ToolDefinition, ToolId, UserDataLocation, UserFileMapping, UserFileStrategy,
 };
 use tempfile::TempDir;
 
@@ -324,6 +326,16 @@ fn fixture(tools: Vec<ToolDefinition>) -> Fixture {
 }
 
 fn fixture_with(tools: Vec<ToolDefinition>, user_files: bool, plugins: bool) -> Fixture {
+    fixture_with_exe(tools, user_files, plugins, r"C:\Windows\System32\cmd.exe")
+}
+
+/// A fixture whose `Game.exe` is a copy of `exe`: a 64-bit `cmd.exe` by default, or the 32-bit one.
+fn fixture_with_exe(
+    tools: Vec<ToolDefinition>,
+    user_files: bool,
+    plugins: bool,
+    exe: &str,
+) -> Fixture {
     let tmp = TempDir::new().unwrap();
     let def = definition(&tools, user_files, plugins);
     let ctx = CoreContext::for_testing(tmp.path().join("app_data"));
@@ -331,7 +343,7 @@ fn fixture_with(tools: Vec<ToolDefinition>, user_files: bool, plugins: bool) -> 
     let ctx = ctx.with_games(registry(&def, tools));
     let install_dir = tmp.path().join("install");
     std::fs::create_dir_all(install_dir.join("Data")).unwrap();
-    std::fs::copy(r"C:\Windows\System32\cmd.exe", install_dir.join("Game.exe")).unwrap();
+    std::fs::copy(exe, install_dir.join("Game.exe")).unwrap();
     std::fs::write(install_dir.join("Data").join("Skyrim.bsa"), b"BSA DATA").unwrap();
     std::fs::write(install_dir.join("base_file.txt"), b"initial base file").unwrap();
     let install = install_of(&install_dir);
@@ -411,15 +423,56 @@ impl Fixture {
         game_tools::tool_dir(&self.instance_dir(), tool)
     }
 
+    /// A run with the default capture, `auto`.
     fn run(&self, tool: &str, launcher: &dyn Launcher) -> Result<RunOutcome, ToolError> {
+        self.run_as(tool, launcher, CaptureMode::Auto)
+    }
+
+    fn run_as(
+        &self,
+        tool: &str,
+        launcher: &dyn Launcher,
+        capture: CaptureMode,
+    ) -> Result<RunOutcome, ToolError> {
         game_tools::run(
             &self.ctx,
             self.id(),
             &self.def,
             &ToolId::new(tool).unwrap(),
+            capture,
             launcher,
             &CancellationToken::new(),
         )
+    }
+
+    /// The game folder of this instance's deployment, where a link-captured run's writes land.
+    fn deployed_game_dir(&self) -> PathBuf {
+        let manifest = get_manifest(&self.ctx, self.id()).unwrap();
+        let BaseReference::Pinned { id: base_id, .. } = manifest.base else {
+            panic!("the fixture instance is pinned");
+        };
+        let base: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(self.ctx.paths.base_manifest_path(&base_id)).unwrap(),
+        )
+        .unwrap();
+        let location = PathBuf::from(base["location"].as_str().unwrap());
+        location
+            .parent()
+            .unwrap()
+            .join("deployments")
+            .join(self.id())
+            .join("game")
+    }
+
+    /// The bytes of a content item's file, as the content store holds them.
+    fn content_bytes(&self, item: &str, path: &str) -> Vec<u8> {
+        let item = agora_core::content_store::get_item(&self.ctx, item).unwrap();
+        let file = item
+            .files
+            .iter()
+            .find(|f| f.path.as_str() == path)
+            .unwrap_or_else(|| panic!("no file {path} in the item"));
+        std::fs::read(self.ctx.paths.content_object_path(&file.sha256)).unwrap()
     }
 
     /// A run that must promote.
@@ -1049,9 +1102,10 @@ fn a_run_is_refused_before_anything_is_deployed_when_the_vfs_cannot_start() {
     let f = fixture(vec![writes_or_fails("nemesis")]);
 
     let err = f
-        .run(
+        .run_as(
             "nemesis",
             &StagingLauncher::without_vfs("agora_vfs.dll was not found"),
+            CaptureMode::Vfs,
         )
         .unwrap_err();
     match err {
@@ -1089,6 +1143,326 @@ fn an_undeclared_tool_is_refused() {
     let f = fixture(vec![writes_or_fails("nemesis")]);
     let err = f.run("pandora", &StagingLauncher::new()).unwrap_err();
     assert!(matches!(err, ToolError::UnknownTool { .. }), "{err:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Link capture (MASTER_SPEC §26.9): a run whose writes come from the link farm, compared with the
+// deployment record. These run without the VFS: `StagingLauncher` starts the tool in the game folder.
+// ---------------------------------------------------------------------------------------------
+
+/// The `whiteouts` of a tool's generated layer, as the layer stores them.
+fn whiteouts_of(f: &Fixture, tool: &str) -> Vec<String> {
+    get_manifest(&f.ctx, f.id())
+        .unwrap()
+        .layers
+        .layers()
+        .iter()
+        .find_map(|layer| match &layer.source {
+            LayerSource::Generated { tool: t, .. } if t.as_str() == tool => Some(
+                layer
+                    .whiteouts
+                    .iter()
+                    .map(|w| w.as_str().to_string())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// Sets an environment variable for one test and removes it after.
+struct EnvVar(&'static str);
+
+impl EnvVar {
+    fn set(key: &'static str, value: &str) -> Self {
+        std::env::set_var(key, value);
+        Self(key)
+    }
+}
+
+impl Drop for EnvVar {
+    fn drop(&mut self) {
+        std::env::remove_var(self.0);
+    }
+}
+
+#[test]
+fn a_link_capture_promotes_new_and_changed_files_and_a_whiteout_for_a_deletion() {
+    let maker = tool(
+        "maker",
+        "Maker",
+        &["/c", "echo", "one", ">", r"Data\gen.txt"],
+    );
+    let rewriter = tool(
+        "rewriter",
+        "Rewriter",
+        &[
+            "/c",
+            "echo",
+            "two",
+            ">",
+            r"Data\gen.txt",
+            "&",
+            "echo",
+            "fresh",
+            ">",
+            r"Data\new.txt",
+            "&",
+            "echo",
+            "value=2",
+            ">",
+            r"Data\Test.ini",
+            "&",
+            "del",
+            r"Data\mod.txt",
+        ],
+    );
+    let f = fixture(vec![maker, rewriter]);
+    let item = f.add_mod(
+        "Mod",
+        &[
+            ("Data/mod.txt", b"original"),
+            ("Data/Test.ini", b"value=1\r\n"),
+        ],
+    );
+    let mod_bytes = f.content_bytes(&item, "Data/mod.txt");
+    let launcher = StagingLauncher::new();
+
+    // The first tool makes a generated file: a copy in the farm, which the second tool rewrites.
+    let first = f.run_as("maker", &launcher, CaptureMode::Links).unwrap();
+    assert!(first.promoted, "{first:?}");
+    assert_eq!(first.capture, CaptureMethod::Links);
+    assert!(first.capture_reason.is_some());
+
+    let out = f.run_as("rewriter", &launcher, CaptureMode::Links).unwrap();
+    println!("link run outcome: {out:?}");
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.capture, CaptureMethod::Links);
+    assert_eq!(out.current.as_deref(), Some("1"));
+    assert_eq!(out.deleted, vec!["Data/mod.txt".to_string()]);
+    assert_eq!(
+        out.written,
+        vec![
+            "Data/Test.ini".to_string(),
+            "Data/gen.txt".to_string(),
+            "Data/new.txt".to_string()
+        ],
+        "the new file, the rewritten generated file and the rewritten ini are the output"
+    );
+
+    let gen = f.generation_dir("rewriter", "1");
+    assert_eq!(
+        std::fs::read_to_string(gen.join("Data/gen.txt"))
+            .unwrap()
+            .trim(),
+        "two"
+    );
+    assert_eq!(
+        std::fs::read_to_string(gen.join("Data/new.txt"))
+            .unwrap()
+            .trim(),
+        "fresh"
+    );
+    assert_eq!(
+        std::fs::read_to_string(gen.join("Data/Test.ini"))
+            .unwrap()
+            .trim(),
+        "value=2"
+    );
+    assert!(!gen.join("Data/mod.txt").exists());
+    assert_eq!(
+        whiteouts_of(&f, "rewriter"),
+        vec!["Data/mod.txt".to_string()]
+    );
+
+    // The writable layer is the game's: a tool run never changes it.
+    assert!(
+        names(&f.writable_dir()).is_empty(),
+        "{:?}",
+        names(&f.writable_dir())
+    );
+    // The first tool's output is what it was.
+    assert_eq!(
+        std::fs::read_to_string(f.generation_dir("maker", "1").join("Data/gen.txt"))
+            .unwrap()
+            .trim(),
+        "one"
+    );
+    // The deleted mod file's content object is untouched.
+    assert_eq!(f.content_bytes(&item, "Data/mod.txt"), mod_bytes);
+    // The farm the run used is taken away, so nothing it wrote is the game's.
+    assert!(!f.deployed_game_dir().exists());
+
+    // The next plan shows the new generation's bytes, and hides the deleted file.
+    let p = f.plan(DeployMode::Links);
+    assert!(planned(&p, "Data/mod.txt").is_none());
+    let source = |rel: &str| {
+        agora_core::game_deploy::visible_file_source(&f.ctx, f.id(), &f.def, DeployMode::Links, rel)
+            .unwrap()
+            .unwrap_or_else(|| panic!("no visible file {rel}"))
+    };
+    assert_eq!(
+        std::fs::read_to_string(source("Data/gen.txt"))
+            .unwrap()
+            .trim(),
+        "two"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source("Data/Test.ini"))
+            .unwrap()
+            .trim(),
+        "value=2"
+    );
+}
+
+#[test]
+fn a_link_capture_that_changes_a_linked_file_is_refused_and_discarded() {
+    let f = fixture(vec![tool(
+        "relinker",
+        "Relinker",
+        &[
+            "/c",
+            "del",
+            r"Data\mod.txt",
+            "&",
+            "echo",
+            "changed",
+            ">",
+            r"Data\mod.txt",
+        ],
+    )]);
+    let item = f.add_mod("Mod", &[("Data/mod.txt", b"original")]);
+    let before = f.content_bytes(&item, "Data/mod.txt");
+
+    let err = f
+        .run_as("relinker", &StagingLauncher::new(), CaptureMode::Links)
+        .unwrap_err();
+    match err {
+        ToolError::LinkedFileChanged {
+            tool,
+            paths,
+            failed_folder,
+        } => {
+            assert_eq!(tool, "relinker");
+            assert_eq!(paths, vec!["Data/mod.txt".to_string()]);
+            let failed = failed_folder.expect("the discarded run is kept");
+            assert!(failed.is_dir(), "{}", failed.display());
+        }
+        other => panic!("expected LinkedFileChanged, got {other:?}"),
+    }
+    assert!(f.generated("relinker").is_none());
+    assert_eq!(f.content_bytes(&item, "Data/mod.txt"), before);
+    assert!(names(&f.writable_dir()).is_empty());
+    assert!(!f.deployed_game_dir().exists());
+}
+
+#[test]
+fn a_write_through_a_linked_file_is_refused_and_the_run_is_not_promoted() {
+    let f = fixture(vec![tool(
+        "writer",
+        "Writer",
+        &["/c", "echo", "changed", ">", r"Data\mod.txt"],
+    )]);
+    let item = f.add_mod("Mod", &[("Data/mod.txt", b"original")]);
+    let before = f.content_bytes(&item, "Data/mod.txt");
+
+    // Whether the content store's ACL refuses the write (the tool fails) or lets it through (the
+    // change is caught), the run is discarded and the content object keeps its bytes.
+    match f.run_as("writer", &StagingLauncher::new(), CaptureMode::Links) {
+        Ok(out) => {
+            println!("write-through outcome: {out:?}");
+            assert!(!out.promoted, "{out:?}");
+        }
+        Err(ToolError::LinkedFileChanged { paths, .. }) => {
+            println!("write-through refused by the change check: {paths:?}");
+            assert_eq!(paths, vec!["Data/mod.txt".to_string()]);
+        }
+        Err(other) => panic!("{other:?}"),
+    }
+    assert!(f.generated("writer").is_none());
+    assert_eq!(f.content_bytes(&item, "Data/mod.txt"), before);
+    assert!(names(&f.writable_dir()).is_empty());
+}
+
+#[test]
+fn a_failing_link_run_is_discarded_and_the_farm_is_taken_away() {
+    // Writes a new file, then exits 3: the file is kept in the discarded run only.
+    let fails = tool(
+        "fails",
+        "Fails",
+        &[
+            "/c",
+            "echo",
+            "partial",
+            ">",
+            r"Data\partial.txt",
+            "&",
+            "exit",
+            "/b",
+            "3",
+        ],
+    );
+    let f = fixture(vec![writes_or_fails("nemesis"), fails]);
+    f.run_as("nemesis", &StagingLauncher::new(), CaptureMode::Links)
+        .unwrap();
+    assert_eq!(f.generated("nemesis").unwrap().0, "1");
+
+    let out = f
+        .run_as("fails", &StagingLauncher::new(), CaptureMode::Links)
+        .expect("a failed run is an outcome, not an error");
+
+    assert!(!out.promoted, "{out:?}");
+    assert_eq!(out.exit_code, Some(3));
+    assert_eq!(out.capture, CaptureMethod::Links);
+    assert_eq!(out.current, None);
+    let failed = out.failed_folder.expect("the discarded run is kept");
+    assert!(failed.join("Data/partial.txt").is_file());
+    assert!(f.generated("fails").is_none());
+    assert_eq!(f.generated("nemesis").unwrap().0, "1");
+    assert!(names(&f.writable_dir()).is_empty());
+    assert!(!f.deployed_game_dir().exists());
+    assert!(planned(&f.plan(DeployMode::Links), "Data/partial.txt").is_none());
+}
+
+#[test]
+fn auto_captures_under_the_vfs_when_the_vfs_starts_and_says_so() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+
+    let out = f.run("nemesis", &StagingLauncher::new()).unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.capture, CaptureMethod::Vfs);
+    assert_eq!(out.capture_reason, None);
+}
+
+#[test]
+fn auto_captures_from_links_when_the_vfs_cannot_start_and_says_why() {
+    let _dll = EnvVar::set("AGORA_VFS_DLL", r"C:\agora-missing\agora_vfs.dll");
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+
+    let out = f
+        .run_as(
+            "nemesis",
+            &agora_core::game_launch::SystemLauncher,
+            CaptureMode::Auto,
+        )
+        .expect("auto falls back to links");
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.capture, CaptureMethod::Links);
+    let reason = out.capture_reason.expect("the fallback says why");
+    assert!(
+        reason.contains("the virtual file system could not start")
+            && reason.contains("AGORA_VFS_DLL points at"),
+        "{reason}"
+    );
+    assert_eq!(out.written, vec!["Data/nemesis.txt".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(f.generation_dir("nemesis", "1").join("Data/nemesis.txt"))
+            .unwrap()
+            .trim(),
+        "made"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1276,4 +1650,35 @@ fn real_injection_a_tool_that_deletes_a_mods_file_hides_it() {
         b"original",
         "the mod's stored file changed"
     );
+}
+
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs, then set AGORA_VFS_DLL"]
+fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto() {
+    // The game's own executable is the 32-bit cmd.exe, so agora_vfs.dll (64-bit) cannot load into it.
+    let f = fixture_with_exe(
+        vec![tool("wow", "Wow", &["/c", "echo", "x", ">", "out.txt"])],
+        false,
+        false,
+        r"C:\Windows\SysWOW64\cmd.exe",
+    );
+    let launcher = RealLauncher::new(&[]);
+
+    let out = f
+        .run_as("wow", &launcher, CaptureMode::Auto)
+        .expect("a 32-bit tool runs by link capture");
+    println!("run outcome: {out:?}");
+    assert_eq!(out.capture, CaptureMethod::Links, "{out:?}");
+    let reason = out.capture_reason.clone().unwrap_or_default();
+    assert!(reason.contains("32-bit"), "{reason}");
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.written, vec!["out.txt".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(f.generation_dir("wow", "1").join("out.txt"))
+            .unwrap()
+            .trim(),
+        "x"
+    );
+    assert!(names(&f.writable_dir()).is_empty());
+    assert!(!f.deployed_game_dir().exists());
 }

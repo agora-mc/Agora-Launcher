@@ -1402,6 +1402,157 @@ pub fn undeploy(ctx: &Ctx, instance_id: &str) -> Result<HarvestReport, DeployErr
     }
 }
 
+/// A file in a deployed game folder, as it is on disk now.
+pub(crate) struct FarmFile {
+    pub rel_path: RelPath,
+    pub size: u64,
+    pub modified_unix_ms: i64,
+    pub abs_path: PathBuf,
+}
+
+/// One difference between a deployed game folder and its record (MASTER_SPEC §26.9).
+pub(crate) enum FarmChange<'a> {
+    /// The record names the file, and the comparison says it changed.
+    Changed {
+        recorded: &'a DeployedFileRecord,
+        file: FarmFile,
+    },
+    /// The folder holds a file the record does not name.
+    Added(FarmFile),
+}
+
+/// How a deployed game folder differs from its record. Harvest and a tool run that captures from
+/// links both compare through [`compare_farm`], so they cannot disagree about what changed.
+pub(crate) struct FarmDiff<'a> {
+    /// Changed and added files, in lower-cased path order.
+    pub changes: Vec<FarmChange<'a>>,
+    /// Recorded files the folder no longer has, in the record's order.
+    pub missing: Vec<&'a DeployedFileRecord>,
+}
+
+/// Compare the game folder under `game_dir` with `record`. `differs` says whether a file the record
+/// names has changed: harvest compares size and time, a tool run that captures from links compares
+/// bytes where the file was copied.
+pub(crate) fn compare_farm<'a>(
+    game_dir: &Path,
+    record: &'a DeploymentRecord,
+    differs: &mut dyn FnMut(&FarmFile, &DeployedFileRecord) -> Result<bool, DeployError>,
+) -> Result<FarmDiff<'a>, DeployError> {
+    let mut current: BTreeMap<String, FarmFile> = BTreeMap::new();
+    walk_farm(game_dir, Path::new(""), &mut current)?;
+
+    let mut record_map: BTreeMap<String, &'a DeployedFileRecord> = BTreeMap::new();
+    for f in &record.files {
+        record_map.insert(f.path.as_str().to_ascii_lowercase(), f);
+    }
+
+    let missing = record
+        .files
+        .iter()
+        .filter(|f| !current.contains_key(&f.path.as_str().to_ascii_lowercase()))
+        .collect();
+
+    let mut changes = Vec::new();
+    for (lower_path, file) in current {
+        match record_map.get(&lower_path) {
+            Some(recorded) => {
+                if differs(&file, recorded)? {
+                    changes.push(FarmChange::Changed { recorded, file });
+                }
+            }
+            None => changes.push(FarmChange::Added(file)),
+        }
+    }
+    Ok(FarmDiff { changes, missing })
+}
+
+/// Every file under `root`, keyed by lower-cased path. Links and other reparse points are skipped.
+fn walk_farm(
+    root: &Path,
+    rel: &Path,
+    out: &mut BTreeMap<String, FarmFile>,
+) -> Result<(), DeployError> {
+    let cur = if rel.as_os_str().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel)
+    };
+    if !cur.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(&cur)? {
+        let entry = entry?;
+        let abs_path = entry.path();
+        let meta = std::fs::symlink_metadata(&abs_path)?;
+        if is_reparse_point_or_symlink(&meta) {
+            continue;
+        }
+        let child_rel = rel.join(entry.file_name());
+        if meta.is_dir() {
+            walk_farm(root, &child_rel, out)?;
+        } else if meta.is_file() {
+            let rel_str = child_rel.to_string_lossy().replace('\\', "/");
+            let rel_path = RelPath::new(rel_str)
+                .map_err(|e| DeployError::Other(format!("invalid game file path: {e}")))?;
+            let mtime = get_modified_unix_ms(&meta);
+            out.insert(
+                rel_path.as_str().to_ascii_lowercase(),
+                FarmFile {
+                    rel_path,
+                    size: meta.len(),
+                    modified_unix_ms: mtime,
+                    abs_path,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The record of what a deployment put in its game folder.
+pub(crate) fn read_deployment_record(
+    deployment_dir: &Path,
+) -> Result<DeploymentRecord, DeployError> {
+    let record_content = std::fs::read_to_string(deployment_dir.join("deployment.json"))?;
+    serde_json::from_str(&record_content)
+        .map_err(|e| DeployError::CorruptDeployment(format!("unreadable deployment.json: {e}")))
+}
+
+/// Take a deployment away without harvesting it: its game folder and record go, and nothing is
+/// copied into the writable layer. For a tool run that has captured its writes already, whose
+/// farm must not become the game's own (MASTER_SPEC §26.9).
+pub(crate) fn discard_deployment(
+    deployment_dir: &Path,
+    instance_id: &str,
+) -> Result<(), DeployError> {
+    validate_deployment_safety(deployment_dir, instance_id)?;
+    let game_dir = deployment_dir.join("game");
+    if game_dir.exists() {
+        std::fs::remove_dir_all(&game_dir)?;
+    }
+    let record_path = deployment_dir.join("deployment.json");
+    if record_path.exists() {
+        std::fs::remove_file(&record_path)?;
+    }
+    Ok(())
+}
+
+/// Copy a changed or new game file into the writable layer, and clear any deletion marker for it.
+fn copy_to_writable(
+    writable_dir: &Path,
+    file: &FarmFile,
+    report: &mut HarvestReport,
+) -> Result<(), DeployError> {
+    let dest = writable_dir.join(file.rel_path.as_str());
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&file.abs_path, &dest)?;
+    clear_whiteout_marker(writable_dir, &file.rel_path);
+    report.copied_to_writable.push(file.rel_path.clone());
+    Ok(())
+}
+
 fn harvest_internal(
     ctx: &Ctx,
     instance_id: &str,
@@ -1413,69 +1564,7 @@ fn harvest_internal(
 
     // Guard safety checks
     validate_deployment_safety(deployment_dir, instance_id)?;
-
-    let record_content = std::fs::read_to_string(&record_path)?;
-    let record: DeploymentRecord = serde_json::from_str(&record_content)
-        .map_err(|e| DeployError::CorruptDeployment(format!("unreadable deployment.json: {e}")))?;
-
-    let mut record_map: BTreeMap<String, &DeployedFileRecord> = BTreeMap::new();
-    for f in &record.files {
-        record_map.insert(f.path.as_str().to_ascii_lowercase(), f);
-    }
-
-    // Walk current game_dir
-    struct CurrentFile {
-        rel_path: RelPath,
-        size: u64,
-        modified_unix_ms: i64,
-        abs_path: PathBuf,
-    }
-    let mut current_files: BTreeMap<String, CurrentFile> = BTreeMap::new();
-
-    fn walk_dir(
-        root: &Path,
-        rel: &Path,
-        out: &mut BTreeMap<String, CurrentFile>,
-    ) -> Result<(), DeployError> {
-        let cur = if rel.as_os_str().is_empty() {
-            root.to_path_buf()
-        } else {
-            root.join(rel)
-        };
-        if !cur.exists() {
-            return Ok(());
-        }
-        for entry in std::fs::read_dir(&cur)? {
-            let entry = entry?;
-            let abs_path = entry.path();
-            let meta = std::fs::symlink_metadata(&abs_path)?;
-            if is_reparse_point_or_symlink(&meta) {
-                continue;
-            }
-            let file_name = entry.file_name();
-            let child_rel = rel.join(&file_name);
-            if meta.is_dir() {
-                walk_dir(root, &child_rel, out)?;
-            } else if meta.is_file() {
-                let rel_str = child_rel.to_string_lossy().replace('\\', "/");
-                let rel_path = RelPath::new(rel_str)
-                    .map_err(|e| DeployError::Other(format!("invalid game file path: {e}")))?;
-                let mtime = get_modified_unix_ms(&meta);
-                out.insert(
-                    rel_path.as_str().to_ascii_lowercase(),
-                    CurrentFile {
-                        rel_path,
-                        size: meta.len(),
-                        modified_unix_ms: mtime,
-                        abs_path,
-                    },
-                );
-            }
-        }
-        Ok(())
-    }
-
-    walk_dir(&game_dir, Path::new(""), &mut current_files)?;
+    let record = read_deployment_record(deployment_dir)?;
 
     let instance_dir = ctx
         .paths
@@ -1486,74 +1575,45 @@ fn harvest_internal(
     let mut report = HarvestReport::default();
     let mut new_whiteouts = Vec::new();
 
-    // 1. Files in current_files
-    for (lower_path, cur_file) in &current_files {
-        if let Some(rec_file) = record_map.get(lower_path) {
-            match rec_file.placement {
-                Placement::Copy => {
-                    if cur_file.size != rec_file.size
-                        || cur_file.modified_unix_ms != rec_file.modified_unix_ms
-                    {
-                        let dest = writable_dir.join(cur_file.rel_path.as_str());
-                        if let Some(parent) = dest.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        std::fs::copy(&cur_file.abs_path, &dest)?;
-                        clear_whiteout_marker(&writable_dir, &cur_file.rel_path);
-                        report.copied_to_writable.push(cur_file.rel_path.clone());
-                    }
-                }
+    // 1. Files the game folder changed or added: copied to the writable layer. A recorded file is
+    // changed when its size or time differs; a changed base file is also named in the report.
+    let diff = compare_farm(&game_dir, &record, &mut |file, recorded| {
+        Ok(file.size != recorded.size || file.modified_unix_ms != recorded.modified_unix_ms)
+    })?;
+    for change in diff.changes {
+        match change {
+            FarmChange::Changed { recorded, file } => match recorded.placement {
+                Placement::Copy => copy_to_writable(&writable_dir, &file, &mut report)?,
                 Placement::Link => {
                     if let FileSource::Base {
                         linked_to_store, ..
-                    } = rec_file.source
+                    } = recorded.source
                     {
-                        if cur_file.size != rec_file.size
-                            || cur_file.modified_unix_ms != rec_file.modified_unix_ms
-                        {
-                            let dest = writable_dir.join(cur_file.rel_path.as_str());
-                            if let Some(parent) = dest.parent() {
-                                std::fs::create_dir_all(parent)?;
-                            }
-                            std::fs::copy(&cur_file.abs_path, &dest)?;
-                            clear_whiteout_marker(&writable_dir, &cur_file.rel_path);
-                            report.copied_to_writable.push(cur_file.rel_path.clone());
-                            report.base_files_changed.push(BaseFileChanged {
-                                path: cur_file.rel_path.clone(),
-                                linked_to_store,
-                            });
-                        }
+                        copy_to_writable(&writable_dir, &file, &mut report)?;
+                        report.base_files_changed.push(BaseFileChanged {
+                            path: file.rel_path.clone(),
+                            linked_to_store,
+                        });
                     }
                 }
-            }
-        } else {
-            // New file not in record
-            let dest = writable_dir.join(cur_file.rel_path.as_str());
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(&cur_file.abs_path, &dest)?;
-            clear_whiteout_marker(&writable_dir, &cur_file.rel_path);
-            report.copied_to_writable.push(cur_file.rel_path.clone());
+            },
+            FarmChange::Added(file) => copy_to_writable(&writable_dir, &file, &mut report)?,
         }
     }
 
-    // 2. Missing files that were recorded
-    for rec_file in &record.files {
-        let lower = rec_file.path.as_str().to_ascii_lowercase();
-        if !current_files.contains_key(&lower) {
-            match rec_file.source {
-                FileSource::Writable { .. } => {
-                    let dest = writable_dir.join(rec_file.path.as_str());
-                    if dest.exists() {
-                        let _ = std::fs::remove_file(&dest);
-                    }
-                    report.writable_files_removed.push(rec_file.path.clone());
+    // 2. Recorded files the game folder no longer has
+    for rec_file in diff.missing {
+        match rec_file.source {
+            FileSource::Writable { .. } => {
+                let dest = writable_dir.join(rec_file.path.as_str());
+                if dest.exists() {
+                    let _ = std::fs::remove_file(&dest);
                 }
-                _ => {
-                    new_whiteouts.push(rec_file.path.clone());
-                    report.whiteouts_added.push(rec_file.path.clone());
-                }
+                report.writable_files_removed.push(rec_file.path.clone());
+            }
+            _ => {
+                new_whiteouts.push(rec_file.path.clone());
+                report.whiteouts_added.push(rec_file.path.clone());
             }
         }
     }
