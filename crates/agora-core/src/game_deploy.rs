@@ -1046,6 +1046,32 @@ pub fn visible_paths(
     Ok(paths)
 }
 
+/// The file on disk whose bytes the game sees at `rel` (a `/`-separated path relative to the game
+/// root, matched case-insensitively) under `mode`. The writable layer is on top, so it wins. `None`
+/// when no file the game would see has that path.
+pub fn visible_file_source(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+    rel: &str,
+) -> Result<Option<PathBuf>, DeployError> {
+    let instance_dir = ctx
+        .paths
+        .instance_dir(instance_id)
+        .map_err(|e| DeployError::Other(e.to_string()))?;
+    let writable = instance_dir.join("writable").join(rel);
+    if writable.is_file() {
+        return Ok(Some(writable));
+    }
+    let plan = plan(ctx, instance_id, definition, mode)?;
+    Ok(plan
+        .files
+        .iter()
+        .find(|file| file.path.as_str().eq_ignore_ascii_case(rel))
+        .map(|file| source_path(ctx, &file.source)))
+}
+
 pub fn deployment_dir(ctx: &Ctx, instance_id: &str) -> Result<Option<PathBuf>, DeployError> {
     let manifest = match crate::game_instance::get_manifest(ctx, instance_id) {
         Ok(m) => m,
@@ -1684,6 +1710,57 @@ pub fn add_content(
     write_instance_manifest_atomic(ctx, instance_id, &manifest)?;
 
     Ok(new_layer)
+}
+
+/// Where a content item goes in an instance, by its game's content layout. This is the one placement
+/// rule: `games instance content add` and the catalog install both apply it (MASTER_SPEC §26.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlacementDecision {
+    /// Place the item: under `mount_path` (empty for the game root or the data folder) and from
+    /// `source_path` inside the archive (empty for the archive's root).
+    Place {
+        mount_path: String,
+        source_path: String,
+        reason: String,
+    },
+    /// The archive has a FOMOD installer, so it is not placed as it stands.
+    Installer {
+        reason: String,
+        top_level: Vec<String>,
+    },
+    /// No rule places these files; the caller must say where they go.
+    Unknown { top_level: Vec<String> },
+}
+
+pub fn decide_placement(
+    item: &crate::content_store::ContentItem,
+    layout: &agora_game_api::ContentLayout,
+) -> PlacementDecision {
+    let files: Vec<RelPath> = item.files.iter().map(|file| file.path.clone()).collect();
+    match agora_game_api::suggest_placement(&files, layout) {
+        agora_game_api::Suggestion::Place {
+            source_path,
+            mount_path,
+            reason,
+        } => PlacementDecision::Place {
+            mount_path: mount_path.as_str().to_string(),
+            source_path: source_path.as_str().to_string(),
+            reason,
+        },
+        agora_game_api::Suggestion::Installer { reason } => {
+            let mut top_level: Vec<String> = item
+                .files
+                .iter()
+                .filter_map(|file| file.path.as_str().split('/').next().map(str::to_string))
+                .collect();
+            top_level.sort();
+            top_level.dedup();
+            PlacementDecision::Installer { reason, top_level }
+        }
+        agora_game_api::Suggestion::Unknown { top_level } => {
+            PlacementDecision::Unknown { top_level }
+        }
+    }
 }
 
 /// Choose (or, with `None`, stop choosing) how an instance is deployed and run. A chosen mode is

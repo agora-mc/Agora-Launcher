@@ -23,7 +23,6 @@ use agora_core::ctx::Ctx;
 use agora_core::dependency_ops::{AliasMap, DepSource, Requirement};
 use agora_core::download;
 use agora_core::error::{LauncherError, LauncherResult};
-use agora_core::github_ratelimit;
 use agora_core::http_client::{self, ClientCategory, HttpClients};
 use agora_core::models::{InstalledMod, InstanceManifest, ModVersionCandidate};
 use agora_core::registry::{self, ManifestDeps};
@@ -240,26 +239,6 @@ struct ModrinthApiDep {
 // ---------------------------------------------------------------------------
 // Private GitHub Release API types
 // ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    published_at: Option<String>,
-    #[serde(default)]
-    prerelease: bool,
-    assets: Vec<GitHubReleaseAsset>,
-}
-
-#[derive(Deserialize)]
-struct GitHubReleaseAsset {
-    name: String,
-    #[allow(dead_code)]
-    browser_download_url: String,
-    #[serde(default)]
-    size: Option<u64>,
-    #[serde(default)]
-    digest: Option<String>,
-}
 
 // ---------------------------------------------------------------------------
 // Resolver
@@ -1130,70 +1109,17 @@ impl Resolver {
         loader: &str,
         page: u32,
     ) -> LauncherResult<(Vec<ModVersionCandidate>, u32)> {
-        let url =
-            format!("https://api.github.com/repos/{source}/releases?per_page=100&page={page}");
-
-        let headers = github_auth_headers(self.github_token.as_deref());
-        let mut response = self.send_github_releases_request(&url, &headers).await?;
-
-        // Release listings are public. A stale or malformed stored token must
-        // not turn a public request into a hard failure, and must not be
-        // retried with the same invalid Authorization header.
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.github_token.is_some() {
-            if self.clear_stored_github_token_on_unauthorized {
-                // Attempt a single token refresh before falling back to anonymous.
-                if agora_core::auth::try_refresh_after_401_with_token(
-                    self.github_token.as_deref().unwrap_or_default(),
-                )
-                .await
-                .is_ok()
-                {
-                    if let Some(new_token) = agora_core::auth::get_valid_access_token().await {
-                        let new_headers = github_auth_headers(Some(&new_token));
-                        response = self
-                            .send_github_releases_request(&url, &new_headers)
-                            .await?;
-                    } else {
-                        response = self.send_github_releases_request(&url, &[]).await?;
-                    }
-                } else {
-                    let _ = agora_core::auth::clear_token();
-                    response = self.send_github_releases_request(&url, &[]).await?;
-                }
-            } else {
-                response = self.send_github_releases_request(&url, &[]).await?;
-            }
-        }
-
-        if github_ratelimit::is_rate_limit_response(&response) {
-            let retry = github_ratelimit::parse_retry_after(&response);
-            github_ratelimit::report_rate_limit(retry).await;
-            return Err(LauncherError::Generic {
-                code: "ERR_RATE_LIMITED".into(),
-                message: format!("GitHub rate limit hit while fetching releases for {source}."),
-            });
-        }
-
-        let link_value = response
-            .headers()
-            .get("link")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-
-        let releases: Vec<GitHubRelease> = response
-            .error_for_status()
-            .map_err(|e| LauncherError::Generic {
-                code: "ERR_NETWORK".into(),
-                message: format!("GitHub API request failed: {e}"),
-            })?
-            .json()
-            .await
-            .map_err(|_| LauncherError::Generic {
-                code: "ERR_NETWORK".into(),
-                message: "Failed to parse GitHub releases response.".into(),
-            })?;
-
-        let total_pages = parse_link_total_pages(link_value.as_deref());
+        let auth = agora_core::github_release::GitHubAuth {
+            token: self.github_token.clone(),
+            clear_stored_on_unauthorized: self.clear_stored_github_token_on_unauthorized,
+        };
+        let (releases, total_pages) = agora_core::github_release::list_releases_page(
+            &self.ctx.http_clients,
+            source,
+            page,
+            &auth,
+        )
+        .await?;
         let mut candidates: Vec<ModVersionCandidate> = Vec::new();
 
         for release in &releases {
@@ -1242,24 +1168,6 @@ impl Resolver {
         }
 
         Ok((candidates, total_pages))
-    }
-
-    async fn send_github_releases_request(
-        &self,
-        url: &str,
-        headers: &[(String, String)],
-    ) -> LauncherResult<reqwest::Response> {
-        let _permit = agora_core::github_ratelimit::acquire_github_permit().await;
-        agora_core::http_client::checked_send(
-            &self.ctx.http_clients,
-            ClientCategory::GitHub,
-            reqwest::Method::GET,
-            url,
-            headers,
-            None,
-            None,
-        )
-        .await
     }
 
     // ------------------------------------------------------------------
@@ -2546,41 +2454,6 @@ fn project_search_identity_matches(base: &str, title: &str, slug: &str) -> bool 
         || base.contains(&slug)
 }
 
-// ---------------------------------------------------------------------------
-// Standalone functions: GitHub release helpers
-// ---------------------------------------------------------------------------
-
-fn github_auth_headers(token: Option<&str>) -> Vec<(String, String)> {
-    token
-        .map(|token| vec![("Authorization".into(), format!("Bearer {token}"))])
-        .unwrap_or_default()
-}
-
-/// Parse the GitHub API `Link` response header to discover the total number of pages.
-pub fn parse_link_total_pages(header_value: Option<&str>) -> u32 {
-    let value = match header_value {
-        Some(v) => v,
-        None => return 1,
-    };
-    for part in value.split(',') {
-        let trimmed = part.trim();
-        if trimmed.contains("rel=\"last\"") {
-            if let Some(close) = trimmed.rfind('>') {
-                let substr = &trimmed[..close];
-                if let Some(open) = substr.rfind('<') {
-                    let url = &substr[open + 1..];
-                    for segment in url.split(&['?', '&'][..]) {
-                        if let Some(num) = segment.strip_prefix("page=") {
-                            return num.parse::<u32>().unwrap_or(1);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    1
-}
-
 /// Whether version lists should be sorted purely by date (ignoring stable vs prerelease).
 /// Reads `version_sort_by_date` setting, defaulting to false (stable-first).
 fn version_sort_by_date(ctx: &Ctx) -> bool {
@@ -3824,6 +3697,7 @@ fn open_registry_db(path: &std::path::Path) -> LauncherResult<rusqlite::Connecti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agora_core::github_release::{github_auth_headers, parse_link_total_pages};
     use agora_core::registry::RegistryItem;
 
     #[test]

@@ -630,6 +630,21 @@ fn default_deploy_mode(definition: &GameDefinition) -> DeployMode {
     }
 }
 
+/// The deployment mode whose visible files a launch of this instance would judge, as launch
+/// picks it: the instance's own choice or the game's default when it deploys, and the mode the
+/// instance would use if it is not deployed at all (the same files, with nothing on top).
+pub(crate) fn visible_mode(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+) -> Result<DeployMode, InstanceError> {
+    let manifest = get_manifest(ctx, id)?;
+    Ok(
+        deploys_on_launch(&manifest, definition, manifest.deployment)
+            .unwrap_or_else(|| default_deploy_mode(definition)),
+    )
+}
+
 fn vfs_fallback_notice(reason: &str, next: DeployMode) -> String {
     format!(
         "the virtual file system could not start: {reason}; running from {} instead",

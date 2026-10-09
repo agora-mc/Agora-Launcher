@@ -270,6 +270,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "base", "remove"],
     &["games", "catalog"],
     &["games", "catalog", "list"],
+    &["games", "catalog", "install"],
     &["games", "content"],
     &["games", "content", "add"],
     &["games", "content", "list"],
@@ -4320,4 +4321,53 @@ fn games_catalog_list_refuses_minecraft_and_unknown_games() {
         );
         assert!(!output.status.success(), "{game} should be refused");
     }
+}
+
+#[test]
+fn games_catalog_install_refuses_an_unknown_entry_or_instance_before_any_download() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let catalog = tempfile::tempdir().unwrap();
+    let catalog_db = catalog.path().join("registry.db");
+    write_catalog_fixture(&catalog_db);
+
+    let unknown_entry = run_agora_with_catalog(
+        &data_dir,
+        &catalog_db,
+        false,
+        &[
+            "games",
+            "catalog",
+            "install",
+            "no-such-instance",
+            "no-such-entry",
+            "--dry-run",
+        ],
+    );
+    assert!(!unknown_entry.status.success());
+    let stderr = String::from_utf8_lossy(&unknown_entry.stderr);
+    assert!(
+        stderr.contains("No catalog entry 'no-such-entry'"),
+        "{stderr}"
+    );
+
+    let unknown_instance = run_agora_with_catalog(
+        &data_dir,
+        &catalog_db,
+        false,
+        &[
+            "games",
+            "catalog",
+            "install",
+            "no-such-instance",
+            "crash-logger",
+            "--dry-run",
+        ],
+    );
+    assert!(!unknown_instance.status.success());
+    let stderr = String::from_utf8_lossy(&unknown_instance.stderr);
+    assert!(stderr.contains("not found"), "{stderr}");
+    assert!(
+        !String::from_utf8_lossy(&unknown_instance.stdout).contains("Downloading"),
+        "nothing is announced for a download that cannot start"
+    );
 }

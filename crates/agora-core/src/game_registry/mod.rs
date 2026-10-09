@@ -412,6 +412,19 @@ impl GameRegistry {
         self.games.get(id).map(|(idx, _)| &self.packages[*idx].1)
     }
 
+    /// The framework `framework_id` of `game`, as the game's package declares it (MASTER_SPEC §26.6).
+    pub fn framework(
+        &self,
+        game: &GameId,
+        framework_id: &FrameworkId,
+    ) -> Option<&agora_game_api::FrameworkDefinition> {
+        self.package_for(game)?
+            .definition()
+            .frameworks
+            .iter()
+            .find(|framework| framework.game == *game && framework.id == *framework_id)
+    }
+
     /// The tool `tool_id` of `game`, as the game's package declares it (MASTER_SPEC §26.9).
     pub fn tool(&self, game: &GameId, tool_id: &ToolId) -> Option<&agora_game_api::ToolDefinition> {
         self.package_for(game)?

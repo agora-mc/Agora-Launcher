@@ -315,7 +315,11 @@
       "supported_runtimes": [],
       "required_frameworks": [],
       "content": [],
-      "launch": null
+      "launch": null,
+      "detection": {
+        "marker": "skse64_loader.exe",
+        "version": "pe_file_version"
+      }
     }
   ],
   "tools": [

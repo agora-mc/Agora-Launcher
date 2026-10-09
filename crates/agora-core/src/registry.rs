@@ -240,6 +240,12 @@ impl RegistryService {
         list_game_items(&conn, game)
     }
 
+    /// One catalog entry for another game, whichever game it is for.
+    pub fn get_game_item(&self, item_id: &str) -> LauncherResult<Option<GameCatalogItem>> {
+        let conn = self.connection()?;
+        get_game_item(&conn, item_id)
+    }
+
     /// Fetch a single registry item by ID.
     pub fn get_item_by_id(&self, item_id: &str) -> LauncherResult<Option<RegistryItem>> {
         let conn = self.connection()?;
@@ -749,20 +755,39 @@ pub fn list_game_items(conn: &Connection, game: &str) -> LauncherResult<Vec<Game
     if game == "minecraft" || !has_game_catalog(conn) {
         return Ok(Vec::new());
     }
+    query_game_items(conn, "game = ?1", game)
+}
+
+/// The catalog entry `item_id`, whatever game it is for, or `None` when there is no such entry.
+pub fn get_game_item(conn: &Connection, item_id: &str) -> LauncherResult<Option<GameCatalogItem>> {
+    if !has_game_catalog(conn) {
+        return Ok(None);
+    }
+    Ok(query_game_items(conn, "id = ?1", item_id)?
+        .into_iter()
+        .next())
+}
+
+/// The catalog entries whose `filter` (a `WHERE` clause over one `?1` parameter) matches `param`.
+fn query_game_items(
+    conn: &Connection,
+    filter: &str,
+    param: &str,
+) -> LauncherResult<Vec<GameCatalogItem>> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id, game, name, author, content_type, download_strategy,
                     source_identifier, sha256, download_sources_json,
                     game_compatibility_json, description, license_id, page_url,
                     icon_url, status, date_added
-             FROM game_catalog_items WHERE game = ?1 ORDER BY name ASC, id ASC",
-        )
+             FROM game_catalog_items WHERE {filter} ORDER BY name ASC, id ASC"
+        ))
         .map_err(|e| LauncherError::Generic {
             code: "ERR_INVALID_QUERY".to_string(),
             message: e.to_string(),
         })?;
     let rows = stmt
-        .query_map([game], |row| {
+        .query_map([param], |row| {
             Ok((
                 GameCatalogItem {
                     id: row.get(0)?,

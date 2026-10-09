@@ -684,6 +684,20 @@ enum CatalogCmd {
         /// The game id, as `agora games list` shows it.
         game: String,
     },
+    /// Install a catalog entry into a game instance (MASTER_SPEC §26.8).
+    Install {
+        /// Instance ID to install into.
+        instance_id: String,
+        /// Catalog entry ID, as `agora games catalog list` shows it.
+        item_id: String,
+        /// Install although the file differs from a curator pin or an earlier install. Never
+        /// overrides a published hash that differs, nor a framework refusal.
+        #[arg(long)]
+        install_anyway: bool,
+        /// Show the plan and stop before anything is downloaded or stored.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4964,6 +4978,56 @@ async fn run_command(
                 }
             },
             GamesCmd::Catalog { action } => match action {
+                CatalogCmd::Install {
+                    instance_id,
+                    item_id,
+                    install_anyway,
+                    dry_run,
+                } => {
+                    let svc = RegistryService::new(ctx.clone());
+                    let item = svc.get_game_item(&item_id)?.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "No catalog entry '{item_id}'. 'agora games catalog list <game>' shows the entries for one game."
+                        )
+                    })?;
+                    let transport = agora_core::catalog_install::HttpTransport {
+                        clients: &ctx.http_clients,
+                        auth: agora_core::github_release::GitHubAuth::default(),
+                    };
+                    let request = agora_core::catalog_install::InstallRequest {
+                        instance_id: &instance_id,
+                        item: &item,
+                        install_anyway,
+                        dry_run,
+                    };
+                    let report = agora_core::catalog_install::install(
+                        ctx,
+                        &transport,
+                        request,
+                        &mut |plan: &agora_core::catalog_install::CatalogPlan| {
+                            if !json {
+                                let size = plan_size_text(&plan.source);
+                                println!(
+                                    "Downloading {} from {} ({size}).",
+                                    plan.source.file_name(),
+                                    plan.source.describe()
+                                );
+                            }
+                        },
+                    )
+                    .await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    } else {
+                        print_catalog_report(&report);
+                    }
+                    if matches!(
+                        report.state,
+                        agora_core::catalog_install::InstallState::NeedsInstaller { .. }
+                    ) {
+                        std::process::exit(1);
+                    }
+                }
                 CatalogCmd::List { game } => {
                     if game == "minecraft" {
                         anyhow::bail!(
@@ -6239,12 +6303,10 @@ async fn run_command(
                                 }
                             };
 
-                            let file_paths: Vec<agora_game_api::RelPath> =
-                                item.files.iter().map(|f| f.path.clone()).collect();
-                            let suggestion = agora_game_api::suggest_placement(&file_paths, layout);
+                            let decision = agora_core::game_deploy::decide_placement(&item, layout);
 
-                            match suggestion {
-                                agora_game_api::Suggestion::Place {
+                            match decision {
+                                agora_core::game_deploy::PlacementDecision::Place {
                                     source_path,
                                     mount_path,
                                     reason,
@@ -6252,28 +6314,22 @@ async fn run_command(
                                     if !json {
                                         println!("{reason}");
                                     }
-                                    let mount_opt = if mount_path.as_str().is_empty() {
+                                    let mount_opt = if mount_path.is_empty() {
                                         None
                                     } else {
-                                        Some(mount_path.as_str().to_string())
+                                        Some(mount_path.clone())
                                     };
-                                    let source_opt = if source_path.as_str().is_empty() {
+                                    let source_opt = if source_path.is_empty() {
                                         None
                                     } else {
                                         Some(source_path.as_str().to_string())
                                     };
                                     (mount_opt, source_opt)
                                 }
-                                agora_game_api::Suggestion::Installer { reason } => {
-                                    let mut top_level: Vec<String> = item
-                                        .files
-                                        .iter()
-                                        .filter_map(|f| {
-                                            f.path.as_str().split('/').next().map(|s| s.to_string())
-                                        })
-                                        .collect();
-                                    top_level.sort();
-                                    top_level.dedup();
+                                agora_core::game_deploy::PlacementDecision::Installer {
+                                    reason,
+                                    top_level,
+                                } => {
                                     let command = format!(
                                         "agora games content fomod install {item_id} --instance {instance_id}"
                                     );
@@ -6300,7 +6356,9 @@ async fn run_command(
                                     }
                                     std::process::exit(1);
                                 }
-                                agora_game_api::Suggestion::Unknown { top_level } => {
+                                agora_core::game_deploy::PlacementDecision::Unknown {
+                                    top_level,
+                                } => {
                                     if json {
                                         let out = serde_json::json!({
                                             "status": "error",
@@ -8648,6 +8706,123 @@ fn runtime_finding_lines(findings: &[agora_game_api::RuntimeFileFinding]) -> Vec
         }
     }
     lines
+}
+
+/// How many bytes a catalog file is, or that it is not known until it is downloaded.
+fn size_text(size: Option<u64>) -> String {
+    match size {
+        Some(bytes) => format!("{bytes} bytes"),
+        None => "size not known until downloaded".to_string(),
+    }
+}
+
+fn plan_size_text(source: &agora_core::catalog_install::PlannedSource) -> String {
+    use agora_core::catalog_install::PlannedSource;
+    match source {
+        PlannedSource::GithubRelease { size, .. } | PlannedSource::DirectHash { size, .. } => {
+            size_text(*size)
+        }
+    }
+}
+
+/// The human view of a catalog install: what was matched and checked, and what changed.
+fn print_catalog_report(report: &agora_core::catalog_install::InstallReport) {
+    use agora_core::catalog_install::{InstallState, PlannedSource};
+    let plan = &report.plan;
+    println!("Entry: {} ({}).", plan.item_name, plan.item_id);
+    println!(
+        "Compatibility entry {} of the item: {} on {}.",
+        plan.compatibility_index + 1,
+        plan.compatibility.game_versions.join(", "),
+        plan.compatibility.stores.join(", ")
+    );
+    for framework in &plan.frameworks {
+        let needs = framework
+            .min_version
+            .as_deref()
+            .map(|minimum| format!(", needs {minimum} or newer"))
+            .unwrap_or_default();
+        match &framework.found_version {
+            Some(found) => println!("Framework: {} {found} is installed{needs}.", framework.name),
+            None => println!(
+                "Framework: {} is installed, its version unreadable{needs}.",
+                framework.name
+            ),
+        }
+    }
+    for warning in &plan.warnings {
+        eprintln!("Warning: {warning}");
+    }
+    match &plan.source {
+        PlannedSource::GithubRelease {
+            repo,
+            tag,
+            asset,
+            size,
+            ..
+        } => println!(
+            "File: {asset}, release {tag} of {repo}, {}.",
+            size_text(*size)
+        ),
+        PlannedSource::DirectHash {
+            file, url, size, ..
+        } => println!("File: {file}, from {url}, {}.", size_text(*size)),
+    }
+    match &report.state {
+        InstallState::DryRun => println!("Dry run: nothing was downloaded or stored."),
+        InstallState::AlreadyInstalled {
+            installed_release,
+            same_release,
+        } => match (installed_release, same_release) {
+            (Some(release), true) => println!(
+                "Already in instance '{}' from release {release}. Nothing changed.",
+                plan.instance_id
+            ),
+            (Some(release), false) => println!(
+                "Instance '{}' has release {release}; a different release is available. Nothing changed: updating is a later slice.",
+                plan.instance_id
+            ),
+            (None, _) => println!(
+                "Already in instance '{}'. Nothing changed.",
+                plan.instance_id
+            ),
+        },
+        InstallState::Placed {
+            content_item_id,
+            mount_path,
+            source_path,
+            size,
+            hash,
+        } => {
+            println!("Hash: {}.", hash.basis);
+            println!("Content item: {content_item_id} ({size} bytes).");
+            let from_note = if source_path.is_empty() {
+                String::new()
+            } else {
+                format!(" (from '{source_path}')")
+            };
+            println!(
+                "Added content '{content_item_id}' to instance '{}' (mount: '{mount_path}'{from_note}).",
+                plan.instance_id
+            );
+        }
+        InstallState::NeedsInstaller {
+            content_item_id,
+            size,
+            hash,
+            reason,
+            installer_command,
+            ..
+        } => {
+            println!("Hash: {}.", hash.basis);
+            println!("Content item: {content_item_id} ({size} bytes), not added to the instance.");
+            eprintln!("Error: this archive has a FOMOD installer: {reason}.");
+            eprintln!("Install it with: {installer_command} --defaults");
+            eprintln!(
+                "or pick options with --choose \"Step/Group/Plugin\" (see `agora games content fomod show {content_item_id}`)."
+            );
+        }
+    }
 }
 
 fn print_runtime_findings(findings: &[agora_game_api::RuntimeFileFinding]) {

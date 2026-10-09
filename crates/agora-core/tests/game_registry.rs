@@ -237,6 +237,7 @@ fn registry_rejects_undefined_game_in_framework_leaving_registry_unchanged() {
         required_frameworks: vec![],
         content: vec![],
         launch: None,
+        detection: None,
     };
     let pkg = make_package(
         "pkg-bad-fw",

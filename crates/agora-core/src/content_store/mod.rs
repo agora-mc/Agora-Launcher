@@ -58,6 +58,19 @@ pub enum ContentSource {
         version: String,
         added_at_unix_ms: i64,
     },
+    /// An archive from the curated catalog for another game (MASTER_SPEC §26.8): the entry, the
+    /// release and asset it came from, and whether a hash its source published checked the bytes.
+    /// `release` is `None` for a `direct_hash` file. An unverified item's hash is remembered, so a
+    /// later install of the same release file can ask the user before it differs.
+    Catalog {
+        item_id: String,
+        game: String,
+        release: Option<String>,
+        asset: String,
+        sha256: String,
+        verified: bool,
+        added_at_unix_ms: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -489,6 +502,24 @@ pub fn add_archive(
     archive_path: &Path,
     name: Option<&str>,
 ) -> Result<AddOutcome, ContentError> {
+    add_archive_with_source(ctx, archive_path, name, |sha256, path| {
+        ContentSource::Archive {
+            path: path.to_string(),
+            sha256: sha256.to_string(),
+            added_at_unix_ms: now_unix_ms(),
+        }
+    })
+}
+
+/// [`add_archive`] with the source record built by `source` from the archive's SHA-256 and its
+/// display path. The catalog install records its own provenance this way, not a path to a
+/// temporary download.
+pub fn add_archive_with_source(
+    ctx: &Ctx,
+    archive_path: &Path,
+    name: Option<&str>,
+    source: impl FnOnce(&str, &str) -> ContentSource,
+) -> Result<AddOutcome, ContentError> {
     let _lock = ctx
         .lock_manager
         .acquire(LockResource::ContentStore, "content-add")?;
@@ -825,11 +856,7 @@ pub fn add_archive(
         })
         .unwrap_or_else(|| "content".into());
 
-    let source = ContentSource::Archive {
-        path: archive_display_path,
-        sha256: archive_sha256,
-        added_at_unix_ms: now_unix_ms(),
-    };
+    let source = source(&archive_sha256, &archive_display_path);
 
     let outcome = finish_adding(ctx, &item_name, staged_entries, source)?;
     guard.active = false;
@@ -1127,6 +1154,24 @@ fn commit_manifest(
                         version: v,
                         ..
                     } if f == from_item && p == package && v == version
+                )
+            }),
+            ContentSource::Catalog {
+                item_id,
+                release,
+                asset,
+                sha256,
+                ..
+            } => !existing_item.sources.iter().any(|s| {
+                matches!(
+                    s,
+                    ContentSource::Catalog {
+                        item_id: i,
+                        release: r,
+                        asset: a,
+                        sha256: h,
+                        ..
+                    } if i == item_id && r == release && a == asset && h == sha256
                 )
             }),
         };

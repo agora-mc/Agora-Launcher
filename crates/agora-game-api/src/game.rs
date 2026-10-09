@@ -1182,6 +1182,30 @@ pub struct FrameworkDefinition {
     pub required_frameworks: Vec<FrameworkId>,
     pub content: Vec<String>,
     pub launch: Option<LaunchRecipe>,
+    /// How an instance is checked for this framework and its version (MASTER_SPEC §26.8). Absent
+    /// means core cannot tell whether the framework is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detection: Option<FrameworkDetection>,
+}
+
+/// How core finds a framework in an instance: a file at the game root whose presence means the
+/// framework is installed, and optionally where its version is read from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameworkDetection {
+    /// A path relative to the game root, matched case-insensitively, e.g. `skse64_loader.exe`.
+    pub marker: RelPath,
+    /// Where the version is read from. Absent means presence is all core knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<FrameworkVersionSource>,
+}
+
+/// Where a framework's version is read from, given its marker file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameworkVersionSource {
+    /// The marker's PE `FileVersion` resource. Its leading zero component is dropped, so the
+    /// `0.2.2.6` that SKSE's loader carries reads as `2.2.6`, the version its manifests use.
+    PeFileVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
