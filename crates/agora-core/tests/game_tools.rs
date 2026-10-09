@@ -1686,6 +1686,47 @@ fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto() {
     assert!(!f.deployed_game_dir().exists());
 }
 
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs, then set AGORA_VFS_DLL"]
+fn real_injection_a_tool_that_writes_the_real_install_path_is_staged_and_the_install_is_unchanged()
+{
+    // The tool does not declare uses_install_path. Its install folder is an alias of the view, so
+    // its write to the real install's Data lands in this run's staging folder, and is promoted.
+    let f = fixture(vec![tool(
+        "alias-writer",
+        "Nemesis",
+        &[
+            "/c",
+            "echo",
+            "made",
+            ">",
+            r"%AGORA_REAL%\Data\from_alias.txt",
+        ],
+    )]);
+    let install = install_dir(&f);
+    let launcher = RealLauncher::new(&[("AGORA_REAL", install.to_str().unwrap())]);
+    let before = snapshot(&install);
+
+    let out = f
+        .run_as("alias-writer", &launcher, CaptureMode::Vfs)
+        .expect("run under the VFS");
+    println!("run outcome: {out:?}");
+    assert_eq!(out.capture, CaptureMethod::Vfs, "{out:?}");
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.written, vec!["Data/from_alias.txt".to_string()]);
+    assert_eq!(
+        std::fs::read_to_string(
+            f.generation_dir("alias-writer", "1")
+                .join("Data/from_alias.txt")
+        )
+        .unwrap()
+        .trim(),
+        "made"
+    );
+    assert_eq!(snapshot(&install), before, "the real install changed");
+    assert!(names(&f.writable_dir()).is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // The swap and the real install (MASTER_SPEC §26.9, slices 4c and 4e). Every test uses a fake install
 // in a temp folder. The swap runs its tool on a real copy of the instance's `Data`, kept between runs

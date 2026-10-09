@@ -1035,6 +1035,8 @@ fn prepare_deployed(
                 mount: game_dir.clone(),
                 upper: instance_dir.join("writable"),
                 lowers: vec![game_dir],
+                // A game launch shows no alias: its view is the instance's own folder.
+                aliases: Vec::new(),
                 config_path: instance_dir.join("vfs").join("config.json"),
                 log: instance_dir.join("logs").join("vfs.log"),
             })

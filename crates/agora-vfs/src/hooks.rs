@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use retour::GenericDetour;
-use windows_sys::Win32::Foundation::{BOOL, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, SetLastError, BOOL, HANDLE};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::*;
 
@@ -15,8 +15,21 @@ use crate::handles;
 use crate::listing::*;
 use crate::nt::*;
 use crate::paths::*;
+use crate::reverse::{
+    fill_name_block, fill_object_name, FILE_ALL_MIN_LEN, FILE_ALL_NAME_AT, FILE_NAME_MIN_LEN,
+};
 use crate::util::{catch_hook_panic, guarded, is_inside, log};
 use crate::Tracked;
+
+/// Win32 error codes a refused process start reports.
+const ERROR_FILE_NOT_FOUND: u32 = 2;
+const ERROR_PATH_NOT_FOUND: u32 = 3;
+const ERROR_ACCESS_DENIED: u32 = 5;
+
+type NtQueryInformationFileFn =
+    unsafe extern "system" fn(HANDLE, *mut c_void, *mut c_void, u32, u32) -> NTSTATUS;
+type NtQueryObjectFn =
+    unsafe extern "system" fn(HANDLE, u32, *mut c_void, u32, *mut u32) -> NTSTATUS;
 
 type NtCreateFileFn = unsafe extern "system" fn(
     *mut HANDLE,
@@ -102,6 +115,8 @@ pub struct Hooks {
     pub query_dir: GenericDetour<NtQueryDirectoryFileFn>,
     pub query_dir_ex: GenericDetour<NtQueryDirectoryFileExFn>,
     pub query_by_name: GenericDetour<NtQueryInformationByNameFn>,
+    pub query_info: GenericDetour<NtQueryInformationFileFn>,
+    pub query_object: GenericDetour<NtQueryObjectFn>,
 }
 unsafe impl Sync for Hooks {}
 unsafe impl Send for Hooks {}
@@ -158,6 +173,7 @@ pub enum Plan {
 
 pub fn plan_open(
     rel: String,
+    via: Via,
     access: u32,
     disposition: u32,
     options: u32,
@@ -175,6 +191,7 @@ pub fn plan_open(
     let delete_on_close = options & FILE_DELETE_ON_CLOSE != 0;
     let upper_track = |rel: &str, dir: bool| Tracked {
         rel: rel.to_string(),
+        via,
         lower: false,
         delete_on_close: false,
         dir,
@@ -212,6 +229,7 @@ pub fn plan_open(
                     | SYNCHRONIZE;
                 let track = Tracked {
                     rel,
+                    via,
                     lower: true,
                     delete_on_close,
                     dir: true,
@@ -249,6 +267,7 @@ pub fn plan_open(
                 };
                 let track = Tracked {
                     rel,
+                    via,
                     lower: false,
                     delete_on_close,
                     dir: false,
@@ -268,6 +287,7 @@ pub fn plan_open(
             }
             let track = Tracked {
                 rel,
+                via,
                 lower: true,
                 delete_on_close,
                 dir: false,
@@ -353,7 +373,7 @@ unsafe extern "system" fn nt_create_file(
         }
 
         let plan = guarded(|| match rel_of_attrs(oa, c) {
-            Some(rel) => plan_open(rel, access, disposition, options, c),
+            Some(loc) => plan_open(loc.rel, loc.via, access, disposition, options, c),
             None => Plan::Passthrough,
         });
         if let Some(Plan::Fail(status)) = &plan {
@@ -417,7 +437,7 @@ unsafe extern "system" fn nt_open_file(
         }
 
         let plan = guarded(|| match rel_of_attrs(oa, c) {
-            Some(rel) => plan_open(rel, access, FILE_OPEN, options, c),
+            Some(loc) => plan_open(loc.rel, loc.via, access, FILE_OPEN, options, c),
             None => Plan::Passthrough,
         });
         if let Some(Plan::Fail(status)) = &plan {
@@ -518,12 +538,16 @@ unsafe extern "system" fn nt_set_information_file(
                     base.add(20) as *const u16,
                     name_len,
                 ));
-                let target_rel = if root.is_null() {
-                    guarded(|| rel_of(&name, c)).flatten()
+                let target = if root.is_null() {
+                    guarded(|| locate(&name, c)).flatten()
                 } else {
                     None
                 };
-                let Some(target_rel) = target_rel else {
+                let Some(Located {
+                    rel: target_rel,
+                    via: target_via,
+                }) = target
+                else {
                     if t.lower {
                         // Moving a lower file out of the mount would take it from its layer.
                         return STATUS_ACCESS_DENIED;
@@ -593,6 +617,7 @@ unsafe extern "system" fn nt_set_information_file(
                                 handles().lock().unwrap().get_mut(&(handle as usize))
                             {
                                 entry.rel = target_rel;
+                                entry.via = target_via;
                             }
                         }
                         status
@@ -613,23 +638,20 @@ unsafe fn query_attributes(oa: *mut ObjectAttributes, out: *mut c_void, full: bo
         }
     };
     let c = cfg();
-    let resolved = guarded(|| rel_of_attrs(oa, c).map(|rel| resolve(&rel, c)));
+    let resolved =
+        guarded(|| rel_of_attrs(oa, c).map(|loc| (loc.rel.is_empty(), resolve(&loc.rel, c))));
     match resolved {
-        Some(Some(Resolved::Upper(p))) | Some(Some(Resolved::Lower(p))) => {
+        Some(Some((_, Resolved::Upper(p)))) | Some(Some((_, Resolved::Lower(p)))) => {
             let r = redirect(oa, &p);
             call(&*r.attrs as *const _ as *mut _)
         }
-        Some(Some(Resolved::WhitedOut)) => STATUS_OBJECT_NAME_NOT_FOUND,
-        Some(Some(Resolved::Missing)) => {
-            let rel = guarded(|| rel_of_attrs(oa, c))
-                .flatten()
-                .unwrap_or_default();
-            if rel.is_empty() {
-                call(oa)
-            } else {
-                STATUS_OBJECT_NAME_NOT_FOUND
-            }
+        Some(Some((_, Resolved::WhitedOut))) => STATUS_OBJECT_NAME_NOT_FOUND,
+        Some(Some((true, Resolved::Missing))) => {
+            // The folder itself, under the mount or an alias: the mount folder is the real one.
+            let r = redirect(oa, Path::new(&c.mount_original));
+            call(&*r.attrs as *const _ as *mut _)
         }
+        Some(Some((false, Resolved::Missing))) => STATUS_OBJECT_NAME_NOT_FOUND,
         _ => call(oa),
     }
 }
@@ -661,7 +683,7 @@ unsafe extern "system" fn nt_query_information_by_name(
         let call = |o| hooks().query_by_name.call(o, iosb, out, len, class);
         let c = cfg();
         let resolved =
-            guarded(|| rel_of_attrs(oa, c).map(|rel| (rel.is_empty(), resolve(&rel, c))));
+            guarded(|| rel_of_attrs(oa, c).map(|loc| (loc.rel.is_empty(), resolve(&loc.rel, c))));
         match resolved {
             Some(Some((_, Resolved::Upper(p)))) | Some(Some((_, Resolved::Lower(p)))) => {
                 let r = redirect(oa, &p);
@@ -669,6 +691,11 @@ unsafe extern "system" fn nt_query_information_by_name(
             }
             Some(Some((_, Resolved::WhitedOut))) | Some(Some((false, Resolved::Missing))) => {
                 STATUS_OBJECT_NAME_NOT_FOUND
+            }
+            Some(Some((true, Resolved::Missing))) => {
+                // The folder itself, under the mount or an alias: the mount folder is the real one.
+                let r = redirect(oa, Path::new(&c.mount_original));
+                call(&*r.attrs as *const _ as *mut _)
             }
             _ => call(oa),
         }
@@ -716,16 +743,34 @@ unsafe extern "system" fn create_process_internal_w(
     pi: *mut PROCESS_INFORMATION,
     new_token: *mut HANDLE,
 ) -> BOOL {
+    let c = cfg();
+    // The names under the view are started from where they really are: the kernel opens the image
+    // itself, outside these hooks (brief decision 6). Our own work here is not redirected.
+    let translated = match guarded(|| translate_start(app, cmd, cwd, c)) {
+        Some(Ok(t)) => t,
+        Some(Err(error)) => {
+            SetLastError(error);
+            return 0;
+        }
+        None => Translation::default(),
+    };
+    let app_buf = translated.app.as_ref().map(|s| wide_nul(s));
+    let mut cmd_buf = translated.cmd.as_ref().map(|s| wide_nul(s));
+    let cwd_buf = translated.cwd.as_ref().map(|s| wide_nul(s));
+    let app_ptr = app_buf.as_ref().map_or(app, |b| b.as_ptr());
+    let cmd_ptr = cmd_buf.as_mut().map_or(cmd, |b| b.as_mut_ptr());
+    let cwd_ptr = cwd_buf.as_ref().map_or(cwd, |b| b.as_ptr());
+
     let ok = hooks().create_process.call(
         token,
-        app,
-        cmd,
+        app_ptr,
+        cmd_ptr,
         pa,
         ta,
         inherit,
         flags | CREATE_SUSPENDED,
         env,
-        cwd,
+        cwd_ptr,
         si,
         pi,
         new_token,
@@ -734,26 +779,140 @@ unsafe extern "system" fn create_process_internal_w(
         // Our own file work (the short path name, the log) must not be redirected.
         let was_inside = is_inside();
         crate::util::set_inside(true);
-        match agora_vfs_inject::inject_child((*pi).hProcess, &cfg().dll) {
-            Ok((method, fallback_from)) => log(format!(
-                "injected child {} by {}{}",
-                (*pi).dwProcessId,
-                method.describe(),
-                fallback_from
-                    .map(|why| format!(" (import-table injection was not possible: {why})"))
-                    .unwrap_or_default()
-            )),
-            Err(e) => log(format!(
-                "inject into child {} failed: {e}",
-                (*pi).dwProcessId
-            )),
-        }
+        let injected = agora_vfs_inject::inject_child((*pi).hProcess, &c.dll);
         crate::util::set_inside(was_inside);
-        if flags & CREATE_SUSPENDED == 0 {
-            ResumeThread((*pi).hThread);
+        match injected {
+            Ok((method, fallback_from)) => {
+                log(format!(
+                    "injected child {} by {}{}",
+                    (*pi).dwProcessId,
+                    method.describe(),
+                    fallback_from
+                        .map(|why| format!(" (import-table injection was not possible: {why})"))
+                        .unwrap_or_default()
+                ));
+                if flags & CREATE_SUSPENDED == 0 {
+                    ResumeThread((*pi).hThread);
+                }
+            }
+            Err(e) => {
+                // A child that is not under the VFS must not run: it could write to the layers.
+                log(format!(
+                    "inject into child {} failed, so it is ended: {e}",
+                    (*pi).dwProcessId
+                ));
+                TerminateProcess((*pi).hProcess, crate::EXIT_UNPROTECTED);
+                CloseHandle((*pi).hThread);
+                CloseHandle((*pi).hProcess);
+                SetLastError(ERROR_ACCESS_DENIED);
+                return 0;
+            }
         }
     }
     ok
+}
+
+/// What a process start names, where it really is, for each argument that lies under the view.
+/// `None` leaves an argument as it was.
+#[derive(Default)]
+struct Translation {
+    app: Option<String>,
+    cmd: Option<String>,
+    cwd: Option<String>,
+}
+
+unsafe fn translate_start(
+    app: *const u16,
+    cmd: *const u16,
+    cwd: *const u16,
+    c: &RuntimeConfig,
+) -> Result<Translation, u32> {
+    let app = if app.is_null() {
+        None
+    } else {
+        translate_name(&wide_read(app), c, ERROR_FILE_NOT_FOUND)?
+    };
+    let cwd = if cwd.is_null() {
+        None
+    } else {
+        translate_directory(&wide_read(cwd), c)?
+    };
+    let cmd = if cmd.is_null() {
+        None
+    } else {
+        translate_command_line(&wide_read(cmd), c)?
+    };
+    Ok(Translation { app, cmd, cwd })
+}
+
+/// The real path of a name under the view, `None` when it is not under the view.
+fn translate_name(name: &str, c: &RuntimeConfig, missing: u32) -> Result<Option<String>, u32> {
+    let Some(located) = locate(name.strip_prefix(r"\\?\").unwrap_or(name), c) else {
+        return Ok(None);
+    };
+    match start_path(&located, c) {
+        Start::Real(path) => Ok(Some(path.display().to_string())),
+        Start::NotInView => Err(missing),
+    }
+}
+
+/// The real path of a current directory under the view. The mount holds the view's own copy of the
+/// folder whenever it has one, so the child's relative names resolve through the view. Only when the
+/// mount has no such folder (it exists in the upper, or in another lower) is the folder that wins
+/// used, and then the child's relative paths are not virtual; that is logged.
+fn translate_directory(name: &str, c: &RuntimeConfig) -> Result<Option<String>, u32> {
+    let Some(located) = locate(name.strip_prefix(r"\\?\").unwrap_or(name), c) else {
+        return Ok(None);
+    };
+    let winning = match start_path(&located, c) {
+        Start::Real(path) => path,
+        Start::NotInView => return Err(ERROR_PATH_NOT_FOUND),
+    };
+    if located.rel.is_empty() {
+        return Ok(Some(winning.display().to_string()));
+    }
+    let in_mount = Path::new(&c.mount_original).join(&located.rel);
+    if in_mount.is_dir() {
+        return Ok(Some(in_mount.display().to_string()));
+    }
+    log(format!(
+        "the child's current directory {} is not a folder of the mount, so its relative paths are not virtual",
+        located.rel
+    ));
+    Ok(Some(winning.display().to_string()))
+}
+
+/// The command line with its first token translated. The translated token is quoted, so a real
+/// path with a space in it stays one token.
+fn translate_command_line(cmd: &str, c: &RuntimeConfig) -> Result<Option<String>, u32> {
+    let lead = cmd.len() - cmd.trim_start().len();
+    let rest = &cmd[lead..];
+    let (token, end) = if let Some(quoted) = rest.strip_prefix('"') {
+        match quoted.find('"') {
+            Some(close) => (&quoted[..close], lead + close + 2),
+            None => (quoted, cmd.len()),
+        }
+    } else {
+        let end = rest.find([' ', '\t']).unwrap_or(rest.len());
+        (&rest[..end], lead + end)
+    };
+    match translate_name(token, c, ERROR_FILE_NOT_FOUND)? {
+        Some(real) => Ok(Some(format!("{}\"{real}\"{}", &cmd[..lead], &cmd[end..]))),
+        None => Ok(None),
+    }
+}
+
+fn wide_nul(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(Some(0)).collect()
+}
+
+/// A NUL-terminated wide string read from a Win32 argument.
+unsafe fn wide_read(p: *const u16) -> String {
+    let mut len = 0usize;
+    while *p.add(len) != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(std::slice::from_raw_parts(p, len))
 }
 
 unsafe extern "system" fn nt_query_directory_file(
@@ -817,6 +976,112 @@ unsafe extern "system" fn nt_query_directory_file_ex(
     })
 }
 
+/// The tracked record of a handle, if the DLL opened it.
+unsafe fn tracked_of(handle: HANDLE) -> Option<Tracked> {
+    handles().lock().unwrap().get(&(handle as usize)).cloned()
+}
+
+/// Write an IO_STATUS_BLOCK: the status, then the information.
+unsafe fn set_iosb(iosb: *mut c_void, status: NTSTATUS, information: usize) {
+    if !iosb.is_null() {
+        std::ptr::write_unaligned(iosb as *mut usize, status as u32 as usize);
+        std::ptr::write_unaligned((iosb as *mut usize).add(1), information);
+    }
+}
+
+/// The name of a tracked handle, as FileNameInformation reports it (volume-relative), in UTF-16.
+fn view_name_utf16(t: &Tracked, c: &RuntimeConfig) -> Option<Vec<u16>> {
+    view_path(t.via, &t.rel, c).map(|p| p.encode_utf16().collect())
+}
+
+/// The reverse name of a handle with its device, as ObjectNameInformation reports it, and the byte
+/// length of the device part.
+fn object_name_utf16(t: &Tracked, c: &RuntimeConfig) -> Option<(Vec<u16>, usize)> {
+    let name: Vec<u16> = device_path(t.via, &t.rel, c)?.encode_utf16().collect();
+    let device = c.prefix(t.via).device.as_ref()?;
+    Some((name, device.encode_utf16().count() * 2))
+}
+
+/// NtQueryInformationFile for a tracked handle: its name reports the folder it was opened through
+/// (FileNameInformation, FileNormalizedNameInformation and the name part of FileAllInformation).
+/// Untracked handles and other classes pass through unchanged.
+unsafe extern "system" fn nt_query_information_file(
+    handle: HANDLE,
+    iosb: *mut c_void,
+    info: *mut c_void,
+    len: u32,
+    class: u32,
+) -> NTSTATUS {
+    catch_hook_panic("NtQueryInformationFile", || {
+        let original = || hooks().query_info.call(handle, iosb, info, len, class);
+        if is_inside()
+            || info.is_null()
+            || !matches!(
+                class,
+                FILE_NAME_INFORMATION | FILE_NORMALIZED_NAME_INFORMATION | FILE_ALL_INFORMATION
+            )
+        {
+            return original();
+        }
+        let Some(t) = tracked_of(handle) else {
+            return original();
+        };
+        let c = cfg();
+        let Some(name) = guarded(|| view_name_utf16(&t, c)).flatten() else {
+            return original();
+        };
+        if class == FILE_ALL_INFORMATION {
+            if (len as usize) < FILE_ALL_MIN_LEN {
+                set_iosb(iosb, STATUS_INFO_LENGTH_MISMATCH, 0);
+                return STATUS_INFO_LENGTH_MISMATCH;
+            }
+            // The fixed part (times, sizes, attributes) is the real file's, so the kernel fills it.
+            let status = original();
+            if status < 0 && status != STATUS_BUFFER_OVERFLOW {
+                return status;
+            }
+            let (status, information) = fill_name_block(
+                info as *mut u8,
+                len,
+                FILE_ALL_NAME_AT,
+                FILE_ALL_MIN_LEN,
+                &name,
+            );
+            set_iosb(iosb, status, information);
+            return status;
+        }
+        let (status, information) =
+            fill_name_block(info as *mut u8, len, 4, FILE_NAME_MIN_LEN, &name);
+        set_iosb(iosb, status, information);
+        status
+    })
+}
+
+/// NtQueryObject for a tracked handle: ObjectNameInformation reports the device and the folder it
+/// was opened through. Other classes and untracked handles pass through unchanged.
+unsafe extern "system" fn nt_query_object(
+    handle: HANDLE,
+    class: u32,
+    info: *mut c_void,
+    len: u32,
+    ret: *mut u32,
+) -> NTSTATUS {
+    catch_hook_panic("NtQueryObject", || {
+        let original = || hooks().query_object.call(handle, class, info, len, ret);
+        if is_inside() || info.is_null() || class != OBJECT_NAME_INFORMATION {
+            return original();
+        }
+        let Some(t) = tracked_of(handle) else {
+            return original();
+        };
+        let c = cfg();
+        let Some((name, device_bytes)) = guarded(|| object_name_utf16(&t, c)).flatten() else {
+            return original();
+        };
+        fill_object_name(info as *mut u8, len, &name, device_bytes, ret)
+    })
+}
+
 unsafe fn proc_addr<T>(module: &str, name: &str) -> T {
     let m: Vec<u16> = module.encode_utf16().chain(Some(0)).collect();
     let n = std::ffi::CString::new(name).unwrap();
@@ -864,6 +1129,14 @@ pub unsafe fn install_hooks() -> Result<(), retour::Error> {
         proc_addr::<NtQueryInformationByNameFn>("ntdll.dll", "NtQueryInformationByName"),
         nt_query_information_by_name,
     )?;
+    let query_info = GenericDetour::new(
+        proc_addr::<NtQueryInformationFileFn>("ntdll.dll", "NtQueryInformationFile"),
+        nt_query_information_file,
+    )?;
+    let query_object = GenericDetour::new(
+        proc_addr::<NtQueryObjectFn>("ntdll.dll", "NtQueryObject"),
+        nt_query_object,
+    )?;
 
     let h = Hooks {
         create,
@@ -876,6 +1149,8 @@ pub unsafe fn install_hooks() -> Result<(), retour::Error> {
         query_dir,
         query_dir_ex,
         query_by_name,
+        query_info,
+        query_object,
     };
     let h = HOOKS.get_or_init(|| h);
 
@@ -892,7 +1167,7 @@ pub unsafe fn install_hooks() -> Result<(), retour::Error> {
         }
     }
 
-    let all_hooks: [&dyn HookEnable; 10] = [
+    let all_hooks: [&dyn HookEnable; 12] = [
         &h.create,
         &h.open,
         &h.set_info,
@@ -903,6 +1178,8 @@ pub unsafe fn install_hooks() -> Result<(), retour::Error> {
         &h.query_dir,
         &h.query_dir_ex,
         &h.query_by_name,
+        &h.query_info,
+        &h.query_object,
     ];
 
     for hook in all_hooks {

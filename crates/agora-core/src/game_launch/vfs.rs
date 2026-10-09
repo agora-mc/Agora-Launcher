@@ -27,6 +27,9 @@ pub struct VfsLaunch {
     pub upper: PathBuf,
     /// Lower layers, highest priority first.
     pub lowers: Vec<PathBuf>,
+    /// Folders that show the same view as `mount`: a tool run's real install folder, so the tool
+    /// sees the mod at the path it reads. Empty for a game launch.
+    pub aliases: Vec<PathBuf>,
     /// Where the JSON configuration is written.
     pub config_path: PathBuf,
     /// The VFS's log.
@@ -131,9 +134,10 @@ pub fn processes_ended_by_vfs(appended: &str) -> Vec<EndedProcess> {
         .collect()
 }
 
-/// The VFS's JSON configuration (`crates/agora-vfs/README.md`).
+/// The VFS's JSON configuration (`crates/agora-vfs/README.md`). Version 2 only when there are
+/// aliases, so a launch without them is written exactly as before.
 pub fn config_json(vfs: &VfsLaunch, ready_event: &str) -> serde_json::Value {
-    serde_json::json!({
+    let mut json = serde_json::json!({
         "version": 1,
         "mount": vfs.mount.to_string_lossy(),
         "upper": vfs.upper.to_string_lossy(),
@@ -142,7 +146,16 @@ pub fn config_json(vfs: &VfsLaunch, ready_event: &str) -> serde_json::Value {
         "log": vfs.log.to_string_lossy(),
         "verbose": false,
         "ready_event": ready_event,
-    })
+    });
+    if !vfs.aliases.is_empty() {
+        json["version"] = serde_json::json!(2);
+        json["aliases"] = serde_json::json!(vfs
+            .aliases
+            .iter()
+            .map(|p| p.to_string_lossy())
+            .collect::<Vec<_>>());
+    }
+    json
 }
 
 /// Start the game under the VFS. The returned [`LaunchedGame`] is the running game, exactly as
@@ -440,6 +453,7 @@ mod tests {
             mount: PathBuf::from("D:/Bases/deployments/inst/game"),
             upper: PathBuf::from("C:/Data/instances/inst/writable"),
             lowers: vec![PathBuf::from("D:/Bases/deployments/inst/game")],
+            aliases: Vec::new(),
             config_path: PathBuf::from("C:/Data/instances/inst/vfs/config.json"),
             log: PathBuf::from("C:/Data/instances/inst/logs/vfs.log"),
         }
@@ -455,6 +469,30 @@ mod tests {
         assert_eq!(json["dll"], "C:/Agora/agora_vfs.dll");
         assert_eq!(json["log"], "C:/Data/instances/inst/logs/vfs.log");
         assert_eq!(json["ready_event"], "Local\\agora-vfs-1-abc");
+    }
+
+    #[test]
+    fn a_configuration_without_aliases_is_version_one_with_no_aliases_key() {
+        let json = config_json(&sample(), "Local\\agora-vfs-1-abc");
+        assert_eq!(json["version"], 1);
+        assert!(json.get("aliases").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_configuration_with_aliases_is_version_two_and_names_them() {
+        let mut vfs = sample();
+        vfs.aliases = vec![PathBuf::from(
+            "D:/SteamLibrary/common/Skyrim Special Edition",
+        )];
+        let json = config_json(&vfs, "Local\\agora-vfs-1-abc");
+        assert_eq!(json["version"], 2);
+        assert_eq!(
+            json["aliases"],
+            serde_json::json!(["D:/SteamLibrary/common/Skyrim Special Edition"])
+        );
+        // The rest is what version 1 carries, unchanged.
+        assert_eq!(json["mount"], "D:/Bases/deployments/inst/game");
+        assert_eq!(json["lowers"][0], json["mount"]);
     }
 
     #[test]

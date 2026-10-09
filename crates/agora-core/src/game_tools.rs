@@ -1172,12 +1172,15 @@ fn run_under_vfs(
     let mut prepared = PreparedLaunch::undeployed(resolved, Vec::new(), None);
     prepared.deployment = Some(DeployMode::Virtual);
     // The game folder is mounted; its lowers are the instance's writable layer over the farm, so
-    // the tool sees what the game wrote but every write lands in this run's staging folder.
+    // the tool sees what the game wrote but every write lands in this run's staging folder. The
+    // real install folder is an alias, so a tool that reads or writes it there (Nemesis, BodySlide)
+    // sees the same mod files at its own path, and its writes land in the same staging folder.
     prepared.vfs = Some(VfsLaunch {
         dll,
         mount: game_dir.clone(),
         upper: staging.clone(),
         lowers: vec![writable, game_dir.clone()],
+        aliases: vec![base.source_location.clone()],
         config_path: instance_dir.join("vfs").join(VFS_CONFIG),
         log: instance_dir.join("logs").join("vfs.log"),
     });

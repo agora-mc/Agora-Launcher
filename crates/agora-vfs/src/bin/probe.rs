@@ -5,6 +5,11 @@
 
 #![cfg(windows)]
 
+#[path = "probe/alias.rs"]
+mod alias;
+#[path = "../../tests/support/names.rs"]
+mod names;
+
 use std::ffi::{c_void, OsStr};
 use std::fs;
 use std::os::windows::ffi::OsStrExt;
@@ -306,8 +311,63 @@ fn arg(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
+/// The arguments after `flag` up to the next `--` option.
+fn names_after(args: &[String], flag: &str) -> Vec<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .map(|i| {
+            args[i + 1..]
+                .iter()
+                .take_while(|a| !a.starts_with("--"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // A child the alias scenario starts: read the file it is given, and report what it read.
+    if let Some(file) = arg(&args, "--child-read") {
+        let out = arg(&args, "--out").expect("--out required");
+        std::process::exit(alias::child_read(Path::new(&file), Path::new(&out)));
+    }
+    // A child started by the relative-names scenario: read the names it is given, relative to its
+    // current directory.
+    if args.iter().any(|a| a == "--child-relative") {
+        let out = arg(&args, "--out").expect("--out required");
+        let names = names_after(&args, "--child-relative");
+        std::process::exit(alias::child_relative(&names, Path::new(&out)));
+    }
+    // The parent of that child: start it in the folder given, through CreateProcess.
+    if let Some(dir) = arg(&args, "--spawn-in") {
+        let child = arg(&args, "--child").expect("--child required");
+        let out = arg(&args, "--out").expect("--out required");
+        let names = names_after(&args, "--names");
+        std::process::exit(alias::spawn_child_in(
+            Path::new(&child),
+            Path::new(&dir),
+            &names,
+            Path::new(&out),
+        ));
+    }
+    if args.iter().any(|a| a == "--alias-scenario") {
+        let path = |name: &str| {
+            PathBuf::from(arg(&args, name).unwrap_or_else(|| panic!("{name} required")))
+        };
+        let forms_file = path("--forms");
+        let forms: Vec<alias::Form> =
+            serde_json::from_slice(&fs::read(&forms_file).expect("read forms"))
+                .expect("parse forms");
+        let code = alias::run(
+            &path("--install"),
+            &path("--mount"),
+            &path("--upper"),
+            &path("--out"),
+            &forms,
+        );
+        std::process::exit(code);
+    }
     let root = arg(&args, "--root").expect("--root required");
     let out = arg(&args, "--out").expect("--out required");
     let child = args.iter().any(|a| a == "--child");

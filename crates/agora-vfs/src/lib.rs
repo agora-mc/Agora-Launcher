@@ -25,6 +25,8 @@ pub mod listing;
 #[cfg(windows)]
 pub mod nt;
 #[cfg(windows)]
+pub mod reverse;
+#[cfg(windows)]
 pub mod util;
 
 #[cfg(windows)]
@@ -42,10 +44,14 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::config::RuntimeConfig;
+use crate::paths::Via;
 
 #[derive(Clone, Debug)]
 pub struct Tracked {
     pub rel: String,
+    /// The folder the handle was opened through: the mount, or an alias. Its reverse names start
+    /// with that folder, whichever layer the handle really holds.
+    pub via: Via,
     pub lower: bool,
     pub delete_on_close: bool,
     pub dir: bool,
@@ -128,7 +134,7 @@ pub unsafe extern "system" fn DllMain(
         // Put back the import table that import-table injection rewrote, before the program
         // reads it. A no-op when the DLL was loaded any other way.
         agora_vfs_inject::restore_after_import_injection();
-        let Some(config) = config::load_config_from_env() else {
+        let Some(mut config) = config::load_config_from_env() else {
             // No `AGORA_VFS_CONFIG` at all: this process was never meant to run under the VFS
             // (a child started with its own environment block), so install nothing.
             if std::env::var_os("AGORA_VFS_CONFIG").is_none() {
@@ -139,6 +145,8 @@ pub unsafe extern "system" fn DllMain(
             eprintln!("[agora-vfs] the configuration could not be loaded");
             end_unprotected("the configuration could not be loaded");
         };
+        // The names the mount and each alias answer to: the volume GUID, device and 8.3 forms.
+        paths::add_system_forms(&mut config);
         let ready_event = config.ready_event.clone();
         let _ = CONFIG.set(config);
         util::set_inside(true);
@@ -218,9 +226,9 @@ mod tests {
     }
 
     #[test]
-    fn test_config_parsing_rejects_version_2() {
+    fn test_config_parsing_rejects_version_3() {
         let json = r#"{
-            "version": 2,
+            "version": 3,
             "mount": "D:\\Game\\mount",
             "upper": "C:\\Instances\\upper",
             "dll": "C:\\Agora\\agora_vfs.dll"
@@ -254,6 +262,10 @@ mod tests {
             log: None,
             verbose: false,
             ready_event: None,
+            prefixes: vec![paths::Prefix::new(
+                paths::Via::Mount,
+                r"D:\Games\Skyrim".to_string(),
+            )],
         };
 
         // Exact mount match

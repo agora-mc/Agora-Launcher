@@ -46,7 +46,40 @@ When injected into a process:
 5. Any delete of a lower layer records a whiteout marker (`<upper>\.agvfs-wh\<rel>.wh`).
 6. Folder directory listings merge the upper layer over lower layers, with whiteout markers removed.
 7. Any calls creating child processes (`CreateProcessInternalW`) intercept process creation and inject
-   `agora_vfs.dll` into the child before resumption.
+   `agora_vfs.dll` into the child before resumption. A child that cannot be injected is ended and the
+   start fails; it never runs unprotected.
+8. **Aliases (configuration version 2).** Each alias folder shows exactly the view of `mount`. A path
+   under an alias resolves to the same mount-relative path, so a tool that reads the real install
+   folder (Nemesis reads it from the registry, BodySlide hard-codes it) sees the mod files at its own
+   path. The view is opaque: a real file in the install that is in no layer is **not found**, and is
+   absent from listings. Writes copy up into `upper` as through the mount, and nothing under the real
+   folder is opened for write, created, renamed or deleted by a hooked process.
+9. **Reverse names.** A handle reports the folder it was opened through (the mount, or an alias) plus its
+   relative path, whichever layer it really holds. The hooks are `NtQueryInformationFile` (classes 9,
+   48 and the name part of 18) and `NtQueryObject` (class 1), so `GetFinalPathNameByHandleW` (every flag
+   in use), `GetFileInformationByHandleEx(FileNameInfo)` and the NT name queries agree. Untracked
+   handles pass through. The short-buffer answers were measured on Windows 11 (NTFS) against unhooked
+   calls on a real file, for every buffer length from 0 to 260, and are matched (see
+   `tests/alias.rs`).
+10. **Start paths.** A process start (`CreateProcessInternalW`) translates the application name, the first
+    token of the command line and the current directory from a name under the view to the real path the
+    view resolves them to (for the folder itself, the mount folder). The kernel opens the image itself,
+    so an image that exists only in a lower can start. A name under the view that is in no layer, or
+    whited out, is refused with `ERROR_FILE_NOT_FOUND` (`ERROR_PATH_NOT_FOUND` for the directory).
+
+### Path forms
+
+For the mount and each alias, the DLL computes at start-up every NT name that names the same folder,
+and matches any of them, case-insensitively:
+
+- the drive form `\??\X:\...` (Win32 `\\?\` and `\\.\` paths arrive in this form);
+- the volume GUID form `\??\Volume{GUID}\...`, from `GetVolumeNameForVolumeMountPointW`;
+- the device form `\Device\HarddiskVolumeN\...` and `\??\GLOBALROOT\Device\HarddiskVolumeN\...`,
+  from `QueryDosDeviceW`;
+- the 8.3 form of the folder, from `GetShortPathNameW`, when it differs, combined with each of the above.
+
+**Known gap:** 8.3 components *below* the mount or alias folder are not recognised. A name such as
+`...\Skyrim Special Edition\DATA~1\x.esp` is not in the view. Only the folder's own 8.3 form is.
 
 ## Configuration Format
 
@@ -69,7 +102,12 @@ Configuration is loaded as JSON from the path in `AGORA_VFS_CONFIG`:
 
 ### Fields
 
-- `version` (`u32`): Configuration schema version (must be `1`).
+- `version` (`u32`): Configuration schema version: `1`, or `2` when there are `aliases`. Any other
+  version is refused. A version 1 configuration with `aliases` is refused too: a reader that ignored
+  them would show a tool a vanilla game. Core writes version 2 only when there are aliases.
+- `aliases` (`array of strings`, version 2, optional): Folders that show exactly the view of `mount`
+  (see point 8 above). Each is normalized as the others are. Refused when empty, or when it is equal to,
+  inside, or containing the mount, the upper, any lower, or another alias. The comparison ignores case.
 - `mount` (`string`): The path the game sees as its root/mount folder. Trailing backslashes are stripped.
 - `upper` (`string`): The instance's writable directory (layer 4) where copy-up files and whiteouts are stored.
 - `lowers` (`array of strings`): Lower layer folders in priority order (highest priority first). In link deployments, `lowers[0]` is typically identical to `mount`.
@@ -94,6 +132,11 @@ cargo test -p agora-core --test game_deploy -- --ignored  # real injection, incl
 - `tests/matrix.rs`: the six-topology write matrix.
 - `tests/early_import.rs`: a DLL that cannot do its job ends the process before it runs; no
   configuration installs nothing.
+- `tests/alias.rs`: an alias over a temp install, with a lower-only program started by its alias path.
+  The probe (`src/bin/probe.rs`, `src/bin/probe/alias.rs`) runs the checks under the DLL. The name
+  queries (`tests/support/names.rs`) are run on the probe's handles and, unhooked, on the real files;
+  every answer must be equal for every buffer length from 0 to 260. The temp install's tree must be
+  byte-for-byte unchanged at the end.
 - `crates/agora-vfs/fixtures/early-import` is the fixture: `agora-early-import-exe.exe` statically
   imports `agora_early_import.dll` (a `raw-dylib` import, so there is no import library and no build
   ordering), whose `DllMain` rewrites `early_<program>.txt` beside it. With argument `spawn` the
