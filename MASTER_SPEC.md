@@ -3843,6 +3843,56 @@ anything else. Rolling back is judged by what the game reads: the test is that t
 through the mounted stack change, not that a record says they did. This is the feature the initiative was proposed for, and the spike shows the output is
 small and well defined enough to support it.
 
+**Tools work on the real install's path** (measured 2026-10-08/09; decided with the user,
+2026-10-09; not built yet).
+- **The problem:** Skyrim tools do not use the folder they are started in.
+  - The real Nemesis 0.84 reads the install path from the registry (its log:
+    `Data Directory: D:\SteamLibrary\steamapps\common\Skyrim Special Edition\data\`).
+  - BodySlide's `Config.xml` hard-codes `GameDataPath`.
+  - xEdit and DynDOLOD behave the same way.
+  - MO2 works because its VFS shows the mods *at the real path*. Agora's VFS and link capture show
+    them at the deployment's own path, so such a tool sees a vanilla game.
+- **What the 2026-10-09 real runs found** (the Data swap of slice 4c, then 4d):
+  - with a junction in place of the real `Data`, Nemesis saw the whole 368-mod list;
+  - it then failed on files it opens with write access but never changes (its own
+    `Papyrus Compiler\scripts\Actor.psc`, then XPMSE's `skeleton_female.hkx`), because a
+    link-deployed file is the ACL-protected content object;
+  - it exited 0 anyway. The output checks (`required_outputs`, `failure_markers`, slice 4d)
+    discarded it, after an earlier run without them had been promoted and had to be rolled back.
+- **The plan:**
+  1. **A real-path view in the VFS: the default.**
+     - For an injected process tree only, the deployment is visible at the real install's path.
+       Nothing in the install changes, and copy-on-write applies as everywhere else.
+     - This needs reverse-name hooks (a handle's path is reported as the real-path name), explicit
+       handling of every path form (`\\?\UNC\`, volume GUIDs, 8.3 input, drive-relative paths),
+       and the established listing order.
+     - 32-bit tools such as Nemesis need an x86 build of `agora_vfs.dll` and a small 32-bit
+       injection helper, as usvfs does with its proxy.
+     - The design input, with citations to usvfs's code and bug history, is in
+       `D:\Agora-bench\research\usvfs-report.md` (outside the repository).
+  2. **Link capture (built, slice 4b):** used when the VFS cannot host the tool. It captures
+     writes to the deployment, not to the real path.
+  3. **A full-copy swap, the slow universal fallback, offered when a tool keeps failing:**
+     - the instance is deployed as **copies**, so every file is a real, writable file;
+     - the real `Data` is renamed aside, and the copy put in its place;
+     - the tool runs;
+     - then the copy is taken back out, the changes are captured, and the real `Data` is
+       renamed back.
+     On the same volume every move is a rename, and the copy is kept between runs, so only the
+     first run is slow. Across volumes the copy goes in and the changed files come back, which
+     is slower every run and needs free space on the game's drive. Agora deletes only a copy it
+     can prove it made: a marker file inside it, matched by the journal. The journal and
+     recovery of slice 4c carry over; the junction swap itself is replaced, since it fails for
+     tools that open protected files for writing.
+     **The offer states its costs:** the disk space (the whole instance's size), the time for
+     the first and later runs, and that the real `Data` is renamed during the run, so Steam and
+     the game must not run.
+  4. **Switching the instance to link deployment** is offered alongside, for failures where
+     injection is the problem (anti-virus, anti-tamper), not for real-path tools.
+- **Pandora Behaviour Engine** is the recommended behaviour engine. It is 64-bit and takes the game
+  data folder on its command line (`-o`), plus `-autorun -autoclose`, so Agora can rebuild stale
+  output without the user clicking.
+
 ### 26.10 Importing Existing Setups
 
 Most people who will try this already have a setup. Import has to be good.
