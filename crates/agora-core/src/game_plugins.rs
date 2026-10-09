@@ -452,12 +452,18 @@ fn implicit_keys(
     instance_id: &str,
     definition: &GameDefinition,
     rule: &PluginListRule,
+    links: Option<&DeploymentPlan>,
 ) -> Result<std::collections::HashSet<Vec<u8>>, PluginListError> {
     let mut names: Vec<String> = rule.implicit.clone();
     if rule.implicit_list_file.is_some() {
         names.extend(
-            crate::game_load_order::implicit_list_names(ctx, instance_id, definition)
-                .map_err(|e| PluginListError::Other(e.to_string()))?,
+            crate::game_load_order::implicit_list_names_with_view(
+                ctx,
+                instance_id,
+                definition,
+                links,
+            )
+            .map_err(|e| PluginListError::Other(e.to_string()))?,
         );
     }
     Ok(names.iter().map(|n| key(n.as_bytes())).collect())
@@ -472,6 +478,19 @@ pub fn sync_locked(
     definition: &GameDefinition,
     store: &StoreId,
     desired: &[String],
+) -> Result<Option<PluginSyncReport>, PluginListError> {
+    sync_locked_with_view(ctx, instance_id, definition, store, desired, None)
+}
+
+/// [`sync_locked`], reading `links` (the instance's Links plan) when the caller has it, rather than
+/// planning the names a game's implicit list holds again.
+pub(crate) fn sync_locked_with_view(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    store: &StoreId,
+    desired: &[String],
+    links: Option<&DeploymentPlan>,
 ) -> Result<Option<PluginSyncReport>, PluginListError> {
     let Some(rule) = &definition.plugin_list else {
         return Ok(None);
@@ -505,7 +524,7 @@ pub fn sync_locked(
     };
 
     // A plugin the game loads itself is never Agora's, whatever an earlier sync recorded for it.
-    let implicit = implicit_keys(ctx, instance_id, definition, rule)?;
+    let implicit = implicit_keys(ctx, instance_id, definition, rule, links)?;
     let not_implicit = |n: &String| !implicit.contains(&key(n.as_bytes()));
     let wanted: Vec<String> = desired
         .iter()

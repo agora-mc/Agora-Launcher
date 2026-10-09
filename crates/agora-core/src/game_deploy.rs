@@ -4,11 +4,13 @@
 //! using hardlinks or copies, harvests writes into the instance's writable layer,
 //! and tracks deployed file state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use agora_game_api::{
-    BaseReference, GameDefinition, Layer, LayerId, LayerSource, LayerStack, RelPath,
+    BaseReference, CompiledGlob, GameDefinition, Layer, LayerId, LayerSource, LayerStack, RelPath,
+    DEFAULT_COPY_PATTERNS,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -440,6 +442,11 @@ pub(crate) fn plan_would_be(
     )
 }
 
+/// How many times the planner has run in this process. A measurement hook for the benchmark and the
+/// launch test that count the plans one launch makes; the product never reads it.
+#[doc(hidden)]
+pub static PLAN_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn plan_inner(
     ctx: &Ctx,
     instance_id: &str,
@@ -448,6 +455,7 @@ fn plan_inner(
     copy_layer: Option<&str>,
     would_be: Option<WouldBe<'_>>,
 ) -> Result<DeploymentPlan, DeployError> {
+    PLAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let manifest = match &would_be {
         Some(w) => w.manifest.clone(),
         None => crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
@@ -795,13 +803,15 @@ fn plan_inner(
         }
     }
 
+    let rules = PathRules::new(definition);
     for (_key, cand) in candidates {
         // A generated layer's files are copies in every mode, as the writable layer's are.
         let generated = matches!(cand.source, FileSource::Generated { .. });
+        let declared = rules.is_declared_write(cand.path.as_str());
         let is_config_copy = mode == DeployMode::Links
             && cand.size <= 1024 * 1024
-            && definition.is_copy_pattern(cand.path.as_str())
-            && !definition.is_declared_write(cand.path.as_str())
+            && rules.is_copy_pattern(cand.path.as_str())
+            && !declared
             && !cand.own_copy
             && !generated
             && !matches!(cand.source, FileSource::Writable { .. });
@@ -810,7 +820,7 @@ fn plan_inner(
             _ if generated => Placement::Copy,
             DeployMode::Copies => Placement::Copy,
             DeployMode::Virtual => {
-                if cand.own_copy || definition.is_declared_write(cand.path.as_str()) {
+                if cand.own_copy || declared {
                     Placement::Copy
                 } else {
                     match &cand.source {
@@ -827,10 +837,7 @@ fn plan_inner(
                 // A declared-write path gets the instance's own copy in every mode.
                 // An own_copy layer deploys all its files as copies.
                 // Small text files matching copy patterns (<= 1 MiB) are placed as copies too.
-                if cand.own_copy
-                    || definition.is_declared_write(cand.path.as_str())
-                    || is_config_copy
-                {
+                if cand.own_copy || declared || is_config_copy {
                     Placement::Copy
                 } else {
                     match &cand.source {
@@ -930,7 +937,7 @@ fn walk_generated_dir(
     for entry in std::fs::read_dir(&cur)? {
         let entry = entry?;
         let abs_path = entry.path();
-        let meta = std::fs::symlink_metadata(&abs_path)?;
+        let meta = entry.metadata()?;
         if is_reparse_point_or_symlink(&meta) {
             continue;
         }
@@ -979,7 +986,7 @@ fn walk_writable_dir(
     for entry in std::fs::read_dir(&cur)? {
         let entry = entry?;
         let abs_path = entry.path();
-        let meta = std::fs::symlink_metadata(&abs_path)?;
+        let meta = entry.metadata()?;
         if is_reparse_point_or_symlink(&meta) {
             continue;
         }
@@ -1018,7 +1025,7 @@ fn read_whiteout_markers(writable_dir: &Path) -> Result<Vec<String>, DeployError
     fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), DeployError> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
-            let meta = std::fs::symlink_metadata(entry.path())?;
+            let meta = entry.metadata()?;
             if is_reparse_point_or_symlink(&meta) {
                 continue;
             }
@@ -1087,6 +1094,15 @@ pub fn visible_paths(
     mode: DeployMode,
 ) -> Result<Vec<String>, DeployError> {
     let plan = plan(ctx, instance_id, definition, mode)?;
+    visible_paths_of(ctx, instance_id, &plan)
+}
+
+/// [`visible_paths`] for a plan already made for `instance_id` in the deployment's mode.
+pub(crate) fn visible_paths_of(
+    ctx: &Ctx,
+    instance_id: &str,
+    plan: &DeploymentPlan,
+) -> Result<Vec<String>, DeployError> {
     let mut paths: Vec<String> = plan
         .files
         .iter()
@@ -1174,13 +1190,34 @@ pub fn deploy(
     definition: &GameDefinition,
     mode: DeployMode,
 ) -> Result<DeployOutcome, DeployError> {
-    let _lock = ctx
+    let (outcome, _plan) =
+        deploy_checked::<DeployError>(ctx, instance_id, definition, mode, |_| Ok(()))??;
+    Ok(outcome)
+}
+
+/// [`deploy`] for a caller that wants to see the plan before anything is built (a launch). The plan
+/// is made under the instance's lock, and `before_build` sees it first, so it can refuse the launch
+/// with nothing built. Returns the outcome and the plan the deployment was built from. The outer
+/// `Err` is `before_build`'s refusal; the inner one is the deploy's own error.
+pub(crate) fn deploy_checked<E>(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+    before_build: impl FnOnce(&DeploymentPlan) -> Result<(), E>,
+) -> Result<Result<(DeployOutcome, DeploymentPlan), DeployError>, E> {
+    let _lock = match ctx
         .lock_manager
-        .acquire(LockResource::Instance(instance_id.to_string()), "deploy")?;
+        .acquire(LockResource::Instance(instance_id.to_string()), "deploy")
+    {
+        Ok(lock) => lock,
+        Err(e) => return Ok(Err(e.into())),
+    };
     // An interrupted tool swap is put back before anything is deployed (MASTER_SPEC §26.9).
-    crate::game_tool_swap::recover_game(ctx, definition)
-        .map_err(|e| DeployError::Other(e.to_string()))?;
-    deploy_locked(ctx, instance_id, definition, mode)
+    if let Err(e) = crate::game_tool_swap::recover_game(ctx, definition) {
+        return Ok(Err(DeployError::Other(e.to_string())));
+    }
+    deploy_locked_checked(ctx, instance_id, definition, mode, None, before_build)
 }
 
 /// [`deploy`] for a caller that already holds the instance's lock: a tool run holds it for the
@@ -1205,69 +1242,48 @@ pub(crate) struct PlacedFiles {
 
 /// The executor that writes a plan's files into `root`: a hard link where the plan places a link (a
 /// copy when the link fails), a real copy otherwise. Each file is recorded with the placement, size
-/// and time it has in `root`. A deployment writes its staging folder with it, and a swap's copy of
-/// `Data` writes its copy with it (MASTER_SPEC §26.9), so there is one copy loop.
+/// and time it has in `root`. The folders are created first, in one sequential pass; then the files
+/// are placed on a bounded pool of threads (MASTER_SPEC §26.5). The record is in plan order, and the
+/// first failure in plan order is the one returned. A deployment writes its staging folder with it,
+/// and a swap's copy of `Data` writes its copy with it (MASTER_SPEC §26.9), so there is one copy loop.
 pub(crate) fn place_files(
     ctx: &Ctx,
     files: &[PlannedFile],
     root: &Path,
 ) -> Result<PlacedFiles, DeployError> {
-    let mut linked = 0usize;
-    let mut copied = 0usize;
-    let mut copied_bytes = 0u64;
-    let mut config_copied = 0usize;
-    let mut recorded = Vec::with_capacity(files.len());
+    create_planned_dirs(root, files)?;
+    let sources: Vec<PathBuf> = files
+        .iter()
+        .map(|file| source_path(ctx, &file.source))
+        .collect();
+    let results = run_in_pool(files.len(), placement_threads(files.len()), |index| {
+        place_one(
+            &sources[index],
+            &root.join(files[index].path.as_str()),
+            &files[index],
+        )
+    })?;
 
-    for file in files {
+    let mut placed = PlacedFiles {
+        linked: 0,
+        copied: 0,
+        copied_bytes: 0,
+        config_copied: 0,
+        recorded: Vec::with_capacity(results.len()),
+    };
+    for (file, result) in files.iter().zip(results) {
         if file.is_config_copy {
-            config_copied += 1;
+            placed.config_copied += 1;
         }
-
-        let dest = root.join(file.path.as_str());
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let source_path = source_path(ctx, &file.source);
-
-        let mut actual_placement = file.placement;
-        if file.placement == Placement::Link {
-            match std::fs::hard_link(&source_path, &dest) {
-                Ok(()) => {
-                    linked += 1;
-                }
-                Err(_) => {
-                    // Fallback to copy if hard link fails
-                    std::fs::copy(&source_path, &dest)?;
-                    copied += 1;
-                    copied_bytes += file.size;
-                    actual_placement = Placement::Copy;
-                }
-            }
+        if result.linked {
+            placed.linked += 1;
         } else {
-            std::fs::copy(&source_path, &dest)?;
-            copied += 1;
-            copied_bytes += file.size;
+            placed.copied += 1;
+            placed.copied_bytes += result.size;
         }
-
-        let meta = std::fs::metadata(&dest)?;
-        let mtime = get_modified_unix_ms(&meta);
-        recorded.push(DeployedFileRecord {
-            path: file.path.clone(),
-            source: file.source.clone(),
-            placement: actual_placement,
-            size: meta.len(),
-            modified_unix_ms: mtime,
-        });
+        placed.recorded.push(result.record);
     }
-
-    Ok(PlacedFiles {
-        linked,
-        copied,
-        copied_bytes,
-        config_copied,
-        recorded,
-    })
+    Ok(placed)
 }
 
 /// Whether a file in a farm differs from its record (MASTER_SPEC §26.9): a size change is a change;
@@ -1302,6 +1318,28 @@ pub(crate) fn deploy_locked_with_copy(
     mode: DeployMode,
     copy_layer: Option<&str>,
 ) -> Result<DeployOutcome, DeployError> {
+    let (outcome, _plan) = deploy_locked_checked::<DeployError>(
+        ctx,
+        instance_id,
+        definition,
+        mode,
+        copy_layer,
+        |_| Ok(()),
+    )??;
+    Ok(outcome)
+}
+
+/// Where a deployment goes: the instance, its base, and the folders the deployment uses.
+struct DeployTarget {
+    manifest: crate::game_instance::GameInstanceManifest,
+    base_id: String,
+    base_manifest: BaseManifest,
+    deployment_dir: PathBuf,
+    game_dir: PathBuf,
+    record_path: PathBuf,
+}
+
+fn deploy_target(ctx: &Ctx, instance_id: &str) -> Result<DeployTarget, DeployError> {
     let manifest = crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
         crate::game_instance::InstanceError::NotFound(id) => DeployError::InstanceNotFound(id),
         other => DeployError::Other(other.to_string()),
@@ -1330,16 +1368,76 @@ pub(crate) fn deploy_locked_with_copy(
     let deployment_dir = bases_root.join("deployments").join(instance_id);
     let game_dir = deployment_dir.join("game");
     let record_path = deployment_dir.join("deployment.json");
+    Ok(DeployTarget {
+        manifest,
+        base_id,
+        base_manifest,
+        deployment_dir,
+        game_dir,
+        record_path,
+    })
+}
 
-    if game_dir.exists() {
-        let running = crate::game_launch::processes_running_from(&game_dir);
+/// The deploy, with the lock held. The plan is made once here, `before_build` sees it before the
+/// farm is checked or built, and the deployment is built from that same plan (unless harvesting
+/// changed the instance, in which case the plan is made again, as it always was).
+fn deploy_locked_checked<E>(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+    copy_layer: Option<&str>,
+    before_build: impl FnOnce(&DeploymentPlan) -> Result<(), E>,
+) -> Result<Result<(DeployOutcome, DeploymentPlan), DeployError>, E> {
+    let target = match deploy_target(ctx, instance_id) {
+        Ok(target) => target,
+        Err(e) => return Ok(Err(e)),
+    };
+
+    if target.game_dir.exists() {
+        let running = crate::game_launch::processes_running_from(&target.game_dir);
         if !running.is_empty() {
             let pids: Vec<String> = running.iter().map(|p| p.pid.to_string()).collect();
-            return Err(DeployError::ProcessesRunning(pids.join(", ")));
+            return Ok(Err(DeployError::ProcessesRunning(pids.join(", "))));
         }
     }
 
-    let mut current_plan = plan_with_copy(ctx, instance_id, definition, mode, copy_layer)?;
+    let plan = match plan_with_copy(ctx, instance_id, definition, mode, copy_layer) {
+        Ok(plan) => plan,
+        Err(e) => return Ok(Err(e)),
+    };
+    before_build(&plan)?;
+    Ok(build_deployment(
+        ctx,
+        instance_id,
+        definition,
+        mode,
+        copy_layer,
+        target,
+        plan,
+    ))
+}
+
+/// Build the deployment from `plan`, or keep the one in place when it is up to date. Runs under the
+/// instance lock.
+fn build_deployment(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    mode: DeployMode,
+    copy_layer: Option<&str>,
+    target: DeployTarget,
+    plan: DeploymentPlan,
+) -> Result<(DeployOutcome, DeploymentPlan), DeployError> {
+    let DeployTarget {
+        manifest,
+        base_id,
+        base_manifest,
+        deployment_dir,
+        game_dir,
+        record_path,
+    } = target;
+    let mut current_plan = plan;
 
     // Check if current deployment is up to date
     if record_path.exists() && game_dir.exists() {
@@ -1349,44 +1447,22 @@ pub(crate) fn deploy_locked_with_copy(
                     && record.mode == mode
                     && record.instance_id == instance_id
                 {
-                    let mut up_to_date = true;
-                    for f in &record.files {
-                        // The instance's own copy of a path the game is declared to write is
-                        // expected to change (an early write under the VFS lands in it); that
-                        // is the game's state, not a damaged deployment.
-                        // Small config files matching copy patterns and files from own_copy layers
-                        // are likewise expected to be rewritten by the game/mod.
-                        let is_own_copy = match &f.source {
-                            FileSource::Content { item_id, .. } => {
-                                manifest.layers.layers().iter().any(|l| {
-                                    l.enabled
-                                        && l.own_copy
-                                        && match &l.source {
-                                            LayerSource::Content { content } => content == item_id,
-                                            _ => false,
-                                        }
-                                })
-                            }
-                            _ => false,
-                        };
-                        if f.placement == Placement::Copy
-                            && (definition.is_declared_write(f.path.as_str())
-                                || (f.size <= 1024 * 1024
-                                    && definition.is_copy_pattern(f.path.as_str()))
-                                || is_own_copy)
-                        {
-                            continue;
-                        }
-                        let path = game_dir.join(f.path.as_str());
-                        match std::fs::metadata(&path) {
-                            Ok(m) if m.len() == f.size => {}
-                            _ => {
-                                up_to_date = false;
-                                break;
-                            }
-                        }
-                    }
-                    if up_to_date {
+                    let own_copy_items: std::collections::HashSet<&str> = manifest
+                        .layers
+                        .layers()
+                        .iter()
+                        .filter(|l| l.enabled && l.own_copy)
+                        .filter_map(|l| match &l.source {
+                            LayerSource::Content { content } => Some(content.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if farm_matches_record(
+                        &game_dir,
+                        &record,
+                        &PathRules::new(definition),
+                        &own_copy_items,
+                    ) {
                         let plugins = activate_plugins(
                             ctx,
                             instance_id,
@@ -1394,8 +1470,9 @@ pub(crate) fn deploy_locked_with_copy(
                             &manifest,
                             &base_manifest,
                             &current_plan,
+                            links_view(mode, &current_plan),
                         )?;
-                        return Ok(DeployOutcome::UpToDate { plugins });
+                        return Ok((DeployOutcome::UpToDate { plugins }, current_plan));
                     }
                 }
             }
@@ -1459,16 +1536,255 @@ pub(crate) fn deploy_locked_with_copy(
         &manifest,
         &base_manifest,
         &current_plan,
+        links_view(mode, &current_plan),
     )?;
 
-    Ok(DeployOutcome::Built {
-        linked: linked_count,
-        copied: copied_count,
-        copied_bytes,
-        config_copied: config_copied_count,
-        harvest,
-        plugins,
+    Ok((
+        DeployOutcome::Built {
+            linked: linked_count,
+            copied: copied_count,
+            copied_bytes,
+            config_copied: config_copied_count,
+            harvest,
+            plugins,
+        },
+        current_plan,
+    ))
+}
+
+/// The plan of this deployment when it is linked, which is the Links view the load order reads.
+/// `None` for another mode: the caller plans the Links view itself.
+fn links_view(mode: DeployMode, plan: &DeploymentPlan) -> Option<&DeploymentPlan> {
+    (mode == DeployMode::Links).then_some(plan)
+}
+
+/// The most threads that place a deployment's files at once (MASTER_SPEC §26.5). Linking and copying
+/// are disk-bound, so past a few threads more do not help.
+const PLACEMENT_THREADS_MAX: usize = 8;
+
+/// The planned files' folders, each created once, parents before children. This sequential pass
+/// comes before the parallel placement, so no two threads create the same folder.
+fn create_planned_dirs(staging: &Path, files: &[PlannedFile]) -> Result<(), DeployError> {
+    let dirs: BTreeSet<PathBuf> = files
+        .iter()
+        .filter_map(|file| {
+            staging
+                .join(file.path.as_str())
+                .parent()
+                .map(Path::to_path_buf)
+        })
+        .collect();
+    for dir in &dirs {
+        std::fs::create_dir_all(dir)?;
+    }
+    Ok(())
+}
+
+/// One planned file as it was placed.
+#[derive(Debug)]
+struct PlacedFile {
+    record: DeployedFileRecord,
+    /// True when it was placed as a hard link; false when it was copied.
+    linked: bool,
+    /// The planned size, which is what a copy adds to the deployment's copied bytes.
+    size: u64,
+}
+
+fn placement_threads(files: usize) -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(PLACEMENT_THREADS_MAX)
+        .min(files)
+        .max(1)
+}
+
+/// Place one file: a hard link when the plan says so and the link can be made, else a copy. The
+/// record gets the placed file's size and time from the file itself.
+fn place_one(source: &Path, dest: &Path, file: &PlannedFile) -> Result<PlacedFile, DeployError> {
+    let (linked, placement) = match file.placement {
+        Placement::Link => match std::fs::hard_link(source, dest) {
+            Ok(()) => (true, Placement::Link),
+            // A link that cannot be made is a copy, and the record says so.
+            Err(_) => {
+                std::fs::copy(source, dest)?;
+                (false, Placement::Copy)
+            }
+        },
+        Placement::Copy => {
+            std::fs::copy(source, dest)?;
+            (false, Placement::Copy)
+        }
+    };
+    let meta = std::fs::metadata(dest)?;
+    Ok(PlacedFile {
+        record: DeployedFileRecord {
+            path: file.path.clone(),
+            source: file.source.clone(),
+            placement,
+            size: meta.len(),
+            modified_unix_ms: get_modified_unix_ms(&meta),
+        },
+        linked,
+        size: file.size,
     })
+}
+
+/// Run `job(0)` to `job(count - 1)` on `threads` threads, and return the results in index order.
+/// Indices are handed out in order, and a failure stops new work from starting; the jobs already
+/// started finish. Every index before a failed one has been handed out, so the first error in index
+/// order is the error a sequential run would have stopped at.
+fn run_in_pool<T, F>(count: usize, threads: usize, job: F) -> Result<Vec<T>, DeployError>
+where
+    T: Send,
+    F: Fn(usize) -> Result<T, DeployError> + Sync,
+{
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let finished: Vec<Vec<(usize, Result<T, DeployError>)>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        if failed.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        if index >= count {
+                            break;
+                        }
+                        let result = job(index);
+                        if result.is_err() {
+                            failed.store(true, Ordering::Release);
+                        }
+                        done.push((index, result));
+                    }
+                    done
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| match worker.join() {
+                Ok(done) => done,
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    });
+    let mut results: Vec<(usize, Result<T, DeployError>)> =
+        finished.into_iter().flatten().collect();
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
+}
+
+/// The size of every entry under `root`, keyed by its `/`-separated path relative to `root`, from
+/// one listing: a directory's listing carries each entry's size, so no file is opened. Reparse points
+/// are left out, and a folder that cannot be listed is skipped. A path missing from the map must be
+/// looked up on its own, so an answer never depends on what the listing left out.
+fn farm_sizes(root: &Path) -> std::collections::HashMap<String, u64> {
+    let mut sizes = std::collections::HashMap::new();
+    let mut folders = vec![(root.to_path_buf(), String::new())];
+    while let Some((folder, rel)) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if is_reparse_point_or_symlink(&meta) {
+                continue;
+            }
+            let key = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            if meta.is_dir() {
+                folders.push((entry.path(), key.clone()));
+            }
+            sizes.insert(key, meta.len());
+        }
+    }
+    sizes
+}
+
+/// Whether the game folder still holds every file the record names, at the size it was deployed
+/// with. A file the game is expected to rewrite (a declared write, a small config copy, or a file of
+/// an own-copy layer) is not checked. A file the listing does not have is looked up on its own, so
+/// the answer is the one a per-file lookup gives.
+fn farm_matches_record(
+    game_dir: &Path,
+    record: &DeploymentRecord,
+    rules: &PathRules,
+    own_copy_items: &std::collections::HashSet<&str>,
+) -> bool {
+    let sizes = farm_sizes(game_dir);
+    record.files.iter().all(|f| {
+        let path = f.path.as_str();
+        let is_own_copy = matches!(
+            &f.source,
+            FileSource::Content { item_id, .. } if own_copy_items.contains(item_id.as_str())
+        );
+        if f.placement == Placement::Copy
+            && (rules.is_declared_write(path)
+                || (f.size <= 1024 * 1024 && rules.is_copy_pattern(path))
+                || is_own_copy)
+        {
+            return true;
+        }
+        let len = match sizes.get(path) {
+            Some(&len) => Ok(len),
+            None => std::fs::metadata(game_dir.join(path)).map(|m| m.len()),
+        };
+        matches!(len, Ok(len) if len == f.size)
+    })
+}
+
+/// The game definition's path patterns, compiled once per plan or check. Gives the answers of
+/// [`GameDefinition::is_copy_pattern`] and [`GameDefinition::is_declared_write`], which parse the
+/// patterns again on every call.
+struct PathRules {
+    copy: Vec<CompiledGlob>,
+    declared: Vec<CompiledGlob>,
+}
+
+impl PathRules {
+    fn new(definition: &GameDefinition) -> Self {
+        let copy = DEFAULT_COPY_PATTERNS
+            .iter()
+            .copied()
+            .chain(definition.copy_patterns.iter().map(String::as_str))
+            .map(|pattern| CompiledGlob::new(&pattern.to_ascii_lowercase()))
+            .collect();
+        let declared = definition
+            .declared_writes
+            .iter()
+            .map(|pattern| CompiledGlob::new(&pattern.to_ascii_lowercase()))
+            .collect();
+        Self { copy, declared }
+    }
+
+    /// The path as the definition's matchers see it: a valid relative path, lower-cased.
+    fn normalized(path: &str) -> Option<String> {
+        RelPath::new(path)
+            .ok()
+            .map(|rel| rel.as_str().to_ascii_lowercase())
+    }
+
+    fn is_copy_pattern(&self, path: &str) -> bool {
+        Self::normalized(path)
+            .is_some_and(|normalized| self.copy.iter().any(|glob| glob.matches(&normalized)))
+    }
+
+    fn is_declared_write(&self, path: &str) -> bool {
+        Self::normalized(path)
+            .is_some_and(|normalized| self.declared.iter().any(|glob| glob.matches(&normalized)))
+    }
 }
 
 /// Name the plugins the content layers deploy in the instance's plugin list (when the game
@@ -1480,6 +1796,7 @@ fn activate_plugins(
     manifest: &crate::game_instance::GameInstanceManifest,
     base_manifest: &BaseManifest,
     plan: &DeploymentPlan,
+    links: Option<&DeploymentPlan>,
 ) -> Result<Option<crate::game_plugins::PluginSyncReport>, DeployError> {
     let Some(rule) = &definition.plugin_list else {
         return Ok(None);
@@ -1499,12 +1816,13 @@ fn activate_plugins(
         plan,
         base_manifest.files.iter().map(|f| f.path.as_str()),
     );
-    Ok(crate::game_plugins::sync_locked(
+    Ok(crate::game_plugins::sync_locked_with_view(
         ctx,
         instance_id,
         definition,
         &base_manifest.runtime.store,
         &desired,
+        links,
     )?)
 }
 
@@ -1635,7 +1953,7 @@ fn walk_farm(
     for entry in std::fs::read_dir(&cur)? {
         let entry = entry?;
         let abs_path = entry.path();
-        let meta = std::fs::symlink_metadata(&abs_path)?;
+        let meta = entry.metadata()?;
         if is_reparse_point_or_symlink(&meta) {
             continue;
         }
@@ -2174,4 +2492,256 @@ pub fn move_content(
     write_instance_manifest_atomic(ctx, instance_id, &manifest)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn base_file(path: &Path, rel: &str, placement: Placement, size: u64) -> PlannedFile {
+        PlannedFile {
+            path: RelPath::new(rel).unwrap(),
+            source: FileSource::Base {
+                path: path.to_path_buf(),
+                linked_to_store: false,
+            },
+            placement,
+            size,
+            is_config_copy: false,
+            layer_id: "base".to_string(),
+        }
+    }
+
+    /// Every file under `root` with its bytes, keyed by its relative path.
+    fn read_tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
+        let mut out = BTreeMap::new();
+        let mut folders = vec![root.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else {
+                    let rel = path
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.insert(rel, std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn run_in_pool_returns_results_in_index_order_for_any_thread_count() {
+        for threads in [1, 2, 8] {
+            let out = run_in_pool(100, threads, |i| Ok(i * 2)).unwrap();
+            assert_eq!(out, (0..100).map(|i| i * 2).collect::<Vec<_>>());
+        }
+        let none: Vec<usize> = run_in_pool(0, 4, |_| unreachable!()).unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn run_in_pool_returns_the_first_failure_in_index_order() {
+        // A sequential run stops at index 37; a parallel one must report that same failure, not
+        // whichever failing job happened to finish first.
+        for threads in [1, 4, 8] {
+            let err = run_in_pool(200, threads, |i| {
+                if i == 37 || i == 90 {
+                    Err(DeployError::Other(format!("job {i}")))
+                } else {
+                    Ok(i)
+                }
+            })
+            .unwrap_err();
+            assert_eq!(err.to_string(), "job 37", "threads = {threads}");
+        }
+    }
+
+    #[test]
+    fn parallel_placement_produces_the_same_farm_and_records_as_sequential() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let mut files = Vec::new();
+        for i in 0..60usize {
+            let rel = format!("Data/dir{}/file{}.dat", i % 7, i);
+            let path = src.join(&rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let body = format!("content {i} ").repeat(i + 1).into_bytes();
+            std::fs::write(&path, &body).unwrap();
+            let placement = if i % 3 == 0 {
+                Placement::Copy
+            } else {
+                Placement::Link
+            };
+            files.push(base_file(&path, &rel, placement, body.len() as u64));
+        }
+
+        let place_all = |threads: usize, name: &str| -> (Vec<PlacedFile>, PathBuf) {
+            let staging = tmp.path().join(name);
+            std::fs::create_dir_all(&staging).unwrap();
+            create_planned_dirs(&staging, &files).unwrap();
+            let placed = run_in_pool(files.len(), threads, |i| {
+                let FileSource::Base { path, .. } = &files[i].source else {
+                    unreachable!("the test plans base files only");
+                };
+                place_one(path, &staging.join(files[i].path.as_str()), &files[i])
+            })
+            .unwrap();
+            (placed, staging)
+        };
+
+        let (sequential, seq_dir) = place_all(1, "sequential");
+        let (parallel, par_dir) = place_all(8, "parallel");
+        assert_eq!(sequential.len(), files.len());
+        assert_eq!(parallel.len(), files.len());
+        for ((seq, par), planned) in sequential.iter().zip(&parallel).zip(&files) {
+            // Plan order, the same placement and size. A copy's time is when it was copied, so it is
+            // not compared.
+            assert_eq!(seq.record.path, planned.path);
+            assert_eq!(par.record.path, planned.path);
+            assert_eq!(seq.record.placement, par.record.placement);
+            assert_eq!(seq.record.size, par.record.size);
+            assert_eq!(seq.linked, par.linked);
+            assert_eq!(seq.size, par.size);
+            // Links are links here: the same placement as planned.
+            assert_eq!(seq.record.placement, planned.placement);
+        }
+        assert_eq!(read_tree(&seq_dir), read_tree(&par_dir));
+    }
+
+    #[test]
+    fn a_parallel_placement_failure_is_the_sequential_failure() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let mut files = Vec::new();
+        for i in 0..40usize {
+            let path = src.join(format!("f{i}.dat"));
+            // Files 12 and 30 have no source: placing them fails.
+            if i != 12 && i != 30 {
+                std::fs::write(&path, b"ok").unwrap();
+            }
+            files.push(base_file(&path, &format!("f{i}.dat"), Placement::Copy, 2));
+        }
+        for threads in [1, 8] {
+            let staging = tmp.path().join(format!("staging-{threads}"));
+            std::fs::create_dir_all(&staging).unwrap();
+            let err = run_in_pool(files.len(), threads, |i| {
+                let FileSource::Base { path, .. } = &files[i].source else {
+                    unreachable!();
+                };
+                place_one(path, &staging.join(files[i].path.as_str()), &files[i])
+            })
+            .unwrap_err();
+            assert!(
+                matches!(&err, DeployError::Io(e) if e.kind() == std::io::ErrorKind::NotFound),
+                "threads = {threads}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn farm_sizes_lists_every_entry_with_its_metadata_size() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("game");
+        for (rel, body) in [
+            ("Game.exe", &b"exe"[..]),
+            ("Data/a.esp", &b"plugin bytes"[..]),
+            ("Data/deep/b.bin", &b""[..]),
+            ("Data/deep/er/c.ini", &b"[x]"[..]),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body).unwrap();
+        }
+        let sizes = farm_sizes(&root);
+        for (rel, _) in [
+            ("Game.exe", 0),
+            ("Data/a.esp", 0),
+            ("Data/deep/b.bin", 0),
+            ("Data/deep/er/c.ini", 0),
+        ] {
+            let meta = std::fs::metadata(root.join(rel)).unwrap();
+            assert_eq!(sizes.get(rel), Some(&meta.len()), "{rel}");
+        }
+        // Folders are listed too, as the per-path lookup would find them.
+        assert!(sizes.contains_key("Data"));
+        assert!(sizes.contains_key("Data/deep/er"));
+        assert_eq!(sizes.len(), 7);
+        // A path the listing does not have is absent, so the caller looks it up itself.
+        assert!(!sizes.contains_key("Data/missing.txt"));
+    }
+
+    #[test]
+    fn precompiled_path_rules_answer_as_the_definition_does() {
+        let definition = GameDefinition {
+            mo2_game_name: None,
+            id: agora_game_api::GameId::new("rules-game").unwrap(),
+            name: "Rules Game".into(),
+            stores: vec![],
+            version_sources: vec![],
+            deployment: agora_game_api::DeploymentStrategy::VirtualFileSystem,
+            content_rules: vec![],
+            native_code_patterns: vec![],
+            framework_ids: vec![],
+            tool_ids: vec![],
+            launch: None,
+            log_paths: vec![],
+            crash_paths: vec![],
+            user_files: vec![],
+            save_paths: vec![],
+            linked_archive_patterns: vec![],
+            declared_writes: vec![
+                "writeable_base.txt".into(),
+                "saves/*".into(),
+                "Data/**/Config.ini".into(),
+            ],
+            excluded_paths: vec![],
+            plugin_list: None,
+            runtime_files: Vec::new(),
+            save_location: Vec::new(),
+            launch_alternatives: Vec::new(),
+            content_layout: None,
+            copy_patterns: vec!["custom/**".into(), "*.dat".into()],
+        };
+        let rules = PathRules::new(&definition);
+        let paths = [
+            "Data/a.ini",
+            "Data/a.INI",
+            "Data/x/y.json",
+            "Data/x/y.txt",
+            "writeable_base.txt",
+            "Writeable_Base.txt",
+            "Data/cfg/a.cfg",
+            "saves/x.xml",
+            "saves/deep/x.xml",
+            "Data/x.yml.bak",
+            "a/b/c.toml",
+            "custom/keep.bin",
+            "custom/deep/keep.bin",
+            "top.dat",
+            "Data/deep/config.ini",
+            "Data/config.ini",
+            "../escape.ini",
+            "Data/Skyrim.bsa",
+        ];
+        for path in paths {
+            assert_eq!(
+                rules.is_copy_pattern(path),
+                definition.is_copy_pattern(path),
+                "copy pattern: {path}"
+            );
+            assert_eq!(
+                rules.is_declared_write(path),
+                definition.is_declared_write(path),
+                "declared write: {path}"
+            );
+        }
+    }
 }

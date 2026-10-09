@@ -958,21 +958,47 @@ fn prepare_deployed(
     let content = std::fs::read_to_string(&manifest_path)?;
     let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
 
-    // Checked before anything is deployed: the plan says which files the game will see, so a
-    // refused launch leaves nothing newly built.
-    let visible = crate::game_deploy::visible_paths(ctx, id, definition, rung.mode)?;
-    let findings = crate::game_launch::refuse_runtime_mismatch(
-        crate::game_launch::runtime_findings(definition, &base_manifest.runtime.version, &visible),
-        options.launch_anyway,
-    )?;
+    // The launch plans the deployment once. The runtime-file check reads that plan before anything
+    // is built, so a refused launch leaves nothing newly built, and the build uses the same plan.
+    let mut findings = Vec::new();
+    let (outcome, deployed) =
+        crate::game_deploy::deploy_checked(ctx, id, definition, rung.mode, |plan| {
+            let visible = crate::game_deploy::visible_paths_of(ctx, id, plan)?;
+            findings = crate::game_launch::refuse_runtime_mismatch(
+                crate::game_launch::runtime_findings(
+                    definition,
+                    &base_manifest.runtime.version,
+                    &visible,
+                ),
+                options.launch_anyway,
+            )?;
+            Ok::<(), InstanceError>(())
+        })??;
 
-    let outcome = crate::game_deploy::deploy(ctx, id, definition, rung.mode)?;
+    // The load order reads the Links view of the deployment (the deployed plan itself when it is
+    // linked) when the game declares the Creation Engine rules: the only load-order check that
+    // plans. Otherwise it needs no plan, and neither do the generated outputs.
+    let links_plan;
+    let needs_links_view = definition
+        .plugin_list
+        .as_ref()
+        .is_some_and(crate::game_load_order::is_engine);
+    let links: Option<&crate::game_deploy::DeploymentPlan> = if !needs_links_view {
+        None
+    } else if rung.mode == crate::game_deploy::DeployMode::Links {
+        Some(&deployed)
+    } else {
+        links_plan =
+            crate::game_deploy::plan(ctx, id, definition, crate::game_deploy::DeployMode::Links)?;
+        Some(&links_plan)
+    };
     // The deploy has synced the plugin list, so this is the order the game will read. Nothing has
     // been swapped in yet: a refused launch leaves the user's files as they were.
-    let load_order_findings = check_load_order(ctx, id, definition, options.launch_anyway)?;
+    let load_order_findings = check_load_order(ctx, id, definition, options.launch_anyway, links)?;
     // Stale or unknown tool output is a warning: the launch goes on (MASTER_SPEC §26.9).
-    let generated_findings = crate::game_tools::output_findings(ctx, id, definition)
-        .map_err(|e| InstanceError::Other(e.to_string()))?;
+    let generated_findings =
+        crate::game_tools::output_findings_with_view(ctx, id, definition, links)
+            .map_err(|e| InstanceError::Other(e.to_string()))?;
 
     let game_dir = crate::game_deploy::deployment_dir(ctx, id)?
         .ok_or_else(|| InstanceError::Other("deployed game directory not found".into()))?;
@@ -1067,11 +1093,12 @@ fn check_load_order(
     id: &str,
     definition: &GameDefinition,
     launch_anyway: bool,
+    links: Option<&crate::game_deploy::DeploymentPlan>,
 ) -> Result<Vec<crate::game_load_order::Finding>, InstanceError> {
     if definition.plugin_list.is_none() {
         return Ok(Vec::new());
     }
-    let findings = crate::game_load_order::check(ctx, id, definition)
+    let findings = crate::game_load_order::check_with_view(ctx, id, definition, links)
         .map_err(|e| InstanceError::Other(format!("cannot check the plugin load order: {e}")))?;
     Ok(crate::game_launch::refuse_load_order(
         findings,

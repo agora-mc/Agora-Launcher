@@ -19,7 +19,7 @@ use agora_game_api::{glob_match, GameDefinition, PluginListRule};
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::Ctx;
-use crate::game_deploy::{self, DeployMode};
+use crate::game_deploy::{self, DeployMode, DeploymentPlan};
 use crate::game_plugins::{self, PluginEntry, PluginListError};
 use crate::lock_manager::LockResource;
 
@@ -807,8 +807,18 @@ pub fn implicit_list_names(
     instance_id: &str,
     definition: &GameDefinition,
 ) -> Result<Vec<String>, LoadOrderError> {
+    implicit_list_names_with_view(ctx, instance_id, definition, None)
+}
+
+/// [`implicit_list_names`], reading `links` (the instance's Links plan) instead of planning again.
+pub(crate) fn implicit_list_names_with_view(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    links: Option<&DeploymentPlan>,
+) -> Result<Vec<String>, LoadOrderError> {
     let rule = rule_of(definition)?;
-    let (_, names) = installed_files(ctx, instance_id, definition, rule)?;
+    let (_, names) = installed_files(ctx, instance_id, definition, rule, links)?;
     Ok(names)
 }
 
@@ -819,13 +829,21 @@ fn installed_files(
     instance_id: &str,
     definition: &GameDefinition,
     rule: &PluginListRule,
+    links: Option<&DeploymentPlan>,
 ) -> Result<(Installed, Vec<String>), LoadOrderError> {
-    let plan = game_deploy::plan(ctx, instance_id, definition, DeployMode::Links).map_err(|e| {
-        LoadOrderError::Files {
-            instance_id: instance_id.to_string(),
-            reason: e.to_string(),
+    let planned;
+    let plan = match links {
+        Some(plan) => plan,
+        None => {
+            planned = game_deploy::plan(ctx, instance_id, definition, DeployMode::Links).map_err(
+                |e| LoadOrderError::Files {
+                    instance_id: instance_id.to_string(),
+                    reason: e.to_string(),
+                },
+            )?;
+            &planned
         }
-    })?;
+    };
     let folder = rule.plugin_folder.as_str().trim_matches('/');
     let patterns: Vec<String> = rule
         .patterns
@@ -874,10 +892,19 @@ fn order_of(
     instance_id: &str,
     definition: &GameDefinition,
 ) -> Result<LoadOrder, LoadOrderError> {
+    order_of_with_view(ctx, instance_id, definition, None)
+}
+
+fn order_of_with_view(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    links: Option<&DeploymentPlan>,
+) -> Result<LoadOrder, LoadOrderError> {
     let rule = rule_of(definition)?;
     let listed = game_plugins::list(ctx, instance_id, definition)?;
     if is_engine(rule) {
-        let (installed, names) = installed_files(ctx, instance_id, definition, rule)?;
+        let (installed, names) = installed_files(ctx, instance_id, definition, rule, links)?;
         Ok(build_order(
             rule,
             &listed.entries,
@@ -899,6 +926,17 @@ pub fn order(
     order_of(ctx, instance_id, definition)
 }
 
+/// [`order`], reading `links` (the instance's Links plan, see [`crate::game_deploy`]) instead of
+/// planning again. `None` plans it.
+pub(crate) fn order_with_view(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    links: Option<&DeploymentPlan>,
+) -> Result<LoadOrder, LoadOrderError> {
+    order_of_with_view(ctx, instance_id, definition, links)
+}
+
 /// The findings against the instance's order. A launch check calls this and acts on the result.
 pub fn check(
     ctx: &Ctx,
@@ -906,6 +944,16 @@ pub fn check(
     definition: &GameDefinition,
 ) -> Result<Vec<Finding>, LoadOrderError> {
     Ok(order_of(ctx, instance_id, definition)?.findings)
+}
+
+/// [`check`], reading `links` (the instance's Links plan) instead of planning again. `None` plans it.
+pub(crate) fn check_with_view(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    links: Option<&DeploymentPlan>,
+) -> Result<Vec<Finding>, LoadOrderError> {
+    Ok(order_of_with_view(ctx, instance_id, definition, links)?.findings)
 }
 
 fn write_entries(

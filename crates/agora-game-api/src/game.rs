@@ -915,19 +915,49 @@ pub fn suggest_placement(files: &[RelPath], layout: &ContentLayout) -> Suggestio
 }
 
 pub fn glob_match(pattern: &str, path: &str) -> bool {
-    if !pattern.contains('*') && !pattern.is_empty() {
-        let prefix = pattern.trim_end_matches('/');
-        return path == prefix || path.starts_with(&format!("{prefix}/"));
-    }
-    let pat_parts: Vec<&str> = pattern.split('/').collect();
-    let path_parts: Vec<&str> = path.split('/').collect();
-    match_parts(&pat_parts, &path_parts)
+    CompiledGlob::new(pattern).matches(path)
 }
 
-fn match_parts(pattern: &[&str], path: &[&str]) -> bool {
-    match (pattern.first(), path.first()) {
+/// A pattern for [`glob_match`], parsed once for matching many paths: for every `pattern` and `path`,
+/// `CompiledGlob::new(pattern).matches(path)` is `glob_match(pattern, path)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledGlob {
+    /// The pattern as a literal prefix, when it has no `*`: it matches the prefix, or a path under it.
+    literal: Option<String>,
+    /// The pattern's `/`-separated parts, when it has a `*`.
+    parts: Vec<String>,
+}
+
+impl CompiledGlob {
+    pub fn new(pattern: &str) -> Self {
+        if !pattern.contains('*') && !pattern.is_empty() {
+            return Self {
+                literal: Some(pattern.trim_end_matches('/').to_string()),
+                parts: Vec::new(),
+            };
+        }
+        Self {
+            literal: None,
+            parts: pattern.split('/').map(str::to_string).collect(),
+        }
+    }
+
+    pub fn matches(&self, path: &str) -> bool {
+        if let Some(prefix) = &self.literal {
+            return path == prefix
+                || path
+                    .strip_prefix(prefix.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'));
+        }
+        let path_parts: Vec<&str> = path.split('/').collect();
+        match_parts(&self.parts, &path_parts)
+    }
+}
+
+fn match_parts<P: AsRef<str>>(pattern: &[P], path: &[&str]) -> bool {
+    match (pattern.first().map(AsRef::as_ref), path.first()) {
         (None, None) => true,
-        (Some(&"**"), _) => {
+        (Some("**"), _) => {
             match_parts(&pattern[1..], path)
                 || (!path.is_empty() && match_parts(pattern, &path[1..]))
         }
@@ -938,7 +968,7 @@ fn match_parts(pattern: &[&str], path: &[&str]) -> bool {
                 false
             }
         }
-        (Some(_), None) => pattern.iter().all(|&p| p == "**"),
+        (Some(_), None) => pattern.iter().all(|p| p.as_ref() == "**"),
         (None, Some(_)) => false,
     }
 }

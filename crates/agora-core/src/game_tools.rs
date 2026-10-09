@@ -587,6 +587,18 @@ pub fn input_fingerprint(
     definition: &GameDefinition,
     tool: &ToolDefinition,
 ) -> Result<String, ToolError> {
+    input_fingerprint_with_view(ctx, instance_id, definition, tool, None)
+}
+
+/// [`input_fingerprint`], reading `links` (the instance's Links plan) for the load order when the
+/// caller has it. `None` plans it.
+pub(crate) fn input_fingerprint_with_view(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    links: Option<&crate::game_deploy::DeploymentPlan>,
+) -> Result<String, ToolError> {
     let manifest = load_manifest(ctx, instance_id)?;
     let mut hasher = Sha256::new();
     for layer in manifest.layers.layers() {
@@ -602,7 +614,7 @@ pub fn input_fingerprint(
         }
     }
     if definition.plugin_list.is_some() {
-        let order = game_load_order::order(ctx, instance_id, definition)
+        let order = game_load_order::order_with_view(ctx, instance_id, definition, links)
             .map_err(|e| ToolError::Other(format!("cannot read the load order: {e}")))?;
         for entry in order.entries.iter().filter(|entry| entry.active) {
             hasher.update(format!("plugin\t{}\n", entry.name).as_bytes());
@@ -629,6 +641,7 @@ fn layer_status(
     definition: &GameDefinition,
     tool: &ToolId,
     inputs: &InputFingerprint,
+    links: Option<&crate::game_deploy::DeploymentPlan>,
 ) -> OutputStatus {
     let InputFingerprint::Known(recorded) = inputs else {
         return OutputStatus::Unknown;
@@ -636,7 +649,7 @@ fn layer_status(
     let Some(declared) = ctx.games.tool(&definition.id, tool).cloned() else {
         return OutputStatus::Unknown;
     };
-    match input_fingerprint(ctx, instance_id, definition, &declared) {
+    match input_fingerprint_with_view(ctx, instance_id, definition, &declared, links) {
         Ok(now) if now == *recorded => OutputStatus::Current,
         Ok(_) => OutputStatus::Stale,
         Err(_) => OutputStatus::Unknown,
@@ -701,7 +714,14 @@ pub fn list(
                 declared: declared.is_some(),
                 current: Some(generation.clone()),
                 previous,
-                status: Some(layer_status(ctx, instance_id, definition, tool, inputs)),
+                status: Some(layer_status(
+                    ctx,
+                    instance_id,
+                    definition,
+                    tool,
+                    inputs,
+                    None,
+                )),
             },
         );
     }
@@ -714,6 +734,17 @@ pub fn output_findings(
     ctx: &Ctx,
     instance_id: &str,
     definition: &GameDefinition,
+) -> Result<Vec<OutputFinding>, ToolError> {
+    output_findings_with_view(ctx, instance_id, definition, None)
+}
+
+/// [`output_findings`], reading `links` (the instance's Links plan) for the load order when the
+/// caller has it. `None` plans it.
+pub(crate) fn output_findings_with_view(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    links: Option<&crate::game_deploy::DeploymentPlan>,
 ) -> Result<Vec<OutputFinding>, ToolError> {
     let manifest = load_manifest(ctx, instance_id)?;
     let mut findings = Vec::new();
@@ -729,7 +760,7 @@ pub fn output_findings(
         if !layer.enabled {
             continue;
         }
-        let status = layer_status(ctx, instance_id, definition, tool, inputs);
+        let status = layer_status(ctx, instance_id, definition, tool, inputs, links);
         if status == OutputStatus::Current {
             continue;
         }
