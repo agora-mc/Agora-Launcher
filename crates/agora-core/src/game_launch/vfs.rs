@@ -132,6 +132,7 @@ pub fn processes_ended_by_vfs(appended: &str) -> Vec<EndedProcess> {
 }
 
 /// The VFS's JSON configuration (`crates/agora-vfs/README.md`).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn config_json(vfs: &VfsLaunch, ready_event: &str) -> serde_json::Value {
     serde_json::json!({
         "version": 1,

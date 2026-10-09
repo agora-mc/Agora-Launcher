@@ -543,6 +543,8 @@ mod tests {
         ));
     }
 
+    // The journal names Windows paths, and the swap it describes only runs on Windows.
+    #[cfg(windows)]
     fn good_journal() -> SwapJournal {
         SwapJournal {
             version: JOURNAL_VERSION,
@@ -560,8 +562,10 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     type Tamper = Box<dyn Fn(&mut SwapJournal)>;
 
+    #[cfg(windows)]
     #[test]
     fn only_a_journal_in_the_shape_a_swap_makes_is_obeyed() {
         assert_eq!(check_journal_shape(&good_journal()), Ok(()));

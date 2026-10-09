@@ -7,6 +7,7 @@
 //! `ReadDirectoryChangesW` from just before the tool starts until it exits, and it adds no time to
 //! the run. If the kernel's buffer overflows and events are lost, the report says so.
 
+#[cfg(windows)]
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,6 +92,7 @@ fn unavailable(reason: String) -> InstallChanges {
     }
 }
 
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Added,

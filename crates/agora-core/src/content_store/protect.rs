@@ -365,6 +365,15 @@ mod imp {
 
     pub fn unprotect(path: &Path) -> Result<(), std::io::Error> {
         let mut perms = std::fs::metadata(path)?.permissions();
+        // `set_readonly(false)` would make the file writable by everyone; give write back to the
+        // owner only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(perms.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
+        #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(false);
         std::fs::set_permissions(path, perms)?;
         Ok(())

@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
+#[cfg(windows)]
 use std::time::Duration;
 
 use agora_core::app_paths::AppPaths;
 use agora_core::game_base::{build_base, BaseMode, BuildOptions};
 use agora_core::game_discovery::{DiscoveredInstall, InstallCapabilities};
-use agora_core::game_launch::{
-    launch, prepare_base_launch, processes_running_from, resolve_recipe, wait_for_exit,
-    LaunchError, LaunchRoots,
-};
+#[cfg(windows)]
+use agora_core::game_launch::{launch, processes_running_from, wait_for_exit};
+use agora_core::game_launch::{prepare_base_launch, resolve_recipe, LaunchError, LaunchRoots};
 use agora_core::game_registry::{IdentifiedInstall, RuntimeResolution};
 use agora_game_api::{
     DeploymentStrategy, GameDefinition, GameId, GamePath, InstallId, InstallKind, LaunchRecipe,
@@ -96,6 +96,8 @@ fn recipe_resolution_all_supported_roots_and_values() {
     let runtime_dir = tmp.path().join("runtime");
     let install_dir = tmp.path().join("install");
     let base_dir = tmp.path().join("base");
+    // A bare Linux account has no Documents folder; no other test in this binary reads user data.
+    std::env::set_var("AGORA_TEST_USER_DATA_ROOT", tmp.path().join("user"));
 
     std::fs::create_dir_all(&runtime_dir).unwrap();
     std::fs::create_dir_all(&install_dir).unwrap();
