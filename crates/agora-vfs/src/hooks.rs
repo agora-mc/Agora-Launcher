@@ -847,7 +847,10 @@ unsafe fn translate_start(
 
 /// The real path of a name under the view, `None` when it is not under the view.
 fn translate_name(name: &str, c: &RuntimeConfig, missing: u32) -> Result<Option<String>, u32> {
-    let Some(located) = locate(name.strip_prefix(r"\\?\").unwrap_or(name), c) else {
+    let Some(full) = full_win32_path(name) else {
+        return Ok(None);
+    };
+    let Some(located) = locate(&full, c) else {
         return Ok(None);
     };
     match start_path(&located, c) {
@@ -861,7 +864,10 @@ fn translate_name(name: &str, c: &RuntimeConfig, missing: u32) -> Result<Option<
 /// mount has no such folder (it exists in the upper, or in another lower) is the folder that wins
 /// used, and then the child's relative paths are not virtual; that is logged.
 fn translate_directory(name: &str, c: &RuntimeConfig) -> Result<Option<String>, u32> {
-    let Some(located) = locate(name.strip_prefix(r"\\?\").unwrap_or(name), c) else {
+    let Some(full) = full_win32_path(name) else {
+        return Ok(None);
+    };
+    let Some(located) = locate(&full, c) else {
         return Ok(None);
     };
     let winning = match start_path(&located, c) {
@@ -896,9 +902,55 @@ fn translate_command_line(cmd: &str, c: &RuntimeConfig) -> Result<Option<String>
         let end = rest.find([' ', '\t']).unwrap_or(rest.len());
         (&rest[..end], lead + end)
     };
-    match translate_name(token, c, ERROR_FILE_NOT_FOUND)? {
-        Some(real) => Ok(Some(format!("{}\"{real}\"{}", &cmd[..lead], &cmd[end..]))),
-        None => Ok(None),
+    // Only an absolute first token is translated, and never at the cost of the start: Windows
+    // searches for a relative one, tries an unquoted one at each space, and when the application name
+    // is given the token is only the child's argv[0]. What is not resolved here is left for Windows.
+    if !is_absolute_win32(token) {
+        return Ok(None);
+    }
+    match translate_name(token, c, ERROR_FILE_NOT_FOUND) {
+        Ok(Some(real)) => Ok(Some(format!("{}\"{real}\"{}", &cmd[..lead], &cmd[end..]))),
+        Ok(None) | Err(_) => Ok(None),
+    }
+}
+
+/// A drive-absolute (`X:\`, `X:/`) or UNC or device (`\\…`) Win32 path.
+fn is_absolute_win32(name: &str) -> bool {
+    let b = name.as_bytes();
+    name.starts_with(r"\\")
+        || (b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && matches!(b[2], b'\\' | b'/'))
+}
+
+/// The path Windows itself uses for a Win32 name before it opens anything: repeated separators
+/// collapsed (SKSE's loader starts `game\\SkyrimSE.exe`), `/` made `\`, `.` and `..` resolved, and a
+/// relative name completed from the current directory. A `\\?\` name is taken verbatim, as Windows
+/// takes it. Lexical only: nothing is opened.
+fn full_win32_path(name: &str) -> Option<String> {
+    if let Some(verbatim) = name.strip_prefix(r"\\?\") {
+        return Some(verbatim.to_string());
+    }
+    let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    let mut buf = vec![0u16; 1024];
+    loop {
+        // SAFETY: `wide` is NUL-terminated and `buf` is writable for the length passed.
+        let n = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetFullPathNameW(
+                wide.as_ptr(),
+                buf.len() as u32,
+                buf.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
+        } as usize;
+        if n == 0 {
+            return None;
+        }
+        if n < buf.len() {
+            return Some(String::from_utf16_lossy(&buf[..n]));
+        }
+        buf.resize(n + 1, 0);
     }
 }
 
@@ -1196,4 +1248,97 @@ pub unsafe fn install_hooks() -> Result<(), retour::Error> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+    use crate::config::VfsConfig;
+
+    /// A mount that is also the lowest layer, holding `SkyrimSE.exe` and `Data\`, as a game launch has.
+    fn mount_config(root: &Path) -> RuntimeConfig {
+        let mount = root.join("game");
+        std::fs::create_dir_all(mount.join("Data")).unwrap();
+        std::fs::write(mount.join("SkyrimSE.exe"), b"exe").unwrap();
+        let json = serde_json::json!({
+            "version": 1,
+            "mount": mount,
+            "upper": root.join("upper"),
+            "lowers": [mount],
+            "dll": root.join("agora_vfs.dll"),
+        });
+        VfsConfig::from_json_str(&json.to_string()).unwrap()
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("agvfs-start-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_doubled_separator_is_the_same_file_as_windows_sees_it() {
+        // SKSE's loader starts `<game>\\SkyrimSE.exe`; Windows collapses the separators, so must we.
+        let root = temp_root("doubled");
+        let c = mount_config(&root);
+        let doubled = format!(r"{}\\SkyrimSE.exe", root.join("game").display());
+        let real = translate_name(&doubled, &c, ERROR_FILE_NOT_FOUND).unwrap();
+        assert_eq!(
+            real.map(PathBuf::from),
+            Some(root.join("game").join("SkyrimSE.exe"))
+        );
+        let slashes = format!("{}/./Data/../SkyrimSE.exe", root.join("game").display());
+        assert!(translate_name(&slashes, &c, ERROR_FILE_NOT_FOUND)
+            .unwrap()
+            .is_some());
+        let dir = format!(r"{}\\Data\", root.join("game").display());
+        assert_eq!(
+            translate_directory(&dir, &c).unwrap().map(PathBuf::from),
+            Some(root.join("game").join("Data"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_name_in_no_layer_is_refused_only_as_the_application_name() {
+        let root = temp_root("missing");
+        let c = mount_config(&root);
+        let missing = format!(r"{}\Missing Tool.exe", root.join("game").display());
+        assert_eq!(
+            translate_name(&missing, &c, ERROR_FILE_NOT_FOUND),
+            Err(ERROR_FILE_NOT_FOUND)
+        );
+        // As a command line it is left for Windows: unquoted, Windows tries it at each space.
+        let unquoted = format!("{} -x", missing);
+        assert_eq!(translate_command_line(&unquoted, &c), Ok(None));
+        let quoted = format!("\"{}\" -x", missing);
+        assert_eq!(translate_command_line(&quoted, &c), Ok(None));
+        // A relative token is searched for by Windows, never translated.
+        assert_eq!(translate_command_line("cmd.exe /c exit", &c), Ok(None));
+        // A doubled separator in a quoted absolute token is translated, with the arguments kept.
+        let exe = format!(
+            r#""{}\\SkyrimSE.exe" -forcesteamloader"#,
+            root.join("game").display()
+        );
+        let translated = translate_command_line(&exe, &c).unwrap().unwrap();
+        assert!(translated.ends_with(" -forcesteamloader"), "{translated}");
+        assert!(translated.starts_with('"'), "{translated}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn absolute_win32_names() {
+        assert!(is_absolute_win32(r"C:\x.exe"));
+        assert!(is_absolute_win32("C:/x.exe"));
+        assert!(is_absolute_win32(r"\\server\share\x.exe"));
+        assert!(!is_absolute_win32("x.exe"));
+        assert!(!is_absolute_win32(r"C:x.exe"));
+        assert!(!is_absolute_win32(""));
+        assert_eq!(
+            full_win32_path(r"\\?\C:\a\\b").as_deref(),
+            Some(r"C:\a\\b"),
+            "a verbatim name is not normalised"
+        );
+    }
 }
