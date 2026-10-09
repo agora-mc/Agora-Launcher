@@ -348,6 +348,12 @@ enum ToolsSwapCmd {
     /// Put back every interrupted swap whose tool run is no longer going. Nothing is merged or
     /// overwritten: a case that needs a hand is reported with the steps.
     Restore,
+    /// Delete an instance's kept copy of its Data folder (MASTER_SPEC §26.9). Only a copy whose marker
+    /// names the instance is deleted. The instance's next swap copies Data again.
+    RemoveCopy {
+        /// Instance ID.
+        instance_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -546,10 +552,14 @@ enum InstanceToolsCmd {
         tool: String,
         /// How the run's writes are captured: `auto` (the virtual file system, or linked files when it
         /// cannot start), `vfs` (the virtual file system only), `links` (linked files only), or `swap`
-        /// (the real install's Data folder is swapped for a link to the instance's mods for the run). A
+        /// (the real install's Data folder is swapped for a copy of the instance's Data for the run). A
         /// tool that works on the real install needs `swap`; `auto` asks before it uses it.
         #[arg(long, default_value = "auto", value_name = "auto|vfs|links|swap")]
         capture: String,
+        /// Confirm a swap without asking, after it has shown what it costs. Needed when there is no
+        /// terminal to ask in.
+        #[arg(long)]
+        yes: bool,
     },
     /// Make the previous output current again. The game reads it on its next launch.
     Rollback {
@@ -7597,6 +7607,40 @@ async fn run_command(
                         std::process::exit(1);
                     }
                 }
+                ToolsSwapCmd::RemoveCopy { instance_id } => {
+                    let record = agora_core::game_instance::get(ctx, &instance_id)?
+                        .ok_or_else(|| anyhow::anyhow!("Instance '{instance_id}' not found."))?;
+                    let game_def = ctx.games.game(&record.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", record.game)
+                    })?;
+                    let outcome =
+                        agora_core::game_tool_copy::remove_kept_copy(ctx, game_def, &instance_id);
+                    match outcome {
+                        Ok(removed) => {
+                            let removed =
+                                removed == agora_core::game_tool_copy::RemoveCopy::Removed;
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&serde_json::json!({
+                                        "instance_id": instance_id,
+                                        "removed": removed,
+                                    }))?
+                                );
+                            } else if removed {
+                                println!(
+                                    "Removed the kept copy of Data for instance {instance_id}. Its next swap copies Data again."
+                                );
+                            } else {
+                                println!("Instance {instance_id} has no kept copy of Data.");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
             },
             GamesCmd::Import { action } => run_games_import(ctx, action, json)?,
             GamesCmd::UserFiles { action } => match action {
@@ -8233,7 +8277,9 @@ fn instance_tools_command(
                 }
             }
         }
-        InstanceToolsCmd::Run { tool, capture, .. } => {
+        InstanceToolsCmd::Run {
+            tool, capture, yes, ..
+        } => {
             let tool = tool_id(&tool);
             let capture = game_tools::CaptureMode::parse(&capture).unwrap_or_else(|| {
                 fail(format!(
@@ -8253,18 +8299,26 @@ fn instance_tools_command(
                     &cancel,
                 )
             };
-            let outcome = match run_as(capture) {
-                Ok(outcome) => outcome,
-                // `auto` refuses a tool that works on the real install, before anything is deployed.
-                Err(game_tools::ToolError::InstallPathNeedsSwap { .. }) => {
-                    if ask_about_swap(&instance_id, tool.as_str(), json)? {
-                        run_as(game_tools::CaptureMode::Swap)
-                            .unwrap_or_else(|e| fail(e.to_string()))
-                    } else {
-                        std::process::exit(1);
-                    }
+            let outcome = if capture == game_tools::CaptureMode::Swap {
+                // A swap is only run after it has said what it costs and been confirmed.
+                if !confirm_swap(ctx, &instance_id, game_def, tool.as_str(), json, yes)? {
+                    std::process::exit(1);
                 }
-                Err(e) => fail(e.to_string()),
+                run_as(capture).unwrap_or_else(|e| fail(e.to_string()))
+            } else {
+                match run_as(capture) {
+                    Ok(outcome) => outcome,
+                    // `auto` refuses a tool that works on the real install, before anything is deployed.
+                    Err(game_tools::ToolError::InstallPathNeedsSwap { .. }) => {
+                        if confirm_swap(ctx, &instance_id, game_def, tool.as_str(), json, yes)? {
+                            run_as(game_tools::CaptureMode::Swap)
+                                .unwrap_or_else(|e| fail(e.to_string()))
+                        } else {
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => fail(e.to_string()),
+                }
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
@@ -8416,9 +8470,26 @@ fn print_tool_run(outcome: &agora_core::game_tools::RunOutcome) {
         }
         (agora_core::game_tools::CaptureMethod::Swap, _) => {
             println!(
-                "Its writes were captured from linked files, with the real install's Data folder swapped for a link to the instance's mods. The real Data folder was put back."
+                "Its writes were captured from its copy of the instance's Data, which was swapped in for the run. Changed, new and deleted files were compared with the copy's record by size, then time, then bytes, as link capture does. The real Data folder was put back."
             );
         }
+    }
+    if let Some(report) = &outcome.swap {
+        use agora_core::game_tool_copy::CopyKind;
+        use agora_core::game_tool_swap::human_bytes;
+        let copy = match report.copy {
+            CopyKind::Kept => "kept between runs on the install's volume",
+            CopyKind::PerRun => "made for this run only, on the install's volume",
+        };
+        println!(
+            "The copy of Data was {copy}. Copied in before the run: {} file(s), {}. Changed or new files captured: {}. Deleted: {}. Copied again after the run to match the plan: {} file(s), {}.",
+            report.copied_in_files,
+            human_bytes(report.copied_in_bytes),
+            report.captured_files,
+            report.deleted_files,
+            report.refreshed_files,
+            human_bytes(report.refreshed_bytes),
+        );
     }
     if let Some(folder) = &outcome.failed_folder {
         println!("The discarded run is kept in {}.", folder.display());
@@ -8463,27 +8534,106 @@ fn print_install_changes(changes: &agora_core::install_watch::InstallChanges) {
     }
 }
 
-/// `auto` refused a tool that works on the real install. Under `--json` or without a terminal, print
-/// the swap command and refuse. In a terminal, say what a swap does and ask; `Ok(true)` runs it by swap.
-fn ask_about_swap(instance_id: &str, tool: &str, json: bool) -> anyhow::Result<bool> {
-    let command = format!("agora games instance tools run {instance_id} {tool} --capture swap");
-    let reason = format!(
-        "{tool} works on the real install's Data folder, so it runs by swap, which replaces the real Data folder with a link to this instance's mods for the length of the run."
+/// What a swap costs and does, in words for a person (MASTER_SPEC §26.9, decision 7): the disk space,
+/// whether the first run copies everything and later runs only what changed (or every run copies it
+/// all), and that the real Data folder is renamed for the length of the run.
+fn swap_cost_lines(tool: &str, costs: &agora_core::game_tool_copy::SwapCosts) -> Vec<String> {
+    use agora_core::game_tool_swap::human_bytes;
+    let volume = costs.copy_folder.display();
+    let mut lines = vec![format!(
+        "{tool} works on the real install's Data folder, so it runs on a copy of the instance's Data, swapped in for the length of the run."
+    )];
+    lines.push(match costs.free_bytes {
+        Some(free) => format!(
+            "Disk space: the copy needs {} on the volume of {volume}, and {} is free there.",
+            human_bytes(costs.copy_bytes),
+            human_bytes(free)
+        ),
+        None => format!(
+            "Disk space: the copy needs {} on the volume of {volume}. The free space there could not be read.",
+            human_bytes(costs.copy_bytes)
+        ),
+    });
+    lines.push(format!(
+        "The instance's Data is {} in {} file(s).",
+        human_bytes(costs.data_bytes),
+        costs.data_files
+    ));
+    if costs.same_volume && costs.kept_copy_exists {
+        lines.push(format!(
+            "A kept copy from an earlier run is there, so this run copies only what changed: {} in {} file(s). Later runs do the same.",
+            human_bytes(costs.copy_bytes),
+            costs.copy_files
+        ));
+    } else if costs.same_volume {
+        lines.push(format!(
+            "The copy is kept between runs on this volume. The first run copies everything ({} in {} file(s)); later runs copy only what changed.",
+            human_bytes(costs.copy_bytes),
+            costs.copy_files
+        ));
+    } else {
+        lines.push(format!(
+            "The copy would be on another volume from the install, so every run copies all of Data in ({} in {} file(s)) and the changes back out. The copy is deleted after the run.",
+            human_bytes(costs.copy_bytes),
+            costs.copy_files
+        ));
+    }
+    lines.push(
+        "The real Data folder is renamed for the length of the run. Steam must not update the game, and the game must not be started meanwhile."
+            .to_string(),
     );
+    if costs.steam_running {
+        lines.push(
+            "Warning: Steam is running. Close it before the swap, or it may update the game while Data is renamed."
+                .to_string(),
+        );
+    }
+    lines
+}
+
+/// The swap's costs, shown before a swap runs (MASTER_SPEC §26.9, decision 7). `yes` confirms it. In a
+/// terminal the CLI asks; without one it needs `yes`, and otherwise prints the command and refuses.
+/// Under `--json` the costs travel in the error. `Ok(true)` runs the swap.
+fn confirm_swap(
+    ctx: &agora_core::ctx::Ctx,
+    instance_id: &str,
+    game_def: &agora_game_api::GameDefinition,
+    tool: &str,
+    json: bool,
+    yes: bool,
+) -> anyhow::Result<bool> {
+    let command =
+        format!("agora games instance tools run {instance_id} {tool} --capture swap --yes");
+    let costs = match agora_core::game_tool_copy::swap_costs(ctx, instance_id, game_def) {
+        Ok(costs) => costs,
+        Err(e) => ini_fail(json, e.to_string()),
+    };
+    let lines = swap_cost_lines(tool, &costs);
+    if !json {
+        for line in &lines {
+            eprintln!("{line}");
+        }
+    }
+    if yes {
+        return Ok(true);
+    }
     if json {
         let out = serde_json::json!({
             "status": "error",
-            "error": reason,
+            "error": lines.join(" "),
             "exitCode": 1,
             "retry": [command],
         });
         eprintln!("{}", serde_json::to_string_pretty(&out)?);
         std::process::exit(1);
     }
-    eprintln!("{reason}");
-    eprintln!("Steam and the game must not run meanwhile. The real Data folder is put back afterwards, even after a crash, on the next start.");
     if std::io::stdin().is_terminal() && ask_yes_no("Run it by swap? [y/N]: ")? {
         return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "There is no terminal to ask in, so the swap was not run. Confirm it with --yes:"
+        );
     }
     eprintln!("To run it by swap:");
     eprintln!("  {command}");
@@ -11886,5 +12036,64 @@ mod tests {
             }
             _ => panic!("wrong command variant"),
         }
+    }
+}
+
+#[cfg(test)]
+mod swap_cost_text {
+    use super::swap_cost_lines;
+    use agora_core::game_tool_copy::{CopyKind, SwapCosts};
+
+    fn costs(same_volume: bool, kept_copy_exists: bool, steam_running: bool) -> SwapCosts {
+        SwapCosts {
+            install_dir: std::path::PathBuf::from(r"D:\Games\Skyrim"),
+            data_files: 5263,
+            data_bytes: 9_663_676_416,
+            same_volume,
+            copy_kind: if same_volume {
+                CopyKind::Kept
+            } else {
+                CopyKind::PerRun
+            },
+            copy_folder: std::path::PathBuf::from(r"D:\Bases\deployments\inst\swap"),
+            kept_copy_exists,
+            copy_files: if kept_copy_exists { 12 } else { 5263 },
+            copy_bytes: if kept_copy_exists {
+                52_428_800
+            } else {
+                9_663_676_416
+            },
+            free_bytes: Some(120_259_084_288),
+            steam_running,
+        }
+    }
+
+    #[test]
+    fn the_first_swap_on_one_volume_says_the_copy_is_kept_and_what_it_costs() {
+        let lines = swap_cost_lines("nemesis", &costs(true, false, true)).join("\n");
+        println!("{lines}");
+        assert!(
+            lines.contains("Disk space: the copy needs 9.0 GB"),
+            "{lines}"
+        );
+        assert!(lines.contains("The first run copies everything"), "{lines}");
+        assert!(lines.contains("real Data folder is renamed"), "{lines}");
+        assert!(lines.contains("Steam is running"), "{lines}");
+    }
+
+    #[test]
+    fn a_later_swap_says_only_what_changed_is_copied() {
+        let lines = swap_cost_lines("nemesis", &costs(true, true, false)).join("\n");
+        println!("{lines}");
+        assert!(lines.contains("copies only what changed: 50 MB"), "{lines}");
+        assert!(!lines.contains("Steam is running"), "{lines}");
+    }
+
+    #[test]
+    fn on_another_volume_every_run_copies_everything_in_and_back() {
+        let lines = swap_cost_lines("nemesis", &costs(false, false, false)).join("\n");
+        println!("{lines}");
+        assert!(lines.contains("every run copies all of Data in"), "{lines}");
+        assert!(lines.contains("deleted after the run"), "{lines}");
     }
 }

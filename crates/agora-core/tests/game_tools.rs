@@ -1687,25 +1687,18 @@ fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto() {
 }
 
 // ---------------------------------------------------------------------------
-// The swap and the real install (MASTER_SPEC §26.9, slice 4c). Every test uses a fake install in a
-// temp folder. `AGORA_REAL` names that folder for the tool, so it can write where Nemesis writes.
+// The swap and the real install (MASTER_SPEC §26.9, slices 4c and 4e). Every test uses a fake install
+// in a temp folder. The swap runs its tool on a real copy of the instance's `Data`, kept between runs
+// on the same volume, or made for one run on another volume (seam).
 // ---------------------------------------------------------------------------
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use agora_core::game_tool_swap::{self as swap, SwapError, SwapJournal};
-
-/// A tool that works on the real install: the same as [`tool`], with `uses_install_path` set.
-fn swap_tool(id: &str, name: &str, args: &[&str]) -> ToolDefinition {
-    ToolDefinition {
-        uses_install_path: true,
-        required_outputs: Vec::new(),
-        failure_markers: Vec::new(),
-        ..tool(id, name, args)
-    }
-}
+use agora_core::game_deploy::source_path;
+use agora_core::game_tool_copy::{self, CopyKind};
+use agora_core::game_tool_swap::{self as swap, SpaceNeed, SwapError, SwapJournal, VolumeSeam};
 
 /// A tool that writes `Data\meshes\x.nif` in the real install, through `AGORA_REAL`.
 fn writes_real_data(id: &str) -> ToolDefinition {
@@ -1772,74 +1765,106 @@ fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     out
 }
 
-/// A journal for a swap that a test sets up by hand, pointing at the instance's farm.
-fn journal_for(f: &Fixture, run: &str, aside: &Path, farm_data: &Path) -> SwapJournal {
-    SwapJournal {
-        version: swap::JOURNAL_VERSION,
-        game: GAME.into(),
-        store: "steam".into(),
-        instance_id: f.id().into(),
-        tool: "nemesis".into(),
-        run: run.into(),
-        started_unix_ms: 0,
-        install_dir: install_dir(f),
-        real_data: real_data(f),
-        aside: aside.to_path_buf(),
-        junction_target: farm_data.to_path_buf(),
-        deployment_game_dir: f.deployed_game_dir(),
+/// The volume seam is process-wide, so every swap test takes this lock, sets the seam it needs, and
+/// clears it when it ends.
+static SWAP_SEAM: Mutex<()> = Mutex::new(());
+
+struct SwapTest {
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl SwapTest {
+    fn with(seam: VolumeSeam) -> Self {
+        let lock = SWAP_SEAM.lock().unwrap_or_else(|e| e.into_inner());
+        swap::set_volume_seam(Some(seam));
+        Self { _lock: lock }
+    }
+
+    /// The copy is kept on the install's volume: the normal case.
+    fn same_volume() -> Self {
+        Self::with(VolumeSeam {
+            same_volume: Some(true),
+            free_bytes: None,
+        })
+    }
+
+    /// The copy is made for the run on the install's volume: the other-volume case, simulated.
+    fn different_volume() -> Self {
+        Self::with(VolumeSeam {
+            same_volume: Some(false),
+            free_bytes: None,
+        })
     }
 }
 
-/// Simulates a crash in the middle of a swap: the real `Data` is renamed aside, a junction to the
-/// farm stands in its place, and the journal is on disk.
-fn simulate_crashed_swap(f: &Fixture) -> SwapJournal {
-    // A real deployment, as a crashed run leaves behind: the farm has its record and its links.
-    agora_core::game_deploy::deploy(&f.ctx, f.id(), &f.def, DeployMode::Links).unwrap();
-    let farm_data = f.deployed_game_dir().join("Data");
-    std::fs::create_dir_all(&farm_data).unwrap();
-    let aside = aside_named(f, "crash");
-    let journal = journal_for(f, "crash", &aside, &farm_data);
-    swap::write_journal(&f.ctx, &journal).unwrap();
-    std::fs::rename(real_data(f), &aside).unwrap();
-    junction::create(&farm_data, real_data(f)).unwrap();
-    journal
+impl Drop for SwapTest {
+    fn drop(&mut self) {
+        swap::set_volume_seam(None);
+    }
 }
 
-#[test]
-fn a_swap_run_restores_the_real_data_and_its_writes_through_the_link_are_captured() {
-    let f = fixture(vec![writes_real_data("nemesis")]);
-    let install = install_dir(&f);
-    let before = snapshot(&real_data(&f));
-    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
-
-    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Swap).unwrap();
-
-    assert!(outcome.promoted, "{outcome:?}");
-    assert_eq!(outcome.capture, CaptureMethod::Swap);
-    assert!(outcome.written.contains(&"Data/meshes/x.nif".to_string()));
-    // The real Data is byte-identical, has no link, and never received the file.
-    assert_eq!(snapshot(&real_data(&f)), before);
-    assert!(!swap::is_reparse_point(&real_data(&f)));
-    assert!(real_data(&f).is_dir());
-    assert!(!real_data(&f).join("meshes").join("x.nif").exists());
-    assert!(names(&install)
-        .iter()
-        .all(|n| !n.starts_with(swap::ASIDE_PREFIX)));
-    assert!(!journal_file(&f).exists());
-    // The output is the promoted generation.
-    let (generation, _) = f.generated("nemesis").expect("a generated layer");
-    assert!(f
-        .generation_dir("nemesis", &generation)
-        .join("Data")
-        .join("meshes")
-        .join("x.nif")
-        .exists());
+/// A tool that works on the real install: the same as [`tool`], with `uses_install_path` set.
+fn swap_tool(id: &str, name: &str, args: &[&str]) -> ToolDefinition {
+    ToolDefinition {
+        uses_install_path: true,
+        required_outputs: Vec::new(),
+        failure_markers: Vec::new(),
+        ..tool(id, name, args)
+    }
 }
 
-#[test]
-fn a_failing_swap_run_is_restored_and_discarded() {
-    let f = fixture(vec![swap_tool(
-        "nemesis",
+/// A tool that writes `Data\meshes\<name>` in the real install, through `AGORA_REAL`.
+fn writes_mesh(id: &str, name: &str) -> ToolDefinition {
+    let target = format!(r"%AGORA_REAL%\Data\meshes\{name}");
+    let args: Vec<&str> = vec![
+        "/c",
+        "mkdir",
+        r"%AGORA_REAL%\Data\meshes",
+        "&",
+        "echo",
+        "nif",
+        ">",
+        target.as_str(),
+    ];
+    swap_tool(id, "Nemesis", &args)
+}
+
+/// A tool that overwrites `Data\tweak.ini`, creates `Data\meshes\x.nif` and deletes `Data\delete_me.txt`.
+fn writes_and_deletes(id: &str) -> ToolDefinition {
+    let args: Vec<&str> = vec![
+        "/c",
+        "mkdir",
+        r"%AGORA_REAL%\Data\meshes",
+        "&",
+        "echo",
+        "nif",
+        ">",
+        r"%AGORA_REAL%\Data\meshes\x.nif",
+        "&",
+        "echo",
+        "changed",
+        ">",
+        r"%AGORA_REAL%\Data\tweak.ini",
+        "&",
+        "del",
+        r"%AGORA_REAL%\Data\delete_me.txt",
+    ];
+    swap_tool(id, "Nemesis", &args)
+}
+
+/// A tool that opens `Data\Skyrim.bsa` for writing and writes nothing to it.
+fn opens_for_writing_only(id: &str) -> ToolDefinition {
+    swap_tool(
+        id,
+        "Nemesis",
+        &["/c", "type", "nul", ">>", r"%AGORA_REAL%\Data\Skyrim.bsa"],
+    )
+}
+
+/// A tool that changes `Data` and then exits 3.
+fn writes_then_fails(id: &str) -> ToolDefinition {
+    swap_tool(
+        id,
         "Nemesis",
         &[
             "/c",
@@ -1848,29 +1873,317 @@ fn a_failing_swap_run_is_restored_and_discarded() {
             ">",
             r"%AGORA_REAL%\Data\bad.txt",
             "&",
+            "echo",
+            "x",
+            ">",
+            r"%AGORA_REAL%\Data\tweak.ini",
+            "&",
+            "del",
+            r"%AGORA_REAL%\Data\delete_me.txt",
+            "&",
             "exit",
             "/b",
             "3",
         ],
-    )]);
+    )
+}
+
+/// A swap fixture: `Data` holds three files the tests keep, change and delete.
+fn swap_fixture(tools: Vec<ToolDefinition>) -> Fixture {
+    let tmp = TempDir::new().unwrap();
+    let def = definition(&tools, false, false);
+    let ctx = CoreContext::for_testing(tmp.path().join("app_data"));
+    agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
+    let ctx = ctx.with_games(registry(&def, tools));
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(install_dir.join("Data")).unwrap();
+    std::fs::copy(r"C:\Windows\System32\cmd.exe", install_dir.join("Game.exe")).unwrap();
+    std::fs::write(install_dir.join("Data").join("Skyrim.bsa"), b"BSA DATA").unwrap();
+    std::fs::write(install_dir.join("Data").join("tweak.ini"), b"ini original").unwrap();
+    std::fs::write(install_dir.join("Data").join("delete_me.txt"), b"delete me").unwrap();
+    std::fs::write(install_dir.join("base_file.txt"), b"initial base file").unwrap();
+    let install = install_of(&install_dir);
+    let inst = create(
+        &ctx,
+        &install,
+        &def,
+        "Tools",
+        None,
+        BaseMode::Linked,
+        &|_| {},
+    )
+    .expect("create instance");
+    Fixture {
+        _tmp: tmp,
+        ctx,
+        def,
+        inst,
+    }
+}
+
+fn swap_launcher(f: &Fixture) -> StagingLauncher {
+    StagingLauncher::new().with_env("AGORA_REAL", install_dir(f).to_str().unwrap())
+}
+
+/// The swap folder of the instance: `<bases>\deployments\<instance>\swap`.
+fn swap_dir(f: &Fixture) -> PathBuf {
+    swap::swap_location(&f.ctx, f.id()).unwrap().swap_dir
+}
+
+/// The kept copy of the instance's `Data`.
+fn kept_copy(f: &Fixture) -> PathBuf {
+    swap_dir(f).join("Data")
+}
+
+/// The files the instance's plan puts under `Data`, as a swap's copy holds them.
+fn planned_files(f: &Fixture) -> Vec<PlannedFile> {
+    game_tool_copy::data_files(&f.ctx, f.id(), &f.def).unwrap()
+}
+
+/// The kept copy holds exactly the planned files, each with the bytes of its source, and no marker
+/// output. This is what a discarded run must leave behind, and what every finished run leaves.
+fn assert_copy_matches_plan(f: &Fixture) {
+    let copy = kept_copy(f);
+    let planned = planned_files(f);
+    let on_disk: BTreeSet<String> = snapshot(&copy)
+        .into_iter()
+        .filter(|(k, _)| !k.ends_with('/') && k.as_str() != game_tool_copy::MARKER_FILE)
+        .map(|(k, _)| k.to_ascii_lowercase())
+        .collect();
+    let wanted: BTreeSet<String> = planned
+        .iter()
+        .map(|p| p.path.as_str().to_ascii_lowercase())
+        .collect();
+    assert_eq!(
+        on_disk, wanted,
+        "the kept copy holds exactly the planned files"
+    );
+    for file in &planned {
+        let want = std::fs::read(source_path(&f.ctx, &file.source)).unwrap();
+        let got = std::fs::read(copy.join(file.path.as_str())).unwrap();
+        assert_eq!(got, want, "{} matches its source", file.path.as_str());
+    }
+}
+
+/// A journal for a swap a test sets up by hand, exactly as `run_by_swap` writes it.
+fn journal_of(f: &Fixture, run: &str, kind: CopyKind) -> SwapJournal {
+    let loc = swap::swap_location(&f.ctx, f.id()).unwrap();
+    SwapJournal {
+        version: swap::JOURNAL_VERSION,
+        game: GAME.into(),
+        store: "steam".into(),
+        instance_id: f.id().into(),
+        tool: "nemesis".into(),
+        run: run.into(),
+        started_unix_ms: 0,
+        install_dir: loc.install.clone(),
+        real_data: loc.install.join("Data"),
+        aside: loc.install.join(format!("{}{run}", swap::ASIDE_PREFIX)),
+        copy_kind: kind,
+        copy_dir: game_tool_copy::copy_dir_for(kind, &loc, run),
+        swap_dir: loc.swap_dir.clone(),
+    }
+}
+
+/// Simulates a crash in a kept-copy swap after `step` (MASTER_SPEC §26.9, the run's steps): 4 the real
+/// Data is renamed aside; 5 the copy is renamed into its place; 6 the tool has written into it; 7 the
+/// copy has been renamed back home. The journal is on disk.
+fn crash_after(f: &Fixture, step: u8, kind: CopyKind, run: &str) -> SwapJournal {
+    let journal = journal_of(f, run, kind);
+    swap::write_journal(&f.ctx, &journal).unwrap();
+    game_tool_copy::prepare(&f.ctx, &journal, &planned_files(f)).unwrap();
+    if step >= 4 {
+        std::fs::rename(&journal.real_data, &journal.aside).unwrap();
+    }
+    if step >= 5 {
+        std::fs::rename(&journal.copy_dir, &journal.real_data).unwrap();
+    }
+    if step >= 6 {
+        let data = &journal.real_data;
+        std::fs::write(data.join("tweak.ini"), b"tool wrote").unwrap();
+        std::fs::write(data.join("new.txt"), b"tool new").unwrap();
+        std::fs::remove_file(data.join("delete_me.txt")).unwrap();
+    }
+    if step >= 7 {
+        std::fs::rename(&journal.real_data, &journal.copy_dir).unwrap();
+    }
+    journal
+}
+
+#[test]
+fn a_swap_run_promotes_its_writes_and_the_real_data_is_byte_for_byte_unchanged() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
     let install = install_dir(&f);
     let before = snapshot(&real_data(&f));
-    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+    let planned = planned_files(&f).len();
 
-    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Swap).unwrap();
+    let outcome = f
+        .run_as("nemesis", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
+
+    assert!(outcome.promoted, "{outcome:?}");
+    assert_eq!(outcome.capture, CaptureMethod::Swap);
+    assert_eq!(outcome.copied_layer, None);
+    assert!(outcome.written.contains(&"Data/meshes/x.nif".to_string()));
+    assert!(outcome.written.contains(&"Data/tweak.ini".to_string()));
+    assert_eq!(outcome.deleted, vec!["Data/delete_me.txt".to_string()]);
+    // The real Data is unchanged, and it is the real folder again: no copy, no aside, no journal.
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(!real_data(&f).join("meshes").join("x.nif").exists());
+    assert!(names(&install)
+        .iter()
+        .all(|n| !n.starts_with(swap::ASIDE_PREFIX)));
+    assert!(!journal_file(&f).exists());
+    // The output is the promoted generation.
+    let (generation, _) = f.generated("nemesis").expect("a generated layer");
+    let gen_dir = f.generation_dir("nemesis", &generation);
+    assert!(gen_dir.join("Data").join("meshes").join("x.nif").exists());
+    assert_eq!(
+        std::fs::read_to_string(gen_dir.join("Data").join("tweak.ini"))
+            .unwrap()
+            .trim(),
+        "changed"
+    );
+    // The kept copy now matches the plan, which has the new generation and not the deleted file.
+    assert_copy_matches_plan(&f);
+    let report = outcome.swap.expect("a swap report");
+    assert_eq!(report.copy, CopyKind::Kept);
+    assert_eq!(
+        report.copied_in_files, planned,
+        "the first run copies everything"
+    );
+}
+
+#[test]
+fn a_second_run_copies_only_what_changed() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![
+        writes_mesh("first", "x.nif"),
+        writes_mesh("second", "y.nif"),
+    ]);
+    let planned = planned_files(&f).len();
+
+    let first = f
+        .run_as("first", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
+    assert!(first.promoted, "{first:?}");
+    let first_report = first.swap.expect("a swap report");
+    assert_eq!(first_report.copied_in_files, planned);
+    assert_eq!(first_report.captured_files, 1);
+    // The first run's own output joins the plan, so the copy takes that one file after the run.
+    assert_eq!(first_report.refreshed_files, 1);
+
+    let second = f
+        .run_as("second", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
+    assert!(second.promoted, "{second:?}");
+    let second_report = second.swap.expect("a swap report");
+    assert_eq!(
+        second_report.copied_in_files, 0,
+        "nothing changed since the last run, so nothing is copied in"
+    );
+    assert_eq!(second_report.captured_files, 1);
+    assert_eq!(second_report.refreshed_files, 1);
+    assert_copy_matches_plan(&f);
+}
+
+#[test]
+fn a_tool_that_opens_a_file_for_writing_and_changes_nothing_produces_no_output() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![opens_for_writing_only("nemesis")]);
+    let before = snapshot(&real_data(&f));
+
+    let outcome = f
+        .run_as("nemesis", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
+
+    assert!(outcome.promoted, "{outcome:?}");
+    assert_eq!(outcome.exit_code, Some(0));
+    assert!(outcome.written.is_empty(), "{:?}", outcome.written);
+    assert!(outcome.deleted.is_empty(), "{:?}", outcome.deleted);
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert_copy_matches_plan(&f);
+}
+
+#[test]
+fn a_discarded_run_leaves_the_kept_copy_matching_the_plan_again() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_then_fails("nemesis")]);
+    let before = snapshot(&real_data(&f));
+
+    let outcome = f
+        .run_as("nemesis", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
 
     assert!(!outcome.promoted, "{outcome:?}");
     assert_eq!(outcome.exit_code, Some(3));
     assert!(outcome.failed_folder.is_some());
     assert_eq!(snapshot(&real_data(&f)), before);
-    assert!(!swap::is_reparse_point(&real_data(&f)));
     assert!(!journal_file(&f).exists());
     assert!(f.generated("nemesis").is_none());
+    // The run's edits did not survive into the copy.
+    assert!(!kept_copy(&f).join("bad.txt").exists());
+    assert_copy_matches_plan(&f);
+}
+
+#[test]
+fn on_another_volume_a_copy_is_made_for_the_run_and_deleted_after_it() {
+    let _swap = SwapTest::different_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
+    let install = install_dir(&f);
+    let before = snapshot(&real_data(&f));
+    let planned = planned_files(&f).len();
+
+    let outcome = f
+        .run_as("nemesis", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
+
+    assert!(outcome.promoted, "{outcome:?}");
+    let report = outcome.swap.expect("a swap report");
+    assert_eq!(report.copy, CopyKind::PerRun);
+    assert_eq!(
+        report.copied_in_files, planned,
+        "every run copies everything in"
+    );
+    assert!(
+        !kept_copy(&f).exists(),
+        "no kept copy is made on another volume"
+    );
+    assert!(names(&install)
+        .iter()
+        .all(|n| !n.starts_with(swap::COPY_PREFIX) && !n.starts_with(swap::ASIDE_PREFIX)));
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(!journal_file(&f).exists());
+}
+
+#[test]
+fn a_swap_is_refused_before_anything_moves_when_the_copy_volume_lacks_space() {
+    let _swap = SwapTest::with(VolumeSeam {
+        same_volume: Some(true),
+        free_bytes: Some(1),
+    });
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
+    let before = snapshot(&real_data(&f));
+
+    let result = f.run_as("nemesis", &swap_launcher(&f), CaptureMode::Swap);
+
+    match result {
+        Err(ToolError::Swap(SwapError::Refused(message))) => {
+            assert!(message.contains("needs"), "{message}");
+            assert!(message.contains("only 1 bytes is free"), "{message}");
+        }
+        other => panic!("expected a refusal for space, got {other:?}"),
+    }
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(!journal_file(&f).exists());
+    assert!(!swap_dir(&f).exists());
 }
 
 #[test]
 fn a_swap_is_refused_while_a_program_runs_from_the_install() {
     let f = fixture(vec![writes_real_data("nemesis")]);
+    let _swap = SwapTest::same_volume();
     let install = install_dir(&f);
     std::fs::copy(r"C:\Windows\System32\cmd.exe", install.join("busy.exe")).unwrap();
     let mut busy = Command::new(install.join("busy.exe"))
@@ -1896,11 +2209,12 @@ fn a_swap_is_refused_while_a_program_runs_from_the_install() {
     assert_eq!(snapshot(&real_data(&f)), before);
     assert!(!swap::is_reparse_point(&real_data(&f)));
     assert!(!journal_file(&f).exists());
-    assert!(!f.deployed_game_dir().exists());
+    assert!(!swap_dir(&f).exists());
 }
 
 #[test]
 fn a_swap_is_refused_when_the_real_data_is_already_a_link() {
+    let _swap = SwapTest::same_volume();
     let f = fixture(vec![writes_real_data("nemesis")]);
     let install = install_dir(&f);
     let kept = install.join("Data.kept");
@@ -1929,8 +2243,12 @@ fn a_taken_aside_name_is_refused_before_anything_moves() {
     std::fs::create_dir_all(&aside).unwrap();
     std::fs::write(aside.join("keep.txt"), b"keep").unwrap();
     let before = snapshot(&real_data(&f));
+    let space = SpaceNeed {
+        folder: install.clone(),
+        bytes: 0,
+    };
 
-    let result = swap::preflight(&install, &f.deployed_game_dir(), &real_data(&f), &aside);
+    let result = swap::preflight(&install, &real_data(&f), &aside, &space);
 
     match result {
         Err(SwapError::Refused(message)) => {
@@ -1957,98 +2275,244 @@ fn auto_refuses_a_tool_that_works_on_the_real_install_before_anything_is_deploye
 }
 
 #[test]
-fn a_crashed_swap_is_put_back_by_the_next_check() {
-    let f = fixture(vec![writes_real_data("nemesis")]);
+fn a_crash_after_step_4_is_put_back_and_the_copy_is_discarded() {
+    crash_case(4, CopyKind::Kept);
+}
+
+#[test]
+fn a_crash_after_step_5_is_put_back_and_the_copy_is_discarded() {
+    crash_case(5, CopyKind::Kept);
+}
+
+#[test]
+fn a_crash_after_step_6_is_put_back_and_the_tools_writes_are_discarded() {
+    crash_case(6, CopyKind::Kept);
+}
+
+#[test]
+fn a_crash_after_step_7_is_put_back_and_the_copy_is_discarded() {
+    crash_case(7, CopyKind::Kept);
+}
+
+#[test]
+fn a_crash_on_another_volume_is_put_back_and_the_per_run_copy_is_deleted() {
+    crash_case_on_other_volume(6);
+}
+
+fn crash_case(step: u8, kind: CopyKind) {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
     let install = install_dir(&f);
     let before = snapshot(&real_data(&f));
-    simulate_crashed_swap(&f);
-    assert!(swap::is_reparse_point(&real_data(&f)));
+    crash_after(&f, step, kind, "crash");
 
     let restored = swap::recover_game(&f.ctx, &f.def).unwrap();
 
-    assert_eq!(restored.len(), 1);
-    assert!(!swap::is_reparse_point(&real_data(&f)));
-    assert!(real_data(&f).is_dir());
-    assert_eq!(snapshot(&real_data(&f)), before);
+    assert_eq!(restored.len(), 1, "step {step}");
+    assert_eq!(snapshot(&real_data(&f)), before, "step {step}");
+    assert!(!kept_copy(&f).exists(), "step {step}: the copy is deleted");
     assert!(names(&install)
         .iter()
         .all(|n| !n.starts_with(swap::ASIDE_PREFIX)));
     assert!(!journal_file(&f).exists());
 }
 
-#[test]
-fn a_crashed_swap_is_put_back_by_a_run_before_it_starts() {
-    let f = fixture(vec![writes_real_data("nemesis")]);
+fn crash_case_on_other_volume(step: u8) {
+    let _swap = SwapTest::different_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
     let install = install_dir(&f);
     let before = snapshot(&real_data(&f));
-    simulate_crashed_swap(&f);
+    crash_after(&f, step, CopyKind::PerRun, "crashpr");
+
+    let restored = swap::recover_game(&f.ctx, &f.def).unwrap();
+
+    assert_eq!(restored.len(), 1);
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(names(&install)
+        .iter()
+        .all(|n| !n.starts_with(swap::COPY_PREFIX) && !n.starts_with(swap::ASIDE_PREFIX)));
+    assert!(!journal_file(&f).exists());
+}
+
+#[test]
+fn a_crashed_swap_is_put_back_by_a_run_before_it_starts() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
+    let before = snapshot(&real_data(&f));
+    crash_after(&f, 6, CopyKind::Kept, "crash");
+
+    let outcome = f
+        .run_as("nemesis", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
+
+    assert!(outcome.promoted, "{outcome:?}");
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert_copy_matches_plan(&f);
+}
+
+#[test]
+fn a_journal_whose_copy_points_at_a_victim_folder_stops_recovery_and_touches_nothing() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
+    let victim = f._tmp.path().join("victim");
+    std::fs::create_dir_all(&victim).unwrap();
+    std::fs::write(victim.join("keep.txt"), b"keep").unwrap();
+    let mut journal = journal_of(&f, "tamper", CopyKind::Kept);
+    journal.copy_dir = victim.clone();
+    swap::write_journal(&f.ctx, &journal).unwrap();
+    std::fs::rename(real_data(&f), aside_named(&f, "tamper")).unwrap();
+
+    let result = swap::recover_game(&f.ctx, &f.def);
+
+    match result {
+        Err(SwapError::Stuck(message)) => {
+            assert!(message.contains("copy folder"), "{message}");
+        }
+        other => panic!("expected the recovery to stop, got {other:?}"),
+    }
+    assert_eq!(std::fs::read(victim.join("keep.txt")).unwrap(), b"keep");
+    assert!(aside_named(&f, "tamper").is_dir());
+    assert!(!real_data(&f).exists());
+    assert!(journal_file(&f).exists());
+}
+
+#[test]
+fn a_copy_without_a_matching_marker_stops_recovery_before_anything_moves() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
+    let journal = journal_of(&f, "stranger", CopyKind::Kept);
+    swap::write_journal(&f.ctx, &journal).unwrap();
+    std::fs::rename(real_data(&f), aside_named(&f, "stranger")).unwrap();
+    std::fs::create_dir_all(kept_copy(&f)).unwrap();
+    std::fs::write(kept_copy(&f).join("stranger.txt"), b"not ours").unwrap();
+
+    let result = swap::recover_game(&f.ctx, &f.def);
+
+    match result {
+        Err(SwapError::Stuck(message)) => {
+            assert!(message.contains("marker"), "{message}");
+        }
+        other => panic!("expected the recovery to stop, got {other:?}"),
+    }
+    assert!(!real_data(&f).exists(), "the real Data was not moved back");
+    assert!(aside_named(&f, "stranger").is_dir());
+    assert_eq!(
+        std::fs::read(kept_copy(&f).join("stranger.txt")).unwrap(),
+        b"not ours"
+    );
+    assert!(journal_file(&f).exists());
+}
+
+#[test]
+fn a_version_1_junction_journal_is_refused_by_name_and_nothing_is_changed() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let before = snapshot(&real_data(&f));
+    let path = journal_file(&f);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let old = serde_json::json!({
+        "version": 1,
+        "game": GAME,
+        "store": "steam",
+        "instance_id": f.id(),
+        "tool": "nemesis",
+        "run": "old",
+        "started_unix_ms": 0,
+        "install_dir": install_dir(&f),
+        "real_data": real_data(&f),
+        "aside": aside_named(&f, "old"),
+        "junction_target": f._tmp.path().join("farm"),
+        "deployment_game_dir": f._tmp.path().join("farm"),
+    });
+    std::fs::write(&path, serde_json::to_vec_pretty(&old).unwrap()).unwrap();
+
+    let result = swap::recover_game(&f.ctx, &f.def);
+
+    match result {
+        Err(SwapError::Stuck(message)) => {
+            assert!(message.contains("version 1"), "{message}");
+            assert!(message.contains("junction"), "{message}");
+        }
+        other => panic!("expected the recovery to stop, got {other:?}"),
+    }
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(path.exists());
+}
+
+#[test]
+fn remove_copy_refuses_a_folder_without_the_marker_and_removes_a_kept_copy() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
+    std::fs::create_dir_all(kept_copy(&f)).unwrap();
+    std::fs::write(kept_copy(&f).join("stranger.txt"), b"not ours").unwrap();
+
+    let refused = game_tool_copy::remove_kept_copy(&f.ctx, &f.def, f.id());
+
+    assert!(matches!(refused, Err(SwapError::Refused(_))), "{refused:?}");
+    assert!(kept_copy(&f).join("stranger.txt").exists());
+
+    std::fs::remove_dir_all(kept_copy(&f)).unwrap();
+    let outcome = f
+        .run_as("nemesis", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
+    assert!(outcome.promoted, "{outcome:?}");
+    assert!(kept_copy(&f).is_dir());
+
+    let removed = game_tool_copy::remove_kept_copy(&f.ctx, &f.def, f.id()).unwrap();
+
+    assert_eq!(removed, game_tool_copy::RemoveCopy::Removed);
+    assert!(!kept_copy(&f).exists());
+    assert_eq!(
+        game_tool_copy::remove_kept_copy(&f.ctx, &f.def, f.id()).unwrap(),
+        game_tool_copy::RemoveCopy::NothingToRemove
+    );
+}
+
+#[test]
+fn deleting_an_instance_removes_its_swap_folder() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_and_deletes("nemesis")]);
+    let outcome = f
+        .run_as("nemesis", &swap_launcher(&f), CaptureMode::Swap)
+        .unwrap();
+    assert!(outcome.promoted, "{outcome:?}");
+    let folder = swap_dir(&f);
+    assert!(folder.exists());
+
+    agora_core::game_instance::delete(&f.ctx, f.id()).unwrap();
+
+    assert!(!folder.exists());
+}
+
+#[test]
+#[ignore = "runs the 32-bit cmd.exe from SysWOW64 on a fake install; run with --ignored"]
+fn real_a_32_bit_tool_run_by_swap_promotes_its_write() {
+    let _swap = SwapTest::same_volume();
+    let f = fixture_with_exe(
+        vec![writes_real_data("nemesis")],
+        false,
+        false,
+        r"C:\Windows\SysWOW64\cmd.exe",
+    );
+    let install = install_dir(&f);
+    let before = snapshot(&real_data(&f));
     let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
 
     let outcome = f.run_as("nemesis", &launcher, CaptureMode::Swap).unwrap();
 
+    println!("{outcome:#?}");
     assert!(outcome.promoted, "{outcome:?}");
+    assert!(outcome.written.contains(&"Data/meshes/x.nif".to_string()));
     assert_eq!(snapshot(&real_data(&f)), before);
-    assert!(!swap::is_reparse_point(&real_data(&f)));
 }
 
 #[test]
-fn a_journal_with_a_real_data_folder_and_an_aside_stops_and_touches_neither() {
+fn a_recovery_with_nothing_pending_changes_nothing() {
     let f = fixture(vec![writes_real_data("nemesis")]);
-    let aside = aside_named(&f, "both");
-    std::fs::create_dir_all(&aside).unwrap();
-    std::fs::write(aside.join("aside.txt"), b"aside").unwrap();
-    let farm_data = f.deployed_game_dir().join("Data");
-    swap::write_journal(&f.ctx, &journal_for(&f, "both", &aside, &farm_data)).unwrap();
-    let real_before = snapshot(&real_data(&f));
-    let aside_before = snapshot(&aside);
+    let before = snapshot(&real_data(&f));
 
-    let result = swap::recover_game(&f.ctx, &f.def);
-
-    match result {
-        Err(SwapError::Stuck(message)) => {
-            assert!(message.contains("both"), "{message}");
-            assert!(message.contains("nothing was merged"), "{message}");
-        }
-        other => panic!("expected the recovery to stop, got {other:?}"),
-    }
-    assert_eq!(snapshot(&real_data(&f)), real_before);
-    assert_eq!(snapshot(&aside), aside_before);
-    assert!(journal_file(&f).exists());
-}
-
-#[test]
-fn a_junction_pointing_somewhere_else_stops_recovery_and_is_left_alone() {
-    let f = fixture(vec![writes_real_data("nemesis")]);
-    let install = install_dir(&f);
-    let elsewhere = f._tmp.path().join("elsewhere");
-    std::fs::create_dir_all(&elsewhere).unwrap();
-    let aside = aside_named(&f, "elsewhere");
-    let farm_data = f.deployed_game_dir().join("Data");
-    std::fs::create_dir_all(&farm_data).unwrap();
-    swap::write_journal(&f.ctx, &journal_for(&f, "elsewhere", &aside, &farm_data)).unwrap();
-    std::fs::rename(real_data(&f), &aside).unwrap();
-    junction::create(&elsewhere, real_data(&f)).unwrap();
-    let aside_before = snapshot(&aside);
-
-    let result = swap::recover_game(&f.ctx, &f.def);
-
-    match result {
-        Err(SwapError::Stuck(message)) => {
-            assert!(message.contains("not the instance's farm"), "{message}");
-        }
-        other => panic!("expected the recovery to stop, got {other:?}"),
-    }
-    assert!(swap::is_reparse_point(&real_data(&f)));
-    assert!(swap::same_path(
-        &junction::get_target(real_data(&f)).unwrap(),
-        &elsewhere
-    ));
-    assert_eq!(snapshot(&aside), aside_before);
-    assert!(aside.is_dir());
-    assert!(names(&install)
-        .iter()
-        .any(|n| n.starts_with(swap::ASIDE_PREFIX)));
-    assert!(journal_file(&f).exists());
+    assert!(swap::recover_game(&f.ctx, &f.def).unwrap().is_empty());
+    assert!(swap::recover_all(&f.ctx).is_empty());
+    assert_eq!(snapshot(&real_data(&f)), before);
 }
 
 #[test]
@@ -2109,41 +2573,6 @@ fn the_outside_data_watch_reports_a_file_written_at_the_install_root() {
         outcome.install_changes
     );
     assert!(!outcome.install_changes.may_be_incomplete);
-}
-
-/// A 32-bit tool, run by swap, promotes its write: the 32-bit cmd cannot load the 64-bit VFS DLL, so
-/// this is the path a real 32-bit tool takes. A real program on a fake install, so it is ignored by
-/// default.
-#[test]
-#[ignore = "runs the 32-bit cmd.exe from SysWOW64 on a fake install; run with --ignored"]
-fn real_a_32_bit_tool_run_by_swap_promotes_its_write() {
-    let f = fixture_with_exe(
-        vec![writes_real_data("nemesis")],
-        false,
-        false,
-        r"C:\Windows\SysWOW64\cmd.exe",
-    );
-    let install = install_dir(&f);
-    let before = snapshot(&real_data(&f));
-    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
-
-    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Swap).unwrap();
-
-    println!("{outcome:#?}");
-    assert!(outcome.promoted, "{outcome:?}");
-    assert!(outcome.written.contains(&"Data/meshes/x.nif".to_string()));
-    assert_eq!(snapshot(&real_data(&f)), before);
-    assert!(!swap::is_reparse_point(&real_data(&f)));
-}
-
-#[test]
-fn a_recovery_with_nothing_pending_changes_nothing() {
-    let f = fixture(vec![writes_real_data("nemesis")]);
-    let before = snapshot(&real_data(&f));
-
-    assert!(swap::recover_game(&f.ctx, &f.def).unwrap().is_empty());
-    assert!(swap::recover_all(&f.ctx).is_empty());
-    assert_eq!(snapshot(&real_data(&f)), before);
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,17 +2844,19 @@ fn under_swap_a_tool_overwrites_a_file_in_its_own_mod_and_the_mod_and_real_data_
             ("Data/Tool/own.txt", b"original"),
         ],
     );
-    let layer = content_layer_id(&f, &item);
     let before_mod = f.content_bytes(&item, "Data/Tool/own.txt");
     let before_real = snapshot(&real_data(&f));
 
+    // Under a swap every file is a copy, so the tool's own mod is copied with the rest and no layer is
+    // copied separately (MASTER_SPEC §26.9, decision 9).
+    let _swap = SwapTest::same_volume();
     let out = f
         .run_as("owner", &StagingLauncher::new(), CaptureMode::Swap)
         .unwrap();
 
     assert!(out.promoted, "{out:?}");
     assert_eq!(out.capture, CaptureMethod::Swap);
-    assert_eq!(out.copied_layer.as_deref(), Some(layer.as_str()));
+    assert_eq!(out.copied_layer, None);
     assert_eq!(
         std::fs::read_to_string(f.generation_dir("owner", "1").join("Data/Tool/own.txt"))
             .unwrap()

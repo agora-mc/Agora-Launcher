@@ -41,6 +41,7 @@ pub mod game_load_order;
 pub mod game_plugins;
 pub mod game_registry;
 pub mod game_saves;
+pub mod game_tool_copy;
 pub mod game_tool_swap;
 pub mod game_tools;
 pub mod game_user_files;

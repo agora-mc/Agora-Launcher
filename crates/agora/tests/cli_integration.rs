@@ -319,6 +319,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "tools-swap"],
     &["games", "tools-swap", "status"],
     &["games", "tools-swap", "restore"],
+    &["games", "tools-swap", "remove-copy"],
     &["games", "import"],
     &["games", "import", "mo2"],
     &["games", "import", "mo2", "scan"],

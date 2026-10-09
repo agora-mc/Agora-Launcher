@@ -561,6 +561,11 @@ pub fn delete(ctx: &Ctx, id: &str) -> Result<DeleteOutcome, InstanceError> {
     // The row goes first: a folder left behind by a failed removal is inert,
     // while a row whose folder is gone is a broken instance.
     conn.execute("DELETE FROM game_instances WHERE instance_id = ?1", [id])?;
+    // The instance's kept copy of Data goes with it (MASTER_SPEC §26.9). A folder the copy's marker does
+    // not name is left in place, and the deletion still succeeds.
+    if let BaseReference::Pinned { id: base_id, .. } = &base_ref {
+        let _ = crate::game_tool_copy::remove_deleted_instance_copy(ctx, id, base_id);
+    }
     if instance_dir.exists() {
         std::fs::remove_dir_all(&instance_dir)?;
     }

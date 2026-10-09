@@ -29,8 +29,8 @@ use crate::ctx::Ctx;
 use crate::event_sink::CancellationToken;
 use crate::game_base::BaseManifest;
 use crate::game_deploy::{
-    compare_farm, deploy_locked, deploy_locked_with_copy, discard_deployment,
-    read_deployment_record, source_path, DeployMode, DeploymentRecord, FarmChange, Placement,
+    compare_farm, deploy_locked, deploy_locked_with_copy, discard_deployment, farm_file_differs,
+    read_deployment_record, DeployMode, DeploymentRecord, FarmChange, Placement,
 };
 use crate::game_ini;
 use crate::game_instance::GameInstanceManifest;
@@ -38,6 +38,7 @@ use crate::game_launch::{
     self, LaunchError, LaunchRoots, LaunchedGame, Launcher, PreparedLaunch, VfsLaunch,
 };
 use crate::game_load_order;
+use crate::game_tool_copy::{self, CopyKind};
 use crate::game_tool_swap::{self, SwapError, SwapJournal};
 use crate::game_user_files::{self, UserFilesError};
 use crate::install_watch::{InstallChanges, InstallWatch};
@@ -255,6 +256,29 @@ pub struct RunOutcome {
     /// are captured and not listed here.
     #[serde(default)]
     pub install_changes: InstallChanges,
+    /// What a swap did with its copy of `Data`, for a run captured by swap (MASTER_SPEC §26.9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap: Option<SwapRunReport>,
+}
+
+/// What a swap did with its copy of the instance's `Data` (MASTER_SPEC §26.9): how much was copied in
+/// before the tool ran, what the capture found, and how much was copied again afterwards to match the
+/// plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwapRunReport {
+    /// Whether the copy is kept between runs (same volume) or made for this run only.
+    pub copy: CopyKind,
+    /// Files and bytes written into the copy before the tool ran: all of `Data` for a new copy, only
+    /// what changed for a kept one.
+    pub copied_in_files: usize,
+    pub copied_in_bytes: u64,
+    /// Changed or new files the capture found in the copy.
+    pub captured_files: usize,
+    /// Files the tool deleted from the copy, captured as whiteouts.
+    pub deleted_files: usize,
+    /// Files written into the copy after the run to match the plan again.
+    pub refreshed_files: usize,
+    pub refreshed_bytes: u64,
 }
 
 /// The difference between a tool's previous and current generations, by file.
@@ -1333,13 +1357,13 @@ fn run_from_links(
     Ok(out)
 }
 
-/// A run that works on the real install's `Data` folder (MASTER_SPEC §26.9, slice 4c). The instance is
-/// deployed as links, the user files are swapped in, and then the real `Data` is renamed aside and
-/// replaced by a junction to the farm's `Data`. The tool runs from the farm, so the paths it reads
-/// through the real install are the mods, and its writes go through the junction into the farm, where
-/// link capture takes them. When the tool exits the junction is removed and the real `Data` is put
-/// back, and only then is the farm captured and taken away. The writable layer is never changed. The
-/// caller holds the lock.
+/// A run that works on the real install's `Data` folder (MASTER_SPEC §26.9, slice 4e). The instance's
+/// `Data` is copied as real, writable files (the copy is kept between runs on the same volume, or made
+/// for this run on the install's volume). The real `Data` is renamed aside, the copy is renamed into its
+/// place, and the tool runs from the install folder, so it sees the real path. When it exits the copy
+/// is renamed back and the real `Data` with it. The copy's changes are captured from the copy against
+/// its record, the way link capture does, then the copy is brought back in line with the plan. The
+/// instance's normal farm is not touched. The caller holds the lock.
 #[allow(clippy::too_many_arguments)]
 fn run_by_swap(
     ctx: &Ctx,
@@ -1357,44 +1381,22 @@ fn run_by_swap(
         .paths
         .instance_dir(instance_id)
         .map_err(|e| ToolError::Other(e.to_string()))?;
-    let game_dir = deployment_folder(base, instance_id)?;
-    let deployment_dir = game_dir
-        .parent()
-        .ok_or_else(|| ToolError::Other("the deployment has no folder".into()))?
-        .to_path_buf();
-    let install = base.source_location.clone();
-    let real_data = install.join("Data");
     let run = new_run_id();
+
+    // Decided from trusted inputs before anything is created or moved.
+    let copy = game_tool_copy::copy_plan(ctx, instance_id, definition, &run)?;
+    let install = copy.location.install.clone();
+    let real_data = install.join("Data");
     let aside = install.join(format!("{}{run}", game_tool_swap::ASIDE_PREFIX));
-    let farm_data = game_dir.join("Data");
-
-    // Refused before anything is deployed or moved.
-    game_tool_swap::preflight(&install, &game_dir, &real_data, &aside)?;
-
-    let copied = executable_layer(ctx, instance_id, definition, tool)?;
-    deploy_locked_with_copy(
-        ctx,
-        instance_id,
-        definition,
-        DeployMode::Links,
-        copied.as_deref(),
-    )?;
-    let before = read_deployment_record(&deployment_dir)?;
-    let fingerprint = input_fingerprint(ctx, instance_id, definition, tool)?;
-
-    let roots = LaunchRoots {
-        runtime: game_dir.clone(),
-        install: Some(install.clone()),
-        base: Some(base.location.clone()),
-    };
-    let resolved = game_launch::resolve_recipe(&tool.launch, &roots)?;
-
     let dir = tool_dir(&instance_dir, tool_id.as_str());
     let staging = dir.join(format!("staging-{run}"));
 
+    game_tool_swap::preflight(&install, &real_data, &aside, &copy.space_need())?;
+    let fingerprint = input_fingerprint(ctx, instance_id, definition, tool)?;
+
     // The user files go in before the real Data moves, so the swap journal is the only swap in progress
     // for this game when the recovery check runs.
-    game_user_files::swap_in(ctx, instance_id, definition, &store, &game_dir)?;
+    game_user_files::swap_in(ctx, instance_id, definition, &store, &install)?;
 
     let journal = SwapJournal {
         version: game_tool_swap::JOURNAL_VERSION,
@@ -1407,68 +1409,75 @@ fn run_by_swap(
         install_dir: install.clone(),
         real_data: real_data.clone(),
         aside: aside.clone(),
-        junction_target: farm_data.clone(),
-        deployment_game_dir: game_dir.clone(),
+        copy_kind: copy.kind,
+        copy_dir: copy.copy_dir.clone(),
+        swap_dir: copy.location.swap_dir.clone(),
     };
-    // The journal is written, and made durable, before the real Data is touched.
+    // The journal is written, and made durable, before the copy or the real Data is touched.
     if let Err(e) = game_tool_swap::write_journal(ctx, &journal) {
-        let undone = undo_swap(
-            ctx,
-            definition,
-            &store,
-            &journal,
-            &deployment_dir,
-            instance_id,
-            e.into(),
-        );
-        return Err(undone);
+        let _ = release_session(ctx, definition, &store);
+        return Err(e.into());
     }
-    std::fs::create_dir_all(&farm_data)?;
+
+    let (before, prepared) = match game_tool_copy::prepare(ctx, &journal, &copy.files) {
+        Ok(prepared) => prepared,
+        Err(e) => return Err(abandon_swap(ctx, definition, &store, &journal, e.into())),
+    };
     if let Err(e) = game_tool_swap::engage(&journal) {
-        let undone = undo_swap(
-            ctx,
-            definition,
-            &store,
-            &journal,
-            &deployment_dir,
-            instance_id,
-            e.into(),
-        );
-        return Err(undone);
+        return Err(abandon_swap(ctx, definition, &store, &journal, e.into()));
     }
 
-    let mut prepared = PreparedLaunch::undeployed(resolved, Vec::new(), None);
-    prepared.deployment = Some(DeployMode::Links);
-
-    let watch = InstallWatch::start(&install);
-    let mut launched = match launcher.launch(&prepared) {
-        Ok(launched) => launched,
+    // The tool runs from the install folder, with the copy in place of `Data`: a program the recipe starts
+    // from `Data` runs the copy's file, and a program from the install root runs the real file. The recipe
+    // is resolved now, because resolving it checks that the program is there.
+    let roots = LaunchRoots {
+        runtime: install.clone(),
+        install: Some(install.clone()),
+        base: Some(base.location.clone()),
+    };
+    let resolved = match game_launch::resolve_recipe(&tool.launch, &roots) {
+        Ok(resolved) => resolved,
         Err(e) => {
-            let _ = watch.finish();
-            return Err(undo_swap(
+            return Err(put_back_after(
                 ctx,
                 definition,
                 &store,
                 &journal,
-                &deployment_dir,
-                instance_id,
+                ToolError::Launch(e),
+            ))
+        }
+    };
+
+    let mut prepared_launch = PreparedLaunch::undeployed(resolved, Vec::new(), None);
+    prepared_launch.deployment = Some(DeployMode::Copies);
+
+    let watch = InstallWatch::start(&install);
+    let mut launched = match launcher.launch(&prepared_launch) {
+        Ok(launched) => launched,
+        Err(e) => {
+            let _ = watch.finish();
+            return Err(put_back_after(
+                ctx,
+                definition,
+                &store,
+                &journal,
                 ToolError::Launch(e),
             ));
         }
     };
     let _ = game_user_files::record_process(ctx, &definition.id, &store, launched.identity.clone());
 
-    let exit = wait_for_tree(&game_dir, &mut launched, cancel);
+    let exit = wait_for_tree(&install, &mut launched, cancel);
     let installed = watch.finish();
 
-    // Put the real Data back before capturing. If that fails, the farm is kept, with the tool's writes
-    // in it, and the journal stays for the next check.
-    if let Err(e) = game_tool_swap::unswap(ctx, &journal) {
+    // Put the real Data back before capturing: the copy is moved home, then the aside comes back. If that
+    // fails, the copy and the journal are kept for the next check.
+    if let Err(e) = game_tool_swap::disengage(&journal) {
         let _ = release_session(ctx, definition, &store);
         return Err(e.into());
     }
 
-    let settled = capture_from_links(
+    let captured = capture_from_copy(
         ctx,
         instance_id,
         definition,
@@ -1477,15 +1486,16 @@ fn run_by_swap(
         &staging,
         &run,
         &fingerprint,
-        &game_dir,
+        &journal.copy_dir,
         &before,
         &exit,
     );
-    let forgotten = discard_deployment(&deployment_dir, instance_id);
+    let finished = game_tool_copy::finish_copy(ctx, definition, &journal);
     let released = release_session(ctx, definition, &store);
-    let settled = settled?;
-    forgotten?;
+    let refreshed = finished?;
+    game_tool_swap::remove_journal(ctx, &journal)?;
     released?;
+    let (settled, counts) = captured?;
 
     let mut out = outcome(
         tool_id,
@@ -1496,28 +1506,147 @@ fn run_by_swap(
         CaptureMethod::Swap,
         reason,
     );
-    out.copied_layer = copied;
-    out.install_changes = installed;
+    out.install_changes = outside_data(installed);
+    out.swap = Some(SwapRunReport {
+        copy: copy.kind,
+        copied_in_files: prepared.files,
+        copied_in_bytes: prepared.bytes,
+        captured_files: counts.changed,
+        deleted_files: counts.missing,
+        refreshed_files: refreshed.files,
+        refreshed_bytes: refreshed.bytes,
+    });
     Ok(out)
 }
 
-/// Undo a swap that did not get as far as the tool: put the real Data back, then take the farm and
-/// the user files away. If the real Data cannot be put back, the farm and the journal are kept for the
-/// next check and that error is the one returned. Otherwise `error` is returned.
-fn undo_swap(
+/// What a swap's capture found in the copy: the changed or new files written to the staging folder, and
+/// the files the tool deleted.
+#[derive(Debug, Clone, Copy, Default)]
+struct CopyCounts {
+    changed: usize,
+    missing: usize,
+}
+
+/// Step 9 of a swap: compares the copy with the record it had before the run, by the change detection
+/// link capture uses (size; then time; then the bytes against the source), and writes what changed into
+/// the staging folder under `Data/`. A deletion becomes a whiteout. The copy's own marker is never
+/// output. Then the run is settled as any other.
+#[allow(clippy::too_many_arguments)]
+fn capture_from_copy(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    dir: &Path,
+    staging: &Path,
+    run: &str,
+    fingerprint: &str,
+    copy_dir: &Path,
+    before: &game_tool_copy::CopyRecord,
+    exit: &TreeExit,
+) -> Result<(Settled, CopyCounts), ToolError> {
+    std::fs::create_dir_all(staging)?;
+    let deployed = game_tool_copy::as_deployment_record(before);
+    let diff = compare_farm(copy_dir, &deployed, &mut |file, recorded| {
+        farm_file_differs(ctx, file, recorded)
+    })?;
+
+    let mut counts = CopyCounts::default();
+    for change in diff.changes {
+        let file = match change {
+            FarmChange::Changed { file, .. } | FarmChange::Added(file) => file,
+        };
+        if file.rel_path.as_str() == game_tool_copy::MARKER_FILE {
+            continue;
+        }
+        let rel = format!("Data/{}", file.rel_path.as_str());
+        let dest = crate::game_ini::join_rel(staging, &rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&file.abs_path, &dest)?;
+        counts.changed += 1;
+    }
+    for recorded in &diff.missing {
+        let rel = RelPath::new(format!("Data/{}", recorded.path.as_str()))
+            .map_err(|e| ToolError::Other(format!("invalid deletion: {e}")))?;
+        write_whiteout(staging, &rel)?;
+        counts.missing += 1;
+    }
+
+    let settled = settle_run(
+        ctx,
+        instance_id,
+        definition,
+        tool,
+        dir,
+        staging,
+        run,
+        fingerprint,
+        exit,
+    )?;
+    Ok((settled, counts))
+}
+
+/// The changes under the real install folder that are not under `Data`: a swap's `Data` writes are the
+/// copy's, and are captured, so they are not listed here.
+fn outside_data(changes: InstallChanges) -> InstallChanges {
+    let outside = |paths: Vec<String>| -> Vec<String> {
+        paths
+            .into_iter()
+            .filter(|p| {
+                !(p.eq_ignore_ascii_case("Data") || p.to_ascii_lowercase().starts_with("data/"))
+            })
+            .collect()
+    };
+    InstallChanges {
+        created: outside(changes.created),
+        changed: outside(changes.changed),
+        deleted: outside(changes.deleted),
+        may_be_incomplete: changes.may_be_incomplete,
+        unavailable: changes.unavailable,
+    }
+}
+
+/// A swap that did not get as far as the tool: the real Data is put back if it moved, the copy is
+/// discarded, and the journal goes last. If the real Data cannot be put back, the copy and the journal
+/// are kept for the next check and that error is returned instead.
+fn abandon_swap(
     ctx: &Ctx,
     definition: &GameDefinition,
     store: &StoreId,
     journal: &SwapJournal,
-    deployment_dir: &Path,
-    instance_id: &str,
     error: ToolError,
 ) -> ToolError {
-    if let Err(e) = game_tool_swap::unswap(ctx, journal) {
+    if let Err(e) = game_tool_swap::restore_and_discard(journal) {
         return e.into();
     }
-    // A failure to take the farm away does not hide the error that started the undo.
-    let _ = discard_deployment(deployment_dir, instance_id);
+    let _ = game_tool_swap::remove_journal(ctx, journal);
+    let _ = release_session(ctx, definition, store);
+    error
+}
+
+/// A swap whose tool did not start: the copy moves home, the kept copy is brought to the plan (or the
+/// per-run copy deleted), and the journal goes. Returns `error`, or the error of the step that failed.
+fn put_back_after(
+    ctx: &Ctx,
+    definition: &GameDefinition,
+    store: &StoreId,
+    journal: &SwapJournal,
+    error: ToolError,
+) -> ToolError {
+    if let Err(e) = game_tool_swap::disengage(journal) {
+        let _ = release_session(ctx, definition, store);
+        return e.into();
+    }
+    if let Err(e) = game_tool_copy::finish_copy(ctx, definition, journal) {
+        let _ = release_session(ctx, definition, store);
+        return e.into();
+    }
+    if let Err(e) = game_tool_swap::remove_journal(ctx, journal) {
+        let _ = release_session(ctx, definition, store);
+        return e.into();
+    }
     let _ = release_session(ctx, definition, store);
     error
 }
@@ -1559,6 +1688,7 @@ fn outcome(
         failure: settled.failure,
         copied_layer: None,
         install_changes: InstallChanges::default(),
+        swap: None,
     }
 }
 
@@ -1583,17 +1713,7 @@ fn capture_from_links(
     // bytes changed nothing. A link is the content object itself, so a write through it shows in its
     // size and time, and the copy in the source cannot be compared with it.
     let diff = compare_farm(game_dir, before, &mut |file, recorded| {
-        if file.size != recorded.size {
-            return Ok(true);
-        }
-        if file.modified_unix_ms == recorded.modified_unix_ms {
-            return Ok(false);
-        }
-        if recorded.placement == Placement::Link {
-            return Ok(true);
-        }
-        let source = source_path(ctx, &recorded.source);
-        Ok(std::fs::read(&file.abs_path)? != std::fs::read(&source)?)
+        farm_file_differs(ctx, file, recorded)
     })?;
 
     let linked: Vec<String> = diff
@@ -1644,7 +1764,7 @@ fn capture_from_links(
 
 /// The VFS's deletion marker for `rel` in a staging folder: `<staging>\.agvfs-wh\<rel>.wh`, the same
 /// marker the VFS writes when a tool deletes a file.
-fn write_whiteout(staging: &Path, rel: &RelPath) -> Result<(), ToolError> {
+pub(crate) fn write_whiteout(staging: &Path, rel: &RelPath) -> Result<(), ToolError> {
     let mut marker = staging
         .join(WHITEOUT_DIR)
         .join(rel.as_str())

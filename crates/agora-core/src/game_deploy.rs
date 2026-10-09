@@ -1194,6 +1194,104 @@ pub(crate) fn deploy_locked(
     deploy_locked_with_copy(ctx, instance_id, definition, mode, None)
 }
 
+/// What [`place_files`] did: the counts, and the record of each file as the folder now holds it.
+pub(crate) struct PlacedFiles {
+    pub linked: usize,
+    pub copied: usize,
+    pub copied_bytes: u64,
+    pub config_copied: usize,
+    pub recorded: Vec<DeployedFileRecord>,
+}
+
+/// The executor that writes a plan's files into `root`: a hard link where the plan places a link (a
+/// copy when the link fails), a real copy otherwise. Each file is recorded with the placement, size
+/// and time it has in `root`. A deployment writes its staging folder with it, and a swap's copy of
+/// `Data` writes its copy with it (MASTER_SPEC §26.9), so there is one copy loop.
+pub(crate) fn place_files(
+    ctx: &Ctx,
+    files: &[PlannedFile],
+    root: &Path,
+) -> Result<PlacedFiles, DeployError> {
+    let mut linked = 0usize;
+    let mut copied = 0usize;
+    let mut copied_bytes = 0u64;
+    let mut config_copied = 0usize;
+    let mut recorded = Vec::with_capacity(files.len());
+
+    for file in files {
+        if file.is_config_copy {
+            config_copied += 1;
+        }
+
+        let dest = root.join(file.path.as_str());
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let source_path = source_path(ctx, &file.source);
+
+        let mut actual_placement = file.placement;
+        if file.placement == Placement::Link {
+            match std::fs::hard_link(&source_path, &dest) {
+                Ok(()) => {
+                    linked += 1;
+                }
+                Err(_) => {
+                    // Fallback to copy if hard link fails
+                    std::fs::copy(&source_path, &dest)?;
+                    copied += 1;
+                    copied_bytes += file.size;
+                    actual_placement = Placement::Copy;
+                }
+            }
+        } else {
+            std::fs::copy(&source_path, &dest)?;
+            copied += 1;
+            copied_bytes += file.size;
+        }
+
+        let meta = std::fs::metadata(&dest)?;
+        let mtime = get_modified_unix_ms(&meta);
+        recorded.push(DeployedFileRecord {
+            path: file.path.clone(),
+            source: file.source.clone(),
+            placement: actual_placement,
+            size: meta.len(),
+            modified_unix_ms: mtime,
+        });
+    }
+
+    Ok(PlacedFiles {
+        linked,
+        copied,
+        copied_bytes,
+        config_copied,
+        recorded,
+    })
+}
+
+/// Whether a file in a farm differs from its record (MASTER_SPEC §26.9): a size change is a change;
+/// an unchanged time is not; a linked file that moved in time is a change, since a link is the content
+/// object itself; a copy whose time moved is compared byte for byte with its source. Link capture and
+/// a swap's copy both decide change this way.
+pub(crate) fn farm_file_differs(
+    ctx: &Ctx,
+    file: &FarmFile,
+    recorded: &DeployedFileRecord,
+) -> Result<bool, DeployError> {
+    if file.size != recorded.size {
+        return Ok(true);
+    }
+    if file.modified_unix_ms == recorded.modified_unix_ms {
+        return Ok(false);
+    }
+    if recorded.placement == Placement::Link {
+        return Ok(true);
+    }
+    let source = source_path(ctx, &recorded.source);
+    Ok(std::fs::read(&file.abs_path)? != std::fs::read(&source)?)
+}
+
 /// [`deploy_locked`], with one content layer deployed as copies (see [`plan_with_copy`]). The
 /// deployment's fingerprint records the copies, so a deployment made this way is not mistaken for
 /// the ordinary one. The caller discards it when its run is over.
@@ -1328,54 +1426,12 @@ pub(crate) fn deploy_locked_with_copy(
         active: true,
     };
 
-    let mut linked_count = 0usize;
-    let mut copied_count = 0usize;
-    let mut copied_bytes = 0u64;
-    let mut config_copied_count = 0usize;
-    let mut recorded_files = Vec::with_capacity(current_plan.files.len());
-
-    for file in &current_plan.files {
-        if file.is_config_copy {
-            config_copied_count += 1;
-        }
-
-        let dest = staging_dir.join(file.path.as_str());
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let source_path = source_path(ctx, &file.source);
-
-        let mut actual_placement = file.placement;
-        if file.placement == Placement::Link {
-            match std::fs::hard_link(&source_path, &dest) {
-                Ok(()) => {
-                    linked_count += 1;
-                }
-                Err(_) => {
-                    // Fallback to copy if hard link fails
-                    std::fs::copy(&source_path, &dest)?;
-                    copied_count += 1;
-                    copied_bytes += file.size;
-                    actual_placement = Placement::Copy;
-                }
-            }
-        } else {
-            std::fs::copy(&source_path, &dest)?;
-            copied_count += 1;
-            copied_bytes += file.size;
-        }
-
-        let meta = std::fs::metadata(&dest)?;
-        let mtime = get_modified_unix_ms(&meta);
-        recorded_files.push(DeployedFileRecord {
-            path: file.path.clone(),
-            source: file.source.clone(),
-            placement: actual_placement,
-            size: meta.len(),
-            modified_unix_ms: mtime,
-        });
-    }
+    let placed = place_files(ctx, &current_plan.files, &staging_dir)?;
+    let linked_count = placed.linked;
+    let copied_count = placed.copied;
+    let copied_bytes = placed.copied_bytes;
+    let config_copied_count = placed.config_copied;
+    let recorded_files = placed.recorded;
 
     // Rename staging folder to game folder
     std::fs::rename(&staging_dir, &game_dir)?;

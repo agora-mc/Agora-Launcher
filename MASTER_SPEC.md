@@ -3873,17 +3873,24 @@ small and well defined enough to support it.
   2. **Link capture (built, slice 4b):** used when the VFS cannot host the tool. It captures
      writes to the deployment, not to the real path.
   3. **A full-copy swap, the slow universal fallback, offered when a tool keeps failing:**
-     - the instance is deployed as **copies**, so every file is a real, writable file;
-     - the real `Data` is renamed aside, and the copy put in its place;
-     - the tool runs;
-     - then the copy is taken back out, the changes are captured, and the real `Data` is
-       renamed back.
-     On the same volume every move is a rename, and the copy is kept between runs, so only the
-     first run is slow. Across volumes the copy goes in and the changed files come back, which
-     is slower every run and needs free space on the game's drive. Agora deletes only a copy it
-     can prove it made: a marker file inside it, matched by the journal. The journal and
-     recovery of slice 4c carry over; the junction swap itself is replaced, since it fails for
-     tools that open protected files for writing.
+     - the instance's `Data` is copied as **real, writable files**, planned as a copies
+       deployment and written by the same executor, into a copy of its own. The normal farm is
+       not touched;
+     - the journal is written before the copy is touched; then the real `Data` is renamed aside,
+       and the copy put in its place;
+     - the tool runs from the install folder, so it sees the real path;
+     - then the copy is taken back out, the changes are captured by comparing the copy with the
+       record it held before the run (link capture's change detection), and the real `Data` is
+       renamed back. The kept copy is then brought back to the plan, so a discarded run's edits do
+       not survive it;
+     - recovery discards the copy's writes rather than capturing them.
+     On the same volume every move is a rename, and the copy is kept in the instance's swap folder
+     (`deployments\<instance>\swap\Data`) between runs, so only the first run is slow. Across
+     volumes a copy is made on the install's volume for one run and deleted afterwards, so every
+     run copies everything in and the changes back out, which needs free space on the game's
+     drive. Agora deletes only a copy it can prove it made: a marker file inside it, matched by the
+     journal. The journal and recovery of slice 4c carry over; the junction swap itself is
+     replaced, since it fails for tools that open protected files for writing.
      **The offer states its costs:** the disk space (the whole instance's size), the time for
      the first and later runs, and that the real `Data` is renamed during the run, so Steam and
      the game must not run.
