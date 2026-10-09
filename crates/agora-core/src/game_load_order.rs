@@ -799,6 +799,19 @@ fn rule_of(definition: &GameDefinition) -> Result<&PluginListRule, LoadOrderErro
         .ok_or_else(|| PluginListError::NoRule(definition.id.clone()).into())
 }
 
+/// The names a game's `implicit_list_file` holds, as the instance's deployment provides it. Empty
+/// when the deployment provides no such file. Sync reads the same names, so it never manages a
+/// plugin the game loads itself.
+pub fn implicit_list_names(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+) -> Result<Vec<String>, LoadOrderError> {
+    let rule = rule_of(definition)?;
+    let (_, names) = installed_files(ctx, instance_id, definition, rule)?;
+    Ok(names)
+}
+
 /// The plugin folder the game sees, from the deployment plan, and the names its
 /// `implicit_list_file` holds. The plan includes the writable layer, which the game also sees.
 fn installed_files(

@@ -456,6 +456,58 @@ fn base_plugins_are_never_added_even_when_a_layer_overrides_them() {
     assert!(!h.copy_text(&inst).contains("Skyrim.esm"));
 }
 
+/// The test game, with the plugins the game always loads named in its rule and in `Skyrim.ccc`.
+fn implicit_definition() -> GameDefinition {
+    let mut def = definition();
+    let rule = def.plugin_list.as_mut().unwrap();
+    rule.implicit = vec!["Skyrim.esm".into(), "Update.esm".into()];
+    rule.implicit_list_file = Some(RelPath::new("Skyrim.ccc").unwrap());
+    def
+}
+
+#[test]
+fn a_plugin_the_game_always_loads_is_never_activated_or_removed_by_sync() {
+    let h = Harness::with_definition(implicit_definition());
+    std::fs::write(h.install_dir.join("Skyrim.ccc"), "ccA.esm\r\nccB.esl\r\n").unwrap();
+    let inst = h.instance("creation-club");
+    let cc = h.item(
+        "creation-club",
+        &[
+            ("Data/ccA.esm", b"a"),
+            ("Data/Update.esm", b"u"),
+            ("Data/Mine.esp", b"m"),
+        ],
+    );
+    h.add(&inst, &cc);
+    h.deploy(&inst);
+    // The rule's Update.esm is never written into the list, and neither is a plugin Skyrim.ccc names
+    // until the game itself writes it.
+    assert_eq!(h.lines(&inst), [HEADER[0], HEADER[1], "*Mine.esp"]);
+
+    // The game writes its own line for ccA.esm, inactive, as Skyrim does in Plugins.txt.
+    append_line(&h, &inst, "ccA.esm");
+
+    // A later deploy changes the layers, so sync runs: it leaves the game's line exactly as it is.
+    let second = h.item("second", &[("Data/Second.esp", b"s")]);
+    h.add(&inst, &second);
+    let outcome = h.deploy(&inst);
+    let report = outcome.plugins().unwrap();
+    assert_eq!(report.added, ["Second.esp"]);
+    assert!(report.removed.is_empty());
+    assert_eq!(
+        h.lines(&inst),
+        [HEADER[0], HEADER[1], "*Mine.esp", "ccA.esm", "*Second.esp"]
+    );
+    assert_eq!(
+        h.plugin_names(&inst),
+        [
+            ("Mine.esp".into(), true, true),
+            ("ccA.esm".into(), false, false),
+            ("Second.esp".into(), true, true),
+        ]
+    );
+}
+
 #[test]
 fn an_instance_with_no_plugins_never_gets_a_list() {
     let h = Harness::new();
@@ -1069,8 +1121,8 @@ fn a_plugin_the_game_always_loads_is_shown_once_and_is_not_moved() {
     );
     h.add(&inst, &item);
     h.deploy(&inst);
-    // The deployed copy still names Base.esm, as the game's own list would.
-    assert_eq!(body(&h, &inst), ["*Base.esm", "*Patch.esp"]);
+    // The game loads Base.esm itself, so the deployed copy never names it (game_load_order docs).
+    assert_eq!(body(&h, &inst), ["*Patch.esp"]);
 
     let order = game_load_order::order(&h.ctx, &inst.instance_id, &h.def).unwrap();
     let names: Vec<&str> = order.entries.iter().map(|e| e.name.as_str()).collect();
@@ -1080,7 +1132,7 @@ fn a_plugin_the_game_always_loads_is_shown_once_and_is_not_moved() {
 
     let report = game_load_order::sort(&h.ctx, &inst.instance_id, &h.def, false).unwrap();
     assert!(report.moves.is_empty() && !report.written);
-    assert_eq!(body(&h, &inst), ["*Base.esm", "*Patch.esp"]);
+    assert_eq!(body(&h, &inst), ["*Patch.esp"]);
     let moved = game_load_order::move_plugin(
         &h.ctx,
         &inst.instance_id,

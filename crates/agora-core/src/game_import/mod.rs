@@ -619,10 +619,25 @@ pub fn plan(
     // `overwrite`: the tool outputs, and the rest.
     let overwrite_dir = ini.overwrite.clone();
     let overwrite_present = overwrite_dir.is_dir();
+    // The game's own data folder: a plugin the install already has is the game's, never managed.
+    let base_data = install.discovered.location.join(mount_point(def));
+    let mut overwrite_plugins: Vec<String> = Vec::new();
     let overwrite = if overwrite_present {
         let files = content_store::collect_folder_files(&overwrite_dir)
             .map_err(|e| ImportError::OverwriteUnreadable(e.to_string()))?;
         let split = split_overwrite(ctx, def, files);
+        // The rest of overwrite becomes the "MO2 overwrite" content layer, which deploys its
+        // root plugins into the plugin folder. Those are managed, as an enabled mod's are. A
+        // plugin the install already has is the game's own, so it stays unmanaged. Generated
+        // files are not counted: a deploy does not treat their plugins as deployed by a layer.
+        overwrite_plugins = split
+            .rest
+            .iter()
+            .map(|(rel, _)| rel.as_str())
+            .filter(|rel| !rel.contains('/') && mo2::is_plugin_file(rel))
+            .filter(|rel| !base_data.join(rel).is_file())
+            .map(str::to_string)
+            .collect();
         let mut total_files = 0usize;
         let mut total_bytes = 0u64;
         let mut generated = Vec::new();
@@ -671,7 +686,14 @@ pub fn plan(
     };
 
     let store = install.discovered.store.clone();
-    let plugins = plan_plugins(def, &profile_dir, &mods, &mut warnings)?;
+    let plugins = plan_plugins(
+        def,
+        &profile_dir,
+        &mods,
+        &overwrite_plugins,
+        &base_data,
+        &mut warnings,
+    )?;
     let inis = plan_inis(def, &store, &profile_dir, settings.local_settings);
     let saves = plan_saves(def, &store, &profile_dir, settings.local_saves)?;
 
@@ -793,6 +815,8 @@ fn plan_plugins(
     def: &GameDefinition,
     profile_dir: &Path,
     mods: &[PlannedMod],
+    overwrite_plugins: &[String],
+    base_data: &Path,
     warnings: &mut Vec<String>,
 ) -> Result<PluginPlan, ImportError> {
     let Some(rule) = &def.plugin_list else {
@@ -836,10 +860,18 @@ fn plan_plugins(
         mods.iter()
             .filter(|m| m.enabled)
             .flat_map(|m| m.plugin_files.iter().cloned())
+            // A plugin the install already has is the game's, so it is never managed.
+            .filter(|n| !base_data.join(n).is_file())
             .filter(|n| seen.insert(n.to_ascii_lowercase()))
             .collect()
     };
     let managed_keys: HashSet<String> = managed.iter().map(|n| n.to_ascii_lowercase()).collect();
+    // The overwrite plugins are managed only where MO2 lists them: a line is never added for
+    // one, so a plugin MO2 does not list keeps the import's usual handling.
+    let overwrite_keys: HashSet<String> = overwrite_plugins
+        .iter()
+        .map(|n| n.to_ascii_lowercase())
+        .collect();
 
     let mut lines: Vec<PluginLinePlan> = Vec::new();
     let mut implicit_skipped = Vec::new();
@@ -865,7 +897,7 @@ fn plan_plugins(
         lines.push(PluginLinePlan {
             name,
             active: active_names.contains(&key),
-            managed: managed_keys.contains(&key),
+            managed: managed_keys.contains(&key) || overwrite_keys.contains(&key),
         });
     }
     for name in &managed {

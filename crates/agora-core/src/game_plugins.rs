@@ -444,6 +444,25 @@ pub fn desired_plugins<'a>(
 // Sync
 // ---------------------------------------------------------------------------
 
+/// The plugins the game always loads itself: the rule's `implicit` names and the names its
+/// `implicit_list_file` holds, as the deployment provides it. Their lines are the game's, so sync
+/// never manages, activates or removes them.
+fn implicit_keys(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    rule: &PluginListRule,
+) -> Result<std::collections::HashSet<Vec<u8>>, PluginListError> {
+    let mut names: Vec<String> = rule.implicit.clone();
+    if rule.implicit_list_file.is_some() {
+        names.extend(
+            crate::game_load_order::implicit_list_names(ctx, instance_id, definition)
+                .map_err(|e| PluginListError::Other(e.to_string()))?,
+        );
+    }
+    Ok(names.iter().map(|n| key(n.as_bytes())).collect())
+}
+
 /// Bring an instance's plugin list in step with the plugins its deployment provides.
 ///
 /// The caller holds the instance lock. `None` when the game keeps no plugin list.
@@ -485,18 +504,33 @@ pub fn sync_locked(
         None => starting_contents(ctx, definition, store, mapping, rule, &mut report)?,
     };
 
-    let (added, removed) = apply_sync(&mut file, rule, desired, &old.managed);
+    // A plugin the game loads itself is never Agora's, whatever an earlier sync recorded for it.
+    let implicit = implicit_keys(ctx, instance_id, definition, rule)?;
+    let not_implicit = |n: &String| !implicit.contains(&key(n.as_bytes()));
+    let wanted: Vec<String> = desired
+        .iter()
+        .filter(|n| not_implicit(n))
+        .cloned()
+        .collect();
+    let managed_before: Vec<String> = old
+        .managed
+        .iter()
+        .filter(|n| not_implicit(n))
+        .cloned()
+        .collect();
+
+    let (added, removed) = apply_sync(&mut file, rule, &wanted, &managed_before);
     let changed = !added.is_empty() || !removed.is_empty();
     // The list goes first: a state file that is behind only delays a removal, one that is
     // ahead would forget lines Agora still owns.
-    if changed || (!have_copy && !desired.is_empty()) {
+    if changed || (!have_copy && !wanted.is_empty()) {
         write_atomic(&copy_path, &file.render())?;
     }
-    if !same_names(&old.managed, desired) {
+    if !same_names(&old.managed, &wanted) {
         write_state(
             &dir,
             &ManagedState {
-                managed: desired.to_vec(),
+                managed: wanted,
                 locked: old.locked,
             },
         )?;
