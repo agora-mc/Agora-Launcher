@@ -1171,6 +1171,10 @@ pub fn launch_with(
 ) -> Result<LaunchedInstance, InstanceError> {
     let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
 
+    // An interrupted tool swap is put back before the launch deploys or swaps anything (MASTER_SPEC §26.9).
+    crate::game_tool_swap::recover_game(ctx, definition)
+        .map_err(|e| InstanceError::Other(e.to_string()))?;
+
     // 1. Prepare launch (which performs deployment if needed)
     let prepared = prepare_launch_with(ctx, id, definition, options, discover_fn, launcher)?;
 

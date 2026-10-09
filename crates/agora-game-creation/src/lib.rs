@@ -168,14 +168,31 @@ mod tests {
         );
         assert_eq!(def.frameworks[0].game, GameId::new("skyrim-se").unwrap());
         assert_eq!(def.frameworks[0].name, "Skyrim Script Extender");
-        // Nemesis is the one tool Skyrim SE declares (MASTER_SPEC §26.9): its engine sits in the
-        // deployed Nemesis mod folder and runs from there.
+        // Nemesis and BodySlide are the tools Skyrim SE declares (MASTER_SPEC §26.9): Nemesis's engine
+        // sits in the deployed Nemesis mod folder and runs from there. Both read the install path,
+        // so both run by swap (MASTER_SPEC §26.9, slice 4c).
         assert_eq!(
             game.tool_ids,
-            vec![agora_game_api::ToolId::new("nemesis").unwrap()]
+            vec![
+                agora_game_api::ToolId::new("nemesis").unwrap(),
+                agora_game_api::ToolId::new("bodyslide").unwrap(),
+            ]
         );
-        assert_eq!(def.tools.len(), 1);
+        assert_eq!(def.tools.len(), 2);
         let nemesis = &def.tools[0];
+        assert!(nemesis.uses_install_path);
+        let bodyslide = &def.tools[1];
+        assert_eq!(
+            bodyslide.id,
+            agora_game_api::ToolId::new("bodyslide").unwrap()
+        );
+        assert!(bodyslide.uses_install_path);
+        assert_eq!(
+            bodyslide.launch.executable,
+            GamePath::Runtime {
+                path: RelPath::new("Data/CalienteTools/BodySlide/BodySlide x64.exe").unwrap()
+            }
+        );
         assert_eq!(nemesis.id, agora_game_api::ToolId::new("nemesis").unwrap());
         assert_eq!(nemesis.game, GameId::new("skyrim-se").unwrap());
         assert_eq!(

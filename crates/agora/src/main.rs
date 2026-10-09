@@ -327,11 +327,27 @@ enum GamesCmd {
         #[command(subcommand)]
         action: UserFilesCmd,
     },
+    /// Show or put back the real install's Data folder when a tool run swapped it (MASTER_SPEC §26.9).
+    #[command(name = "tools-swap")]
+    ToolsSwap {
+        #[command(subcommand)]
+        action: ToolsSwapCmd,
+    },
     /// Import an existing setup from another mod manager (MASTER_SPEC §26.10).
     Import {
         #[command(subcommand)]
         action: ImportCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum ToolsSwapCmd {
+    /// List the swaps still in progress: the game, the store, the instance and the tool, and what the
+    /// real Data folder and its aside folder are now.
+    Status,
+    /// Put back every interrupted swap whose tool run is no longer going. Nothing is merged or
+    /// overwritten: a case that needs a hand is reported with the steps.
+    Restore,
 }
 
 #[derive(Subcommand)]
@@ -529,8 +545,10 @@ enum InstanceToolsCmd {
         /// Tool ID, e.g. nemesis.
         tool: String,
         /// How the run's writes are captured: `auto` (the virtual file system, or linked files when it
-        /// cannot start), `vfs` (the virtual file system only), or `links` (linked files only).
-        #[arg(long, default_value = "auto", value_name = "auto|vfs|links")]
+        /// cannot start), `vfs` (the virtual file system only), `links` (linked files only), or `swap`
+        /// (the real install's Data folder is swapped for a link to the instance's mods for the run). A
+        /// tool that works on the real install needs `swap`; `auto` asks before it uses it.
+        #[arg(long, default_value = "auto", value_name = "auto|vfs|links|swap")]
         capture: String,
     },
     /// Make the previous output current again. The game reads it on its next launch.
@@ -1591,6 +1609,19 @@ async fn main() {
     for warning in warnings {
         progress.log("warning", &warning);
         eprintln!("Warning: {warning}");
+    }
+    // An interrupted tool swap is put back at startup: one file existence test per game and store
+    // when nothing is pending (MASTER_SPEC §26.9). A case that needs a hand is reported, not raised.
+    for recovery in agora_core::game_tool_swap::recover_all(&ctx) {
+        match recovery {
+            agora_core::game_tool_swap::Recovery::Restored(j) => eprintln!(
+                "Put back the real Data folder of {} after an interrupted run of {}.",
+                j.game, j.tool
+            ),
+            agora_core::game_tool_swap::Recovery::Stuck(message) => {
+                eprintln!("Warning: a tool swap was not put back: {message}");
+            }
+        }
     }
     let data_dir = paths.root().to_path_buf();
     let result = run_command(cli, &paths, &data_dir, &ctx, output_fmt).await;
@@ -7489,6 +7520,84 @@ async fn run_command(
                     }
                 }
             }
+            GamesCmd::ToolsSwap { action } => match action {
+                ToolsSwapCmd::Status => {
+                    let pending = agora_core::game_tool_swap::pending(ctx);
+                    if json {
+                        let list: Vec<serde_json::Value> = pending
+                            .iter()
+                            .map(|p| {
+                                serde_json::json!({
+                                    "game": p.game,
+                                    "store": p.store,
+                                    "journal": p.path.display().to_string(),
+                                    "running": p.running,
+                                    "read_error": p.read_error,
+                                    "swap": p.journal,
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&list)?);
+                    } else if pending.is_empty() {
+                        println!("No tool swap is in progress.");
+                    } else {
+                        println!("Tool swaps in progress ({}):", pending.len());
+                        for p in &pending {
+                            println!("\nGame:     {}", p.game);
+                            println!("Store:    {}", p.store);
+                            println!("Journal:  {}", p.path.display());
+                            match &p.journal {
+                                Some(j) => {
+                                    println!("Instance: {} (tool {})", j.instance_id, j.tool);
+                                    println!(
+                                        "Running:  {}",
+                                        if p.running {
+                                            "yes, a tool run is still going"
+                                        } else {
+                                            "no"
+                                        }
+                                    );
+                                    println!(
+                                        "Real Data: {}",
+                                        agora_core::game_tool_swap::describe_folder(&j.real_data)
+                                    );
+                                    println!(
+                                        "Aside:     {}",
+                                        agora_core::game_tool_swap::describe_folder(&j.aside)
+                                    );
+                                }
+                                None => println!(
+                                    "Unreadable: {}",
+                                    p.read_error.as_deref().unwrap_or("unknown error")
+                                ),
+                            }
+                        }
+                        println!("\nRun `agora games tools-swap restore` to put back the ones that are not running.");
+                    }
+                }
+                ToolsSwapCmd::Restore => {
+                    let results = agora_core::game_tool_swap::recover_all(ctx);
+                    let mut stuck = false;
+                    if results.is_empty() {
+                        println!("No tool swap is in progress.");
+                    }
+                    for result in results {
+                        match result {
+                            agora_core::game_tool_swap::Recovery::Restored(j) => println!(
+                                "Put back the real Data folder of {} ({}) after the interrupted run of {} for instance {}.",
+                                j.game, j.store, j.tool, j.instance_id
+                            ),
+                            agora_core::game_tool_swap::Recovery::Stuck(message) => {
+                                stuck = true;
+                                eprintln!("{message}");
+                            }
+                        }
+                    }
+                    if stuck {
+                        std::process::exit(1);
+                    }
+                }
+            },
             GamesCmd::Import { action } => run_games_import(ctx, action, json)?,
             GamesCmd::UserFiles { action } => match action {
                 UserFilesCmd::Status { game } => {
@@ -8128,20 +8237,35 @@ fn instance_tools_command(
             let tool = tool_id(&tool);
             let capture = game_tools::CaptureMode::parse(&capture).unwrap_or_else(|| {
                 fail(format!(
-                    "--capture must be auto, vfs or links, not '{capture}'"
+                    "--capture must be auto, vfs, links or swap, not '{capture}'"
                 ))
             });
             let cancel = agora_core::event_sink::CancellationToken::new();
-            let outcome = game_tools::run(
-                ctx,
-                &instance_id,
-                game_def,
-                &tool,
-                capture,
-                &agora_core::game_launch::SystemLauncher,
-                &cancel,
-            )
-            .unwrap_or_else(|e| fail(e.to_string()));
+            let launcher = &agora_core::game_launch::SystemLauncher;
+            let run_as = |capture: game_tools::CaptureMode| {
+                game_tools::run(
+                    ctx,
+                    &instance_id,
+                    game_def,
+                    &tool,
+                    capture,
+                    launcher,
+                    &cancel,
+                )
+            };
+            let outcome = match run_as(capture) {
+                Ok(outcome) => outcome,
+                // `auto` refuses a tool that works on the real install, before anything is deployed.
+                Err(game_tools::ToolError::InstallPathNeedsSwap { .. }) => {
+                    if ask_about_swap(&instance_id, tool.as_str(), json)? {
+                        run_as(game_tools::CaptureMode::Swap)
+                            .unwrap_or_else(|e| fail(e.to_string()))
+                    } else {
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => fail(e.to_string()),
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
@@ -8279,10 +8403,80 @@ fn print_tool_run(outcome: &agora_core::game_tools::RunOutcome) {
         (agora_core::game_tools::CaptureMethod::Vfs, _) => {
             println!("Its writes were captured under the virtual file system.");
         }
+        (agora_core::game_tools::CaptureMethod::Swap, _) => {
+            println!(
+                "Its writes were captured from linked files, with the real install's Data folder swapped for a link to the instance's mods. The real Data folder was put back."
+            );
+        }
     }
     if let Some(folder) = &outcome.failed_folder {
         println!("The discarded run is kept in {}.", folder.display());
     }
+    print_install_changes(&outcome.install_changes);
+}
+
+/// What a run changed in the real install folder, outside what Agora captured. Says plainly that the
+/// tool wrote there, and that Agora did not capture it. A report only.
+fn print_install_changes(changes: &agora_core::install_watch::InstallChanges) {
+    use agora_core::game_tools::REPORTED_PATHS;
+
+    if let Some(reason) = &changes.unavailable {
+        println!(
+            "The real install folder could not be watched ({reason}), so its writes are not known."
+        );
+    }
+    let total = changes.created.len() + changes.changed.len() + changes.deleted.len();
+    if total > 0 {
+        println!(
+            "The tool wrote {total} path(s) in the real install folder. Agora did not capture them, and they are not part of the output:"
+        );
+        for (label, paths) in [
+            ("Created", &changes.created),
+            ("Changed", &changes.changed),
+            ("Deleted", &changes.deleted),
+        ] {
+            if paths.is_empty() {
+                continue;
+            }
+            println!("{label} ({}):", paths.len());
+            for path in paths.iter().take(REPORTED_PATHS) {
+                println!("  {path}");
+            }
+            if paths.len() > REPORTED_PATHS {
+                println!("  ... and {} more", paths.len() - REPORTED_PATHS);
+            }
+        }
+    }
+    if changes.may_be_incomplete {
+        println!("Changes may have been missed: the watch of the real install folder lost events.");
+    }
+}
+
+/// `auto` refused a tool that works on the real install. Under `--json` or without a terminal, print
+/// the swap command and refuse. In a terminal, say what a swap does and ask; `Ok(true)` runs it by swap.
+fn ask_about_swap(instance_id: &str, tool: &str, json: bool) -> anyhow::Result<bool> {
+    let command = format!("agora games instance tools run {instance_id} {tool} --capture swap");
+    let reason = format!(
+        "{tool} works on the real install's Data folder, so it runs by swap, which replaces the real Data folder with a link to this instance's mods for the length of the run."
+    );
+    if json {
+        let out = serde_json::json!({
+            "status": "error",
+            "error": reason,
+            "exitCode": 1,
+            "retry": [command],
+        });
+        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+        std::process::exit(1);
+    }
+    eprintln!("{reason}");
+    eprintln!("Steam and the game must not run meanwhile. The real Data folder is put back afterwards, even after a crash, on the next start.");
+    if std::io::stdin().is_terminal() && ask_yes_no("Run it by swap? [y/N]: ")? {
+        return Ok(true);
+    }
+    eprintln!("To run it by swap:");
+    eprintln!("  {command}");
+    Ok(false)
 }
 
 /// A failure in the `ini` and `saves` commands: the message as JSON or as text, and exit 1.

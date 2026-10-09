@@ -1097,6 +1097,9 @@ pub fn deploy(
     let _lock = ctx
         .lock_manager
         .acquire(LockResource::Instance(instance_id.to_string()), "deploy")?;
+    // An interrupted tool swap is put back before anything is deployed (MASTER_SPEC §26.9).
+    crate::game_tool_swap::recover_game(ctx, definition)
+        .map_err(|e| DeployError::Other(e.to_string()))?;
     deploy_locked(ctx, instance_id, definition, mode)
 }
 

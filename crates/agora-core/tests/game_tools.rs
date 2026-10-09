@@ -167,6 +167,7 @@ fn tool(id: &str, name: &str, args: &[&str]) -> ToolDefinition {
         },
         relevant_settings: Vec::new(),
         after_tools: Vec::new(),
+        uses_install_path: false,
     }
 }
 
@@ -1681,4 +1682,462 @@ fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto() {
     );
     assert!(names(&f.writable_dir()).is_empty());
     assert!(!f.deployed_game_dir().exists());
+}
+
+// ---------------------------------------------------------------------------
+// The swap and the real install (MASTER_SPEC §26.9, slice 4c). Every test uses a fake install in a
+// temp folder. `AGORA_REAL` names that folder for the tool, so it can write where Nemesis writes.
+// ---------------------------------------------------------------------------
+
+use std::collections::BTreeMap;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use agora_core::game_tool_swap::{self as swap, SwapError, SwapJournal};
+
+/// A tool that works on the real install: the same as [`tool`], with `uses_install_path` set.
+fn swap_tool(id: &str, name: &str, args: &[&str]) -> ToolDefinition {
+    ToolDefinition {
+        uses_install_path: true,
+        ..tool(id, name, args)
+    }
+}
+
+/// A tool that writes `Data\meshes\x.nif` in the real install, through `AGORA_REAL`.
+fn writes_real_data(id: &str) -> ToolDefinition {
+    swap_tool(
+        id,
+        "Nemesis",
+        &[
+            "/c",
+            "mkdir",
+            r"%AGORA_REAL%\Data\meshes",
+            "&",
+            "echo",
+            "nif",
+            ">",
+            r"%AGORA_REAL%\Data\meshes\x.nif",
+        ],
+    )
+}
+
+fn install_dir(f: &Fixture) -> PathBuf {
+    f._tmp.path().join("install")
+}
+
+fn real_data(f: &Fixture) -> PathBuf {
+    install_dir(f).join("Data")
+}
+
+fn journal_file(f: &Fixture) -> PathBuf {
+    f.ctx.paths.tool_swap_journal_path(GAME, "steam")
+}
+
+fn aside_named(f: &Fixture, name: &str) -> PathBuf {
+    install_dir(f).join(format!("{}{name}", swap::ASIDE_PREFIX))
+}
+
+/// Every entry under `root` with its bytes; folders are listed with a trailing `/`, links as
+/// `(link)`. A missing folder is empty. Used to prove the real folder came back unchanged.
+fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if swap::is_reparse_point(&path) {
+                out.insert(format!("{rel} (link)"), Vec::new());
+            } else if path.is_dir() {
+                out.insert(format!("{rel}/"), Vec::new());
+                walk(root, &path, out);
+            } else {
+                out.insert(rel, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    if root.is_dir() {
+        walk(root, root, &mut out);
+    }
+    out
+}
+
+/// A journal for a swap that a test sets up by hand, pointing at the instance's farm.
+fn journal_for(f: &Fixture, run: &str, aside: &Path, farm_data: &Path) -> SwapJournal {
+    SwapJournal {
+        version: swap::JOURNAL_VERSION,
+        game: GAME.into(),
+        store: "steam".into(),
+        instance_id: f.id().into(),
+        tool: "nemesis".into(),
+        run: run.into(),
+        started_unix_ms: 0,
+        install_dir: install_dir(f),
+        real_data: real_data(f),
+        aside: aside.to_path_buf(),
+        junction_target: farm_data.to_path_buf(),
+        deployment_game_dir: f.deployed_game_dir(),
+    }
+}
+
+/// Simulates a crash in the middle of a swap: the real `Data` is renamed aside, a junction to the
+/// farm stands in its place, and the journal is on disk.
+fn simulate_crashed_swap(f: &Fixture) -> SwapJournal {
+    // A real deployment, as a crashed run leaves behind: the farm has its record and its links.
+    agora_core::game_deploy::deploy(&f.ctx, f.id(), &f.def, DeployMode::Links).unwrap();
+    let farm_data = f.deployed_game_dir().join("Data");
+    std::fs::create_dir_all(&farm_data).unwrap();
+    let aside = aside_named(f, "crash");
+    let journal = journal_for(f, "crash", &aside, &farm_data);
+    swap::write_journal(&f.ctx, &journal).unwrap();
+    std::fs::rename(real_data(f), &aside).unwrap();
+    junction::create(&farm_data, real_data(f)).unwrap();
+    journal
+}
+
+#[test]
+fn a_swap_run_restores_the_real_data_and_its_writes_through_the_link_are_captured() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let install = install_dir(&f);
+    let before = snapshot(&real_data(&f));
+    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+
+    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Swap).unwrap();
+
+    assert!(outcome.promoted, "{outcome:?}");
+    assert_eq!(outcome.capture, CaptureMethod::Swap);
+    assert!(outcome.written.contains(&"Data/meshes/x.nif".to_string()));
+    // The real Data is byte-identical, has no link, and never received the file.
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(!swap::is_reparse_point(&real_data(&f)));
+    assert!(real_data(&f).is_dir());
+    assert!(!real_data(&f).join("meshes").join("x.nif").exists());
+    assert!(names(&install)
+        .iter()
+        .all(|n| !n.starts_with(swap::ASIDE_PREFIX)));
+    assert!(!journal_file(&f).exists());
+    // The output is the promoted generation.
+    let (generation, _) = f.generated("nemesis").expect("a generated layer");
+    assert!(f
+        .generation_dir("nemesis", &generation)
+        .join("Data")
+        .join("meshes")
+        .join("x.nif")
+        .exists());
+}
+
+#[test]
+fn a_failing_swap_run_is_restored_and_discarded() {
+    let f = fixture(vec![swap_tool(
+        "nemesis",
+        "Nemesis",
+        &[
+            "/c",
+            "echo",
+            "bad",
+            ">",
+            r"%AGORA_REAL%\Data\bad.txt",
+            "&",
+            "exit",
+            "/b",
+            "3",
+        ],
+    )]);
+    let install = install_dir(&f);
+    let before = snapshot(&real_data(&f));
+    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+
+    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Swap).unwrap();
+
+    assert!(!outcome.promoted, "{outcome:?}");
+    assert_eq!(outcome.exit_code, Some(3));
+    assert!(outcome.failed_folder.is_some());
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(!swap::is_reparse_point(&real_data(&f)));
+    assert!(!journal_file(&f).exists());
+    assert!(f.generated("nemesis").is_none());
+}
+
+#[test]
+fn a_swap_is_refused_while_a_program_runs_from_the_install() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let install = install_dir(&f);
+    std::fs::copy(r"C:\Windows\System32\cmd.exe", install.join("busy.exe")).unwrap();
+    let mut busy = Command::new(install.join("busy.exe"))
+        .args(["/c", "ping", "-n", "60", "127.0.0.1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let before = snapshot(&real_data(&f));
+    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+
+    let result = f.run_as("nemesis", &launcher, CaptureMode::Swap);
+    let _ = busy.kill();
+    let _ = busy.wait();
+
+    match result {
+        Err(ToolError::Swap(SwapError::Refused(message))) => {
+            assert!(message.contains("install folder"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(!swap::is_reparse_point(&real_data(&f)));
+    assert!(!journal_file(&f).exists());
+    assert!(!f.deployed_game_dir().exists());
+}
+
+#[test]
+fn a_swap_is_refused_when_the_real_data_is_already_a_link() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let install = install_dir(&f);
+    let kept = install.join("Data.kept");
+    std::fs::rename(real_data(&f), &kept).unwrap();
+    junction::create(&kept, real_data(&f)).unwrap();
+    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+
+    let result = f.run_as("nemesis", &launcher, CaptureMode::Swap);
+
+    match result {
+        Err(ToolError::Swap(SwapError::Refused(message))) => {
+            assert!(message.contains("already"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(swap::is_reparse_point(&real_data(&f)));
+    assert!(kept.is_dir());
+    assert!(!journal_file(&f).exists());
+}
+
+#[test]
+fn a_taken_aside_name_is_refused_before_anything_moves() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let install = install_dir(&f);
+    let aside = aside_named(&f, "taken");
+    std::fs::create_dir_all(&aside).unwrap();
+    std::fs::write(aside.join("keep.txt"), b"keep").unwrap();
+    let before = snapshot(&real_data(&f));
+
+    let result = swap::preflight(&install, &f.deployed_game_dir(), &real_data(&f), &aside);
+
+    match result {
+        Err(SwapError::Refused(message)) => {
+            assert!(message.contains("already exists"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert_eq!(std::fs::read(aside.join("keep.txt")).unwrap(), b"keep");
+}
+
+#[test]
+fn auto_refuses_a_tool_that_works_on_the_real_install_before_anything_is_deployed() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+
+    let result = f.run_as("nemesis", &StagingLauncher::new(), CaptureMode::Auto);
+
+    assert!(
+        matches!(result, Err(ToolError::InstallPathNeedsSwap { .. })),
+        "{result:?}"
+    );
+    assert!(!f.deployed_game_dir().exists());
+    assert!(!journal_file(&f).exists());
+}
+
+#[test]
+fn a_crashed_swap_is_put_back_by_the_next_check() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let install = install_dir(&f);
+    let before = snapshot(&real_data(&f));
+    simulate_crashed_swap(&f);
+    assert!(swap::is_reparse_point(&real_data(&f)));
+
+    let restored = swap::recover_game(&f.ctx, &f.def).unwrap();
+
+    assert_eq!(restored.len(), 1);
+    assert!(!swap::is_reparse_point(&real_data(&f)));
+    assert!(real_data(&f).is_dir());
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(names(&install)
+        .iter()
+        .all(|n| !n.starts_with(swap::ASIDE_PREFIX)));
+    assert!(!journal_file(&f).exists());
+}
+
+#[test]
+fn a_crashed_swap_is_put_back_by_a_run_before_it_starts() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let install = install_dir(&f);
+    let before = snapshot(&real_data(&f));
+    simulate_crashed_swap(&f);
+    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+
+    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Swap).unwrap();
+
+    assert!(outcome.promoted, "{outcome:?}");
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(!swap::is_reparse_point(&real_data(&f)));
+}
+
+#[test]
+fn a_journal_with_a_real_data_folder_and_an_aside_stops_and_touches_neither() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let aside = aside_named(&f, "both");
+    std::fs::create_dir_all(&aside).unwrap();
+    std::fs::write(aside.join("aside.txt"), b"aside").unwrap();
+    let farm_data = f.deployed_game_dir().join("Data");
+    swap::write_journal(&f.ctx, &journal_for(&f, "both", &aside, &farm_data)).unwrap();
+    let real_before = snapshot(&real_data(&f));
+    let aside_before = snapshot(&aside);
+
+    let result = swap::recover_game(&f.ctx, &f.def);
+
+    match result {
+        Err(SwapError::Stuck(message)) => {
+            assert!(message.contains("both"), "{message}");
+            assert!(message.contains("nothing was merged"), "{message}");
+        }
+        other => panic!("expected the recovery to stop, got {other:?}"),
+    }
+    assert_eq!(snapshot(&real_data(&f)), real_before);
+    assert_eq!(snapshot(&aside), aside_before);
+    assert!(journal_file(&f).exists());
+}
+
+#[test]
+fn a_junction_pointing_somewhere_else_stops_recovery_and_is_left_alone() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let install = install_dir(&f);
+    let elsewhere = f._tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let aside = aside_named(&f, "elsewhere");
+    let farm_data = f.deployed_game_dir().join("Data");
+    std::fs::create_dir_all(&farm_data).unwrap();
+    swap::write_journal(&f.ctx, &journal_for(&f, "elsewhere", &aside, &farm_data)).unwrap();
+    std::fs::rename(real_data(&f), &aside).unwrap();
+    junction::create(&elsewhere, real_data(&f)).unwrap();
+    let aside_before = snapshot(&aside);
+
+    let result = swap::recover_game(&f.ctx, &f.def);
+
+    match result {
+        Err(SwapError::Stuck(message)) => {
+            assert!(message.contains("not the instance's farm"), "{message}");
+        }
+        other => panic!("expected the recovery to stop, got {other:?}"),
+    }
+    assert!(swap::is_reparse_point(&real_data(&f)));
+    assert!(swap::same_path(
+        &junction::get_target(real_data(&f)).unwrap(),
+        &elsewhere
+    ));
+    assert_eq!(snapshot(&aside), aside_before);
+    assert!(aside.is_dir());
+    assert!(names(&install)
+        .iter()
+        .any(|n| n.starts_with(swap::ASIDE_PREFIX)));
+    assert!(journal_file(&f).exists());
+}
+
+#[test]
+fn a_link_run_reports_what_the_tool_wrote_into_the_real_data_folder() {
+    // Under link capture the tool writes into the real install, which the farm comparison cannot see.
+    let f = fixture(vec![tool(
+        "nemesis",
+        "Nemesis",
+        &[
+            "/c",
+            "mkdir",
+            r"%AGORA_REAL%\Data\meshes",
+            "&",
+            "echo",
+            "nif",
+            ">",
+            r"%AGORA_REAL%\Data\meshes\from_links.nif",
+        ],
+    )]);
+    let install = install_dir(&f);
+    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+
+    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Links).unwrap();
+
+    assert_eq!(outcome.capture, CaptureMethod::Links);
+    assert!(
+        outcome
+            .install_changes
+            .created
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("Data/meshes/from_links.nif")),
+        "{:?}",
+        outcome.install_changes
+    );
+    assert!(outcome.install_changes.unavailable.is_none());
+    assert!(real_data(&f).join("meshes").join("from_links.nif").exists());
+}
+
+#[test]
+fn the_outside_data_watch_reports_a_file_written_at_the_install_root() {
+    let f = fixture(vec![tool(
+        "nemesis",
+        "Nemesis",
+        &["/c", "echo", "root", ">", r"%AGORA_REAL%\root_out.txt"],
+    )]);
+    let install = install_dir(&f);
+    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+
+    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Links).unwrap();
+
+    assert!(
+        outcome
+            .install_changes
+            .created
+            .iter()
+            .any(|p| p == "root_out.txt"),
+        "{:?}",
+        outcome.install_changes
+    );
+    assert!(!outcome.install_changes.may_be_incomplete);
+}
+
+/// A 32-bit tool, run by swap, promotes its write: the 32-bit cmd cannot load the 64-bit VFS DLL, so
+/// this is the path a real 32-bit tool takes. A real program on a fake install, so it is ignored by
+/// default.
+#[test]
+#[ignore = "runs the 32-bit cmd.exe from SysWOW64 on a fake install; run with --ignored"]
+fn real_a_32_bit_tool_run_by_swap_promotes_its_write() {
+    let f = fixture_with_exe(
+        vec![writes_real_data("nemesis")],
+        false,
+        false,
+        r"C:\Windows\SysWOW64\cmd.exe",
+    );
+    let install = install_dir(&f);
+    let before = snapshot(&real_data(&f));
+    let launcher = StagingLauncher::new().with_env("AGORA_REAL", install.to_str().unwrap());
+
+    let outcome = f.run_as("nemesis", &launcher, CaptureMode::Swap).unwrap();
+
+    println!("{outcome:#?}");
+    assert!(outcome.promoted, "{outcome:?}");
+    assert!(outcome.written.contains(&"Data/meshes/x.nif".to_string()));
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert!(!swap::is_reparse_point(&real_data(&f)));
+}
+
+#[test]
+fn a_recovery_with_nothing_pending_changes_nothing() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let before = snapshot(&real_data(&f));
+
+    assert!(swap::recover_game(&f.ctx, &f.def).unwrap().is_empty());
+    assert!(swap::recover_all(&f.ctx).is_empty());
+    assert_eq!(snapshot(&real_data(&f)), before);
 }

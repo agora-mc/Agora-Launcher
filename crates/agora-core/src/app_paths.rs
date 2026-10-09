@@ -252,6 +252,17 @@ impl AppPaths {
         self.user_files_dir(game, store).join("backup")
     }
 
+    /// Swap journals of tools that run on the real install folder (`tool-swaps/`).
+    pub fn tool_swaps_root(&self) -> PathBuf {
+        self.root.join("tool-swaps")
+    }
+
+    /// The swap journal of one game and store (`tool-swaps/<game>_<store>.json`), present only while
+    /// a tool run has the real install's `Data` folder swapped (MASTER_SPEC §26.9).
+    pub fn tool_swap_journal_path(&self, game: &str, store: &str) -> PathBuf {
+        self.tool_swaps_root().join(format!("{game}_{store}.json"))
+    }
+
     /// Root directory for the Agora-owned Minecraft runtime (`minecraft-runtime/`).
     pub fn minecraft_runtime_root(&self) -> PathBuf {
         self.root.join("minecraft-runtime")

@@ -265,6 +265,11 @@ pub fn swap_in(
         "swap-in",
     )?;
 
+    // An interrupted tool swap for this game and store is put back before a session starts
+    // (MASTER_SPEC §26.9). The lock is held here, so the check does not take it again.
+    crate::game_tool_swap::recover_store_unlocked(ctx, definition.id.as_str(), store.as_str())
+        .map_err(|e| UserFilesError::Other(e.to_string()))?;
+
     let journal_path = ctx
         .paths
         .user_files_journal_path(definition.id.as_str(), store.as_str());

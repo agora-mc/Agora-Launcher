@@ -75,7 +75,8 @@
         "skse"
       ],
       "tool_ids": [
-        "nemesis"
+        "nemesis",
+        "bodyslide"
       ],
       "launch": {
         "executable": {
@@ -342,6 +343,7 @@
       },
       "relevant_settings": [],
       "after_tools": [],
+      "uses_install_path": true,
       "output_patterns": [
         "Data/meshes/actors/character/**",
         "Data/meshes/animationdatasinglefile.txt",
@@ -350,6 +352,30 @@
         "Data/scripts/FNIS.pex",
         "Data/scripts/FNIS_aa.pex",
         "Data/scripts/Nemesis_AA_Core.pex"
+      ]
+    },
+    {
+      "id": "bodyslide",
+      "game": "skyrim-se",
+      "name": "BodySlide",
+      "launch": {
+        "executable": {
+          "root": "runtime",
+          "path": "Data/CalienteTools/BodySlide/BodySlide x64.exe"
+        },
+        "arguments": [],
+        "environment": {},
+        "working_directory": {
+          "root": "runtime",
+          "path": "Data/CalienteTools/BodySlide"
+        }
+      },
+      "relevant_settings": [],
+      "after_tools": [],
+      "uses_install_path": true,
+      "output_patterns": [
+        "Data/meshes/actors/character/**",
+        "Data/meshes/clothes/**"
       ]
     }
   ]

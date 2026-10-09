@@ -1244,6 +1244,11 @@ pub struct ToolDefinition {
     /// Generated output precedence is independent of plugin load order.
     #[serde(default)]
     pub after_tools: Vec<ToolId>,
+    /// The tool reads the install path from the game (its registry entry or its own config) and
+    /// works on the real install's `Data` folder, so the virtual file system and link capture would
+    /// both miss its writes. Such a tool runs by swap (MASTER_SPEC §26.9).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub uses_install_path: bool,
     /// Files the tool writes, as game-relative, case-insensitive glob patterns such as
     /// `Data/meshes/actors/character/**`. A Mod Organizer 2 import uses them to decide which files
     /// in an `overwrite` folder are this tool's output (MASTER_SPEC §26.10).

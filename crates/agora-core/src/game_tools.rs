@@ -38,7 +38,9 @@ use crate::game_launch::{
     self, LaunchError, LaunchRoots, LaunchedGame, Launcher, PreparedLaunch, VfsLaunch,
 };
 use crate::game_load_order;
+use crate::game_tool_swap::{self, SwapError, SwapJournal};
 use crate::game_user_files::{self, UserFilesError};
+use crate::install_watch::{InstallChanges, InstallWatch};
 use crate::lock_manager::LockResource;
 
 /// Failed runs kept in `failed-<run>` folders, the newest first (MASTER_SPEC §26.9).
@@ -85,8 +87,17 @@ pub enum ToolError {
         paths: Vec<String>,
         failed_folder: Option<PathBuf>,
     },
+    /// The tool works on the real install's `Data` folder, so under `auto` it cannot run under the
+    /// virtual file system or link capture: its writes would miss them. Nothing was deployed. The CLI
+    /// asks, and runs it with `--capture swap` (MASTER_SPEC §26.9).
+    #[error(
+        "{tool} works on the real install's Data folder, so the virtual file system and link capture would miss its writes. It runs by swap: run it with --capture swap"
+    )]
+    InstallPathNeedsSwap { tool: String, instance_id: String },
     #[error("{0}")]
     Invalid(String),
+    #[error(transparent)]
+    Swap(#[from] SwapError),
     #[error(transparent)]
     Deploy(#[from] crate::game_deploy::DeployError),
     #[error(transparent)]
@@ -162,8 +173,12 @@ pub enum CaptureMode {
     /// From a linked deployment: the tool runs in the game's folder, and what it changed is
     /// compared with the deployment's record.
     Links,
-    /// The virtual file system first, and link capture when it cannot start.
+    /// The virtual file system first, and link capture when it cannot start. A tool that works on the
+    /// real install (`uses_install_path`) is refused here: it needs `Swap`.
     Auto,
+    /// The real install's `Data` folder is swapped for a link to the farm for the length of the run,
+    /// and put back afterwards (MASTER_SPEC §26.9). Asked for by name; never chosen by `Auto`.
+    Swap,
 }
 
 impl CaptureMode {
@@ -172,15 +187,17 @@ impl CaptureMode {
             CaptureMode::Vfs => "vfs",
             CaptureMode::Links => "links",
             CaptureMode::Auto => "auto",
+            CaptureMode::Swap => "swap",
         }
     }
 
-    /// Parse a user-facing capture name (`vfs`, `links`, `auto`).
+    /// Parse a user-facing capture name (`vfs`, `links`, `auto`, `swap`).
     pub fn parse(s: &str) -> Option<CaptureMode> {
         match s.trim().to_ascii_lowercase().as_str() {
             "vfs" => Some(CaptureMode::Vfs),
             "links" => Some(CaptureMode::Links),
             "auto" => Some(CaptureMode::Auto),
+            "swap" => Some(CaptureMode::Swap),
             _ => None,
         }
     }
@@ -192,6 +209,7 @@ impl CaptureMode {
 pub enum CaptureMethod {
     Vfs,
     Links,
+    Swap,
 }
 
 /// What one run wrote, and what became of it.
@@ -219,6 +237,11 @@ pub struct RunOutcome {
     pub cancelled: bool,
     /// Where a discarded run was kept.
     pub failed_folder: Option<PathBuf>,
+    /// What changed under the real install folder during the run, outside what Agora captured: a
+    /// report, never a refusal (MASTER_SPEC §26.9). Under a swap, `Data` is the link, so its writes
+    /// are captured and not listed here.
+    #[serde(default)]
+    pub install_changes: InstallChanges,
 }
 
 /// The difference between a tool's previous and current generations, by file.
@@ -975,9 +998,21 @@ pub fn run(
     let store = base.runtime.store.clone();
     refuse_during_session(ctx, definition, &store)?;
 
+    // A tool that works on the real install would miss its writes under either other capture, so
+    // `auto` refuses it before anything is deployed; the CLI asks, and then runs it by swap.
+    if capture == CaptureMode::Auto && tool.uses_install_path {
+        return Err(ToolError::InstallPathNeedsSwap {
+            tool: tool_id.to_string(),
+            instance_id: instance_id.to_string(),
+        });
+    }
+
     // Decided before anything is deployed: a run that must use the VFS cannot start without it.
     let route = match capture {
         CaptureMode::Links => Route::Links(Some("linked capture was asked for".to_string())),
+        CaptureMode::Swap => Route::Swap(Some(
+            "the tool works on the real install's Data folder, and swap was asked for".to_string(),
+        )),
         CaptureMode::Vfs | CaptureMode::Auto => match launcher.locate_vfs_dll() {
             Ok(dll) => Route::Vfs(dll),
             Err(reason) if capture == CaptureMode::Vfs => {
@@ -991,7 +1026,21 @@ pub fn run(
         .lock_manager
         .acquire(LockResource::Instance(instance_id.to_string()), "tool-run")?;
 
+    // An interrupted swap for this game is put back before anything else runs (MASTER_SPEC §26.9).
+    game_tool_swap::recover_game(ctx, definition)?;
+
     match route {
+        Route::Swap(reason) => run_by_swap(
+            ctx,
+            instance_id,
+            definition,
+            &tool,
+            tool_id,
+            &base,
+            launcher,
+            cancel,
+            reason,
+        ),
         Route::Vfs(dll) => match run_under_vfs(
             ctx,
             instance_id,
@@ -1037,6 +1086,7 @@ pub fn run(
 enum Route {
     Vfs(PathBuf),
     Links(Option<String>),
+    Swap(Option<String>),
 }
 
 /// Why a run was captured from links instead of the virtual file system, in the words an outcome
@@ -1100,6 +1150,8 @@ fn run_under_vfs(
         return Err(e.into());
     }
 
+    // The real install is watched from just before the tool starts until it exits (MASTER_SPEC §26.9).
+    let watch = InstallWatch::start(&base.source_location);
     let mut launched = match launcher.launch(&prepared) {
         Ok(launched) => launched,
         Err(e) => {
@@ -1116,6 +1168,7 @@ fn run_under_vfs(
     let _ = game_user_files::record_process(ctx, &definition.id, &store, launched.identity.clone());
 
     let exit = wait_for_tree(&game_dir, &mut launched, cancel);
+    let installed = watch.finish();
     let settled = settle_run(
         ctx,
         instance_id,
@@ -1133,15 +1186,9 @@ fn run_under_vfs(
     let settled = settled?;
     released?;
 
-    Ok(outcome(
-        tool_id,
-        tool,
-        run,
-        &exit,
-        settled,
-        CaptureMethod::Vfs,
-        None,
-    ))
+    let mut out = outcome(tool_id, tool, run, &exit, settled, CaptureMethod::Vfs, None);
+    out.install_changes = installed;
+    Ok(out)
 }
 
 /// A run captured from a linked deployment (MASTER_SPEC §26.9). The instance is deployed in Links
@@ -1194,6 +1241,8 @@ fn run_from_links(
 
     game_user_files::swap_in(ctx, instance_id, definition, &store, &game_dir)?;
 
+    // The real install is watched from just before the tool starts until it exits (MASTER_SPEC §26.9).
+    let watch = InstallWatch::start(&base.source_location);
     let mut launched = match launcher.launch(&prepared) {
         Ok(launched) => launched,
         Err(e) => {
@@ -1204,6 +1253,7 @@ fn run_from_links(
     let _ = game_user_files::record_process(ctx, &definition.id, &store, launched.identity.clone());
 
     let exit = wait_for_tree(&game_dir, &mut launched, cancel);
+    let installed = watch.finish();
     let settled = capture_from_links(
         ctx,
         instance_id,
@@ -1225,7 +1275,7 @@ fn run_from_links(
     forgotten?;
     released?;
 
-    Ok(outcome(
+    let mut out = outcome(
         tool_id,
         tool,
         run,
@@ -1233,7 +1283,197 @@ fn run_from_links(
         settled,
         CaptureMethod::Links,
         reason,
-    ))
+    );
+    out.install_changes = installed;
+    Ok(out)
+}
+
+/// A run that works on the real install's `Data` folder (MASTER_SPEC §26.9, slice 4c). The instance is
+/// deployed as links, the user files are swapped in, and then the real `Data` is renamed aside and
+/// replaced by a junction to the farm's `Data`. The tool runs from the farm, so the paths it reads
+/// through the real install are the mods, and its writes go through the junction into the farm, where
+/// link capture takes them. When the tool exits the junction is removed and the real `Data` is put
+/// back, and only then is the farm captured and taken away. The writable layer is never changed. The
+/// caller holds the lock.
+#[allow(clippy::too_many_arguments)]
+fn run_by_swap(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    tool_id: &ToolId,
+    base: &BaseManifest,
+    launcher: &dyn Launcher,
+    cancel: &CancellationToken,
+    reason: Option<String>,
+) -> Result<RunOutcome, ToolError> {
+    let store = base.runtime.store.clone();
+    let instance_dir = ctx
+        .paths
+        .instance_dir(instance_id)
+        .map_err(|e| ToolError::Other(e.to_string()))?;
+    let game_dir = deployment_folder(base, instance_id)?;
+    let deployment_dir = game_dir
+        .parent()
+        .ok_or_else(|| ToolError::Other("the deployment has no folder".into()))?
+        .to_path_buf();
+    let install = base.source_location.clone();
+    let real_data = install.join("Data");
+    let run = new_run_id();
+    let aside = install.join(format!("{}{run}", game_tool_swap::ASIDE_PREFIX));
+    let farm_data = game_dir.join("Data");
+
+    // Refused before anything is deployed or moved.
+    game_tool_swap::preflight(&install, &game_dir, &real_data, &aside)?;
+
+    deploy_locked(ctx, instance_id, definition, DeployMode::Links)?;
+    let before = read_deployment_record(&deployment_dir)?;
+    let fingerprint = input_fingerprint(ctx, instance_id, definition, tool)?;
+
+    let roots = LaunchRoots {
+        runtime: game_dir.clone(),
+        install: Some(install.clone()),
+        base: Some(base.location.clone()),
+    };
+    let resolved = game_launch::resolve_recipe(&tool.launch, &roots)?;
+
+    let dir = tool_dir(&instance_dir, tool_id.as_str());
+    let staging = dir.join(format!("staging-{run}"));
+
+    // The user files go in before the real Data moves, so the swap journal is the only swap in progress
+    // for this game when the recovery check runs.
+    game_user_files::swap_in(ctx, instance_id, definition, &store, &game_dir)?;
+
+    let journal = SwapJournal {
+        version: game_tool_swap::JOURNAL_VERSION,
+        game: definition.id.to_string(),
+        store: store.as_str().to_string(),
+        instance_id: instance_id.to_string(),
+        tool: tool_id.to_string(),
+        run: run.clone(),
+        started_unix_ms: now_unix_ms(),
+        install_dir: install.clone(),
+        real_data: real_data.clone(),
+        aside: aside.clone(),
+        junction_target: farm_data.clone(),
+        deployment_game_dir: game_dir.clone(),
+    };
+    // The journal is written, and made durable, before the real Data is touched.
+    if let Err(e) = game_tool_swap::write_journal(ctx, &journal) {
+        let undone = undo_swap(
+            ctx,
+            definition,
+            &store,
+            &journal,
+            &deployment_dir,
+            instance_id,
+            e.into(),
+        );
+        return Err(undone);
+    }
+    std::fs::create_dir_all(&farm_data)?;
+    if let Err(e) = game_tool_swap::engage(&journal) {
+        let undone = undo_swap(
+            ctx,
+            definition,
+            &store,
+            &journal,
+            &deployment_dir,
+            instance_id,
+            e.into(),
+        );
+        return Err(undone);
+    }
+
+    let mut prepared = PreparedLaunch::undeployed(resolved, Vec::new(), None);
+    prepared.deployment = Some(DeployMode::Links);
+
+    let watch = InstallWatch::start(&install);
+    let mut launched = match launcher.launch(&prepared) {
+        Ok(launched) => launched,
+        Err(e) => {
+            let _ = watch.finish();
+            return Err(undo_swap(
+                ctx,
+                definition,
+                &store,
+                &journal,
+                &deployment_dir,
+                instance_id,
+                ToolError::Launch(e),
+            ));
+        }
+    };
+    let _ = game_user_files::record_process(ctx, &definition.id, &store, launched.identity.clone());
+
+    let exit = wait_for_tree(&game_dir, &mut launched, cancel);
+    let installed = watch.finish();
+
+    // Put the real Data back before capturing. If that fails, the farm is kept, with the tool's writes
+    // in it, and the journal stays for the next check.
+    if let Err(e) = game_tool_swap::unswap(ctx, &journal) {
+        let _ = release_session(ctx, definition, &store);
+        return Err(e.into());
+    }
+
+    let settled = capture_from_links(
+        ctx,
+        instance_id,
+        definition,
+        tool,
+        &dir,
+        &staging,
+        &run,
+        &fingerprint,
+        &game_dir,
+        &before,
+        &exit,
+    );
+    let forgotten = discard_deployment(&deployment_dir, instance_id);
+    let released = release_session(ctx, definition, &store);
+    let settled = settled?;
+    forgotten?;
+    released?;
+
+    let mut out = outcome(
+        tool_id,
+        tool,
+        run,
+        &exit,
+        settled,
+        CaptureMethod::Swap,
+        reason,
+    );
+    out.install_changes = installed;
+    Ok(out)
+}
+
+/// Undo a swap that did not get as far as the tool: put the real Data back, then take the farm and
+/// the user files away. If the real Data cannot be put back, the farm and the journal are kept for the
+/// next check and that error is the one returned. Otherwise `error` is returned.
+fn undo_swap(
+    ctx: &Ctx,
+    definition: &GameDefinition,
+    store: &StoreId,
+    journal: &SwapJournal,
+    deployment_dir: &Path,
+    instance_id: &str,
+    error: ToolError,
+) -> ToolError {
+    if let Err(e) = game_tool_swap::unswap(ctx, journal) {
+        return e.into();
+    }
+    // A failure to take the farm away does not hide the error that started the undo.
+    let _ = discard_deployment(deployment_dir, instance_id);
+    let _ = release_session(ctx, definition, store);
+    error
+}
+
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn outcome(
@@ -1263,6 +1503,7 @@ fn outcome(
         exit_code: exit.code,
         cancelled: exit.cancelled,
         failed_folder: settled.failed_folder,
+        install_changes: InstallChanges::default(),
     }
 }
 
