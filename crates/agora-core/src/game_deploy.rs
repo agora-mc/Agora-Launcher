@@ -696,6 +696,15 @@ pub fn plan(
     // 8. Determine placement & compute fingerprint
     let detector = VolumeDetector::new();
     let deploy_vol = detector.get_volume_info(&game_dir);
+    // Every content object lives under the store's objects folder, so its volume is asked once:
+    // asking per file (GetVolumePathNameW walks each path component) cost ~90 s per plan for a
+    // 200,000-file MO2 import.
+    let store_vol = detector.get_volume_info(&ctx.paths.content_objects_dir());
+    let store_links_here = matches!(
+        (&store_vol, &deploy_vol),
+        (Some(ov), Some(dv))
+            if ov.id.eq_ignore_ascii_case(&dv.id) && ov.supports_hardlinks && dv.supports_hardlinks
+    );
 
     let mut planned_files = Vec::with_capacity(candidates.len());
     let mut overrides = Vec::new();
@@ -737,20 +746,8 @@ pub fn plan(
                             Placement::Copy
                         }
                         FileSource::Base { .. } => Placement::Link,
-                        FileSource::Content { sha256, .. } => {
-                            let obj_path = ctx.paths.content_object_path(sha256);
-                            let obj_vol = detector.get_volume_info(&obj_path);
-                            match (&obj_vol, &deploy_vol) {
-                                (Some(ov), Some(dv))
-                                    if ov.id.eq_ignore_ascii_case(&dv.id)
-                                        && ov.supports_hardlinks
-                                        && dv.supports_hardlinks =>
-                                {
-                                    Placement::Link
-                                }
-                                _ => Placement::Copy,
-                            }
-                        }
+                        FileSource::Content { .. } if store_links_here => Placement::Link,
+                        FileSource::Content { .. } => Placement::Copy,
                     }
                 }
             }
@@ -769,20 +766,8 @@ pub fn plan(
                             Placement::Copy
                         }
                         FileSource::Base { .. } => Placement::Link,
-                        FileSource::Content { sha256, .. } => {
-                            let obj_path = ctx.paths.content_object_path(sha256);
-                            let obj_vol = detector.get_volume_info(&obj_path);
-                            match (&obj_vol, &deploy_vol) {
-                                (Some(ov), Some(dv))
-                                    if ov.id.eq_ignore_ascii_case(&dv.id)
-                                        && ov.supports_hardlinks
-                                        && dv.supports_hardlinks =>
-                                {
-                                    Placement::Link
-                                }
-                                _ => Placement::Copy,
-                            }
-                        }
+                        FileSource::Content { .. } if store_links_here => Placement::Link,
+                        FileSource::Content { .. } => Placement::Copy,
                     }
                 }
             }
