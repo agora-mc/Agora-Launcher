@@ -202,6 +202,17 @@ async fn download_and_extract_overrides(
     .await
     .map_err(|e| format!("Failed to download override bundle: {e}"))?;
 
+    extract_verified_overrides(&data, expected_sha256, target_dir)
+}
+
+/// Check a downloaded override bundle against its expected SHA-256 and
+/// extract it to `target_dir`. Split from the download so it can be tested
+/// against real bytes without the network.
+fn extract_verified_overrides(
+    data: &[u8],
+    expected_sha256: &str,
+    target_dir: &Path,
+) -> Result<bool, String> {
     if data.len() > override_sanitizer::MAX_ZIP_SIZE as usize {
         return Err(format!(
             "Override bundle exceeds the {}MB compressed size limit.",
@@ -209,7 +220,7 @@ async fn download_and_extract_overrides(
         ));
     }
 
-    let actual_sha256 = download::sha256_hex(&data);
+    let actual_sha256 = download::sha256_hex(data);
     if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
         return Err(format!(
             "SHA-256 mismatch for override bundle: expected {expected_sha256} got {actual_sha256}"
@@ -219,7 +230,7 @@ async fn download_and_extract_overrides(
     std::fs::create_dir_all(target_dir)
         .map_err(|e| format!("Failed to create override destination: {e}"))?;
     let temporary_zip = target_dir.join(format!(".agora-overrides-{}.zip", uuid::Uuid::new_v4()));
-    std::fs::write(&temporary_zip, &data)
+    std::fs::write(&temporary_zip, data)
         .map_err(|e| format!("Failed to stage override bundle: {e}"))?;
 
     let extraction = override_sanitizer::extract_overrides(&temporary_zip, target_dir)
@@ -473,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_download_and_extract_overrides_with_test_zip() {
+    fn test_extract_verified_overrides_with_test_zip() {
         use std::io::Write;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -493,21 +504,17 @@ mod tests {
         let zip_data = std::fs::read(&zip_path).unwrap();
         let sha256 = agora_core::download::sha256_hex(&zip_data);
 
-        let source = OverrideSource {
-            source_type: "github_release".to_string(),
-            identifier: "owner/repo".to_string(),
-            release_tag: "v1.0.0".to_string(),
-            asset_name: "overrides.zip".to_string(),
-            sha256: Some(sha256),
-        };
+        let mismatch = extract_verified_overrides(&zip_data, &"0".repeat(64), &target_dir);
+        assert!(mismatch.unwrap_err().contains("SHA-256 mismatch"));
+        assert!(!target_dir.join("config").exists(), "nothing extracted");
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let client = reqwest::Client::new();
-
-        let result = rt.block_on(async {
-            download_and_extract_overrides(&client, &source, &target_dir).await
-        });
-
-        assert!(result.is_err(), "expected network error since URL is fake");
+        assert_eq!(
+            extract_verified_overrides(&zip_data, &sha256, &target_dir),
+            Ok(true)
+        );
+        assert_eq!(
+            std::fs::read_to_string(target_dir.join("config/test.cfg")).unwrap(),
+            "test config"
+        );
     }
 }

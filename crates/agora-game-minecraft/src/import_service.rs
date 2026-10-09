@@ -832,6 +832,27 @@ mod tests {
         ctx
     }
 
+    /// Put `version`'s Mojang version JSON in the runtime root, so the
+    /// import's metadata phase is a cache hit rather than a request to
+    /// piston-meta.
+    fn seed_base_version(ctx: &Ctx, version: &str) {
+        let dir = ctx
+            .paths
+            .minecraft_runtime_root()
+            .join("versions")
+            .join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        let info = crate::launch::VersionInfo {
+            id: version.to_string(),
+            ..Default::default()
+        };
+        std::fs::write(
+            dir.join(format!("{version}.json")),
+            serde_json::to_vec(&info).unwrap(),
+        )
+        .unwrap();
+    }
+
     fn listing_contains(
         service: &crate::instance_service::InstanceService,
         instance_id: &str,
@@ -1114,6 +1135,7 @@ mod tests {
     #[tokio::test]
     async fn test_import_mrpack_manifest_roundtrip_through_service() {
         let ctx = test_ctx();
+        seed_base_version(&ctx, "1.21");
         let svc = ImportService::new(ctx);
 
         let tmp = test_tmp("svc-mrp-rt");
@@ -1356,6 +1378,7 @@ mod tests {
     #[tokio::test]
     async fn test_mrpack_import_stamps_pack_origin_and_inventory_via_service() {
         let ctx = test_ctx();
+        seed_base_version(&ctx, "1.20.1");
         let svc = ImportService::new(ctx.clone());
 
         let tmp = test_tmp("mrpack-service-pack");
@@ -1366,10 +1389,11 @@ mod tests {
             let mut writer = zip::ZipWriter::new(file);
             let opts = zip::write::FileOptions::default();
             writer.start_file("modrinth.index.json", opts).unwrap();
-            // versionId present; dependencies for pack loader/mc
+            // versionId present. No loader: installing one would fetch its
+            // profile, and the loader's pinned hash rules out a seeded copy.
             writer
                 .write_all(
-                    br#"{"name":"Service Pack","versionId":"2.0.1","dependencies":{"minecraft":"1.20.1","fabric-loader":"0.15.0"},"files":[]}"#,
+                    br#"{"name":"Service Pack","versionId":"2.0.1","dependencies":{"minecraft":"1.20.1"},"files":[]}"#,
                 )
                 .unwrap();
             writer
@@ -1432,6 +1456,7 @@ mod tests {
     #[tokio::test]
     async fn test_technic_solder_import_via_service_stamps_origin_and_inventory() {
         let ctx = test_ctx();
+        seed_base_version(&ctx, "1.20.1");
         let svc = ImportService::new(ctx.clone());
 
         let tmp = test_tmp("technic-solder-service");

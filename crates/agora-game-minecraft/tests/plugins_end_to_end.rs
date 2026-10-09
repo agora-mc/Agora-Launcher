@@ -1595,7 +1595,11 @@ async fn nothing_is_checked_automatically_unless_the_user_asked_for_it() {
     let world = world();
     let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
     let archive = world._dir.path().join("v1.zip");
-    package_with_source(&archive, &manifest, Some(&update_source()));
+    // An IP-literal publisher: the URL policy refuses one before connecting,
+    // so the check below fails without reaching the network.
+    let mut source = update_source();
+    source["url"] = serde_json::json!("https://127.0.0.1/acme.dashboard.json");
+    package_with_source(&archive, &manifest, Some(&source));
     world.service.install_package(&archive, true).unwrap();
 
     // Default: off. Nothing is contacted, so this returns without reaching the
@@ -1606,10 +1610,9 @@ async fn nothing_is_checked_automatically_unless_the_user_asked_for_it() {
         "with the setting off, nothing should be checked"
     );
 
-    // Switched on, the plugin becomes a candidate. The check itself fails here
-    // because there is no network in a test, and that failure being *recorded*
-    // rather than raised is the contract: an unreachable publisher is not a
-    // launcher error.
+    // Switched on, the plugin becomes a candidate. The check itself fails, and
+    // that failure being *recorded* rather than raised is the contract: an
+    // unreachable publisher is not a launcher error.
     let conn = agora_core::db::local_state_connection(&world.ctx.paths.local_state_db()).unwrap();
     agora_core::db::set_setting(
         &conn,
@@ -1622,6 +1625,7 @@ async fn nothing_is_checked_automatically_unless_the_user_asked_for_it() {
     let results = world.service.check_all_updates().await;
     assert_eq!(results.len(), 1, "the installed plugin is a candidate");
     assert_eq!(results[0].0, "acme.dashboard");
+    assert!(results[0].1.is_err(), "{:?}", results[0].1);
 }
 
 /// A plugin with nowhere to check is not a candidate, so a sweep does not

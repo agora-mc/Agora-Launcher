@@ -23,6 +23,7 @@ use agora_core::ctx::Ctx;
 use agora_core::dependency_ops::{AliasMap, DepSource, Requirement};
 use agora_core::download;
 use agora_core::error::{LauncherError, LauncherResult};
+use agora_core::github_release::{self, GitHubAuth, GitHubRelease};
 use agora_core::http_client::{self, ClientCategory, HttpClients};
 use agora_core::models::{InstalledMod, InstanceManifest, ModVersionCandidate};
 use agora_core::registry::{self, ManifestDeps};
@@ -30,6 +31,7 @@ use serde::Deserialize;
 use sha2::Digest;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -240,6 +242,19 @@ struct ModrinthApiDep {
 // Private GitHub Release API types
 // ---------------------------------------------------------------------------
 
+/// Injectable seam for the GitHub releases listing, so paging and candidate
+/// building are testable without the network.
+#[async_trait::async_trait]
+pub(crate) trait GitHubReleasePages: Send + Sync {
+    /// One page of `source`'s (`owner/repo`) releases, and the total number
+    /// of pages.
+    async fn releases_page(
+        &self,
+        source: &str,
+        page: u32,
+    ) -> LauncherResult<(Vec<GitHubRelease>, u32)>;
+}
+
 // ---------------------------------------------------------------------------
 // Resolver
 // ---------------------------------------------------------------------------
@@ -251,6 +266,8 @@ pub struct Resolver {
     github_token: Option<String>,
     clear_stored_github_token_on_unauthorized: bool,
     providers: Option<agora_core::providers::ProviderRegistry>,
+    /// `None` reads GitHub itself.
+    release_pages: Option<Arc<dyn GitHubReleasePages>>,
 }
 
 impl Resolver {
@@ -260,6 +277,7 @@ impl Resolver {
             github_token: None,
             clear_stored_github_token_on_unauthorized: false,
             providers: None,
+            release_pages: None,
         }
     }
 
@@ -332,6 +350,13 @@ impl Resolver {
     pub fn with_stored_github_token(mut self, token: String) -> Self {
         self.github_token = Some(token);
         self.clear_stored_github_token_on_unauthorized = true;
+        self
+    }
+
+    /// Read GitHub release pages from `pages` instead of GitHub.
+    #[cfg(test)]
+    fn with_release_pages(mut self, pages: Arc<dyn GitHubReleasePages>) -> Self {
+        self.release_pages = Some(pages);
         self
     }
 
@@ -1109,17 +1134,17 @@ impl Resolver {
         loader: &str,
         page: u32,
     ) -> LauncherResult<(Vec<ModVersionCandidate>, u32)> {
-        let auth = agora_core::github_release::GitHubAuth {
-            token: self.github_token.clone(),
-            clear_stored_on_unauthorized: self.clear_stored_github_token_on_unauthorized,
+        let (releases, total_pages) = match &self.release_pages {
+            Some(pages) => pages.releases_page(source, page).await?,
+            None => {
+                let auth = GitHubAuth {
+                    token: self.github_token.clone(),
+                    clear_stored_on_unauthorized: self.clear_stored_github_token_on_unauthorized,
+                };
+                github_release::list_releases_page(&self.ctx.http_clients, source, page, &auth)
+                    .await?
+            }
         };
-        let (releases, total_pages) = agora_core::github_release::list_releases_page(
-            &self.ctx.http_clients,
-            source,
-            page,
-            &auth,
-        )
-        .await?;
         let mut candidates: Vec<ModVersionCandidate> = Vec::new();
 
         for release in &releases {
@@ -3697,7 +3722,9 @@ fn open_registry_db(path: &std::path::Path) -> LauncherResult<rusqlite::Connecti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agora_core::github_release::{github_auth_headers, parse_link_total_pages};
+    use agora_core::github_release::{
+        github_auth_headers, parse_link_total_pages, GitHubReleaseAsset,
+    };
     use agora_core::registry::RegistryItem;
 
     #[test]
@@ -4729,25 +4756,133 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_fetch_github_versions_batch_single_page() {
+    const ONE_PAGE_REPO: &str = "owner/examplemod";
+
+    /// GitHub's releases listing, from memory. [`ONE_PAGE_REPO`] has a single
+    /// page holding one release; any other repository is refused the way
+    /// GitHub refuses one that does not exist. Every request is recorded.
+    #[derive(Default)]
+    struct FakeReleasePages {
+        requests: std::sync::Mutex<Vec<(String, u32)>>,
+    }
+
+    impl FakeReleasePages {
+        fn requests(&self) -> Vec<(String, u32)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl GitHubReleasePages for FakeReleasePages {
+        async fn releases_page(
+            &self,
+            source: &str,
+            page: u32,
+        ) -> LauncherResult<(Vec<GitHubRelease>, u32)> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((source.to_string(), page));
+            if source != ONE_PAGE_REPO {
+                return Err(LauncherError::Generic {
+                    code: "ERR_NETWORK".into(),
+                    message: format!(
+                        "GitHub API request failed: HTTP status client error (404 Not Found) \
+                         for url (https://api.github.com/repos/{source}/releases?per_page=100&page={page})"
+                    ),
+                });
+            }
+            // GitHub answers a page past the last with an empty list.
+            let releases = if page == 1 {
+                vec![GitHubRelease {
+                    tag_name: "v1.0.0".into(),
+                    published_at: Some("2024-01-01T00:00:00Z".into()),
+                    draft: false,
+                    prerelease: false,
+                    assets: vec![GitHubReleaseAsset {
+                        name: "examplemod-fabric-1.20.1-1.0.0.jar".into(),
+                        browser_download_url: String::new(),
+                        size: Some(1234),
+                        digest: Some(format!("sha256:{}", "a".repeat(64))),
+                    }],
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok((releases, 1))
+        }
+    }
+
+    fn resolver_with(pages: &Arc<FakeReleasePages>) -> (tempfile::TempDir, Resolver) {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = crate::testing_context(tmp.path().to_path_buf());
-        let resolver = Resolver::new(ctx);
-        // A single page for a non-existent repo — will error but must not panic
+        let resolver = Resolver::new(ctx).with_release_pages(pages.clone());
+        (tmp, resolver)
+    }
+
+    #[tokio::test]
+    async fn test_fetch_github_versions_batch_single_page() {
+        let pages = Arc::new(FakeReleasePages::default());
+        let (_tmp, resolver) = resolver_with(&pages);
+
         let result = resolver
-            .fetch_github_versions_batch(
-                "nonexistent/repo-does-not-exist",
-                "1.20.1",
-                "fabric",
-                &[1],
-            )
-            .await;
-        // The function tolerates page failures, so the outer Result is Ok
-        // with whatever pages succeeded (could be empty).
-        assert!(
-            result.is_ok(),
-            "batch must tolerate individual page failures"
+            .fetch_github_versions_batch(ONE_PAGE_REPO, "1.20.1", "fabric", &[1])
+            .await
+            .unwrap();
+
+        assert_eq!(pages.requests(), vec![(ONE_PAGE_REPO.to_string(), 1)]);
+        assert_eq!(result.len(), 1, "one page asked for, one page back");
+        let (page, candidates) = &result[0];
+        assert_eq!(*page, 1);
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert_eq!(candidate.version, "v1.0.0");
+        assert_eq!(candidate.filename, "examplemod-fabric-1.20.1-1.0.0.jar");
+        assert_eq!(
+            candidate.download_url,
+            "https://github.com/owner/examplemod/releases/download/v1.0.0/examplemod-fabric-1.20.1-1.0.0.jar"
+        );
+        assert!(candidate.is_compatible);
+        assert_eq!(candidate.sha256.as_deref(), Some("a".repeat(64).as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_github_versions_batch_nonexistent_repo() {
+        let pages = Arc::new(FakeReleasePages::default());
+        let (_tmp, resolver) = resolver_with(&pages);
+        let missing = "nonexistent/repo-does-not-exist";
+
+        // The batch tolerates a page that fails: no pages back, no error.
+        let batch = resolver
+            .fetch_github_versions_batch(missing, "1.20.1", "fabric", &[1])
+            .await
+            .unwrap();
+        assert!(batch.is_empty());
+        assert_eq!(pages.requests(), vec![(missing.to_string(), 1)]);
+
+        // Asked for the page directly, the listing's error comes through.
+        let error = resolver
+            .fetch_github_releases_page(missing, "1.20.1", "fabric", 1)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("404 Not Found"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_all_github_releases_stops_after_a_single_page() {
+        let pages = Arc::new(FakeReleasePages::default());
+        let (_tmp, resolver) = resolver_with(&pages);
+
+        let candidates = resolver
+            .fetch_all_github_releases(ONE_PAGE_REPO, "1.20.1", "fabric")
+            .await
+            .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            pages.requests(),
+            vec![(ONE_PAGE_REPO.to_string(), 1)],
+            "a listing whose only page is page 1 must not ask for page 2"
         );
     }
 
