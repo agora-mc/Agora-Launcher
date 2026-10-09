@@ -63,6 +63,7 @@ pub fn skyrim_definition() -> GameDefinition {
     .collect();
 
     GameDefinition {
+        mo2_game_name: None,
         id: GameId::new("skyrim-se").unwrap(),
         name: "The Elder Scrolls V: Skyrim Special Edition".to_string(),
         stores: vec![

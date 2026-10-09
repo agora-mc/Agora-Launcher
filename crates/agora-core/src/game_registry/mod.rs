@@ -685,6 +685,7 @@ pub mod test_support {
             api_range: semver::VersionReq::parse(">=0.1, <0.2").expect("valid range"),
             parents: Vec::new(),
             games: vec![GameDefinition {
+                mo2_game_name: None,
                 id: GameId::new(game_id).expect("valid game id"),
                 name: game_id.to_string(),
                 stores: Vec::new(),

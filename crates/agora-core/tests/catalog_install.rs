@@ -269,6 +269,7 @@ fn test_definition() -> GameDefinition {
         plugin_list: None,
         runtime_files: Vec::new(),
         save_location: Vec::new(),
+        mo2_game_name: None,
         launch_alternatives: Vec::new(),
         content_layout: Some(ContentLayout {
             data_path: RelPath::new("Data").unwrap(),

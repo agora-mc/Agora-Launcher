@@ -7,6 +7,7 @@
     {
       "id": "skyrim-se",
       "name": "The Elder Scrolls V: Skyrim Special Edition",
+      "mo2_game_name": "Skyrim Special Edition",
       "stores": [
         {
           "store": "steam",
@@ -340,7 +341,16 @@
         }
       },
       "relevant_settings": [],
-      "after_tools": []
+      "after_tools": [],
+      "output_patterns": [
+        "Data/meshes/actors/character/**",
+        "Data/meshes/animationdatasinglefile.txt",
+        "Data/meshes/animationsetdatasinglefile.txt",
+        "Data/Nemesis_Engine/**",
+        "Data/scripts/FNIS.pex",
+        "Data/scripts/FNIS_aa.pex",
+        "Data/scripts/Nemesis_AA_Core.pex"
+      ]
     }
   ]
 }

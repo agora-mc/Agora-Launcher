@@ -327,6 +327,46 @@ enum GamesCmd {
         #[command(subcommand)]
         action: UserFilesCmd,
     },
+    /// Import an existing setup from another mod manager (MASTER_SPEC §26.10).
+    Import {
+        #[command(subcommand)]
+        action: ImportCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ImportCmd {
+    /// Mod Organizer 2: list the setups on this machine, or import one profile as an instance.
+    ///
+    /// `agora games import mo2 <ModOrganizer.ini> --profile <name>` imports a profile. Every mod
+    /// is stored as it is on disk, the profile's load order, plugins, INIs and saves are set on
+    /// the new instance, and the setup is only read. `--dry-run` plans without storing anything.
+    Mo2 {
+        /// Use `scan` to list setups instead of importing one.
+        #[command(subcommand)]
+        action: Option<Mo2ImportCmd>,
+        /// The setup's ModOrganizer.ini.
+        ini: Option<PathBuf>,
+        /// The profile to import, by folder name.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Name for the new instance. Needed to import the same setup and profile again.
+        #[arg(long)]
+        name: Option<String>,
+        /// Plan the import and print it. Nothing is stored or created.
+        #[arg(long)]
+        dry_run: bool,
+        /// Copy the profile's saves into the instance's own save folder under Documents.
+        #[arg(long)]
+        copy_saves: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum Mo2ImportCmd {
+    /// List Mod Organizer 2 setups on this machine, found in the usual place and by scanning the
+    /// fixed drives for ModOrganizer.ini. The mods are not read.
+    Scan,
 }
 
 #[derive(Subcommand)]
@@ -7445,6 +7485,7 @@ async fn run_command(
                     }
                 }
             }
+            GamesCmd::Import { action } => run_games_import(ctx, action, json)?,
             GamesCmd::UserFiles { action } => match action {
                 UserFilesCmd::Status { game } => {
                     let game_id = game
@@ -7539,6 +7580,303 @@ async fn run_command(
     }
 
     Ok(())
+}
+
+/// `agora games import mo2 ...` (MASTER_SPEC §26.10): list the Mod Organizer 2 setups on this
+/// machine, or plan or run the import of one profile.
+fn run_games_import(
+    ctx: &agora_core::ctx::CoreContext,
+    action: ImportCmd,
+    json: bool,
+) -> anyhow::Result<()> {
+    use agora_core::game_import::{self, ImportProgress, Mo2Request, RunOptions};
+    match action {
+        ImportCmd::Mo2 {
+            action: Some(Mo2ImportCmd::Scan),
+            ..
+        } => {
+            let report = game_import::scan();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else if report.setups.is_empty() {
+                println!("No Mod Organizer 2 setups found.");
+            } else {
+                for setup in &report.setups {
+                    println!("{}", setup.ini_path.display());
+                    println!(
+                        "  game: {}",
+                        setup.game_name.as_deref().unwrap_or("(unknown)")
+                    );
+                    let profiles = if setup.profiles.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        setup.profiles.join(", ")
+                    };
+                    println!("  profiles: {profiles}");
+                    let mods = setup
+                        .mod_count
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "(unreadable)".to_string());
+                    println!("  mods: {mods}");
+                    println!("  found by: {}", setup.found_by);
+                }
+            }
+            for warning in &report.warnings {
+                eprintln!("warning: {warning}");
+            }
+        }
+        ImportCmd::Mo2 {
+            action: None,
+            ini: None,
+            ..
+        } => {
+            anyhow::bail!(
+                "give the setup's ModOrganizer.ini and --profile, or run `agora games import mo2 scan`"
+            );
+        }
+        ImportCmd::Mo2 {
+            action: None,
+            ini: Some(ini),
+            profile,
+            name,
+            dry_run,
+            copy_saves,
+        } => {
+            let Some(profile) = profile else {
+                anyhow::bail!(
+                    "--profile is required: name the profile to import, as the setup lists it"
+                );
+            };
+            let request = Mo2Request {
+                ini_path: ini,
+                profile,
+                name,
+                copy_saves,
+            };
+            let discovered = agora_core::game_discovery::discover_all();
+            let inventory = agora_core::game_registry::identify_installs(
+                &ctx.games,
+                &discovered,
+                &agora_core::game_discovery::file_version::read_file_version,
+            );
+            if dry_run {
+                let plan = game_import::plan(ctx, &inventory, &request)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&plan)?);
+                } else {
+                    print_mo2_plan(&plan);
+                }
+                return Ok(());
+            }
+            if !json {
+                eprintln!(
+                    "Importing. Every listed mod is stored as it is on disk; a large setup takes a while. If it is interrupted, run it again: stored bytes are reused."
+                );
+            }
+            let report = game_import::run(
+                ctx,
+                &inventory,
+                &request,
+                RunOptions::default(),
+                &|p: ImportProgress| {
+                    if !json {
+                        eprintln!(
+                            "  stored {}/{} mods, {} of {}",
+                            p.mods_done,
+                            p.mods_total,
+                            human_gb(p.bytes_done),
+                            human_gb(p.bytes_total)
+                        );
+                    }
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_mo2_run(&report);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn human_gb(bytes: u64) -> String {
+    format!("{:.2} GB", bytes as f64 / 1e9)
+}
+
+fn mo2_provenance_text(provenance: &agora_core::content_store::Mo2Provenance) -> String {
+    use agora_core::content_store::Mo2Provenance;
+    match provenance {
+        Mo2Provenance::Claimed {
+            modid: Some(id), ..
+        } => format!("claims Nexus mod {id}, not verified"),
+        Mo2Provenance::Claimed { modid: None, .. } => "meta.ini has no mod id".to_string(),
+        Mo2Provenance::Absent => "no meta.ini".to_string(),
+        Mo2Provenance::Unreadable { reason } => format!("meta.ini unreadable: {reason}"),
+    }
+}
+
+fn print_mo2_plan(plan: &agora_core::game_import::Mo2Plan) {
+    println!(
+        "Import plan: profile \"{}\" from {}",
+        plan.profile,
+        plan.setup.display()
+    );
+    println!(
+        "  game: {} ({}), install {} at {}",
+        plan.mo2_game_name,
+        plan.game,
+        plan.install_id,
+        plan.install_location.display()
+    );
+    println!("  store: {}   instance: {}", plan.store, plan.instance_name);
+    println!(
+        "  mods: {} enabled, {} disabled, {} files, {}",
+        plan.mods_enabled,
+        plan.mods_disabled,
+        plan.files,
+        human_gb(plan.bytes)
+    );
+    println!(
+        "  top-level meta.ini left out of the content: {} (MO2 metadata; its claims are still read as provenance)",
+        plan.meta_ini_excluded
+    );
+    println!(
+        "  skipped: {} separator(s), {} unmanaged entr(ies)",
+        plan.separators,
+        plan.unmanaged.len()
+    );
+    for planned in &plan.mods {
+        println!(
+            "    line {:>3} {:<8} {} ({} files) [{}]",
+            planned.line,
+            if planned.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            planned.folder,
+            planned.files,
+            mo2_provenance_text(&planned.provenance)
+        );
+    }
+    if plan.overwrite.present {
+        println!(
+            "  overwrite: {} files, {}",
+            plan.overwrite.files,
+            human_gb(plan.overwrite.bytes)
+        );
+        for generated in &plan.overwrite.generated {
+            println!(
+                "    {} ({}): {} file(s) become its generated layer, inputs unknown",
+                generated.name, generated.tool, generated.files
+            );
+        }
+        println!(
+            "    {} file(s) become the \"MO2 overwrite\" layer",
+            plan.overwrite.rest_files
+        );
+    } else {
+        println!("  overwrite: none");
+    }
+    if plan.plugins.kept {
+        println!(
+            "  plugins: {} active of {} listed, {} locked; {} always-loaded plugin(s) left to the game",
+            plan.plugins.active,
+            plan.plugins.lines.len(),
+            plan.plugins.locked.len(),
+            plan.plugins.implicit_skipped.len()
+        );
+    } else {
+        println!("  plugins: the game keeps no plugin list");
+    }
+    if plan.local_settings {
+        let names: Vec<&str> = plan.inis.iter().map(|i| i.name.as_str()).collect();
+        println!("  INIs (the profile's own): {}", names.join(", "));
+    } else {
+        println!("  INIs: the game's own (the profile does not keep its own)");
+    }
+    if plan.saves.local {
+        println!(
+            "  saves: the profile's {} file(s), {}; the instance uses its own save folder",
+            plan.saves.files,
+            human_gb(plan.saves.bytes)
+        );
+        if !plan.saves.note.is_empty() {
+            println!("    {}", plan.saves.note);
+        }
+    } else {
+        println!("  saves: shared with the game");
+    }
+    for note in &plan.plugins.notes {
+        println!("  note: {note}");
+    }
+    if !plan.problems.is_empty() {
+        println!("  problems ({}):", plan.problems.len());
+        for problem in &plan.problems {
+            match problem.line {
+                Some(line) => println!("    line {line}: {}: {}", problem.entry, problem.reason),
+                None => println!("    {}: {}", problem.entry, problem.reason),
+            }
+        }
+    }
+    for warning in &plan.warnings {
+        println!("  warning: {warning}");
+    }
+    println!("Nothing was stored. Run without --dry-run to import.");
+}
+
+fn print_mo2_run(report: &agora_core::game_import::Mo2RunReport) {
+    if report.interrupted {
+        println!(
+            "Stopped after {} mod(s), before the instance was made. Run the import again to finish.",
+            report.stored_mods
+        );
+        return;
+    }
+    let plan = &report.plan;
+    println!(
+        "Imported profile \"{}\" as instance {} ({}).",
+        plan.profile,
+        report.instance_id.as_deref().unwrap_or("?"),
+        plan.instance_name
+    );
+    match (&report.base_id, report.base_built) {
+        (Some(base), Some(true)) => println!("  base: {base} (built)"),
+        (Some(base), _) => println!("  base: {base} (reused)"),
+        _ => {}
+    }
+    println!(
+        "  mods: {} stored; {} content layer(s), {} of them disabled",
+        report.stored_mods, report.content_layers, report.disabled_layers
+    );
+    for duplicate in &report.duplicates {
+        println!("  duplicate: {duplicate}");
+    }
+    for generated in &report.generated_layers {
+        println!(
+            "  generated layer: {generated} (run `agora games instance tools list` to see it)"
+        );
+    }
+    if let Some(count) = report.plugins_written {
+        println!("  plugin list: {count} line(s) written, with MO2's order and locks");
+    }
+    for finding in &report.plugin_findings {
+        println!("  plugin order: {finding}");
+    }
+    if !report.inis_copied.is_empty() {
+        println!("  INIs copied: {}", report.inis_copied.join(", "));
+    }
+    if report.saves_copied > 0 || report.saves_skipped_existing > 0 {
+        println!(
+            "  saves copied: {} ({} already there, left alone)",
+            report.saves_copied, report.saves_skipped_existing
+        );
+    }
+    for step in &report.next_steps {
+        println!("  next: {step}");
+    }
+    println!("The setup at {} was only read.", plan.setup.display());
 }
 
 fn print_discovery_report(report: &agora_core::game_discovery::DiscoveryReport) {

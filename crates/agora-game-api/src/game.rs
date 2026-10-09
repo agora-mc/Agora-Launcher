@@ -421,6 +421,11 @@ pub struct GameDefinition {
     /// when the game has no such setting; the instance then always shares the game's saves.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub save_location: Vec<SaveLocationRule>,
+    /// The name Mod Organizer 2 gives this game in its `gameName` setting, such as
+    /// `Skyrim Special Edition`. An MO2 import maps a setup to the game through it (MASTER_SPEC
+    /// §26.10). Absent when no MO2 setup can be matched to this game.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mo2_game_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1239,6 +1244,11 @@ pub struct ToolDefinition {
     /// Generated output precedence is independent of plugin load order.
     #[serde(default)]
     pub after_tools: Vec<ToolId>,
+    /// Files the tool writes, as game-relative, case-insensitive glob patterns such as
+    /// `Data/meshes/actors/character/**`. A Mod Organizer 2 import uses them to decide which files
+    /// in an `overwrite` folder are this tool's output (MASTER_SPEC §26.10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_patterns: Vec<String>,
 }
 
 /// This is plugin/module order, distinct from the order of content layers.
@@ -1536,6 +1546,7 @@ mod tests {
     #[test]
     fn native_code_checks_reject_path_traversal() {
         let def = GameDefinition {
+            mo2_game_name: None,
             id: GameId::new("skyrim").unwrap(),
             name: "Skyrim".into(),
             stores: vec![],
@@ -1589,6 +1600,7 @@ mod tests {
     #[test]
     fn linked_archive_matching_is_case_insensitive() {
         let def = GameDefinition {
+            mo2_game_name: None,
             id: GameId::new("skyrim-se").unwrap(),
             name: "Skyrim SE".into(),
             stores: vec![],
@@ -1638,6 +1650,7 @@ mod tests {
     #[test]
     fn declared_write_matching_is_case_insensitive() {
         let def = GameDefinition {
+            mo2_game_name: None,
             id: GameId::new("skyrim-se").unwrap(),
             name: "Skyrim SE".into(),
             stores: vec![],
@@ -1677,6 +1690,7 @@ mod tests {
     #[test]
     fn excluded_paths_matching_is_case_insensitive() {
         let def = GameDefinition {
+            mo2_game_name: None,
             id: GameId::new("skyrim-se").unwrap(),
             name: "Skyrim SE".into(),
             stores: vec![],
@@ -1712,6 +1726,7 @@ mod tests {
     #[test]
     fn copy_patterns_match_defaults_and_custom_case_insensitively() {
         let def = GameDefinition {
+            mo2_game_name: None,
             id: GameId::new("valheim").unwrap(),
             name: "Valheim".into(),
             stores: vec![],

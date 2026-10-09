@@ -149,6 +149,7 @@ fn literal_args(args: &[&str]) -> Vec<LaunchValue> {
 /// A tool that runs `args`, from the game's folder (its staging folder, under the fake launcher).
 fn tool(id: &str, name: &str, args: &[&str]) -> ToolDefinition {
     ToolDefinition {
+        output_patterns: Vec::new(),
         id: ToolId::new(id).unwrap(),
         game: GameId::new(GAME).unwrap(),
         name: name.into(),
@@ -212,6 +213,7 @@ fn definition(tools: &[ToolDefinition], user_files: bool, plugins: bool) -> Game
         );
     }
     GameDefinition {
+        mo2_game_name: None,
         id: GameId::new(GAME).unwrap(),
         name: "Test Game".into(),
         stores: vec![StoreIdentifier {

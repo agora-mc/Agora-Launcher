@@ -316,6 +316,9 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "user-files"],
     &["games", "user-files", "status"],
     &["games", "user-files", "restore"],
+    &["games", "import"],
+    &["games", "import", "mo2"],
+    &["games", "import", "mo2", "scan"],
 ];
 
 // ---------------------------------------------------------------------------

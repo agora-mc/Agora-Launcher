@@ -33,6 +33,7 @@ pub mod game_deploy;
 pub mod game_discovery;
 pub mod game_frameworks;
 pub mod game_hooks;
+pub mod game_import;
 pub mod game_ini;
 pub mod game_instance;
 pub mod game_launch;

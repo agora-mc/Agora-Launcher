@@ -37,6 +37,10 @@ pub struct GameInstanceManifest {
     /// Absent in older manifests, which read as `Shared`.
     #[serde(default, skip_serializing_if = "SavesChoice::is_shared")]
     pub saves: SavesChoice,
+    /// Where the instance was imported from, when it came from another manager's setup (MASTER_SPEC
+    /// §26.10). An import refuses to repeat itself unless it is given a new name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_from: Option<crate::game_import::ImportRecord>,
 }
 
 /// Where an instance's saves are: the game's shared save folder, or a folder of its own that the
@@ -81,6 +85,7 @@ impl GameInstanceManifest {
             layers: LayerStack::default(),
             deployment: None,
             saves: SavesChoice::Shared,
+            imported_from: None,
         }
     }
 }
@@ -342,6 +347,7 @@ pub fn create_with_options(
         layers: LayerStack::default(),
         deployment: None,
         saves: SavesChoice::Shared,
+        imported_from: None,
     };
 
     let manifest_path = instance_dir.join("instance_manifest.json");

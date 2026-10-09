@@ -17,6 +17,7 @@ fn dummy_package_def(game_id: &str) -> PackageDefinition {
         api_range: VersionReq::parse(">=0.1, <0.2").unwrap(),
         parents: vec![],
         games: vec![GameDefinition {
+            mo2_game_name: None,
             id: GameId::new(game_id).unwrap(),
             name: game_id.to_string(),
             stores: vec![],

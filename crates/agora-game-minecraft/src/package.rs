@@ -22,6 +22,7 @@ pub fn game_package() -> Arc<dyn GamePackage> {
                 api_range: semver::VersionReq::parse(">=0.1, <0.2").unwrap(),
                 parents: Vec::new(),
                 games: vec![GameDefinition {
+                    mo2_game_name: None,
                     id: GameId::minecraft(),
                     name: "Minecraft: Java Edition".to_string(),
                     stores: Vec::new(),

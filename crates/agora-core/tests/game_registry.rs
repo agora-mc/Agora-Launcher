@@ -39,6 +39,7 @@ fn make_package(
 
 fn dummy_game(id: &str, stores: Vec<(&str, &str)>) -> GameDefinition {
     GameDefinition {
+        mo2_game_name: None,
         id: GameId::new(id).unwrap(),
         name: id.to_string(),
         stores: stores
@@ -267,6 +268,7 @@ fn registry_rejects_undefined_game_in_framework_leaving_registry_unchanged() {
 fn registry_rejects_undefined_game_in_tool_leaving_registry_unchanged() {
     let mut builder = GameRegistry::builder();
     let tool = ToolDefinition {
+        output_patterns: Vec::new(),
         id: ToolId::new("tool1").unwrap(),
         game: GameId::new("undefined-game").unwrap(),
         name: "Tool 1".into(),
@@ -395,6 +397,7 @@ fn install_id_sanitizing_and_uniqueness() {
 fn spike_machine_skyrim_steam_and_gog_identification() {
     let mut builder = GameRegistry::builder();
     let skyrim_def = GameDefinition {
+        mo2_game_name: None,
         id: GameId::new("skyrim-se").unwrap(),
         name: "The Elder Scrolls V: Skyrim Special Edition".into(),
         stores: vec![
@@ -556,6 +559,7 @@ fn spike_machine_skyrim_steam_and_gog_identification() {
 fn unreadable_executable_falls_back_to_store_record_and_nothing_usable_gives_unidentified() {
     let mut builder = GameRegistry::builder();
     let game = GameDefinition {
+        mo2_game_name: None,
         id: GameId::new("test-game").unwrap(),
         name: "Test Game".into(),
         stores: vec![StoreIdentifier {

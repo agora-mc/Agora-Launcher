@@ -395,6 +395,59 @@ fn save_layers(
     Ok(())
 }
 
+/// Make files an import found in a Mod Organizer 2 `overwrite` folder into a tool's output
+/// (MASTER_SPEC §26.10). They become generation 1 of the tool, copied whole into its folder, and
+/// the layer's inputs are unknown: nothing records what they were built from, so the launch check
+/// offers a rebuild rather than calling them current. `files` pairs each game-relative path
+/// (`Data/...`) with the file it is copied from. Returns how many files were copied.
+pub fn import_output(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool_id: &ToolId,
+    files: &[(String, PathBuf)],
+) -> Result<usize, ToolError> {
+    declared_tool(ctx, definition, tool_id)?;
+    if files.is_empty() {
+        return Err(ToolError::Invalid(format!(
+            "no files to import as the output of '{tool_id}'"
+        )));
+    }
+    let _lock = ctx.lock_manager.acquire(
+        LockResource::Instance(instance_id.to_string()),
+        "tool-import",
+    )?;
+    let mut manifest = load_manifest(ctx, instance_id)?;
+    if generated_position(manifest.layers.layers(), tool_id.as_str()).is_some() {
+        return Err(ToolError::Invalid(format!(
+            "tool '{tool_id}' already has output in this instance"
+        )));
+    }
+    let instance_dir = ctx
+        .paths
+        .instance_dir(instance_id)
+        .map_err(|e| ToolError::Other(e.to_string()))?;
+    let folder =
+        generation_dir(&instance_dir, tool_id.as_str(), "1").map_err(ToolError::Invalid)?;
+    if folder.exists() {
+        return Err(ToolError::Invalid(format!(
+            "a folder for the first output of '{tool_id}' already exists; remove it first"
+        )));
+    }
+    for (rel, source) in files {
+        let dest = crate::game_ini::join_rel(&folder, rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(source, &dest)?;
+    }
+    let layer = generated_layer(tool_id, "1", InputFingerprint::Unknown, Vec::new())?;
+    let mut layers = manifest.layers.layers().to_vec();
+    layers.push(layer);
+    save_layers(ctx, instance_id, definition, &mut manifest, layers)?;
+    Ok(files.len())
+}
+
 /// Split `file:section:key` into its three parts.
 fn split_setting(setting: &str) -> Result<(&str, &str, &str), ToolError> {
     match setting.split(':').collect::<Vec<_>>().as_slice() {

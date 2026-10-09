@@ -320,6 +320,19 @@ pub fn set_choice(
     definition: &GameDefinition,
     choice: SavesChoice,
 ) -> Result<SavesChange, SavesError> {
+    set_choice_inner(ctx, instance_id, definition, choice, true)
+}
+
+/// [`set_choice`]; with `create_folder` false it does not make the instance's own save folder. That
+/// folder is under the player's Documents, so an import that was not asked to copy saves leaves it
+/// alone. The setting still points at it.
+pub(crate) fn set_choice_inner(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    choice: SavesChoice,
+    create_folder: bool,
+) -> Result<SavesChange, SavesError> {
     let manifest = manifest_of(ctx, instance_id)?;
     let store = game_ini::store_of(ctx, instance_id)?;
     let rule = no_rule_is_an_error(definition, &store)?.clone();
@@ -355,11 +368,13 @@ pub fn set_choice(
                     },
                 )?;
             }
-            let folder = own_folder(&rule, instance_id)?;
-            std::fs::create_dir_all(&folder).map_err(|source| SavesError::Write {
-                path: folder.clone(),
-                source,
-            })?;
+            if create_folder {
+                let folder = own_folder(&rule, instance_id)?;
+                std::fs::create_dir_all(&folder).map_err(|source| SavesError::Write {
+                    path: folder.clone(),
+                    source,
+                })?;
+            }
             if changed {
                 SettingChange::Set { value: own }
             } else {

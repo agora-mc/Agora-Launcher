@@ -58,6 +58,16 @@ pub enum ContentSource {
         version: String,
         added_at_unix_ms: i64,
     },
+    /// A mod folder or an `overwrite` folder of a Mod Organizer 2 setup, imported as it is on disk
+    /// (MASTER_SPEC §26.10). `provenance` is what `meta.ini` claims; nothing has verified it.
+    Mo2Import {
+        /// The setup's ModOrganizer.ini, as the import was run with it.
+        setup: String,
+        /// The folder's name in the MO2 setup, e.g. `090 - Nemesis Unlimited Behavior Engine 0.84`.
+        mo2_folder: String,
+        provenance: Mo2Provenance,
+        added_at_unix_ms: i64,
+    },
     /// An archive from the curated catalog for another game (MASTER_SPEC §26.8): the entry, the
     /// release and asset it came from, and whether a hash its source published checked the bytes.
     /// `release` is `None` for a `direct_hash` file. An unverified item's hash is remembered, so a
@@ -71,6 +81,27 @@ pub enum ContentSource {
         verified: bool,
         added_at_unix_ms: i64,
     },
+}
+
+/// What a mod's `meta.ini` claims about where it came from. An absent or unreadable `meta.ini` is
+/// recorded as such, and the item is still imported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Mo2Provenance {
+    /// `meta.ini` was read. These are the file's own claims: no hash checks them against a
+    /// download, so `note` says "provenance claimed, not verified".
+    Claimed {
+        modid: Option<u64>,
+        version: Option<String>,
+        installation_file: Option<String>,
+        repository: Option<String>,
+        game_name: Option<String>,
+        note: String,
+    },
+    /// The folder has no `meta.ini`.
+    Absent,
+    /// A `meta.ini` exists but could not be read as one.
+    Unreadable { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,7 +289,7 @@ pub fn is_windows_device_name(stem: &str) -> bool {
     )
 }
 
-fn is_reparse_point_or_symlink(metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn is_reparse_point_or_symlink(metadata: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -869,10 +900,18 @@ pub fn add_folder(
     folder_path: &Path,
     name: Option<&str>,
 ) -> Result<AddOutcome, ContentError> {
-    let _lock = ctx
-        .lock_manager
-        .acquire(LockResource::ContentStore, "content-add")?;
+    let source = ContentSource::Folder {
+        path: folder_path.to_string_lossy().to_string(),
+        added_at_unix_ms: now_unix_ms(),
+    };
+    add_folder_as(ctx, folder_path, name, source)
+}
 
+/// Every regular file under `folder_path`, with its validated relative path. Symlinks and reparse
+/// points are refused, as are names no store item may hold. Reads the folder and nothing else.
+pub(crate) fn collect_folder_files(
+    folder_path: &Path,
+) -> Result<Vec<(RelPath, PathBuf)>, ContentError> {
     if !folder_path.exists() {
         return Err(ContentError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -886,25 +925,10 @@ pub fn add_folder(
         )));
     }
 
-    clean_staging_dir(&ctx.paths);
-
-    let folder_display_path = folder_path.to_string_lossy().to_string();
-
-    // 1. Walk folder collecting entries
-    struct SourceFile {
-        rel_path: RelPath,
-        abs_path: PathBuf,
-    }
-    let mut collected = Vec::new();
-    let mut validated_paths = Vec::new();
-    let mut declared_total_size: u64 = 0;
-
     fn walk_dir(
         root: &Path,
         rel: &Path,
-        collected: &mut Vec<SourceFile>,
-        validated_paths: &mut Vec<RelPath>,
-        declared_total_size: &mut u64,
+        collected: &mut Vec<(RelPath, PathBuf)>,
     ) -> Result<(), ContentError> {
         let cur = if rel.as_os_str().is_empty() {
             root.to_path_buf()
@@ -928,35 +952,63 @@ pub fn add_folder(
             }
 
             if meta.is_dir() {
-                walk_dir(
-                    root,
-                    &entry_rel,
-                    collected,
-                    validated_paths,
-                    declared_total_size,
-                )?;
+                walk_dir(root, &entry_rel, collected)?;
             } else if meta.is_file() {
                 let rel_path = validate_entry_path(&rel_str)?;
-                let size = meta.len();
-                *declared_total_size = declared_total_size.saturating_add(size);
-                validated_paths.push(rel_path.clone());
-                collected.push(SourceFile { rel_path, abs_path });
+                collected.push((rel_path, abs_path));
             }
         }
         Ok(())
     }
 
-    walk_dir(
-        folder_path,
-        Path::new(""),
-        &mut collected,
-        &mut validated_paths,
-        &mut declared_total_size,
-    )?;
+    let mut collected = Vec::new();
+    walk_dir(folder_path, Path::new(""), &mut collected)?;
+    Ok(collected)
+}
 
+/// [`add_folder`] with the source the caller names, so an importer can record where a folder came
+/// from as well as the folder itself.
+pub(crate) fn add_folder_as(
+    ctx: &Ctx,
+    folder_path: &Path,
+    name: Option<&str>,
+    source: ContentSource,
+) -> Result<AddOutcome, ContentError> {
+    let collected = collect_folder_files(folder_path)?;
+    let item_name = name
+        .map(|s| s.to_string())
+        .or_else(|| {
+            folder_path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "content".into());
+    add_collected(ctx, &item_name, collected, source)
+}
+
+/// Store an explicit list of files as one item: each file is copied into staging, hashed, and kept
+/// as a protected object. Identical bytes are stored once. The paths must not clash, as a folder's
+/// would not.
+pub(crate) fn add_collected(
+    ctx: &Ctx,
+    item_name: &str,
+    collected: Vec<(RelPath, PathBuf)>,
+    source: ContentSource,
+) -> Result<AddOutcome, ContentError> {
+    let _lock = ctx
+        .lock_manager
+        .acquire(LockResource::ContentStore, "content-add")?;
+
+    clean_staging_dir(&ctx.paths);
+
+    let validated_paths: Vec<RelPath> = collected.iter().map(|(p, _)| p.clone()).collect();
     validate_path_set(&validated_paths)?;
 
-    // 2. Untrusted sizes: check free disk space
+    // Untrusted sizes: check free disk space
+    let mut declared_total_size: u64 = 0;
+    for (_, abs) in &collected {
+        declared_total_size = declared_total_size.saturating_add(std::fs::metadata(abs)?.len());
+    }
     let content_root = ctx.paths.content_root();
     std::fs::create_dir_all(&content_root)?;
     let required = declared_total_size.saturating_add(ONE_GIB);
@@ -969,7 +1021,7 @@ pub fn add_folder(
         }
     }
 
-    // 3. Staging directory setup
+    // Staging directory setup
     let staging_root = ctx.paths.content_staging_dir();
     std::fs::create_dir_all(&staging_root)?;
     let unique = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
@@ -977,12 +1029,12 @@ pub fn add_folder(
     std::fs::create_dir_all(&staging_dir)?;
     let mut guard = StagingGuard::new(&staging_dir);
 
-    // 4. Copy each file to staging while hashing
+    // Copy each file to staging while hashing
     let mut staged_entries = Vec::with_capacity(collected.len());
-    for (idx, src) in collected.into_iter().enumerate() {
+    for (idx, (rel_path, abs_path)) in collected.into_iter().enumerate() {
         let staged_file_path = staging_dir.join(format!("obj_{idx}"));
         use std::io::Write;
-        let mut file_in = std::fs::File::open(&src.abs_path)?;
+        let mut file_in = std::fs::File::open(&abs_path)?;
         let mut staged_out = std::fs::File::create(&staged_file_path)?;
 
         let mut hasher = Sha256::new();
@@ -1001,28 +1053,14 @@ pub fn add_folder(
 
         let sha256 = format!("{:x}", hasher.finalize());
         staged_entries.push(StagedEntry {
-            rel_path: src.rel_path,
+            rel_path,
             staged_path: staged_file_path,
             size: bytes_written,
             sha256,
         });
     }
 
-    let item_name = name
-        .map(|s| s.to_string())
-        .or_else(|| {
-            folder_path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| "content".into());
-
-    let source = ContentSource::Folder {
-        path: folder_display_path,
-        added_at_unix_ms: now_unix_ms(),
-    };
-
-    let outcome = finish_adding(ctx, &item_name, staged_entries, source)?;
+    let outcome = finish_adding(ctx, item_name, staged_entries, source)?;
     guard.active = false;
     let _ = std::fs::remove_dir_all(&staging_dir);
     Ok(outcome)
@@ -1154,6 +1192,18 @@ fn commit_manifest(
                         version: v,
                         ..
                     } if f == from_item && p == package && v == version
+                )
+            }),
+            ContentSource::Mo2Import {
+                setup, mo2_folder, ..
+            } => !existing_item.sources.iter().any(|s| {
+                matches!(
+                    s,
+                    ContentSource::Mo2Import {
+                        setup: t,
+                        mo2_folder: f,
+                        ..
+                    } if t == setup && f == mo2_folder
                 )
             }),
             ContentSource::Catalog {

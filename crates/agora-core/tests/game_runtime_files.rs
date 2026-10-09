@@ -41,6 +41,7 @@ fn skse_rule() -> RuntimeFileRule {
 
 fn make_test_definition() -> GameDefinition {
     GameDefinition {
+        mo2_game_name: None,
         id: GameId::new("skyrim-se").unwrap(),
         name: "Skyrim Special Edition".into(),
         stores: vec![StoreIdentifier {

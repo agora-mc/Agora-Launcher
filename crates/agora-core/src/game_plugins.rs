@@ -672,6 +672,42 @@ fn ensure_copy_editable(
     Ok(())
 }
 
+/// Write an instance's plugin list from an import (MASTER_SPEC §26.10). `lines` are the plugins in
+/// load order with whether each is active; `managed` are the ones a content layer deploys, so a
+/// later sync keeps their states rather than activating them; `locked` are the names the import
+/// locked. The list and its state are replaced. Refused while the game runs. The caller holds the
+/// instance lock.
+pub fn import_list(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    lines: &[(String, bool)],
+    managed: &[String],
+    locked: &[String],
+) -> Result<(), PluginListError> {
+    let rule = rule_of(definition)?;
+    if rule.active_prefix.is_empty() {
+        if let Some((name, _)) = lines.iter().find(|(_, active)| !active) {
+            return Err(PluginListError::NoInactiveState(name.clone()));
+        }
+    }
+    ensure_copy_editable(ctx, instance_id, definition)?;
+    let dir = instance_dir(ctx, instance_id)?;
+    let path = dir.join(rule.user_file.as_str());
+    let mut file = ListFile::from_header(rule);
+    for (name, active) in lines {
+        file.lines.push(render_line(rule, name.as_bytes(), *active));
+    }
+    write_atomic(&path, &file.render())?;
+    write_state(
+        &dir,
+        &ManagedState {
+            managed: managed.to_vec(),
+            locked: locked.to_vec(),
+        },
+    )
+}
+
 /// Lock or unlock a listed plugin's place in the order. Returns whether the state changed.
 /// Only the state file is written, so a running game is not a reason to refuse.
 pub fn set_locked(
