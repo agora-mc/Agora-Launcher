@@ -1354,14 +1354,14 @@ pub(crate) fn deploy_locked_with_copy(
                 }
                 Err(_) => {
                     // Fallback to copy if hard link fails
-                    std::fs::copy(&source_path, &dest)?;
+                    copy_owned(&source_path, &dest)?;
                     copied_count += 1;
                     copied_bytes += file.size;
                     actual_placement = Placement::Copy;
                 }
             }
         } else {
-            std::fs::copy(&source_path, &dest)?;
+            copy_owned(&source_path, &dest)?;
             copied_count += 1;
             copied_bytes += file.size;
         }
@@ -1633,6 +1633,15 @@ pub(crate) fn discard_deployment(
     Ok(())
 }
 
+/// Copy a file the game may then write. `fs::copy` carries the source's permissions, and on Unix
+/// a content store object is read-only; on Windows its protection is an ACL a copy does not take.
+fn copy_owned(source: &Path, dest: &Path) -> std::io::Result<u64> {
+    let bytes = std::fs::copy(source, dest)?;
+    #[cfg(unix)]
+    crate::content_store::protect::unprotect(dest)?;
+    Ok(bytes)
+}
+
 /// Copy a changed or new game file into the writable layer, and clear any deletion marker for it.
 fn copy_to_writable(
     writable_dir: &Path,
@@ -1643,7 +1652,7 @@ fn copy_to_writable(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::copy(&file.abs_path, &dest)?;
+    copy_owned(&file.abs_path, &dest)?;
     clear_whiteout_marker(writable_dir, &file.rel_path);
     report.copied_to_writable.push(file.rel_path.clone());
     Ok(())
