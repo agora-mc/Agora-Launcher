@@ -665,12 +665,13 @@ pub fn inventory_legacy_root(source_root: &Path) -> LauncherResult<MigrationInve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_root::RemoveOnDrop;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn unique_dir() -> PathBuf {
+    fn unique_dir() -> RemoveOnDrop {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let seq = NEXT.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
@@ -679,7 +680,7 @@ mod tests {
             seq
         ));
         let _ = fs::remove_dir_all(&dir);
-        dir
+        RemoveOnDrop::new(dir)
     }
 
     fn make_service(dest_root: &Path) -> DataMigrationService {

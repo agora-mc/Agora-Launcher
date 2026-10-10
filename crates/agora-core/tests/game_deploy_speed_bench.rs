@@ -11,6 +11,10 @@
 //! Sizes: `AGORA_BENCH_ITEMS` content items (default 300), `AGORA_BENCH_FILES` small files per item
 //! (default 400), `AGORA_BENCH_BASE_FILES` base files (default 3000).
 
+// This bench uses only the data root of the shared fixtures.
+#[allow(dead_code)]
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,6 +34,8 @@ use agora_game_api::{
     StoreIdentifier,
 };
 use std::sync::atomic::Ordering;
+
+use common::data_root::DataRoot;
 
 struct BenchPackage(PackageDefinition);
 
@@ -235,12 +241,8 @@ fn deploy_and_launch_timings() {
     // run that finds the folder's marker reuses the imported content (the slow part) instead of
     // importing it again. Delete the folder when done.
     let keep = env_usize("AGORA_BENCH_KEEP", 0) == 1;
-    let _scratch = (!keep).then(|| {
-        tempfile::Builder::new()
-            .prefix("bench-")
-            .tempdir_in(&root)
-            .unwrap()
-    });
+    // A plain run's data root is removed when the run ends, protected objects included.
+    let _scratch = (!keep).then(|| DataRoot::in_dir(&root, "bench-"));
     let dir: PathBuf = match &_scratch {
         Some(scratch) => scratch.path().to_path_buf(),
         None => root.join(format!("keep-{items}x{files}-{base_files}")),

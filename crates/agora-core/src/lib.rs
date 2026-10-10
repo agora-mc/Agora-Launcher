@@ -86,3 +86,6 @@ pub mod snapshot_service;
 pub mod task_scheduler;
 pub mod version_changelogs;
 pub mod version_match;
+
+#[cfg(test)]
+mod test_root;

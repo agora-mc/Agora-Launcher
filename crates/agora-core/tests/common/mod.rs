@@ -2,6 +2,10 @@
 //! as the app's own package declares it (`agora-game-creation/data/package.json`), so core's tests
 //! do not reach into a game package. The CLI tests check the shipped file itself.
 
+// Not every test binary that includes this module uses the data root.
+#[allow(dead_code)]
+pub mod data_root;
+
 use agora_game_api::{
     DeploymentStrategy, GameDefinition, GameId, GamePath, RelPath, SaveLocationRule, StoreId,
     StoreIdentifier, UserDataLocation, UserFileMapping, UserFileStrategy,
