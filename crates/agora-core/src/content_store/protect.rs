@@ -156,6 +156,81 @@ mod imp {
         Ok(())
     }
 
+    /// The same deny ACE as `protect`, set through a handle opened for the object. For an object
+    /// this import has just renamed into place: one open, one DACL read, one DACL write, and no
+    /// read-back query of the path. The caller must know the object is not protected yet.
+    pub fn protect_by_handle(path: &Path) -> Result<(), std::io::Error> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SetSecurityInfo};
+        use windows_sys::Win32::Storage::FileSystem::{READ_CONTROL, WRITE_DAC};
+
+        let file = std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL | WRITE_DAC)
+            .open(path)?;
+        let handle = file.as_raw_handle() as HANDLE;
+        let user_sid = get_current_user_sid()?;
+
+        let mut p_sec_desc: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut p_dacl: *mut ACL = std::ptr::null_mut();
+
+        let ret = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut p_dacl,
+                std::ptr::null_mut(),
+                &mut p_sec_desc,
+            )
+        };
+        if ret != 0 {
+            return Err(std::io::Error::from_raw_os_error(ret as i32));
+        }
+
+        let mut ea: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
+        ea.grfAccessPermissions = DENY_MASK;
+        ea.grfAccessMode = DENY_ACCESS;
+        ea.grfInheritance = NO_INHERITANCE;
+        ea.Trustee.pMultipleTrustee = std::ptr::null_mut();
+        ea.Trustee.MultipleTrusteeOperation = 0;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        ea.Trustee.ptstrName = user_sid.as_ptr() as *mut u16;
+
+        let mut p_new_dacl: *mut ACL = std::ptr::null_mut();
+        let ret = unsafe { SetEntriesInAclW(1, &ea, p_dacl, &mut p_new_dacl) };
+        if ret != 0 {
+            unsafe { LocalFree(p_sec_desc as _) };
+            return Err(std::io::Error::from_raw_os_error(ret as i32));
+        }
+
+        let ret = unsafe {
+            SetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                p_new_dacl,
+                std::ptr::null_mut(),
+            )
+        };
+
+        unsafe {
+            LocalFree(p_new_dacl as _);
+            LocalFree(p_sec_desc as _);
+        }
+
+        if ret != 0 {
+            return Err(std::io::Error::from_raw_os_error(ret as i32));
+        }
+
+        Ok(())
+    }
+
     pub fn unprotect(path: &Path) -> Result<(), std::io::Error> {
         let user_sid = get_current_user_sid()?;
         let wide_path = to_wide_null(path);
@@ -363,6 +438,10 @@ mod imp {
         Ok(())
     }
 
+    pub fn protect_by_handle(path: &Path) -> Result<(), std::io::Error> {
+        protect(path)
+    }
+
     pub fn unprotect(path: &Path) -> Result<(), std::io::Error> {
         let mut perms = std::fs::metadata(path)?.permissions();
         perms.set_readonly(false);
@@ -386,6 +465,12 @@ mod imp {
 
 pub fn protect(path: &Path) -> Result<(), std::io::Error> {
     imp::protect(path)
+}
+
+/// Protect an object that was just renamed into place, skipping the protection query that `protect`
+/// makes first. See `imp::protect_by_handle`.
+pub fn protect_by_handle(path: &Path) -> Result<(), std::io::Error> {
+    imp::protect_by_handle(path)
 }
 
 pub fn unprotect(path: &Path) -> Result<(), std::io::Error> {

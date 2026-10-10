@@ -3,12 +3,16 @@
 //! A mod's files are stored once, by content hash, protected from modification,
 //! and verifiable. Nothing deploys content to a game yet (slice 2).
 
+#[cfg(test)]
+mod import_bench;
 pub mod protect;
 mod rar;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use agora_game_api::RelPath;
 use serde::{Deserialize, Serialize};
@@ -481,6 +485,26 @@ fn hash_file_path(path: &Path) -> Result<String, std::io::Error> {
         hasher.update(&buffer[..n]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Copy `src` to `dst` while hashing the bytes, reading through `buf`. Returns the bytes copied and
+/// their SHA-256 (lowercase hex).
+fn copy_and_hash(src: &Path, dst: &Path, buf: &mut [u8]) -> Result<(u64, String), std::io::Error> {
+    use std::io::Write;
+    let mut file_in = std::fs::File::open(src)?;
+    let mut staged_out = std::fs::File::create(dst)?;
+    let mut hasher = Sha256::new();
+    let mut bytes_written = 0u64;
+    loop {
+        let n = file_in.read(buf)?;
+        if n == 0 {
+            break;
+        }
+        bytes_written += n as u64;
+        staged_out.write_all(&buf[..n])?;
+        hasher.update(&buf[..n]);
+    }
+    Ok((bytes_written, format!("{:x}", hasher.finalize())))
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,41 +1053,127 @@ pub(crate) fn add_collected(
     std::fs::create_dir_all(&staging_dir)?;
     let mut guard = StagingGuard::new(&staging_dir);
 
-    // Copy each file to staging while hashing
-    let mut staged_entries = Vec::with_capacity(collected.len());
-    for (idx, (rel_path, abs_path)) in collected.into_iter().enumerate() {
-        let staged_file_path = staging_dir.join(format!("obj_{idx}"));
-        use std::io::Write;
-        let mut file_in = std::fs::File::open(&abs_path)?;
-        let mut staged_out = std::fs::File::create(&staged_file_path)?;
-
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; HASH_BUFFER_SIZE];
-        let mut bytes_written = 0u64;
-
-        loop {
-            let n = file_in.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            bytes_written += n as u64;
-            staged_out.write_all(&buf[..n])?;
-            hasher.update(&buf[..n]);
-        }
-
-        let sha256 = format!("{:x}", hasher.finalize());
-        staged_entries.push(StagedEntry {
-            rel_path,
-            staged_path: staged_file_path,
-            size: bytes_written,
-            sha256,
-        });
-    }
+    // Copy each file to staging while hashing, several files at once. Results come back in the
+    // order of `collected`, so the manifest is the same as a one-at-a-time copy would give.
+    let staged_entries = parallel_indexed(
+        collected.len(),
+        || vec![0u8; HASH_BUFFER_SIZE],
+        |buf: &mut Vec<u8>, idx| -> Result<StagedEntry, ContentError> {
+            let (rel_path, abs_path) = &collected[idx];
+            let staged_path = staging_dir.join(format!("obj_{idx}"));
+            let (size, sha256) = copy_and_hash(abs_path, &staged_path, buf)?;
+            Ok(StagedEntry {
+                rel_path: rel_path.clone(),
+                staged_path,
+                size,
+                sha256,
+            })
+        },
+    )?;
 
     let outcome = finish_adding(ctx, item_name, staged_entries, source)?;
     guard.active = false;
     let _ = std::fs::remove_dir_all(&staging_dir);
     Ok(outcome)
+}
+
+/// What `place_object` did with one staged file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placed {
+    /// The bytes became a new object (or replaced an untrustworthy one).
+    New,
+    /// A trustworthy object with these bytes was already there.
+    Present,
+}
+
+/// Put one staged file's bytes into the objects folder, or find that a trustworthy object already
+/// holds them. The staged copy is consumed either way.
+fn place_object(paths: &AppPaths, entry: &StagedEntry) -> Result<Placed, ContentError> {
+    let obj_path = paths.content_object_path(&entry.sha256);
+    if let Some(parent) = obj_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    if obj_path.exists() && object_is_trustworthy(&obj_path, entry.size, &entry.sha256)? {
+        let _ = std::fs::remove_file(&entry.staged_path);
+        if protect::protection(&obj_path)? != Protection::Protected {
+            protect::protect(&obj_path)?;
+        }
+        Ok(Placed::Present)
+    } else if obj_path.exists() {
+        // The object no longer holds what its name says (changed while unprotected, or
+        // truncated): the staged bytes are the real content, so they replace it. Protecting
+        // the old bytes as they are would turn a corruption into the recorded truth.
+        protect::unprotect(&obj_path)?;
+        std::fs::remove_file(&obj_path)?;
+        std::fs::rename(&entry.staged_path, &obj_path)?;
+        protect::protect_by_handle(&obj_path)?;
+        Ok(Placed::New)
+    } else {
+        std::fs::rename(&entry.staged_path, &obj_path)?;
+        protect::protect_by_handle(&obj_path)?;
+        Ok(Placed::New)
+    }
+}
+
+/// Run `work` for each index in `0..count` on a bounded pool of scoped threads (at most 8, and no
+/// more than the machine's parallelism). Each thread has its own state from `init`. The results
+/// come back in index order. The first error stops the threads from taking new work and is
+/// returned; work already running finishes.
+fn parallel_indexed<S, T, E, I, W>(count: usize, init: I, work: W) -> Result<Vec<T>, E>
+where
+    T: Send,
+    E: Send,
+    I: Fn() -> S + Sync,
+    W: Fn(&mut S, usize) -> Result<T, E> + Sync,
+{
+    let pool = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8)
+        .min(count.max(1));
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let slots: Mutex<Vec<Option<T>>> = Mutex::new((0..count).map(|_| None).collect());
+    let first_error: Mutex<Option<E>> = Mutex::new(None);
+
+    std::thread::scope(|s| {
+        for _ in 0..pool {
+            s.spawn(|| {
+                let mut state = init();
+                loop {
+                    if failed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let idx = next.fetch_add(1, Ordering::Relaxed);
+                    if idx >= count {
+                        break;
+                    }
+                    match work(&mut state, idx) {
+                        Ok(value) => slots.lock().unwrap()[idx] = Some(value),
+                        Err(e) => {
+                            failed.store(true, Ordering::Release);
+                            let mut slot = first_error.lock().unwrap();
+                            if slot.is_none() {
+                                *slot = Some(e);
+                            }
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    if let Some(e) = first_error.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(slots
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|slot| slot.expect("every index ran when no error was recorded"))
+        .collect())
 }
 
 fn finish_adding(
@@ -1072,40 +1182,46 @@ fn finish_adding(
     staged_entries: Vec<StagedEntry>,
     source: ContentSource,
 ) -> Result<AddOutcome, ContentError> {
-    let mut files = Vec::with_capacity(staged_entries.len());
+    // Entries with the same bytes share one object. Each group runs on one thread, in order: its
+    // first entry places the object and the others then find it present. So two threads never
+    // race for the same object path, and the counts are those of a one-at-a-time pass.
+    let mut group_of: HashMap<&str, usize> = HashMap::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (i, entry) in staged_entries.iter().enumerate() {
+        match group_of.get(entry.sha256.as_str()) {
+            Some(&g) => groups[g].push(i),
+            None => {
+                group_of.insert(entry.sha256.as_str(), groups.len());
+                groups.push(vec![i]);
+            }
+        }
+    }
+
+    let outcomes = parallel_indexed(
+        groups.len(),
+        || (),
+        |_, g| -> Result<Vec<Placed>, ContentError> {
+            groups[g]
+                .iter()
+                .map(|&i| place_object(&ctx.paths, &staged_entries[i]))
+                .collect()
+        },
+    )?;
+
     let mut objects_new = 0usize;
     let mut objects_restored = 0usize;
     let mut objects_present = 0usize;
-    let mut total_size = 0u64;
+    for placed in outcomes.iter().flatten() {
+        match placed {
+            Placed::New => objects_new += 1,
+            Placed::Present => objects_present += 1,
+        }
+    }
 
+    let mut files = Vec::with_capacity(staged_entries.len());
+    let mut total_size = 0u64;
     for entry in staged_entries {
         total_size += entry.size;
-        let obj_path = ctx.paths.content_object_path(&entry.sha256);
-        if let Some(parent) = obj_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        if obj_path.exists() && object_is_trustworthy(&obj_path, entry.size, &entry.sha256)? {
-            let _ = std::fs::remove_file(&entry.staged_path);
-            if protect::protection(&obj_path)? != Protection::Protected {
-                protect::protect(&obj_path)?;
-            }
-            objects_present += 1;
-        } else if obj_path.exists() {
-            // The object no longer holds what its name says (changed while unprotected, or
-            // truncated): the staged bytes are the real content, so they replace it. Protecting
-            // the old bytes as they are would turn a corruption into the recorded truth.
-            protect::unprotect(&obj_path)?;
-            std::fs::remove_file(&obj_path)?;
-            std::fs::rename(&entry.staged_path, &obj_path)?;
-            protect::protect(&obj_path)?;
-            objects_new += 1;
-        } else {
-            std::fs::rename(&entry.staged_path, &obj_path)?;
-            protect::protect(&obj_path)?;
-            objects_new += 1;
-        }
-
         files.push(ContentFile {
             path: entry.rel_path,
             size: entry.size,
