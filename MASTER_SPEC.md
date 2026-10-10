@@ -3844,7 +3844,7 @@ through the mounted stack change, not that a record says they did. This is the f
 small and well defined enough to support it.
 
 **Tools work on the real install's path** (measured 2026-10-08/09; decided with the user,
-2026-10-09; not built yet).
+2026-10-09; built 2026-10-09: the real-path view `86b14fa`, 32-bit programs `a632d5f`, the full-copy swap `10aebb8`, the fallback chain `9f39e90`).
 - **The problem:** Skyrim tools do not use the folder they are started in.
   - The real Nemesis 0.84 reads the install path from the registry (its log:
     `Data Directory: D:\SteamLibrary\steamapps\common\Skyrim Special Edition\data\`).
