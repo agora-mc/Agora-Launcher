@@ -18,8 +18,8 @@ use crate::process_identity::{self, ProcessIdentity};
 
 mod vfs;
 pub use vfs::{
-    launch_under_vfs, locate_dll, log_len, processes_ended_by_vfs, processes_ended_since,
-    EndedProcess, VfsLaunch,
+    launch_under_vfs, locate_dll, locate_dll_x86, log_len, processes_ended_by_vfs,
+    processes_ended_since, EndedProcess, VfsLaunch,
 };
 
 /// Host-resolved roots for recipe resolution.

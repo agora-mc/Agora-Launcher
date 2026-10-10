@@ -18,7 +18,6 @@ use std::fs;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
 
 use names::{Check, Parity};
 use serde::{Deserialize, Serialize};
@@ -29,6 +28,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Threading::*;
+
+#[path = "support/bits.rs"]
+mod bits;
+use bits::Bits;
 
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -153,23 +156,45 @@ fn open_for_reference(path: &Path) -> HANDLE {
     h
 }
 
-/// The unhooked answers for a real file: the reference the probe's answers must equal.
-fn reference(path: &Path) -> Parity {
+/// The unhooked answers for a real file, as a process of `bits` gets them: this process for 64 bits,
+/// the 32-bit probe run unhooked for 32 bits (WOW64 answers in its own terms, so a 64-bit query is
+/// not the reference for a 32-bit one).
+fn reference(bits: Bits, probe: &Path, path: &Path) -> Parity {
+    if bits == Bits::X64 {
+        return reference_here(path);
+    }
+    let out =
+        std::env::temp_dir().join(format!("agora-alias-reference-{}.json", std::process::id()));
+    let status = std::process::Command::new(probe)
+        .arg("--parity-of")
+        .arg(path)
+        .arg("--out")
+        .arg(&out)
+        .status()
+        .expect("run the 32-bit probe for its reference");
+    assert!(
+        status.success(),
+        "the 32-bit probe's reference failed: {status}"
+    );
+    let parity: Parity = serde_json::from_slice(&fs::read(&out).expect("the reference file"))
+        .expect("parse reference");
+    let _ = fs::remove_file(&out);
+    parity
+}
+
+/// The unhooked answers for a real file in this process.
+fn reference_here(path: &Path) -> Parity {
     let h = open_for_reference(path);
     let p = unsafe { names::parity(h) };
     unsafe { CloseHandle(h) };
     p
 }
 
-fn artifacts() -> (PathBuf, PathBuf) {
-    // The test exe is in target/debug/deps; the DLL and the probe are in target/debug.
-    let mut dir = std::env::current_exe().unwrap();
-    dir.pop();
-    if dir.file_name() == Some(std::ffi::OsStr::new("deps")) {
-        dir.pop();
-    }
-    let dll = dir.join("agora_vfs.dll");
-    let probe = dir.join("agora-vfs-probe.exe");
+fn artifacts(bits: Bits) -> (PathBuf, PathBuf) {
+    // The DLL and the probe of `bits`: in target/debug, or target/i686-pc-windows-msvc/debug.
+    let arts = bits::artifacts();
+    let dll = arts.dll(bits);
+    let probe = arts.probe(bits);
     assert!(
         dll.exists(),
         "{} missing: cargo build -p agora-vfs",
@@ -183,11 +208,9 @@ fn artifacts() -> (PathBuf, PathBuf) {
     (dll, probe)
 }
 
-#[test]
-#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs, then run with --ignored"]
-fn an_alias_shows_the_mount_and_leaves_the_real_install_unchanged() {
+fn alias_scenario_shows_the_mount_and_leaves_the_install_unchanged(bits: Bits) {
     let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let (dll, probe) = artifacts();
+    let (dll, probe) = artifacts(bits);
 
     let sb = std::env::temp_dir().join(format!("agora-alias-{}", std::process::id()));
     let _ = fs::remove_dir_all(&sb);
@@ -231,7 +254,8 @@ fn an_alias_shows_the_mount_and_leaves_the_real_install_unchanged() {
         "mount": mount.display().to_string(),
         "upper": upper.display().to_string(),
         "lowers": [mount.display().to_string(), base.display().to_string()],
-        "dll": dll.display().to_string(),
+        "dll": bits::artifacts().dll(Bits::X64).display().to_string(),
+        "dll_x86": bits::artifacts().dll(Bits::X86).display().to_string(),
         "log": results.join("agora_vfs.log").display().to_string(),
         "verbose": false,
         "ready_event": format!("Local\\agora-vfs-alias-{}", std::process::id()),
@@ -272,10 +296,7 @@ fn an_alias_shows_the_mount_and_leaves_the_real_install_unchanged() {
             &mut pi,
         );
         assert!(ok != 0, "CreateProcessW failed: {}", GetLastError());
-        let loaded =
-            agora_vfs_inject::inject_remote_thread(pi.hProcess, &dll, Duration::from_secs(30))
-                .expect("inject agora_vfs.dll");
-        assert!(loaded != 0, "LoadLibraryW returned NULL in the probe");
+        bits::inject(pi.hProcess, pi.dwProcessId, bits, &dll).expect("inject agora_vfs.dll");
         ResumeThread(pi.hThread);
         let wait = WaitForSingleObject(ready, 10_000);
         assert_eq!(
@@ -292,10 +313,11 @@ fn an_alias_shows_the_mount_and_leaves_the_real_install_unchanged() {
     };
     std::env::remove_var("AGORA_VFS_CONFIG");
 
-    let out: Output = serde_json::from_slice(
-        &fs::read(results.join("alias.json")).expect("the probe wrote alias.json"),
-    )
-    .expect("parse alias.json");
+    let out: Output =
+        serde_json::from_slice(&fs::read(results.join("alias.json")).unwrap_or_else(|e| {
+            panic!("the probe wrote no alias.json (exit code {exit_code:#x}): {e}")
+        }))
+        .expect("parse alias.json");
     let failed: Vec<&Check> = out.checks.iter().filter(|c| !c.ok).collect();
     for c in &out.checks {
         println!(
@@ -313,8 +335,8 @@ fn an_alias_shows_the_mount_and_leaves_the_real_install_unchanged() {
     );
 
     // Against the real files, unhooked: the same names, the same buffers, the same statuses.
-    let real_install = reference(&install.join("Data").join("mod.esp"));
-    let real_mount = reference(&mount.join("Data").join("mod.esp"));
+    let real_install = reference(bits, &probe, &install.join("Data").join("mod.esp"));
+    let real_mount = reference(bits, &probe, &mount.join("Data").join("mod.esp"));
     assert_parity("alias, the lower's file", &out.alias_lower, &real_install);
     assert_parity("alias, after copy-up", &out.alias_upper, &real_install);
     assert_parity("mount, the lower's file", &out.mount_lower, &real_mount);
@@ -431,6 +453,7 @@ struct ChildReport {
 /// Start `probe` suspended with `args`, in folder `cwd`, under the DLL configured by `config_path`,
 /// and wait for it. Returns the probe's exit code.
 fn run_probe_under_view(
+    bits: Bits,
     dll: &Path,
     probe: &Path,
     args: &str,
@@ -460,10 +483,7 @@ fn run_probe_under_view(
             &mut pi,
         );
         assert!(ok != 0, "CreateProcessW failed: {}", GetLastError());
-        let loaded =
-            agora_vfs_inject::inject_remote_thread(pi.hProcess, dll, Duration::from_secs(30))
-                .expect("inject agora_vfs.dll");
-        assert!(loaded != 0, "LoadLibraryW returned NULL in the probe");
+        bits::inject(pi.hProcess, pi.dwProcessId, bits, dll).expect("inject agora_vfs.dll");
         ResumeThread(pi.hThread);
         let wait = WaitForSingleObject(ready, 10_000);
         assert_eq!(
@@ -482,14 +502,12 @@ fn run_probe_under_view(
     code
 }
 
-#[test]
-#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs, then run with --ignored"]
-fn a_child_started_in_an_alias_folder_reads_both_layers_by_relative_names() {
+fn cwd_scenario_reads_both_layers_by_relative_names(bits: Bits) {
     // The upper holds one file of Data\sub, the mount (a lower) holds another. A child started with
     // current directory alias\Data\sub must read both by relative name: its directory is translated
     // to the mount's own copy of the folder, so its relative opens go through the view.
     let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let (dll, probe) = artifacts();
+    let (dll, probe) = artifacts(bits);
 
     let sb = std::env::temp_dir().join(format!("agora-cwd-{}", std::process::id()));
     let _ = fs::remove_dir_all(&sb);
@@ -524,7 +542,8 @@ fn a_child_started_in_an_alias_folder_reads_both_layers_by_relative_names() {
         "mount": mount.display().to_string(),
         "upper": upper.display().to_string(),
         "lowers": [mount.display().to_string(), base.display().to_string()],
-        "dll": dll.display().to_string(),
+        "dll": bits::artifacts().dll(Bits::X64).display().to_string(),
+        "dll_x86": bits::artifacts().dll(Bits::X86).display().to_string(),
         "log": results.join("agora_vfs.log").display().to_string(),
         "verbose": false,
         "ready_event": format!("Local\\agora-vfs-cwd-{}", std::process::id()),
@@ -542,7 +561,15 @@ fn a_child_started_in_an_alias_folder_reads_both_layers_by_relative_names() {
         child.display(),
         results.display()
     );
-    let code = run_probe_under_view(&dll, &probe, &args, &results, &config_path, &ready_name);
+    let code = run_probe_under_view(
+        bits,
+        &dll,
+        &probe,
+        &args,
+        &results,
+        &config_path,
+        &ready_name,
+    );
     let log = fs::read_to_string(results.join("agora_vfs.log")).unwrap_or_default();
     println!("the VFS log:\n{log}");
     assert_eq!(code, 0, "the child did not run and read both files");
@@ -575,4 +602,28 @@ fn a_child_started_in_an_alias_folder_reads_both_layers_by_relative_names() {
     );
 
     let _ = fs::remove_dir_all(&sb);
+}
+
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs, then run with --ignored"]
+fn an_alias_shows_the_mount_and_leaves_the_real_install_unchanged() {
+    alias_scenario_shows_the_mount_and_leaves_the_install_unchanged(Bits::X64);
+}
+
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs --target i686-pc-windows-msvc, then run with --ignored"]
+fn an_alias_shows_the_mount_and_leaves_the_real_install_unchanged_32_bit() {
+    alias_scenario_shows_the_mount_and_leaves_the_install_unchanged(Bits::X86);
+}
+
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs, then run with --ignored"]
+fn a_child_started_in_an_alias_folder_reads_both_layers_by_relative_names() {
+    cwd_scenario_reads_both_layers_by_relative_names(Bits::X64);
+}
+
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs --target i686-pc-windows-msvc, then run with --ignored"]
+fn a_child_started_in_an_alias_folder_reads_both_layers_by_relative_names_32_bit() {
+    cwd_scenario_reads_both_layers_by_relative_names(Bits::X86);
 }

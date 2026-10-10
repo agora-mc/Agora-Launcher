@@ -21,6 +21,9 @@ use super::{LaunchError, LaunchedGame, ResolvedLaunch};
 pub struct VfsLaunch {
     /// `agora_vfs.dll`.
     pub dll: PathBuf,
+    /// The 32-bit `agora_vfs.dll` (see [`locate_dll_x86`]). Its helper sits beside it. Needed only when
+    /// a 32-bit program starts; when its files are missing, that start says where it looked.
+    pub dll_x86: Option<PathBuf>,
     /// The game folder the game sees (the link farm's `game/` folder).
     pub mount: PathBuf,
     /// The writable layer: every write, copy-up and whiteout lands here.
@@ -42,6 +45,25 @@ pub fn locate_dll() -> Result<PathBuf, String> {
         std::env::var_os("AGORA_VFS_DLL").map(PathBuf::from),
         std::env::current_exe().ok().as_deref(),
     )
+}
+
+/// Where the 32-bit `agora_vfs.dll` is: `AGORA_VFS_DLL_X86` if set, else `x86\agora_vfs.dll` in the
+/// folder of the 64-bit DLL `dll`. The path is not checked here: a 32-bit program that starts while
+/// the file is missing is refused with this path in its reason.
+pub fn locate_dll_x86(dll: &Path) -> PathBuf {
+    locate_dll_x86_from(
+        std::env::var_os("AGORA_VFS_DLL_X86").map(PathBuf::from),
+        dll,
+    )
+}
+
+fn locate_dll_x86_from(env_override: Option<PathBuf>, dll: &Path) -> PathBuf {
+    env_override.unwrap_or_else(|| {
+        dll.parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join("x86")
+            .join("agora_vfs.dll")
+    })
 }
 
 fn locate_dll_from(
@@ -134,8 +156,8 @@ pub fn processes_ended_by_vfs(appended: &str) -> Vec<EndedProcess> {
         .collect()
 }
 
-/// The VFS's JSON configuration (`crates/agora-vfs/README.md`). Version 2 only when there are
-/// aliases, so a launch without them is written exactly as before.
+/// The VFS's JSON configuration (`crates/agora-vfs/README.md`). Version 2 when there are aliases or
+/// a 32-bit DLL, version 1 otherwise.
 pub fn config_json(vfs: &VfsLaunch, ready_event: &str) -> serde_json::Value {
     let mut json = serde_json::json!({
         "version": 1,
@@ -147,7 +169,10 @@ pub fn config_json(vfs: &VfsLaunch, ready_event: &str) -> serde_json::Value {
         "verbose": false,
         "ready_event": ready_event,
     });
-    if !vfs.aliases.is_empty() {
+    if let Some(dll_x86) = &vfs.dll_x86 {
+        json["dll_x86"] = serde_json::json!(dll_x86.to_string_lossy());
+    }
+    if !vfs.aliases.is_empty() || vfs.dll_x86.is_some() {
         json["version"] = serde_json::json!(2);
         json["aliases"] = serde_json::json!(vfs
             .aliases
@@ -187,14 +212,17 @@ mod windows {
     use std::os::windows::process::CommandExt;
     use std::time::Duration;
 
-    use agora_vfs_inject::{Failure, Method};
+    use std::io::Read;
+
+    use agora_vfs_inject::{Failure, Method, HELPER_TIMEOUT, OWN_MACHINE};
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows_sys::Win32::System::SystemInformation::IMAGE_FILE_MACHINE_I386;
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, GetExitCodeProcess, WaitForMultipleObjects, WaitForSingleObject,
-        CREATE_SUSPENDED,
+        CreateEventW, GetExitCodeProcess, GetProcessId, WaitForMultipleObjects,
+        WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
     };
 
     use super::{config_json, LaunchError, LaunchedGame, ResolvedLaunch, VfsLaunch};
@@ -268,7 +296,7 @@ mod windows {
 
         // From here on the process exists: any failure must end it.
         // SAFETY: `process` is the live handle `child` owns and `event` outlives the call.
-        match unsafe { inject_and_resume(process, vfs, event.0) } {
+        match unsafe { inject_and_resume(process, vfs, event.0, &resolved.program) } {
             Ok(method) => append_log(vfs, &format!("[agora] injected by {}", method.describe())),
             Err(reason) => {
                 let _ = child.kill();
@@ -328,7 +356,18 @@ mod windows {
         process: HANDLE,
         vfs: &VfsLaunch,
         event: HANDLE,
+        program: &std::path::Path,
     ) -> Result<Method, String> {
+        // A 32-bit program cannot be injected from this 64-bit process: its DLL comes through the
+        // 32-bit helper, as a 32-bit child's does (brief decision 6).
+        if agora_vfs_inject::process_machine(process) == Some(IMAGE_FILE_MACHINE_I386)
+            && OWN_MACHINE != IMAGE_FILE_MACHINE_I386
+        {
+            inject_by_helper(process, vfs, program)?;
+            resume(process)?;
+            wait_for_ready(process, event, vfs)?;
+            return Ok(Method::Helper);
+        }
         match agora_vfs_inject::inject_import_table(process, &vfs.dll) {
             Ok(()) => {
                 // The DLL loads during the process's own start-up, so the process must run for
@@ -422,6 +461,56 @@ mod windows {
         }
     }
 
+    /// Have the 32-bit helper beside the 32-bit DLL inject it into the suspended `process`. The helper
+    /// is waited for, and ended after 15 seconds. Nothing is run unless the injection worked.
+    unsafe fn inject_by_helper(
+        process: HANDLE,
+        vfs: &VfsLaunch,
+        program: &std::path::Path,
+    ) -> Result<(), String> {
+        let not_found = |path: &str| {
+            format!(
+                "{} is a 32-bit program and the 32-bit VFS files were not found at {path}",
+                program.display()
+            )
+        };
+        let Some(dll) = vfs.dll_x86.as_deref() else {
+            return Err(not_found("(no path is configured for them)"));
+        };
+        if !dll.is_file() {
+            return Err(not_found(&dll.display().to_string()));
+        }
+        let helper = agora_vfs_inject::helper_beside(dll);
+        if !helper.is_file() {
+            return Err(not_found(&helper.display().to_string()));
+        }
+        let pid = GetProcessId(process);
+        let mut child = std::process::Command::new(&helper)
+            .args(["--pid", &pid.to_string(), "--dll"])
+            .arg(dll)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("could not start {}: {e}", helper.display()))?;
+        let waited =
+            agora_vfs_inject::wait_for_helper(child.as_raw_handle() as HANDLE, HELPER_TIMEOUT);
+        let mut said = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_string(&mut said);
+        }
+        let _ = child.wait();
+        waited.map_err(|why| {
+            let said = said.trim();
+            if said.is_empty() {
+                why
+            } else {
+                format!("{said} ({why})")
+            }
+        })
+    }
+
     /// Resume every thread of a process created suspended.
     unsafe fn resume(process: HANDLE) -> Result<(), String> {
         type NtResumeProcess = unsafe extern "system" fn(HANDLE) -> i32;
@@ -450,6 +539,7 @@ mod tests {
     fn sample() -> VfsLaunch {
         VfsLaunch {
             dll: PathBuf::from("C:/Agora/agora_vfs.dll"),
+            dll_x86: None,
             mount: PathBuf::from("D:/Bases/deployments/inst/game"),
             upper: PathBuf::from("C:/Data/instances/inst/writable"),
             lowers: vec![PathBuf::from("D:/Bases/deployments/inst/game")],
@@ -476,6 +566,29 @@ mod tests {
         let json = config_json(&sample(), "Local\\agora-vfs-1-abc");
         assert_eq!(json["version"], 1);
         assert!(json.get("aliases").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_32_bit_dll_is_named_in_the_configuration_and_makes_it_version_two() {
+        let mut vfs = sample();
+        vfs.dll_x86 = Some(PathBuf::from("C:/Agora/x86/agora_vfs.dll"));
+        let json = config_json(&vfs, "Local\\agora-vfs-1-abc");
+        assert_eq!(json["version"], 2);
+        assert_eq!(json["dll_x86"], "C:/Agora/x86/agora_vfs.dll");
+        assert_eq!(json["dll"], "C:/Agora/agora_vfs.dll");
+    }
+
+    #[test]
+    fn the_32_bit_dll_is_the_override_or_the_x86_folder_beside_the_64_bit_one() {
+        let dll = Path::new("C:/Agora/agora_vfs.dll");
+        assert_eq!(
+            locate_dll_x86_from(None, dll),
+            PathBuf::from("C:/Agora/x86/agora_vfs.dll")
+        );
+        assert_eq!(
+            locate_dll_x86_from(Some(PathBuf::from("D:/elsewhere/x.dll")), dll),
+            PathBuf::from("D:/elsewhere/x.dll")
+        );
     }
 
     #[test]

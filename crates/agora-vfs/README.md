@@ -47,7 +47,11 @@ When injected into a process:
 6. Folder directory listings merge the upper layer over lower layers, with whiteout markers removed.
 7. Any calls creating child processes (`CreateProcessInternalW`) intercept process creation and inject
    `agora_vfs.dll` into the child before resumption. A child that cannot be injected is ended and the
-   start fails; it never runs unprotected.
+   start fails; it never runs unprotected. A child of the other bitness cannot be injected from here
+   (its import table and its DLL load belong to a process of its own bitness), so the DLL of the
+   child's bitness is handed to `agora-vfs-helper.exe` of that bitness: it is started through the
+   original `CreateProcessInternalW` (so this hook does not try to inject it), waited for, and
+   ended after 15 seconds. The helper never resumes the child.
 8. **Aliases (configuration version 2).** Each alias folder shows exactly the view of `mount`. A path
    under an alias resolves to the same mount-relative path, so a tool that reads the real install
    folder (Nemesis reads it from the registry, BodySlide hard-codes it) sees the mod files at its own
@@ -102,16 +106,21 @@ Configuration is loaded as JSON from the path in `AGORA_VFS_CONFIG`:
 
 ### Fields
 
-- `version` (`u32`): Configuration schema version: `1`, or `2` when there are `aliases`. Any other
-  version is refused. A version 1 configuration with `aliases` is refused too: a reader that ignored
-  them would show a tool a vanilla game. Core writes version 2 only when there are aliases.
+- `version` (`u32`): Configuration schema version: `1`, or `2` when there are `aliases` or a `dll_x86`.
+  Any other version is refused. A version 1 configuration with `aliases` or `dll_x86` is refused too: a
+  reader that ignored them would show a tool a vanilla game, or end its 32-bit children. Core writes
+  version 2 only when there are aliases or a 32-bit DLL.
 - `aliases` (`array of strings`, version 2, optional): Folders that show exactly the view of `mount`
   (see point 8 above). Each is normalized as the others are. Refused when empty, or when it is equal to,
   inside, or containing the mount, the upper, any lower, or another alias. The comparison ignores case.
 - `mount` (`string`): The path the game sees as its root/mount folder. Trailing backslashes are stripped.
 - `upper` (`string`): The instance's writable directory (layer 4) where copy-up files and whiteouts are stored.
 - `lowers` (`array of strings`): Lower layer folders in priority order (highest priority first). In link deployments, `lowers[0]` is typically identical to `mount`.
-- `dll` (`string`): Absolute path to `agora_vfs.dll` used to inject child processes.
+- `dll` (`string`): Absolute path to `agora_vfs.dll` (64-bit) used to inject 64-bit child processes.
+- `dll_x86` (`string`, version 2, optional): Absolute path to the 32-bit `agora_vfs.dll`, used for 32-bit
+  children of either bitness of parent. Its helper, `agora-vfs-helper.exe`, sits beside it; the 64-bit
+  helper sits beside `dll`. A 32-bit child with no `dll_x86`, or whose DLL or helper is missing, is ended
+  and its reason names the path that was looked for.
 - `log` (`string`, optional): File path for logging VFS operations and diagnostics.
 - `verbose` (`bool`, default `false`): If true, logs every unique file opened through the mount.
 - `ready_event` (`string`, optional): Name of the Win32 event object (`OpenEventW` with `EVENT_MODIFY_STATE`) signaled once all hooks are active.
@@ -132,6 +141,13 @@ cargo test -p agora-core --test game_deploy -- --ignored  # real injection, incl
 - `tests/matrix.rs`: the six-topology write matrix.
 - `tests/early_import.rs`: a DLL that cannot do its job ends the process before it runs; no
   configuration installs nothing.
+- `tests/bitness.rs`: a 64-bit parent with a 32-bit child (through the 32-bit helper), a 32-bit parent
+  with a 64-bit child (through the 64-bit helper), a missing 32-bit DLL (the child is ended and the
+  reason names the path), and a helper that hangs (`agora-vfs-sleeper`, a bin that
+  sleeps, copied beside the DLL as the helper; the child is ended after the timeout). Needs both builds:
+  `cargo build -p agora-vfs` and `cargo build -p agora-vfs --target i686-pc-windows-msvc`.
+- The write matrix and the alias tests run again for the 32-bit probe (`test_matrix_x86_*`,
+  `*_32_bit`), with the probe built for i686.
 - `tests/alias.rs`: an alias over a temp install, with a lower-only program started by its alias path.
   The probe (`src/bin/probe.rs`, `src/bin/probe/alias.rs`) runs the checks under the DLL. The name
   queries (`tests/support/names.rs`) are run on the probe's handles and, unhooked, on the real files;

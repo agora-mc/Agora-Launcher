@@ -12,6 +12,10 @@ pub struct VfsConfig {
     #[serde(default)]
     pub lowers: Vec<PathBuf>,
     pub dll: PathBuf,
+    /// The 32-bit `agora_vfs.dll` (version 2). Used for 32-bit children of either bitness of
+    /// process; its helper sits beside it. Optional: a 32-bit child with none is ended.
+    #[serde(default)]
+    pub dll_x86: Option<PathBuf>,
     #[serde(default)]
     pub log: Option<PathBuf>,
     #[serde(default)]
@@ -32,6 +36,8 @@ pub struct RuntimeConfig {
     pub upper: PathBuf,
     pub lowers: Vec<PathBuf>,
     pub dll: PathBuf,
+    /// The 32-bit DLL, when configured (version 2).
+    pub dll_x86: Option<PathBuf>,
     pub log: Option<PathBuf>,
     pub verbose: bool,
     pub ready_event: Option<String>,
@@ -81,6 +87,10 @@ impl VfsConfig {
             // A version 1 reader would ignore the aliases and show a tool a vanilla game.
             return Err("aliases need configuration version 2".to_string());
         }
+        if self.version == 1 && self.dll_x86.is_some() {
+            // A version 1 reader would ignore the 32-bit DLL and end its 32-bit children.
+            return Err("dll_x86 needs configuration version 2".to_string());
+        }
         let mount_clean = normalize_win_path(&self.mount);
         if mount_clean.is_empty() {
             return Err("Mount path cannot be empty".to_string());
@@ -116,6 +126,10 @@ impl VfsConfig {
         }
 
         let dll_clean = PathBuf::from(normalize_win_path(&self.dll.to_string_lossy()));
+        let dll_x86_clean = self
+            .dll_x86
+            .as_ref()
+            .map(|p| PathBuf::from(normalize_win_path(&p.to_string_lossy())));
         let log_clean = self
             .log
             .map(|p| PathBuf::from(normalize_win_path(&p.to_string_lossy())));
@@ -133,6 +147,7 @@ impl VfsConfig {
             upper: PathBuf::from(upper_clean),
             lowers: lowers.into_iter().map(PathBuf::from).collect(),
             dll: dll_clean,
+            dll_x86: dll_x86_clean,
             log: log_clean,
             verbose: self.verbose,
             ready_event: self.ready_event,
@@ -196,6 +211,30 @@ mod tests {
     fn version_one_with_aliases_is_refused_so_an_old_reader_never_shows_a_vanilla_game() {
         let err = VfsConfig::from_json_str(&config(1, &[r"E:\Steam\Skyrim"])).unwrap_err();
         assert!(err.contains("version 2"), "{err}");
+    }
+
+    #[test]
+    fn a_32_bit_dll_is_read_in_version_two_and_refused_in_version_one() {
+        let with_x86 = config(2, &[]).replacen(
+            r#""dll": "C:\\Agora\\agora_vfs.dll","#,
+            r#""dll": "C:\\Agora\\agora_vfs.dll", "dll_x86": "C:\\Agora\\x86\\agora_vfs.dll","#,
+            1,
+        );
+        let runtime = VfsConfig::from_json_str(&with_x86).unwrap();
+        assert_eq!(
+            runtime.dll_x86,
+            Some(PathBuf::from(r"C:\Agora\x86\agora_vfs.dll"))
+        );
+        assert!(VfsConfig::from_json_str(&config(2, &[]))
+            .unwrap()
+            .dll_x86
+            .is_none());
+        let as_v1 = with_x86.replacen(r#""version": 2"#, r#""version": 1"#, 1);
+        let err = VfsConfig::from_json_str(&as_v1).unwrap_err();
+        assert!(
+            err.contains("dll_x86 needs configuration version 2"),
+            "{err}"
+        );
     }
 
     #[test]

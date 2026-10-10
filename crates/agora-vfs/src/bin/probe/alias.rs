@@ -83,6 +83,16 @@ fn handle_parity(path: &Path) -> Parity {
     p
 }
 
+/// Write the name answers of a real file, asked of this process's own bitness and unhooked, to `out`
+/// as a `Parity`: the reference the test compares the probe's answers with, for a 32-bit probe.
+pub fn parity_of(file: &Path, out: &Path) -> i32 {
+    let parity = handle_parity(file);
+    match fs::write(out, serde_json::to_vec(&parity).unwrap()) {
+        Ok(()) => 0,
+        Err(_) => 2,
+    }
+}
+
 /// Read a whole file opened by NT name, through the same hooks as every other open.
 fn read_nt(name: &str) -> io::Result<String> {
     let file = NtOpen::file(None, name, false).map_err(|s| io::Error::other(format!("{s:#x}")))?;

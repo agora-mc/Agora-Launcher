@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock};
 
 use retour::GenericDetour;
 use windows_sys::Win32::Foundation::{CloseHandle, SetLastError, BOOL, HANDLE};
+use windows_sys::Win32::Storage::FileSystem::FILE_RENAME_INFO;
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::*;
 
@@ -525,17 +526,21 @@ unsafe extern "system" fn nt_set_information_file(
                 status
             }
             FILE_RENAME_INFORMATION | FILE_RENAME_INFORMATION_EX => {
-                // x64 layout: flags/ReplaceIfExists @0, RootDirectory @8, FileNameLength @16, FileName @20
+                // The layout is FILE_RENAME_INFO's: flags/ReplaceIfExists first, then RootDirectory,
+                // FileNameLength and FileName. Its offsets differ by bitness (x64: 8, 16, 20; i686: 4, 8, 12).
                 let base = info as *const u8;
                 let replace = if class == FILE_RENAME_INFORMATION {
                     *base != 0
                 } else {
                     *(base as *const u32) & FILE_RENAME_REPLACE_IF_EXISTS != 0
                 };
-                let root = *(base.add(8) as *const HANDLE);
-                let name_len = *(base.add(16) as *const u32) as usize / 2;
+                let root_at = std::mem::offset_of!(FILE_RENAME_INFO, RootDirectory);
+                let length_at = std::mem::offset_of!(FILE_RENAME_INFO, FileNameLength);
+                let name_at = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+                let root = *(base.add(root_at) as *const HANDLE);
+                let name_len = *(base.add(length_at) as *const u32) as usize / 2;
                 let name = String::from_utf16_lossy(std::slice::from_raw_parts(
-                    base.add(20) as *const u16,
+                    base.add(name_at) as *const u16,
                     name_len,
                 ));
                 let target = if root.is_null() {
@@ -588,15 +593,21 @@ unsafe extern "system" fn nt_set_information_file(
                             .encode_utf16()
                             .chain(target.as_os_str().encode_wide())
                             .collect();
-                        let new_len = 20 + wide.len() * 2;
+                        // The FILE_RENAME_INFO layout differs by bitness: the root handle is at 8 on
+                        // x64 and 4 on i686, and the name is after its length.
+                        let root_at = std::mem::offset_of!(FILE_RENAME_INFO, RootDirectory);
+                        let length_at = std::mem::offset_of!(FILE_RENAME_INFO, FileNameLength);
+                        let name_at = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+                        let new_len = name_at + wide.len() * 2;
                         let mut buf = vec![0u64; new_len.div_ceil(8)];
                         let p = buf.as_mut_ptr() as *mut u8;
-                        std::ptr::copy_nonoverlapping(base, p, 8);
-                        *(p.add(8) as *mut HANDLE) = std::ptr::null_mut();
-                        *(p.add(16) as *mut u32) = (wide.len() * 2) as u32;
+                        // The header the caller gave (the replace flag), then our own fields.
+                        std::ptr::copy_nonoverlapping(base, p, root_at);
+                        *(p.add(root_at) as *mut HANDLE) = std::ptr::null_mut();
+                        *(p.add(length_at) as *mut u32) = (wide.len() * 2) as u32;
                         std::ptr::copy_nonoverlapping(
                             wide.as_ptr(),
-                            p.add(20) as *mut u16,
+                            p.add(name_at) as *mut u16,
                             wide.len(),
                         );
                         let status = hooks().set_info.call(
@@ -779,7 +790,7 @@ unsafe extern "system" fn create_process_internal_w(
         // Our own file work (the short path name, the log) must not be redirected.
         let was_inside = is_inside();
         crate::util::set_inside(true);
-        let injected = agora_vfs_inject::inject_child((*pi).hProcess, &c.dll);
+        let injected = crate::child::inject((*pi).hProcess, (*pi).dwProcessId, c);
         crate::util::set_inside(was_inside);
         match injected {
             Ok((method, fallback_from)) => {

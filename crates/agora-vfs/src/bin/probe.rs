@@ -327,6 +327,11 @@ fn names_after(args: &[String], flag: &str) -> Vec<String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // The unhooked name answers of a real file, for the test's reference (run without the DLL).
+    if let Some(file) = arg(&args, "--parity-of") {
+        let out = arg(&args, "--out").expect("--out required");
+        std::process::exit(alias::parity_of(Path::new(&file), Path::new(&out)));
+    }
     // A child the alias scenario starts: read the file it is given, and report what it read.
     if let Some(file) = arg(&args, "--child-read") {
         let out = arg(&args, "--out").expect("--out required");

@@ -15,6 +15,10 @@ use std::sync::Mutex;
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::System::Threading::*;
 
+#[path = "support/bits.rs"]
+mod bits;
+use bits::Bits;
+
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 const LAYERS: &[&str] = &["content", "base_copied", "base_linked"];
@@ -233,25 +237,17 @@ unsafe fn inject(process: HANDLE, dll: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn find_built_artifacts() -> (PathBuf, PathBuf) {
-    // Current test exe is in target/debug/deps/...
-    let mut test_exe = std::env::current_exe().unwrap();
-    // Navigate up to target/debug or target/release
-    test_exe.pop(); // pop exe
-    if test_exe.file_name() == Some(std::ffi::OsStr::new("deps")) {
-        test_exe.pop(); // pop deps
-    }
-    let target_dir = test_exe;
-    let dll = target_dir.join("agora_vfs.dll");
-    let probe = target_dir.join("agora-vfs-probe.exe");
+fn find_built_artifacts(bits: Bits) -> (PathBuf, PathBuf) {
+    let arts = bits::artifacts();
+    let (dll, probe) = (arts.dll(bits), arts.probe(bits));
     assert!(
         dll.exists(),
-        "agora_vfs.dll not found at {}. Run `cargo build -p agora-vfs` first.",
+        "{} not found. Build it first (cargo build -p agora-vfs, or --target i686-pc-windows-msvc).",
         dll.display()
     );
     assert!(
         probe.exists(),
-        "agora-vfs-probe.exe not found at {}. Run `cargo build -p agora-vfs` first.",
+        "{} not found. Build it first (cargo build -p agora-vfs, or --target i686-pc-windows-msvc).",
         probe.display()
     );
     (dll, probe)
@@ -267,9 +263,15 @@ struct MatrixResult {
     attr_count: usize,
 }
 
-fn run_matrix_case(sb: &Path, topology: &str, readonly: bool, acl: bool) -> MatrixResult {
+fn run_matrix_case(
+    sb: &Path,
+    topology: &str,
+    readonly: bool,
+    acl: bool,
+    bits: Bits,
+) -> MatrixResult {
     let _lock = TEST_MUTEX.lock().unwrap();
-    let (dll, probe) = find_built_artifacts();
+    let (dll, probe) = find_built_artifacts(bits);
     setup(sb, readonly, acl);
     let results = sb.join("results");
 
@@ -321,16 +323,21 @@ fn run_matrix_case(sb: &Path, topology: &str, readonly: bool, acl: bool) -> Matr
         "CreateEventW failed"
     );
 
-    let config_json = json!({
+    let mut config_json = json!({
         "version": 1,
         "mount": mount.display().to_string(),
         "upper": sb.join("overwrite").display().to_string(),
         "lowers": lowers.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-        "dll": dll.display().to_string(),
+        "dll": bits::artifacts().dll(Bits::X64).display().to_string(),
         "log": results.join("agora_vfs.log").display().to_string(),
         "verbose": true,
         "ready_event": ready_event_name
     });
+    if bits == Bits::X86 {
+        // The probe is 32-bit: its own DLL is the 32-bit one, and its children of its bitness get it.
+        config_json["version"] = json!(2);
+        config_json["dll_x86"] = json!(dll.display().to_string());
+    }
 
     let cfg_path = results.join("agora_vfs.json");
     fs::write(&cfg_path, serde_json::to_vec_pretty(&config_json).unwrap()).unwrap();
@@ -360,7 +367,11 @@ fn run_matrix_case(sb: &Path, topology: &str, readonly: bool, acl: bool) -> Matr
             &mut pi,
         );
         assert!(ok != 0, "CreateProcessW failed: {}", last_error());
-        inject(pi.hProcess, &dll).expect("inject agora_vfs");
+        match bits {
+            Bits::X64 => inject(pi.hProcess, &dll).expect("inject agora_vfs"),
+            Bits::X86 => bits::inject_by_helper(pi.dwProcessId, &dll)
+                .expect("inject agora_vfs through the 32-bit helper"),
+        }
 
         // Resume and wait for ready_event handshake
         ResumeThread(pi.hThread);
@@ -546,7 +557,7 @@ fn run_matrix_case(sb: &Path, topology: &str, readonly: bool, acl: bool) -> Matr
 #[ignore]
 fn test_matrix_topology_full_plain() {
     let sb = std::env::temp_dir().join(format!("agora-vfs-test-full-plain-{}", std::process::id()));
-    let res = run_matrix_case(&sb, "full", false, false);
+    let res = run_matrix_case(&sb, "full", false, false, Bits::X64);
     assert_eq!(res.total_ops, 62);
     assert_eq!(res.leaks, 0, "Lower/store files changed!");
     assert_eq!(res.failures, 0, "Operations failed for probe!");
@@ -559,7 +570,7 @@ fn test_matrix_topology_full_plain() {
 #[ignore]
 fn test_matrix_topology_full_acl() {
     let sb = std::env::temp_dir().join(format!("agora-vfs-test-full-acl-{}", std::process::id()));
-    let res = run_matrix_case(&sb, "full", false, true);
+    let res = run_matrix_case(&sb, "full", false, true, Bits::X64);
     assert_eq!(res.total_ops, 62);
     assert_eq!(res.leaks, 0, "Lower/store files changed!");
     assert_eq!(res.failures, 0, "Operations failed for probe!");
@@ -575,7 +586,7 @@ fn test_matrix_topology_mount_is_lower_plain() {
         "agora-vfs-test-mountlower-plain-{}",
         std::process::id()
     ));
-    let res = run_matrix_case(&sb, "mount_is_lower", false, false);
+    let res = run_matrix_case(&sb, "mount_is_lower", false, false, Bits::X64);
     assert_eq!(res.total_ops, 62);
     assert_eq!(res.leaks, 0, "Lower/store files changed!");
     assert_eq!(res.failures, 0, "Operations failed for probe!");
@@ -591,7 +602,7 @@ fn test_matrix_topology_mount_is_lower_acl() {
         "agora-vfs-test-mountlower-acl-{}",
         std::process::id()
     ));
-    let res = run_matrix_case(&sb, "mount_is_lower", false, true);
+    let res = run_matrix_case(&sb, "mount_is_lower", false, true, Bits::X64);
     assert_eq!(res.total_ops, 62);
     assert_eq!(res.leaks, 0, "Lower/store files changed!");
     assert_eq!(res.failures, 0, "Operations failed for probe!");
@@ -604,7 +615,7 @@ fn test_matrix_topology_mount_is_lower_acl() {
 #[ignore]
 fn test_matrix_topology_farm_plain() {
     let sb = std::env::temp_dir().join(format!("agora-vfs-test-farm-plain-{}", std::process::id()));
-    let res = run_matrix_case(&sb, "farm", false, false);
+    let res = run_matrix_case(&sb, "farm", false, false, Bits::X64);
     assert_eq!(res.total_ops, 62);
     assert_eq!(res.leaks, 0, "Lower/store files changed!");
     assert_eq!(res.failures, 0, "Operations failed for probe!");
@@ -615,7 +626,99 @@ fn test_matrix_topology_farm_plain() {
 #[ignore]
 fn test_matrix_topology_farm_acl() {
     let sb = std::env::temp_dir().join(format!("agora-vfs-test-farm-acl-{}", std::process::id()));
-    let res = run_matrix_case(&sb, "farm", false, true);
+    let res = run_matrix_case(&sb, "farm", false, true, Bits::X64);
+    assert_eq!(res.total_ops, 62);
+    assert_eq!(res.leaks, 0, "Lower/store files changed!");
+    assert_eq!(res.failures, 0, "Operations failed for probe!");
+    assert!(res.consistent, "open, list and attributes disagree");
+}
+
+#[test]
+#[ignore]
+fn test_matrix_x86_topology_full_plain() {
+    let sb = std::env::temp_dir().join(format!(
+        "agora-vfs-test-x86-full-plain-{}",
+        std::process::id()
+    ));
+    let res = run_matrix_case(&sb, "full", false, false, Bits::X86);
+    assert_eq!(res.total_ops, 62);
+    assert_eq!(res.leaks, 0, "Lower/store files changed!");
+    assert_eq!(res.failures, 0, "Operations failed for probe!");
+    assert!(res.consistent, "open, list and attributes disagree");
+    assert_eq!(res.openable_count, res.listed_count);
+    assert_eq!(res.openable_count, res.attr_count);
+}
+
+#[test]
+#[ignore]
+fn test_matrix_x86_topology_full_acl() {
+    let sb = std::env::temp_dir().join(format!(
+        "agora-vfs-test-x86-full-acl-{}",
+        std::process::id()
+    ));
+    let res = run_matrix_case(&sb, "full", false, true, Bits::X86);
+    assert_eq!(res.total_ops, 62);
+    assert_eq!(res.leaks, 0, "Lower/store files changed!");
+    assert_eq!(res.failures, 0, "Operations failed for probe!");
+    assert!(res.consistent, "open, list and attributes disagree");
+    assert_eq!(res.openable_count, res.listed_count);
+    assert_eq!(res.openable_count, res.attr_count);
+}
+
+#[test]
+#[ignore]
+fn test_matrix_x86_topology_mount_is_lower_plain() {
+    let sb = std::env::temp_dir().join(format!(
+        "agora-vfs-test-x86-mountlower-plain-{}",
+        std::process::id()
+    ));
+    let res = run_matrix_case(&sb, "mount_is_lower", false, false, Bits::X86);
+    assert_eq!(res.total_ops, 62);
+    assert_eq!(res.leaks, 0, "Lower/store files changed!");
+    assert_eq!(res.failures, 0, "Operations failed for probe!");
+    assert!(res.consistent, "open, list and attributes disagree");
+    assert_eq!(res.openable_count, res.listed_count);
+    assert_eq!(res.openable_count, res.attr_count);
+}
+
+#[test]
+#[ignore]
+fn test_matrix_x86_topology_mount_is_lower_acl() {
+    let sb = std::env::temp_dir().join(format!(
+        "agora-vfs-test-x86-mountlower-acl-{}",
+        std::process::id()
+    ));
+    let res = run_matrix_case(&sb, "mount_is_lower", false, true, Bits::X86);
+    assert_eq!(res.total_ops, 62);
+    assert_eq!(res.leaks, 0, "Lower/store files changed!");
+    assert_eq!(res.failures, 0, "Operations failed for probe!");
+    assert!(res.consistent, "open, list and attributes disagree");
+    assert_eq!(res.openable_count, res.listed_count);
+    assert_eq!(res.openable_count, res.attr_count);
+}
+
+#[test]
+#[ignore]
+fn test_matrix_x86_topology_farm_plain() {
+    let sb = std::env::temp_dir().join(format!(
+        "agora-vfs-test-x86-farm-plain-{}",
+        std::process::id()
+    ));
+    let res = run_matrix_case(&sb, "farm", false, false, Bits::X86);
+    assert_eq!(res.total_ops, 62);
+    assert_eq!(res.leaks, 0, "Lower/store files changed!");
+    assert_eq!(res.failures, 0, "Operations failed for probe!");
+    assert!(res.consistent, "open, list and attributes disagree");
+}
+
+#[test]
+#[ignore]
+fn test_matrix_x86_topology_farm_acl() {
+    let sb = std::env::temp_dir().join(format!(
+        "agora-vfs-test-x86-farm-acl-{}",
+        std::process::id()
+    ));
+    let res = run_matrix_case(&sb, "farm", false, true, Bits::X86);
     assert_eq!(res.total_ops, 62);
     assert_eq!(res.leaks, 0, "Lower/store files changed!");
     assert_eq!(res.failures, 0, "Operations failed for probe!");

@@ -1057,6 +1057,7 @@ fn prepare_deployed(
                 .instance_dir(id)
                 .map_err(|e| InstanceError::Other(e.to_string()))?;
             Some(crate::game_launch::VfsLaunch {
+                dll_x86: Some(crate::game_launch::locate_dll_x86(&dll)),
                 dll,
                 mount: game_dir.clone(),
                 upper: instance_dir.join("writable"),

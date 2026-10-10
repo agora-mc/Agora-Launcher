@@ -1189,6 +1189,30 @@ impl Drop for EnvVar {
     }
 }
 
+/// The 32-bit DLL's path is read at every launch of a 32-bit program. The two tests that start one hold
+/// this lock, and each puts back the value it found, so one cannot see the other's path.
+static X86_DLL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Sets `AGORA_VFS_DLL_X86` for one test and puts back what was there before.
+struct X86Dll(Option<std::ffi::OsString>);
+
+impl X86Dll {
+    fn set(value: &str) -> Self {
+        let before = std::env::var_os("AGORA_VFS_DLL_X86");
+        std::env::set_var("AGORA_VFS_DLL_X86", value);
+        Self(before)
+    }
+}
+
+impl Drop for X86Dll {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => std::env::set_var("AGORA_VFS_DLL_X86", value),
+            None => std::env::remove_var("AGORA_VFS_DLL_X86"),
+        }
+    }
+}
+
 #[test]
 fn a_link_capture_promotes_new_and_changed_files_and_a_whiteout_for_a_deletion() {
     let maker = tool(
@@ -1657,8 +1681,11 @@ fn real_injection_a_tool_that_deletes_a_mods_file_hides_it() {
 
 #[test]
 #[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs, then set AGORA_VFS_DLL"]
-fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto() {
-    // The game's own executable is the 32-bit cmd.exe, so agora_vfs.dll (64-bit) cannot load into it.
+fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto_when_the_x86_dll_is_missing() {
+    // The game's own executable is the 32-bit cmd.exe. Without the 32-bit DLL it cannot run under the
+    // VFS, so Auto captures from links and says where the 32-bit files were looked for.
+    let _lock = X86_DLL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _x86 = X86Dll::set(r"C:\agora-missing\x86\agora_vfs.dll");
     let f = fixture_with_exe(
         vec![tool("wow", "Wow", &["/c", "echo", "x", ">", "out.txt"])],
         false,
@@ -1673,7 +1700,11 @@ fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto() {
     println!("run outcome: {out:?}");
     assert_eq!(out.capture, CaptureMethod::Links, "{out:?}");
     let reason = out.capture_reason.clone().unwrap_or_default();
-    assert!(reason.contains("32-bit"), "{reason}");
+    assert!(
+        reason.contains("32-bit program and the 32-bit VFS files were not found at")
+            && reason.contains(r"agora-missing"),
+        "{reason}"
+    );
     assert!(out.promoted, "{out:?}");
     assert_eq!(out.written, vec!["out.txt".to_string()]);
     assert_eq!(
@@ -1684,6 +1715,59 @@ fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto() {
     );
     assert!(names(&f.writable_dir()).is_empty());
     assert!(!f.deployed_game_dir().exists());
+}
+
+/// A 32-bit tool runs under the VFS when the 32-bit files exist: the 32-bit probe is the tool, and its
+/// own write lands in the run's promoted generation. Needs `AGORA_VFS_DLL` and `AGORA_VFS_DLL_X86`.
+#[test]
+#[ignore = "injects agora_vfs.dll into a 32-bit tool: cargo build -p agora-vfs, cargo build -p agora-vfs --target i686-pc-windows-msvc, set AGORA_VFS_DLL and AGORA_VFS_DLL_X86"]
+fn real_injection_a_32_bit_tool_runs_under_the_vfs_and_its_write_is_promoted() {
+    let _lock = X86_DLL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let x86_dll = std::env::var_os("AGORA_VFS_DLL_X86")
+        .map(PathBuf::from)
+        .expect("set AGORA_VFS_DLL_X86 to target/i686-pc-windows-msvc/debug/agora_vfs.dll");
+    assert!(x86_dll.is_file(), "{} does not exist", x86_dll.display());
+    let probe = x86_dll
+        .parent()
+        .expect("the 32-bit DLL's folder")
+        .join("agora-vfs-probe.exe");
+    assert!(probe.is_file(), "{} does not exist", probe.display());
+    // The probe's results go to a folder outside the view; it writes its files into the game's Data.
+    let out = std::env::temp_dir().join(format!("agora-tool32-out-{}", std::process::id()));
+    std::fs::create_dir_all(&out).unwrap();
+    let f = fixture_with_exe(
+        vec![tool(
+            "probe32",
+            "Probe",
+            &["--root", ".", "--out", out.to_str().unwrap()],
+        )],
+        false,
+        false,
+        probe.to_str().unwrap(),
+    );
+    let launcher = RealLauncher::new(&[]);
+
+    let run = f.run_as("probe32", &launcher, CaptureMode::Vfs);
+    let _ = std::fs::remove_dir_all(&out);
+    let run = run.expect("run the 32-bit tool under the VFS");
+    println!("run outcome: {run:?}");
+    assert_eq!(run.capture, CaptureMethod::Vfs, "{run:?}");
+    assert!(run.promoted, "{run:?}");
+    assert!(
+        run.written.iter().any(|w| w == "Data/created.txt"),
+        "{:?}",
+        run.written
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            f.generation_dir("probe32", "1")
+                .join("Data")
+                .join("created.txt")
+        )
+        .unwrap(),
+        "NEW"
+    );
+    assert!(names(&f.writable_dir()).is_empty());
 }
 
 #[test]
@@ -3107,4 +3191,66 @@ fn a_run_that_deletes_a_required_output_a_mod_provided_is_discarded() {
         "{reason}"
     );
     assert!(f.generated("deleter").is_none());
+}
+
+/// The machine type in a PE file's header (`IMAGE_FILE_HEADER.Machine`), read without running it.
+fn pe_machine(path: &Path) -> std::io::Result<u16> {
+    use std::io::{Error, Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let mut dos = [0u8; 64];
+    file.read_exact(&mut dos)?;
+    if &dos[..2] != b"MZ" {
+        return Err(Error::other("not an MZ executable"));
+    }
+    let header_at = u32::from_le_bytes([dos[60], dos[61], dos[62], dos[63]]);
+    file.seek(SeekFrom::Start(u64::from(header_at)))?;
+    let mut head = [0u8; 6];
+    file.read_exact(&mut head)?;
+    if &head[..4] != b"PE\0\0" {
+        return Err(Error::other("no PE signature"));
+    }
+    Ok(u16::from_le_bytes([head[4], head[5]]))
+}
+
+/// Read only: the real Nemesis 0.84 executable is a 32-bit program, so under the VFS it needs the
+/// 32-bit DLL, and the locator names the x86 folder beside the 64-bit DLL from `AGORA_VFS_DLL`. The
+/// executable is never run.
+#[test]
+#[ignore = "reads the PE headers of the real Nemesis exe and the DLLs (never runs them): set AGORA_VFS_DLL and AGORA_VFS_DLL_X86"]
+fn the_real_nemesis_exe_is_32_bit_and_the_locator_picks_the_x86_dll() {
+    const I386: u16 = 0x014c;
+    const AMD64: u16 = 0x8664;
+    // Another test in this file sets AGORA_VFS_DLL_X86 to a missing path while it runs.
+    let _lock = X86_DLL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let exe = Path::new(
+        r"D:\Skyrim-MO2-Salvage\MO2\mods\090 - Nemesis Unlimited Behavior Engine 0.84\Nemesis_Engine\Nemesis Unlimited Behavior Engine.exe",
+    );
+    assert!(exe.is_file(), "{} does not exist", exe.display());
+    let machine = pe_machine(exe).expect("read the executable's PE header");
+    assert_eq!(
+        machine, I386,
+        "Nemesis should be 32-bit, got machine {machine:#x}"
+    );
+
+    let dll64 = PathBuf::from(
+        std::env::var_os("AGORA_VFS_DLL").expect("set AGORA_VFS_DLL to the 64-bit agora_vfs.dll"),
+    );
+    let x86 = agora_core::game_launch::locate_dll_x86(&dll64);
+    assert_eq!(
+        x86,
+        PathBuf::from(
+            std::env::var_os("AGORA_VFS_DLL_X86")
+                .expect("set AGORA_VFS_DLL_X86 to the 32-bit agora_vfs.dll")
+        ),
+        "the locator should pick the 32-bit DLL the environment names"
+    );
+    assert!(x86.is_file(), "{} does not exist", x86.display());
+    assert_eq!(
+        pe_machine(&x86).expect("read the 32-bit DLL's header"),
+        I386
+    );
+    assert_eq!(
+        pe_machine(&dll64).expect("read the 64-bit DLL's header"),
+        AMD64
+    );
 }

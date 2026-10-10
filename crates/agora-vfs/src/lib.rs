@@ -19,6 +19,8 @@ pub mod config;
 pub mod paths;
 
 #[cfg(windows)]
+pub mod child;
+#[cfg(windows)]
 pub mod hooks;
 #[cfg(windows)]
 pub mod listing;
@@ -259,6 +261,7 @@ mod tests {
             upper: PathBuf::from("C:\\upper"),
             lowers: vec![],
             dll: PathBuf::from("C:\\agora.dll"),
+            dll_x86: None,
             log: None,
             verbose: false,
             ready_event: None,

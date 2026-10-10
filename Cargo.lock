@@ -249,7 +249,8 @@ name = "agora-vfs"
 version = "0.1.0"
 dependencies = [
  "agora-vfs-inject",
- "retour",
+ "retour 0.3.1",
+ "retour 0.4.0-alpha.4",
  "serde",
  "serde_json",
  "windows-sys 0.59.0",
@@ -2560,6 +2561,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced-x86"
+version = "1.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c447cff8c7f384a7d4f741cfcff32f75f3ad02b406432e8d6c878d56b1edf6b"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "ico"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4458,6 +4468,22 @@ dependencies = [
  "generic-array",
  "libc",
  "libudis86-sys",
+ "mmap-fixed-fixed",
+ "once_cell",
+ "region",
+ "slice-pool2",
+]
+
+[[package]]
+name = "retour"
+version = "0.4.0-alpha.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ead4bc8e12d553ff70769c5f5c21f5f4f0e73c0018068a6bb5a3d7d3b9e57ec7"
+dependencies = [
+ "cfg-if",
+ "generic-array",
+ "iced-x86",
+ "libc",
  "mmap-fixed-fixed",
  "once_cell",
  "region",

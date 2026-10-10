@@ -102,6 +102,18 @@ pub unsafe fn fill_object_name(
     } else {
         (STATUS_BUFFER_OVERFLOW, (slots - 1) * 2, need)
     };
+    // On i686 (WOW64) an answer that is not a success writes nothing into the caller's buffer, and the
+    // length it reports is the native one less 8 bytes: a path-invalid answer, which has no length,
+    // reports -8. Measured against an unhooked 32-bit process (`tests/alias.rs`); x64 writes partials.
+    if cfg!(target_pointer_width = "32") && status != STATUS_SUCCESS {
+        let reported = if required == 0 {
+            0u32.wrapping_sub(8) as usize
+        } else {
+            required
+        };
+        write_ret(reported);
+        return status;
+    }
     let chars = length / 2;
     for (i, unit) in name.iter().take(chars).enumerate() {
         ptr::write_unaligned(out.add(header + 2 * i) as *mut u16, *unit);

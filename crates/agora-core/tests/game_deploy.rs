@@ -1907,6 +1907,9 @@ fn real_injection_leaves_the_games_headers_as_they_were_on_disk() {
 fn real_injection_a_32_bit_game_is_refused_cleanly() {
     let wow64_cmd = std::path::Path::new(r"C:\Windows\SysWOW64\cmd.exe");
     assert!(wow64_cmd.is_file(), "no 32-bit cmd.exe on this machine");
+    // The 32-bit files are not there: the game is refused and the reason says where they were looked for.
+    let missing_x86 = r"C:\agora-missing\x86\agora_vfs.dll";
+    std::env::set_var("AGORA_VFS_DLL_X86", missing_x86);
     let def = cmd_game(&["/c", "exit", "0"]);
     let tmp = TempDir::new().unwrap();
     let ctx = create_test_context(&tmp, &def);
@@ -1941,9 +1944,12 @@ fn real_injection_a_32_bit_game_is_refused_cleanly() {
         "{err:?}"
     );
     assert!(
-        err.to_string().contains("built for another architecture"),
+        err.to_string().contains(&format!(
+            "32-bit program and the 32-bit VFS files were not found at {missing_x86}"
+        )),
         "{err}"
     );
+    std::env::remove_var("AGORA_VFS_DLL_X86");
     let game_dir = deployment_dir(&ctx, id).unwrap().unwrap();
     for _ in 0..40 {
         if agora_core::game_launch::processes_running_from(&game_dir).is_empty() {

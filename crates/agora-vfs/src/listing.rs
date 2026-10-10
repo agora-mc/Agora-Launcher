@@ -84,7 +84,8 @@ pub unsafe fn read_real_dir(dir: &Path, class: u32) -> Vec<Vec<u8>> {
         security_quality_of_service: std::ptr::null_mut(),
     };
     let mut handle: HANDLE = std::ptr::null_mut();
-    let mut iosb = [0u64; 2];
+    // An IO_STATUS_BLOCK is two pointer-sized fields: 8 bytes on i686, 16 on x64.
+    let mut iosb = [0usize; 2];
     let status = hooks().open.call(
         &mut handle,
         FILE_LIST_DIRECTORY | SYNCHRONIZE,
@@ -117,7 +118,7 @@ pub unsafe fn read_real_dir(dir: &Path, class: u32) -> Vec<Vec<u8>> {
         if status < 0 || status == STATUS_NO_MORE_FILES {
             break;
         }
-        let bytes = std::slice::from_raw_parts(buf.as_ptr() as *const u8, iosb[1] as usize);
+        let bytes = std::slice::from_raw_parts(buf.as_ptr() as *const u8, iosb[1]);
         let mut offset = 0usize;
         while offset + name_at <= bytes.len() {
             let next = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
@@ -280,8 +281,8 @@ pub unsafe fn query_directory(
         let start = written.next_multiple_of(8);
         if start + entry.len() > out_bytes.len() {
             if last_entry_at.is_none() {
-                let iosb = iosb as *mut u64;
-                *iosb = STATUS_BUFFER_OVERFLOW as u32 as u64;
+                let iosb = iosb as *mut usize;
+                *iosb = STATUS_BUFFER_OVERFLOW as u32 as usize;
                 *iosb.add(1) = 0;
                 return Some(STATUS_BUFFER_OVERFLOW);
             }
@@ -307,8 +308,8 @@ pub unsafe fn query_directory(
         listing.returned_any = true;
         STATUS_NO_SUCH_FILE
     };
-    let iosb = iosb as *mut u64;
-    *iosb = status as u32 as u64;
-    *iosb.add(1) = written as u64;
+    let iosb = iosb as *mut usize;
+    *iosb = status as u32 as usize;
+    *iosb.add(1) = written;
     Some(status)
 }

@@ -21,7 +21,7 @@
 
 use std::ffi::{c_char, c_void};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
@@ -38,14 +38,17 @@ use windows_sys::Win32::System::SystemInformation::{
     IMAGE_FILE_MACHINE_I386, IMAGE_FILE_MACHINE_UNKNOWN,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateRemoteThread, GetExitCodeThread, IsWow64Process2, WaitForSingleObject,
+    CreateRemoteThread, GetExitCodeProcess, GetExitCodeThread, GetProcessId, IsWow64Process2,
+    QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, PROCESS_NAME_WIN32,
 };
 
 // Keep the Detours static library linked: the two functions used below are declared here
 // (`DetourUpdateProcessWithDll` has no binding in `detours-sys2`).
 use detours_sys2 as _;
 
-extern "C" {
+// Detours declares these `WINAPI`, which is `stdcall` on x86 and the only convention on x64. An
+// `extern "C"` block would ask for `cdecl` names that the i686 build of Detours does not export.
+extern "system" {
     /// `DetourUpdateProcessWithDll` (Detours' `creatwth.cpp`): make `rlpDlls` the first imports of
     /// the suspended process's executable.
     fn DetourUpdateProcessWithDll(hProcess: HANDLE, rlpDlls: *mut *const c_char, nDlls: u32)
@@ -68,11 +71,102 @@ pub unsafe fn restore_after_import_injection() -> bool {
 
 /// The machine type `agora_vfs.dll` was built for.
 #[cfg(target_arch = "x86_64")]
-const OWN_MACHINE: IMAGE_FILE_MACHINE = IMAGE_FILE_MACHINE_AMD64;
+pub const OWN_MACHINE: IMAGE_FILE_MACHINE = IMAGE_FILE_MACHINE_AMD64;
 #[cfg(target_arch = "aarch64")]
-const OWN_MACHINE: IMAGE_FILE_MACHINE = IMAGE_FILE_MACHINE_ARM64;
+pub const OWN_MACHINE: IMAGE_FILE_MACHINE = IMAGE_FILE_MACHINE_ARM64;
 #[cfg(target_arch = "x86")]
-const OWN_MACHINE: IMAGE_FILE_MACHINE = IMAGE_FILE_MACHINE_I386;
+pub const OWN_MACHINE: IMAGE_FILE_MACHINE = IMAGE_FILE_MACHINE_I386;
+
+/// The file name of the helper that injects a DLL into a process of the helper's own bitness. It
+/// always sits beside the DLL of its bitness (see [`helper_beside`]).
+pub const HELPER_FILE_NAME: &str = "agora-vfs-helper.exe";
+
+/// How long a helper gets to inject a DLL into a process of another bitness before it is ended.
+pub const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The helper that sits beside `dll`.
+pub fn helper_beside(dll: &Path) -> PathBuf {
+    dll.with_file_name(HELPER_FILE_NAME)
+}
+
+/// The command line that starts the helper for `pid`: `"<helper>" --pid <pid> --dll "<dll>"`.
+pub fn helper_command_line(helper: &Path, pid: u32, dll: &Path) -> String {
+    format!(
+        "\"{}\" --pid {pid} --dll \"{}\"",
+        helper.display(),
+        dll.display()
+    )
+}
+
+/// Wait for a helper that was started to inject into a process, and say how it ended. A helper
+/// that does not finish within `timeout` is ended, so a hung helper cannot hold its target. Its
+/// exit code is 0 when the injection worked.
+///
+/// # Safety
+/// `helper` must be a live process handle with `SYNCHRONIZE`, `PROCESS_TERMINATE` and
+/// `PROCESS_QUERY_LIMITED_INFORMATION` access (the handle `CreateProcess` returns has them).
+pub unsafe fn wait_for_helper(helper: HANDLE, timeout: Duration) -> Result<(), String> {
+    match WaitForSingleObject(helper, timeout.as_millis() as u32) {
+        WAIT_OBJECT_0 => {
+            let mut code = 0u32;
+            if GetExitCodeProcess(helper, &mut code) == 0 {
+                return Err(format!(
+                    "the helper's exit code could not be read (error {})",
+                    GetLastError()
+                ));
+            }
+            if code == 0 {
+                Ok(())
+            } else {
+                Err(format!("the helper ended with exit code {code}"))
+            }
+        }
+        WAIT_TIMEOUT => {
+            TerminateProcess(helper, 1);
+            WaitForSingleObject(helper, 5_000);
+            Err(format!(
+                "the helper did not finish within {} seconds and was ended",
+                timeout.as_secs()
+            ))
+        }
+        _ => Err(format!(
+            "waiting for the helper failed (error {})",
+            GetLastError()
+        )),
+    }
+}
+
+/// The full path of the program `process` runs, or `None` when Windows cannot say.
+///
+/// # Safety
+/// `process` must be a live handle with `PROCESS_QUERY_LIMITED_INFORMATION` access.
+pub unsafe fn image_path(process: HANDLE) -> Option<PathBuf> {
+    let mut buf = vec![0u16; 1024];
+    let mut len = buf.len() as u32;
+    if QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) == 0 {
+        return None;
+    }
+    Some(PathBuf::from(std::ffi::OsString::from_wide(
+        &buf[..len as usize],
+    )))
+}
+
+/// The process id of a process handle.
+///
+/// # Safety
+/// `process` must be a live process handle.
+pub unsafe fn pid_of(process: HANDLE) -> u32 {
+    GetProcessId(process)
+}
+
+/// How a machine type reads in a message: "32-bit", "64-bit", or "another architecture".
+pub fn bitness_word(machine: IMAGE_FILE_MACHINE) -> &'static str {
+    match machine {
+        IMAGE_FILE_MACHINE_I386 => "32-bit",
+        IMAGE_FILE_MACHINE_AMD64 => "64-bit",
+        _ => "another-architecture",
+    }
+}
 
 /// Set `AGORA_VFS_INJECTION=remote-thread` to skip import-table injection and use the remote
 /// thread for every process (the game and, since children inherit the setting, the processes it
@@ -84,6 +178,9 @@ pub const FORCE_REMOTE_THREAD_ENV: &str = "AGORA_VFS_INJECTION";
 pub enum Method {
     ImportTable,
     RemoteThread,
+    /// A helper of the program's own bitness did the injection (the program is built for another
+    /// architecture than the process that started it).
+    Helper,
 }
 
 impl Method {
@@ -92,6 +189,9 @@ impl Method {
             Method::ImportTable => "import table (the DLL loads before the program's own imports)",
             Method::RemoteThread => {
                 "remote thread (the program's own imports ran before the DLL loaded)"
+            }
+            Method::Helper => {
+                "a helper of the program's own bitness (import table or remote thread)"
             }
         }
     }
@@ -116,7 +216,8 @@ impl std::fmt::Display for Failure {
     }
 }
 
-fn machine_name(machine: IMAGE_FILE_MACHINE) -> &'static str {
+/// The architecture of the program a machine type names, for a message.
+pub fn machine_name(machine: IMAGE_FILE_MACHINE) -> &'static str {
     match machine {
         IMAGE_FILE_MACHINE_I386 => "32-bit (x86)",
         IMAGE_FILE_MACHINE_AMD64 => "64-bit (x64)",

@@ -1207,6 +1207,7 @@ fn run_under_vfs(
     // real install folder is an alias, so a tool that reads or writes it there (Nemesis, BodySlide)
     // sees the same mod files at its own path, and its writes land in the same staging folder.
     prepared.vfs = Some(VfsLaunch {
+        dll_x86: Some(game_launch::locate_dll_x86(&dll)),
         dll,
         mount: game_dir.clone(),
         upper: staging.clone(),

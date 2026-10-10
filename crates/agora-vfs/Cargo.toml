@@ -14,13 +14,32 @@ crate-type = ["cdylib"]
 name = "agora-vfs-probe"
 path = "src/bin/probe.rs"
 
+# Injects agora_vfs.dll into a suspended process of its own bitness (brief decision 2). Built beside
+# the DLL, so a DLL of one bitness always has its helper beside it.
+[[bin]]
+name = "agora-vfs-helper"
+path = "src/bin/helper.rs"
+
+# Sleeps for ten minutes: the test stand-in for a helper that hangs (see tests/bitness.rs).
+[[bin]]
+name = "agora-vfs-sleeper"
+path = "src/bin/sleeper.rs"
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# retour 0.3.1 does not compile for i686 (it names the win64 ABI), so the 32-bit DLL uses the
+# 0.4 alpha. The 64-bit DLL keeps 0.3.1, the version that has run real launches: nothing in its
+# behaviour changes.
+[target.'cfg(all(windows, not(target_arch = "x86")))'.dependencies]
+retour = "0.3"
+
+[target.'cfg(all(windows, target_arch = "x86"))'.dependencies]
+retour = "=0.4.0-alpha.4"
+
 [target.'cfg(windows)'.dependencies]
 agora-vfs-inject = { path = "../agora-vfs-inject" }
-retour = "0.3"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Security",
@@ -29,6 +48,8 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_IO",
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
+  "Win32_System_Pipes",
+  "Win32_System_SystemInformation",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
