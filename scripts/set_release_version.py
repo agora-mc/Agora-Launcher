@@ -58,6 +58,12 @@ WORKSPACE_MEMBERS = (
     "agora-desktop",
     "agora-plugin-api",
     "agora-plugin-host",
+    "agora-game-api",
+    "agora-game-minecraft",
+    "agora-game-creation",
+    "agora-vfs",
+    "agora-vfs-inject",
+    "agora-vfs-early-import",
 )
 
 

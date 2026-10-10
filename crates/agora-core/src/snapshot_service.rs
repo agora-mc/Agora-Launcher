@@ -208,6 +208,7 @@ mod tests {
                 datapacks: vec![],
                 worlds: vec![],
                 user_preferences: serde_json::json!({}),
+                game_data: Default::default(),
             };
             fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         };

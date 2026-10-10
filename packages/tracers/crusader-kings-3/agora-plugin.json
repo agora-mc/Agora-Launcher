@@ -1,0 +1,18 @@
+{
+  "manifest": 1,
+  "id": "agora-tracer.crusader-kings-3",
+  "name": "Crusader Kings III Tracer",
+  "version": "0.1.0",
+  "license": "GPL-3.0-only",
+  "apiRange": ">=0.1, <0.2",
+  "capabilities": {
+    "required": ["game:define"]
+  },
+  "contributions": {
+    "gamePackages": [
+      {
+        "path": "games/package.json"
+      }
+    ]
+  }
+}

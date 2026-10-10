@@ -15,7 +15,7 @@ avoid false positives):
   * web/src/**/*.tsx (internal href routes; prose checks cover web/src/app)
   * desktop/src/data/guideContent.ts and desktop/src/pages/Guide.tsx
 
-Excluded: .kilo/plans/*, BACKLOG.md, root scratch notes, registry data,
+Excluded: MASTER_SPEC.md, .kilo/plans/*, BACKLOG.md, root scratch notes, registry data,
 compiler fixtures, and generated/build directories (target/, node_modules/,
 dist/, .next/, tmp/, __pycache__/, .venv/).
 

@@ -64,7 +64,7 @@ jobs:
         run: python scripts/test_scripts.py
 
       - name: Run loader catalog tests
-        run: cargo test -p agora-core --lib loader_manifests
+        run: cargo test -p agora-game-minecraft --lib loader_manifests
 
       - name: Check for unexpected files
         shell: bash

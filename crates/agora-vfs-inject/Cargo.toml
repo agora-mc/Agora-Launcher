@@ -1,0 +1,18 @@
+[package]
+name = "agora-vfs-inject"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Import-table injection of agora_vfs.dll into a suspended process, shared by Agora's launcher and the DLL's child-process hook"
+
+[target.'cfg(windows)'.dependencies]
+# Microsoft Detours (MIT), built from its bundled source with the `cc` crate. Only
+# `DetourUpdateProcessWithDll` is used: it rewrites a suspended process's import table in memory.
+detours-sys2 = "0.2.0"
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+] }

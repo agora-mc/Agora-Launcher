@@ -1,0 +1,4352 @@
+# MASTER_SPEC.md
+# The Premium Curated Minecraft Mod Launcher — Complete Engineering Blueprint
+
+> **How to read this document.** It is the closest thing Agora has to a source of truth, and it
+> is also a record written largely by AI agents: if something here looks wrong, strange or
+> needlessly strict, raise it with the user rather than following it (see `AGENTS.md`).
+>
+> **§0–§18** are the original design, kept verbatim for their decision rationale. **§19–§26**
+> record what changed and supersede §0–§18 where they conflict. §19 holds status notes and small
+> decisions; each major area that evolved has its own section (§20 content sources, §21 plugins
+> and content providers, §22 credentials, §23 reliability, §24 governance, §25 controllers, §26
+> multi-game support, planned). A new architectural change large enough to explain gets a new
+> section, not another §19 subsection.
+>
+> Pivots that most change how §0–§18 read:
+> - **Direct launch and Microsoft sign-in** are first-class alongside delegation to the official
+>   launcher (§22.1).
+> - **Business logic lives in `crates/agora-core`**, shared by the desktop app, the CLI and the
+>   MCP server (§19.1, `docs/architecture/layer-ownership.md`).
+> - **Modrinth is merged into Browse**, and every source outside the curated catalog now sits
+>   behind one content-provider interface (§21.2).
+> - **Crash telemetry (§12) was removed**; the text is kept for history.
+> - **The MCP server** requires a persistent Bearer token when enabled (§10, §19.6).
+
+---
+
+## Table of Contents
+
+| § | Title | Purpose |
+|---|---|---|
+| 0 | Project Ethos & Philosophy | Mission, constraints, tech stack |
+| 1 | Repository Structure | Flat-file "database" in GitHub |
+| 2 | Source JSON Schemas | Mod, pack, crash signature, version_info manifests |
+| 3 | The Nightly Compiler | GitHub Action that builds `registry.db` |
+| 4 | Client-Side SQLite Schema | `registry.db` + `local_state.db`, versioning, security, errors |
+| 5 | Community Governance | Code of Engagement, triage state machine, immune override |
+| 6 | The Tauri Desktop App | Onboarding, browse, instances, packs, integration config |
+| 7 | Modpack Architecture | Three-tier packs, override sanitization, OAuth token security |
+| 8 | The Execution Engine | Mojang launcher wrapper, modloader injection, JVM args |
+| 9 | Crash Diagnostics | Pre-launch interceptor, regex triage, GitHub issue search |
+| 10 | Local AI / MCP Server | Tool definitions, approval state, system context injection |
+| 11 | Dev Mode | Curator tool with sandboxed builds |
+| 12 | Anonymous Crash Telemetry | Opt-in crash matrix |
+| 13 | Web Directory | Static Next.js site |
+| 14 | Build Execution Pipeline | AI agent module prompts (1–7) |
+| 15 | Security Architecture | Threat model, security principles |
+| 16 | Technical Decisions Log | All architectural decisions with rationale |
+| 17 | Implementation Order & MVP Scope | Phased build guide |
+| 18 | Known Limitations & Open Questions | Honest disclosure of gaps |
+| 19 | Architectural Evolution & Status | What changed since §0–§18, and where major areas moved |
+| 20 | Content Sources & Resolution | Ordered sources, content axes, pack identity, curated packs |
+| 21 | Plugins & Content Providers | Extension system; provider interface; security tiers |
+| 22 | Credentials & Authentication | MSA, direct launch, token storage per platform |
+| 23 | Reliability & Recovery | Safe operations, Last Known Good, snapshots, launch health |
+| 24 | Governance Operations | Audit log, quarantine, production monitor |
+| 25 | Controller Support | App-wide controller navigation |
+| 26 | Multi-Game Support | Planned: other games through game packages, pinned bases, VFS deployment |
+
+---
+
+## 0. PROJECT ETHOS & PHILOSOPHY
+
+### The "Agora" Mission
+This is not a warehouse. This is a boutique.
+
+The project is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform designed to capitalize on community pushback against corporate consolidation (e.g., Spark Universe acquiring Modrinth). The explicit goal is to return platform control to the community while bypassing all centralized commercial infrastructure entirely.
+
+If CurseForge were a beer, this would be Agora.
+
+### Core Constraints (Non-Negotiable)
+- **$0.00/Month Server Footprint.** No backend servers. No proprietary databases. No hosted APIs. All infrastructure is offloaded to GitHub, GitHub Release Assets, and the official Mojang launcher.
+- **Security by Delegation.** The application never touches Microsoft/Xbox authentication or JVM execution. These are fully delegated to the official Mojang launcher.
+- **Decentralized by Design.** All social data (votes, reviews, governance) lives as structured GitHub interactions. All application data is compiled into a static file served via GitHub Release Assets.
+- **AI Agent-Friendly.** The codebase must be broken into isolated, deterministic modules that AI tools can write, test, and debug independently.
+- **Client-Side Scalability.** All GitHub API calls are made using the user's personal OAuth token, giving each user 5,000 requests/hour — meaning the platform scales infinitely at zero cost.
+- **Modrinth Independence.** The primary download strategy is `github_release` — mods are sourced directly from developer GitHub repositories. `modrinth_id` is a supplementary fallback for mods that are not yet self-hosting. Users can disable all Modrinth API integration entirely and still use the full curated catalog, discovery, and instance management features.
+
+### Tech Stack
+| Layer | Technology |
+|---|---|
+| Desktop App Backend | Tauri (Rust) |
+| Desktop App Frontend | React + Tailwind CSS |
+| Web Directory | Next.js (static, hosted on Vercel or GitHub Pages) |
+| Client-Side Database | SQLite (via `tauri-plugin-sql`): `registry.db` (read-only global state) + `local_state.db` (read-write user/instance state) |
+| Data Compiler | Python (GitHub Actions, free runners) |
+| Game Execution | Official Mojang Launcher (wrapper/delegation) |
+| AI Integration | Local MCP Server (user-provided API keys or local Ollama) |
+| Data Hosting | GitHub Release Assets (for `registry.db` + `registry.db.sig`) |
+
+---
+
+## 1. REPOSITORY STRUCTURE (THE GITHUB DATA ENGINE)
+
+The central GitHub repository is the "database." All data is flat files committed via Pull Request.
+
+```
+/registry/
+  mods/
+    sodium.json
+    iris.json
+    ...
+  packs/
+    optimized-survival.json
+    ...
+  shaders/
+    ...
+  resourcepacks/
+    ...
+  servers/
+    ...
+  datapacks/
+    ...
+  worlds/
+    ...
+  governance/
+    poll_blacklist.json     # Banned/bot GitHub usernames; zero-weight in polls
+  pack-overrides/
+    optimized-survival-configs.zip   # Config/resource overrides; NO executables
+  archived/                  # Items removed by community triage (see §5.3)
+    removed-mod.json
+/crash-signatures/
+  fabric-api-missing.json
+  out-of-memory.json
+  ...
+/loader-manifests/
+  fabric-1.21.json          # Pinned modloader URLs + SHA-256 hashes (see §8.2.1)
+  neoforge-1.21.json
+  ...
+/.github/
+  workflows/
+    compile.yml             # Nightly compiler GitHub Action
+  ISSUE_TEMPLATE/
+    review-form.yml         # Structured review submission form
+    mod-submission.yml      # New mod PR template
+README.md                   # Code of Engagement (full text, see §5)
+```
+
+**Separate Repositories:**
+- `launcher-media` — Custom promotional banners and images served via GitHub Pages (see §4 Image and Media Handling). Not part of the main registry repo to avoid binary bloat.
+
+---
+
+## 2. SOURCE JSON SCHEMAS
+
+### 2.1 Mod Manifest (`/registry/mods/<id>.json`)
+
+```json
+{
+  "id": "sodium",
+  "name": "Sodium",
+  "content_type": "mod",
+  "author": "CaffeineMC",
+  "license": "LGPL-3.0",
+  "download_strategy": "github_release",
+  "source_identifier": "CaffeineMC/sodium",
+  "package_signatures": ["me.jellysquid.mods.sodium", "net.caffeine.sodium"],
+  "base_categories": ["optimization", "rendering"],
+  "community_categories": ["client-only", "performance-boost", "essentials"],
+  "curator_note": "Essential rendering engine replacing legacy OpenGL pipelines. Significantly boosts framerates on nearly all hardware. Incompatible with OptiFine; use Iris for shader support instead.",
+  "icon_url": "https://raw.githubusercontent.com/CaffeineMC/sodium/main/assets/icon.png",
+  "gallery_urls": [
+    "https://raw.githubusercontent.com/CaffeineMC/sodium/main/assets/screenshot1.png"
+  ],
+  "governance": {
+    "immune": false,
+    "override_justification": null,
+    "allow_comments": true
+  }
+}
+```
+
+**Field Reference:**
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Unique slug, lowercase, hyphenated |
+| `name` | string | Display name |
+| `content_type` | string | `mod`, `pack`, `shader`, `resourcepack`, `server`, `datapack`, `world` |
+| `author` | string | Creator or organization name |
+| `license` | string | SPDX license identifier (e.g., `MIT`, `LGPL-3.0`) |
+| `download_strategy` | string | `github_release` (primary — direct from developer repo), `modrinth_id` (supplementary fallback — via Modrinth API), `direct_hash` (for closed-source/self-hosted) |
+| `source_identifier` | string | GitHub `owner/repo`, Modrinth project ID, or direct URL |
+| `sha256` | string | **Required for pinned strategies** (`direct_hash`, `technic_pack`, `provider_pack`), where it identifies the one file. Optional otherwise. Never filled in by the compiler: a `github_release` or `modrinth_id` file is checked against the hash its source published (GitHub's asset digest, Modrinth's version hashes), and when the source published none the install says so and records the bytes as not verified. Curator `pins` on a `github_release` source name exact release files and ask the user before a mismatch is installed (`ERR_HASH_CONFIRMATION_REQUIRED`). See `REGISTRY_CURATION_REFERENCE.md` §2. |
+| `package_signatures` | string[] | Java package prefixes for crash log cross-referencing. Note: multiple mods may transitively share package prefixes (e.g., `net.fabricmc`). The crash resolver uses these as an initial filter, then narrows down using class names from the stack trace and the instance's installed mod list. |
+| `base_categories` | string[] | Official curated categories |
+| `community_categories` | string[] | Freeform community tags (dynamic; auto-discovered by compiler) |
+| `curator_note` | string | Human-written markdown write-up for display and AI semantic context |
+| `icon_url` | string | CDN URL for the mod's icon image. For `github_release` strategy, curators provide this manually (e.g., pointing to the repo's `raw.githubusercontent.com` assets or the `launcher-media` repo). For `modrinth_id`, auto-populated from Modrinth API. For `direct_hash`, manually provided. |
+| `gallery_urls` | string[] | Array of CDN URLs for gallery/screenshot images. Auto-populated from Modrinth API or manually provided |
+| `governance.immune` | boolean | If `true`, bypasses all automated triage and vote penalties |
+| `governance.override_justification` | string\|null | **Required when immune=true.** Displayed verbatim in UI. |
+| `governance.allow_comments` | boolean | If `false`, review section is locked on this mod's page |
+
+### 2.2 Closed-Source / Direct-Hash Mod
+
+If a mod is self-hosted and closed-source, its manifest **must** include a direct URL and SHA-256 hash:
+
+```json
+{
+  "id": "proprietary-mod",
+  "download_strategy": "direct_hash",
+  "source_identifier": "https://developer.com/releases/mod-v1.0.0.jar",
+  "sha256": "a1b2c3d4e5f6..."
+}
+```
+
+- The launcher **blocks download** if the hash of the fetched file does not match `sha256`.
+- The developer **must** submit a new PR to update the hash for every new version. If they silently update the hosted file without a PR, every existing download is blocked for all users.
+- This rule is explained in the repository README and enforced structurally by the launcher.
+
+### 2.2b GitHub Release Version Metadata (`version_info.json`)
+
+For mods distributed via `github_release`, developers may optionally attach a `version_info.json` file to their GitHub release assets. This provides structured compatibility data that the launcher can use instead of guessing from filenames and descriptions:
+
+```json
+{
+  "minecraft_version": "1.21",
+  "loader": "fabric",
+  "loader_version": "0.15.11",
+  "mod_version": "2.1.0",
+  "release_date": "2024-06-15",
+  "changelog_url": "https://github.com/owner/repo/releases/tag/v2.1.0"
+}
+```
+
+If present, the launcher uses this data to populate `compatible_versions_json` in the registry and to filter versions in the mod detail page version picker. If absent, the launcher falls back to filename pattern matching (`*1.21*.jar`) and release description text parsing.
+
+### 2.3 Modpack Manifest (`/registry/packs/<id>.json`)
+
+```json
+{
+  "pack_id": "optimized-survival",
+  "name": "Community Optimized Survival",
+  "minecraft_version": "1.21",
+  "loader": "fabric",
+  "loader_version": "0.15.11",
+  "mods": [
+    { "id": "sodium", "source": "manifest", "status": "required" },
+    { "id": "iris", "source": "github_release", "version": "v1.7.2", "status": "recommended", "description": "Enable this if you want to use shaders." },
+    { "id": "xaeros-minimap", "source": "modrinth_id", "modrinth_id": "1bokaNcj", "version": "24.2.0", "status": "optional", "description": "Client-side minimap. Disable for a pure vanilla feel." }
+  ],
+  "override_url": "https://raw.githubusercontent.com/<org>/<repo>/main/registry/pack-overrides/optimized-survival-configs.zip",
+  "curator_note": "A curated, performance-focused survival pack for 1.21. Vanilla+ aesthetic with dramatically improved framerates.",
+  "governance": {
+    "immune": false,
+    "override_justification": null,
+    "allow_comments": true
+  }
+}
+```
+
+**Pack Mod Entry Fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Mod registry ID |
+| `source` | string | `manifest` (lookup in registry.db), `modrinth_id` (query Modrinth API directly), `github_release` |
+| `modrinth_id` | string | Modrinth project ID (required when `source = "modrinth_id"`) |
+| `version` | string | **Exact version string** to install (e.g., `"1.7.2+mc1.21"`, `"v2.1.0"`). For `modrinth_id`, this is the version name from Modrinth. For `github_release`, this is the release tag. If omitted, the launcher defaults to the latest version compatible with the pack's `minecraft_version` and `loader` |
+| `status` | string | `required`, `recommended`, `optional` |
+| `description` | string | UI tooltip explaining why this mod is recommended/optional |
+
+### 2.4 Community Crash Signature (`/crash-signatures/<id>.json`)
+
+```json
+{
+  "id": "fabric-api-missing",
+  "name": "Missing Fabric API",
+  "regex_pattern": "net\\.fabricmc\\.loader\\.impl\\.discovery\\.ModResolutionException: Mod resolution encountered an incompatible mod set!.*requires \\{fabric @",
+  "solution_markdown": "A mod you installed requires **Fabric API**, but it is missing from your mod folder. Click the button below to install it automatically.",
+  "action_button": {
+    "label": "Install Fabric API",
+    "mod_id": "fabric-api"
+  }
+}
+```
+
+#### 2.4.1 Regex DoS Prevention
+
+Community-submitted regex patterns create a ReDoS (Regular Expression Denial of Service) risk. Patterns like `(a+)+` can cause catastrophic backtracking when run against large crash logs, hanging the launcher.
+
+**Countermeasures:**
+
+1. **Rust `regex` Crate Only:** The Rust `regex` crate is *the only* regex engine permitted. It intentionally does not support unbounded backtracking — patterns that would cause exponential backtracking instead return an error at compile time or run in guaranteed linear time. This structurally prevents the most dangerous class of ReDoS attacks.
+
+2. **Maximum Regex Length:** All submitted `regex_pattern` values are limited to **256 characters**. This prevents extremely complex patterns that could still cause performance issues even under the Rust regex engine's constraints.
+
+3. **PR Review Enforcement:** Curators must test every new crash signature against a representative crash log (≥100KB) before merging. The compilation CI rejects any pattern that takes longer than **50ms** to evaluate against the test corpus.
+
+4. **Compiled Regex Caching:** The Tauri client pre-compiles all `crash_signatures` patterns on startup and caches them in memory. Matching is then a simple linear scan with no per-match compilation overhead.
+
+---
+
+## 3. THE NIGHTLY COMPILER (GITHUB ACTION)
+
+**File:** `.github/workflows/compile.yml`  
+**Schedule:** Every 24 hours (cron: `0 2 * * *`)  
+**Runtime:** Free GitHub Actions Ubuntu runner  
+**Dependencies:** Python, `sqlite3` (stdlib), `requests`, `profanity-check`, `vaderSentiment`
+
+### 3.1 Compiler Execution Steps
+
+1. **Initialize in-memory SQLite** using Python's built-in `sqlite3` library.
+
+2. **Parse all manifest JSON files** in `registry/mods/`, `registry/packs/`, etc. Items in `registry/archived/` are explicitly skipped and excluded from the compiled database.
+
+3. **API Batch Fetch with Complexity Budgeting** — Query the GitHub API for all tracked Issues:
+   - For reaction counts: Use the GitHub **REST API** `GET /repos/{owner}/{repo}/issues/{issue_number}/reactions` where more efficient (cheaper than GraphQL per-item queries).
+   - For comments: Use GraphQL with `pageInfo` cursors. Budget approximately 100 items per query to stay well under the 5,000 complexity-point/hour limit.
+   - Pull comment text for all `[REVIEW]`-tagged comments.
+   - Pull commenter account metadata for trust scoring.
+   - Cache issue metadata between nightly runs in the GitHub Action runner's workspace to avoid re-querying unchanged items.
+
+4. **Trust Score Filtering** (applied to every reacting user):
+    - **Account age:** Must be older than 30 days (`createdAt` check). *Note: public repository check was explicitly excluded to avoid disenfranchising non-developer users.*
+    - **Activity threshold:** Must have at least 3 interactions (issues opened, comments, PRs, or reactions) across repositories owned by the agora-mc organization. This is queryable via the GitHub GraphQL API using `user.contributionsCollection` scoped to the org.
+    - If account fails either check: reaction is left on GitHub but assigned a **weight of 0** in compilation. Bad actors waste time clicking buttons that have zero structural impact. No notification is sent.
+
+   **Sybil Attack Resistance:** The base thresholds (30-day age + 3 comments) are cheap for bot farms to overcome at scale (create 1000 accounts, wait 30 days, leave 3 comments each). To mitigate this without disenfranchising legitimate users:
+    - **Velocity weighting:** A single user's vote weight is capped relative to the historical daily average vote volume for that item. If an item typically receives 5 votes/day and suddenly receives 100 from new accounts in a 6-hour window, each of those votes is weighted down proportionally rather than counted at full weight.
+    - **Account diversity bonus:** Vote weight receives a small multiplier if the account has a demonstrated history of participating in *different* issues/repositories (not just the targeted one). Accounts that only vote on a single item are treated with suspicion.
+    - **Curator escalation:** If the compiler detects more than 50 new accounts voting on the same item within 24 hours—all passing the base trust check—it flags the item for curator review and applies the velocity anomaly detection (Step 5) even if the raw threshold hasn't been met.
+
+5. **Velocity Anomaly Detection (Circuit Breaker):**
+   ```
+   if (recent_downvotes / historical_average) > 5.0 AND total_recent > 20:
+       → set status = 'under_review'
+       → freeze vote counts at pre-spike values
+       → trigger GitHub Discussions Triage Poll (see §5.3)
+   ```
+   "Recent" is defined as the past 6-hour window. Historical average is the rolling 7-day mean.
+
+6. **Programmatic Reaction Scrubbing** — If the circuit breaker fires on a burst window:
+    - Use `DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}` to remove the malicious downvotes from GitHub.
+    - Log offending usernames to `registry/governance/poll_blacklist.json`.
+    - For extreme cases: the compiler creates a high-priority confidential issue in the private admin repo with title `[ALERT] Coordinated Attack Detected` and lists offending usernames for manual curator review and org-level action.
+
+**Compiler API Permissions:** The nightly compiler requires `issues:write` (to delete malicious reactions and create curator alerts) and `discussions:write` (to create triage polls). These are granted via the `GITHUB_TOKEN` in the Action workflow with `permissions: issues: write, discussions: write` in the YAML.
+
+7. **Sentiment & Spam Scrubbing** — Every comment that passes trust filtering is then evaluated:
+   - **Regex filters (discard matching):**
+     - Version begging: `(?i)(when\s+is|update\s+to|for|port|1\.\d+)\s*(release|\?|when)`
+     - Empty praise: `^(good\s+mod|nice|cool|pog|great|wow)$`
+   - **`profanity-check` (Python NLP):** Trained SVM model. Discards comments that fail toxicity threshold. Handles obfuscation (e.g., `b@d_w0rd`) better than wordlists.
+   - **`vaderSentiment` (Python NLP):** Scores positivity/negativity. Discards comments with extreme aggression intensity scores even if profanity-check passes.
+   - Comments surviving all filters are included in the compiled SQLite `curator_reviews` table.
+
+8. **Under-Review State Resolution** — For items where a 7-day triage poll has expired:
+   - Parse poll results using GitHub Discussions API.
+   - Any vote cast by a user in `poll_blacklist.json` is counted at weight 0.
+   - **If "Remove" wins:** Archive item. Remove from all future builds. JSON file is moved to `registry/archived/`.
+   - **If "Keep" wins:** Restore `status = 'active'`. Set `immunity_cooldown` for 30 days, during which the automated triage logic is paused for this item.
+
+9. **Immune Item Pass-Through:** If `governance.immune = true`, skip all score evaluation. Item is inserted into the database as `status = 'active'` regardless of vote counts.
+
+10. **SQLite Compilation:** Build `registry.db` from the in-memory state.
+
+11. **Image URL Hydration:** For mods with `download_strategy = "github_release"`, curators provide `icon_url` and `gallery_urls` directly in the manifest (e.g., pointing to `raw.githubusercontent.com` asset paths). For `modrinth_id` mods, the compiler queries the Modrinth API via the batch endpoint `GET /v2/projects?ids=[...]` (up to 500 IDs per request) to extract icon/gallery URLs. For non-Modrinth, non-GitHub items, curators provide image URLs manually. If custom promotional banners are needed, upload those assets to the dedicated `launcher-media` repository served via GitHub Pages. **The database never holds binary image data — only URL strings pointing to CDN-hosted images.**
+
+12. **Database Signing:** Sign the compiled `registry.db` with the project's offline Ed25519 private key. Write the signature to `registry.db.sig`. This allows the Tauri client to verify database authenticity and detect a compromised GitHub account distributing a malicious build.
+
+13. **Deployment as GitHub Release Asset:** Upload `registry.db` and `registry.db.sig` as assets on a tagged GitHub Release (e.g., `registry-2026-06-15`). **Do not commit `registry.db` to the source repository.** A binary file committed daily would bloat the repository's Git history irreversibly, making clones prohibitively slow. GitHub Release Assets support files up to 2GB (vs. 100MB for regular commits), and the database (storing text: names, descriptions, numbers) will remain well under 30MB for the foreseeable future. The Tauri client fetches the latest release asset URL from the GitHub Releases API on startup.
+
+### 3.2 GitHub Interaction Limits ("Raid Shield")
+
+If a major internet event causes a coordinated mass-attack:
+- GitHub's native Interaction Limits can be programmatically enabled via API.
+- Setting: "Limit to existing users" — only accounts with prior interactions can comment or react.
+- This can be toggled by the compiler when a velocity anomaly is detected without requiring human intervention.
+
+---
+
+## 4. CLIENT-SIDE SQLITE SCHEMA
+
+The launcher maintains **two separate SQLite databases**:
+
+1. **`registry.db`** — Read-only global state downloaded from GitHub Release Assets. This database is treated as immutable by the launcher. It contains curated mod metadata, social metrics, categories, crash signatures, and curated reviews. The launcher never writes to this file.
+
+2. **`local_state.db`** — Read-write local state stored in the user's app data directory (`%APPDATA%/agora-mc/local_state.db`, etc.). This contains user settings, instance metadata, launch history, crash telemetry, MCP approval grants, cached registry release tag, and any other mutable application state.
+
+**Why the Split:**
+- Prevents file-system locking bugs where a downloaded read-only database competes with runtime writes.
+- Allows the launcher to replace `registry.db` atomically while `local_state.db` remains open.
+- Makes offline mode simpler: `registry.db` can be stale or missing, but `local_state.db` still knows about installed instances.
+- Enables clean backups: `local_state.db` + `instance_manifest.json` files are the only mutable state needed to reconstruct a user's setup.
+
+### 4.0 Database Files & Paths
+
+| Database | Location | Purpose | Mutability |
+|---|---|---|---|
+| `registry.db` | App data directory, downloaded from GitHub Release Assets | Curated catalog, crash signatures, social metrics | Read-only at runtime |
+| `registry.db.sig` | Same directory as `registry.db` | Ed25519 signature for `registry.db` | Read-only at runtime |
+| `local_state.db` | App data directory | User settings, instances, telemetry, approvals | Read-write |
+
+### Table: `registry_items`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Unique slug (e.g., `"sodium"`) |
+| `name` | TEXT | NOT NULL | Display name |
+| `content_type` | TEXT | NOT NULL | `mod`, `pack`, `shader`, `resourcepack`, `server`, `datapack`, `world` |
+| `download_strategy` | TEXT | NOT NULL | `github_release` (primary), `modrinth_id` (supplementary), `direct_hash` |
+| `source_identifier` | TEXT | NOT NULL | GitHub `owner/repo`, Modrinth ID, or URL |
+| `sha256` | TEXT | NULL | The manifest's hash when it states one. Required for pinned strategies; NULL for `github_release` and `modrinth_id`, whose files are checked against what their source publishes |
+| `upvotes` | INTEGER | DEFAULT 0 | Trust-weighted thumbs-up count from GitHub |
+| `downvotes` | INTEGER | DEFAULT 0 | Trust-weighted thumbs-down count |
+| `net_score` | INTEGER | DEFAULT 0 | Pre-computed: `upvotes - downvotes` |
+| `velocity` | REAL | DEFAULT 0.0 | Change in net score over last 7 days (trending metric) |
+| `status` | TEXT | DEFAULT 'active' | `active`, `under_review`, `archived` |
+| `is_immune` | BOOLEAN | DEFAULT 0 | If 1, triage is bypassed |
+| `immunity_reason` | TEXT | | `override_justification` string displayed verbatim in UI |
+| `allow_comments` | BOOLEAN | DEFAULT 1 | If 0, review section is locked |
+| `immunity_cooldown_until` | TEXT | | ISO timestamp; triage paused until this date ("Keep" vote result) |
+| `icon_url` | TEXT | | CDN URL for the mod's icon image (hotlinked; never stored as binary) |
+| `gallery_urls_json` | TEXT | | JSON array of CDN URLs for gallery/screenshot images |
+| `date_added` | TEXT | | ISO timestamp of first appearance in the registry |
+| `compatible_versions_json` | TEXT | | JSON array of objects: `{ "mc_version": "1.21", "loader": "fabric", "mod_version": "1.7.2" }`. Populated by compiler from Modrinth API for `modrinth_id` strategy; extracted from GitHub release metadata for `github_release` strategy |
+
+### Image and Media Handling
+
+The database **never stores binary image data**. All images are hotlinked via URL strings:
+
+1. **GitHub Release Assets:** For `github_release` mods, curators typically point `icon_url` to `raw.githubusercontent.com` paths within the developer's repo (e.g., `assets/icon.png` on the default branch), or to the `launcher-media` repo for custom promotional assets.
+2. **Modrinth CDN:** For `modrinth_id` mods, the nightly compiler queries the Modrinth API and extracts project icon/gallery URLs. This is the **supplementary** path — used when a mod is not yet self-hosting on GitHub.
+3. **Custom Assets:** For curated packs or items not on GitHub or Modrinth, curators provide image URLs directly in the manifest. Custom promotional banners are uploaded to the `launcher-media` repository served via GitHub Pages.
+4. **Client-Side Caching:** The Tauri app may cache downloaded images locally for offline display, but the source of truth is always the URL in the database.
+
+### Table: `categories`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Lowercase slug (e.g., `"create-addons"`) |
+| `display_name` | TEXT | NOT NULL | Human-readable (e.g., `"Create Addons"`) |
+| `is_community` | BOOLEAN | DEFAULT 0 | 0 = curated, 1 = community-submitted |
+
+### Table: `item_categories` (Junction)
+| Column | Type | Constraints |
+|---|---|---|
+| `item_id` | TEXT | FK → `registry_items(id)` |
+| `category_id` | TEXT | FK → `categories(id)` |
+
+### Table: `curator_reviews`
+| Column | Type | Description |
+|---|---|---|
+| `item_id` | TEXT | FK → `registry_items(id)` |
+| `curator_note` | TEXT | Markdown write-up from the curator team |
+| `top_reviews_json` | TEXT | JSON array of top community comments (survived NLP filtering) |
+
+### Table: `crash_signatures`
+| Column | Type | Description |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `name` | TEXT | Human-readable crash name |
+| `regex_pattern` | TEXT | Regex to match against crash log text |
+| `solution_markdown` | TEXT | User-facing fix description |
+| `action_button_json` | TEXT | JSON: `{ "label": "...", "mod_id": "..." }` |
+
+**Note on Mutable State:** User instances, crash telemetry, settings, and MCP approval grants are **not** stored in `registry.db`. They live in the separate `local_state.db` database defined in §4.1b. This split ensures `registry.db` is read-only and replaceable at runtime without data loss.
+
+#### Schema Versioning
+| Column | Type | Description |
+|---|---|---|
+| `version` | INTEGER | Schema version number (monotonically increasing) |
+
+The Tauri app checks `SELECT version FROM schema_version` on startup. If the cached DB's version is older than the app's expected version, it re-downloads `registry.db` from the latest Release Asset.
+
+#### Database Update Detection
+
+The Tauri app tracks the currently cached `registry.db` release tag (e.g., `registry-2026-06-15`) in its local settings store. The update check runs:
+- On every app startup (if online).
+- When the user manually clicks **"Check for Registry Update"** in Settings.
+- No more than once per hour to avoid GitHub API quota waste.
+
+**Update Check Flow:**
+1. Query GitHub Releases API: `GET /repos/{owner}/{repo}/releases/latest`.
+2. Compare the returned tag name with the locally cached tag.
+3. If newer: download `registry.db` and `registry.db.sig` from the release assets.
+4. Verify the Ed25519 signature.
+5. Replace the old DB atomically (write to `registry.db.tmp`, then `rename` to `registry.db`).
+6. Check `schema_version` and trigger any necessary app-side migrations.
+7. Show a notification: *"Registry updated to <tag>. <N> new mods, <M> updated entries."*
+
+If offline, the app skips the update check and uses the last cached DB. A "Limited Offline Mode" banner appears if the DB is older than 7 days.
+
+### 4.1a Database Versioning Protocol
+
+The launcher enforces a strict protocol whenever a new `registry.db` is available:
+
+1. **Current Schema Check:** On startup, the launcher reads `SELECT version FROM schema_version` from the cached `registry.db`. It compares this value against the **app's supported schema version** (`APP_REGISTRY_SCHEMA_VERSION`), a compile-time constant in the Rust code.
+
+2. **Backward Compatibility Only:** Schema versions are monotonically increasing integers. The launcher supports the cached DB version if `cached_version <= APP_REGISTRY_SCHEMA_VERSION` AND the launcher knows how to read and migrate that version's structure.
+
+3. **Forward-Incompatible DB Detected:** If `cached_version > APP_REGISTRY_SCHEMA_VERSION` (e.g., the user downloaded a newer registry via a manual update, but the app binary is older):
+   - Block the DB load.
+   - Display: *"The registry database was created by a newer version of this launcher. Please update the app to continue."*
+   - Offer a button to open the GitHub Releases page for the latest app version.
+   - Do NOT fall back to the cached older DB in this case, because the launcher cannot safely interpret the newer schema.
+
+4. **Backward-Incompatible DB Detected:** If `cached_version < APP_REGISTRY_SCHEMA_VERSION`:
+   - If the launcher has a built-in migration for that version: apply it in-place on `registry.db` (read the old data, write a new temporary DB with the updated schema, then atomically replace).
+   - If no migration exists: trigger a registry update download, which will provide a DB at the current schema version.
+
+5. **Race Condition Prevention:** The launcher never replaces `registry.db` while an instance is launching or while the MCP server is actively reading from it. A simple readers-writer lock is used:
+   - `registry.db` is opened in read-only mode via `tauri-plugin-sql`.
+   - The update process acquires an exclusive write lock before replacing the file.
+   - Any in-flight launches that started before the update continue using the old DB handle; new launches use the updated DB after the replacement completes.
+
+### 4.1b `local_state.db` Schema (Mutable User State)
+
+The `local_state.db` database is created on first run and is never replaced by the launcher. It stores all mutable user and instance state.
+
+#### Table: `user_settings`
+| Column | Type | Description |
+|---|---|---|
+| `key` | TEXT | PRIMARY KEY |
+| `value_json` | TEXT | JSON-encoded value |
+
+Stores: active sidebar tab, last-selected Minecraft version, JVM defaults, UI theme, notification preferences, telemetry opt-in, MCP server port, cached registry release tag, Modrinth integration toggle, AI/MCP integration toggle.
+
+#### Table: `user_instances`
+| Column | Type | Description |
+|---|---|---|
+| `instance_id` | TEXT | PRIMARY KEY (e.g., `"my-survival-pack"`) |
+| `name` | TEXT | User-chosen display name |
+| `minecraft_version` | TEXT | |
+| `loader` | TEXT | `fabric`, `neoforge`, `quilt`, `forge` |
+| `loader_version` | TEXT | |
+| `is_modpack` | BOOLEAN | Built from a curated pack manifest? |
+| `is_locked` | BOOLEAN | 1 = immutable manifest enforced |
+| `last_launched_at` | TEXT | ISO timestamp; used for crash detection |
+| `jvm_memory_mb` | INTEGER | User-selected RAM allocation in MB |
+| `jvm_gc` | TEXT | `g1gc`, `zgc`, `shenandoah`, `custom` |
+| `jvm_custom_args` | TEXT | Extra JVM flags from text box |
+
+*Note: Detailed per-mod state lives in each instance's `instance_manifest.json` file rather than SQLite, for exportability and simplicity.*
+
+#### Table: `local_crash_telemetry`
+| Column | Type | Description |
+|---|---|---|
+| `mod_a_id` | TEXT | First mod identifier. For curated mods: `registry_items.id`. For raw Modrinth mods: `modrinth:{modrinth_id}`. For manual/unknown mods: `manual:{filename_hash}` |
+| `mod_b_id` | TEXT | Second mod identifier (same format as `mod_a_id`) |
+| `crash_count` | INTEGER | How often this pair co-crashes locally |
+
+**Pair ID Generation:** For curated mods, use the `registry_id`. For raw Modrinth mods, prefix with `modrinth:`. For completely unknown mods (manual drag-drop, no metadata), generate a stable hash from the filename and prefix with `manual:`. This ensures every mod has a trackable identifier even outside the curated registry.
+
+**Retention:** Records older than 90 days are purged. Pairs with `crash_count < 2` are also purged during weekly maintenance to prevent unbounded table growth.
+
+#### Table: `mcp_approval_grants`
+| Column | Type | Description |
+|---|---|---|
+| `tool_name` | TEXT | Name of the MCP tool |
+| `instance_id` | TEXT | Instance scope (or `"*"` for all instances) |
+| `state` | TEXT | `pending`, `approved_once`, `approved_always`, `denied` |
+| `granted_at` | TEXT | ISO timestamp |
+| `expires_at` | TEXT | ISO timestamp or NULL |
+
+When a user selects "Always Allow for This Tool" in the approval dialog, the grant is stored here with `state = 'approved_always'`. This prevents repeated prompts across app restarts. Grants can be revoked by the user in Settings → Integrations → MCP Server → "Clear Tool Approvals."
+
+#### Schema Versioning for `local_state.db`
+| Column | Type | Description |
+|---|---|---|
+| `version` | INTEGER | Schema version number for `local_state.db` |
+
+The launcher runs a Rust-based migration runner on startup. Migrations are applied sequentially from the stored version to `APP_LOCAL_STATE_SCHEMA_VERSION`. Because this database is truly local, migrations must be robust against data loss.
+
+### 4.1c Output Security (XSS / Injection Prevention)
+
+All data sourced from SQLite is **untrusted**. Curator notes, review text, category names, and crash signature markdown all originate from community input that survived NLP filtering but may still contain malicious markup. The following rendering rules are mandatory:
+
+1. **React Frontend:** The Tauri React UI must **never** use `dangerouslySetInnerHTML` for any user/community-sourced content. All output is rendered via React's default JSX escaping, which HTML-encodes all special characters. Curator notes are rendered as plain text with a custom lightweight markdown parser that only supports bold, italic, code blocks, and links — no raw HTML passthrough.
+
+2. **Next.js Web Directory:** The static website must render all SQLite-sourced text safely. Use `react-markdown` with a strict `allowedElements` list (`p`, `strong`, `em`, `code`, `a`, `pre`, `ul`, `ol`, `li`) and `disallowedElements={['html']}` to structurally prevent raw HTML generation. If raw HTML can never be emitted, there is nothing to sanitize. No `<script>`, `<iframe>`, `<object>`, `<embed>`, or event handler attributes are permitted.
+
+3. **Markdown Rendering:** The custom markdown renderer supports only the following inline/block elements: `**bold**`, `*italic*`, `` `code` ``, `[links](url)` (with `rel="noopener noreferrer"` and URL scheme validation), and code fences. Everything else (HTML tags, image tags, etc.) is stripped.
+
+### 4.2 Settings Persistence
+
+General app settings are stored in `user_settings` table in `local_state.db`. Rapidly accessed UI state (active sidebar tab, last-selected filter, etc.) is also mirrored in `tauri-plugin-store` for reactive reads. Long-term authoritative settings live in `local_state.db` and are loaded into the store on startup. If a setting exists in both, `local_state.db` wins.
+
+Settings include: active sidebar tab, last-selected Minecraft version, JVM defaults, UI theme, notification preferences, telemetry opt-in, MCP server port, cached registry release tag, cached Mojang launcher path, Modrinth integration toggle, AI/MCP integration toggle, and MCP approval grants.
+
+**Settings are editable on the fly** — the Settings tab writes to `tauri-plugin-store` immediately, which asynchronously syncs to `local_state.db`. Components subscribing to store values update immediately.
+
+### 4.3 Offline / Degraded Mode
+
+If the launcher cannot reach GitHub Releases to fetch or update `registry.db`, it enters **Degraded Mode**. This is distinct from normal offline use (where a cached `registry.db` is simply stale).
+
+**Degraded Mode Triggers:**
+- GitHub Releases API returns 5xx errors or times out after retries.
+- DNS resolution fails for `api.github.com`.
+- The user's network is completely offline.
+- GitHub is blocked by regional firewall or ISP.
+
+**Degraded Mode Behavior:**
+1. A persistent banner appears at the top of the app: *"⚠️ Registry Offline — Running in Degraded Mode. Curated catalog may be outdated."*
+2. The launcher uses the last cached `registry.db` (even if older than 7 days).
+3. The **My Instances** tab is fully functional. Users can launch existing instances because `local_state.db` and `instance_manifest.json` files are intact.
+4. The **Browse** tab shows curated mods from the cached DB. Mods with `download_strategy = 'modrinth_id'` are filtered out if Modrinth integration is disabled; if Modrinth is enabled, they remain visible but show a warning that registry metadata may be stale.
+5. The **Raw Modrinth Tab** (if enabled) switches to a **Manual Modrinth Input** mode:
+   - Users can paste a Modrinth project URL or project ID.
+   - The launcher queries the Modrinth API directly for that project and its versions.
+   - Users can install mods manually, one at a time, bypassing the central registry entirely.
+6. **Manual Download Mode:** A "Drag .jar Here" panel is always available. Users can install manually downloaded mod files directly into instances.
+7. Users can still create **Custom Instances** from scratch and install modloaders, because `loader_manifests.json` is cached locally.
+8. Governance features (Triage Center, voting, reviews) are disabled because they require GitHub API access.
+
+**Exit Condition:** Degraded Mode exits automatically when the launcher successfully completes a registry update check against GitHub.
+
+### 4.4 Upstream Verification Policy
+
+The launcher does not blindly trust official modloader domains. To prevent compromise of upstream CDNs from translating directly into compromise of users, the launcher maintains a **hardcoded `known_good_hashes.json`** map embedded in the Rust binary at compile time.
+
+```json
+{
+  "loader_hashes": {
+    "fabric": {
+      "fabric-loader-0.15.11-1.21.json": "sha256:a1b2c3...",
+      "fabric-loader-0.15.10-1.21.json": "sha256:d4e5f6..."
+    },
+    "neoforge": {
+      "neoforge-21.0.0-beta.json": "sha256:..."
+    },
+    "quilt": {
+      "quilt-loader-0.26.0-1.21.json": "sha256:..."
+    },
+    "forge": {
+      "forge-1.21-51.0.0.json": "sha256:..."
+    }
+  },
+  "domain_allowlist": [
+    "meta.fabricmc.net",
+    "maven.fabricmc.net",
+    "neoforged.net",
+    "maven.neoforged.net",
+    "meta.quiltmc.org",
+    "maven.quiltmc.org",
+    "minecraftforge.net",
+    "files.minecraftforge.net"
+  ]
+}
+```
+
+**Policy Rules:**
+1. The `known_good_hashes.json` file is maintained by curators in the registry repository at `/loader-manifests/known_good_hashes.json`.
+2. The nightly compiler includes this file in `registry.db` as a `system_config_json` row.
+3. The Rust binary also embeds a **compile-time copy** of the map. If the embedded copy conflicts with the one in the downloaded `registry.db`, the embedded copy wins. This prevents a compromised `registry.db` from weakening modloader verification.
+4. Before downloading any modloader version JSON, the launcher verifies its SHA-256 hash against the map. If the hash does not match exactly, the download is rejected.
+5. Domain pinning is still enforced. A download is rejected if it redirects to any domain not in `domain_allowlist`.
+6. Curators update the hash map only via Pull Request, and every change is reviewed by at least one other curator.
+7. If a new modloader version is released and the map hasn't been updated yet, the launcher shows: *"This modloader version has not been verified by the curation team yet. Please wait for the next registry update or check the project's official channels."*
+
+### 4.5 Human-Centric Error Taxonomy
+
+The Rust backend communicates errors to the React UI using standardized error codes. Each error code maps to a user-facing message, a log level, and (where applicable) a recommended action. This keeps the UI code clean and ensures consistent messaging.
+
+| Error Code | Severity | User-Facing Message | Recommended Action |
+|---|---|---|---|
+| `ERR_NETWORK_OFFLINE` | Info | *"You're offline. Using cached data."* | Continue with cached DB; show Degraded Mode banner |
+| `ERR_REGISTRY_DOWNLOAD_FAILED` | Warning | *"Could not download the latest registry. Using cached version."* | Retry later; check network |
+| `ERR_REGISTRY_SIGNATURE_INVALID` | Critical | *"Registry signature check failed. The database may be compromised."* | Block DB load; use last known-good cached DB; notify curators |
+| `ERR_SCHEMA_TOO_NEW` | Critical | *"This registry requires a newer launcher version. Please update the app."* | Open GitHub Releases page for app update |
+| `ERR_ZIP_BOMB` | Critical | *"Installation aborted: this archive exceeds safety limits."* | Delete archive; log security incident |
+| `ERR_OVERRIDE_SECURITY_VIOLATION` | Critical | *"Installation aborted: pack override contains forbidden files."* | Abort; delete partial files; report pack to curators |
+| `ERR_HASH_MISMATCH` | Critical | *"Downloaded file does not match its expected hash. It may be corrupted or tampered with."* | Re-download once; if persists, skip mod and report |
+| `ERR_UNTRUSTED_SOURCE` | Critical | *"Download rejected: URL is not from an allowed source."* | Block download; log incident |
+| `ERR_DISKFULL` | Warning | *"Not enough disk space to complete this operation."* | Show required vs available space; abort before writing |
+| `ERR_AUTH_EXPIRED` | Warning | *"Your GitHub session has expired. Sign in again to continue."* | Prompt OAuth Device Flow again |
+| `ERR_AUTH_REQUIRED` | Info | *"This feature requires GitHub sign-in."* | Show sign-in button |
+| `ERR_MODRINTH_DISABLED` | Info | *"Modrinth integration is disabled. Enable it in Settings or install this mod manually."* | Open Settings → Integrations or drag-and-drop panel |
+| `ERR_INSTANCE_LOCKED` | Info | *"This instance is locked. Unlock it to add or remove mods."* | Show unlock confirmation dialog |
+| `ERR_SANDBOX_UNAVAILABLE` | Error | *"Dev Mode builds require Docker, Podman, or Firecracker."* | Link to sandbox setup guide |
+| `ERR_MOJANG_NOT_FOUND` | Error | *"Minecraft Launcher not found. Please install it or set its path in Settings."* | Open Settings → Launcher Path |
+| `ERR_LAUNCH_FAILED` | Error | *"Could not start Minecraft. Check the logs for details."* | Open Diagnostics / Logs tab |
+| `ERR_UNSUPPORTED_LOADER` | Error | *"This modloader version is not yet verified by the curation team."* | Wait for registry update |
+| `ERR_VERSION_NOT_FOUND` | Warning | *"Requested mod version not found. Install the closest compatible version?"* | Show fallback version picker |
+| `ERR_DEPENDENCY_MISSING` | Warning | *"A mod requires [dependency]. Try installing it?"* | Offer auto-install from crash signature or manual search |
+| `ERR_MCP_TOO_MANY_REQUESTS` | Warning | *"AI client sent too many requests. Approve or deny pending requests first."* | Show MCP approvals queue |
+| `ERR_MCP_DENIED` | Info | *"AI tool request denied based on your saved approval preferences."* | No action — call was explicitly blocked |
+| `ERR_MCP_UNAUTHORIZED` | Error | *"AI client connection rejected: invalid or missing token."* | Show current token in Settings |
+
+**Error Response Shape (JSON-RPC and Tauri commands):**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERR_HASH_MISMATCH",
+    "message": "Downloaded file does not match its expected hash.",
+    "details": {
+      "filename": "sodium.jar",
+      "expected": "a1b2...",
+      "actual": "c3d4..."
+    },
+    "suggested_action": "retry" 
+  }
+}
+```
+
+`message` is always safe to display directly to the user. `details` may contain technical data and is shown only when the user clicks "Show Details." `suggested_action` is one of: `retry`, `skip`, `abort`, `open_settings`, `sign_in`, `manual_install`.
+
+### 4.6 Audit Log (Transparency "Black Box")
+
+The compiler generates an append-only **`/governance/audit_log.json`** file in the central repository. Every automated or curator-initiated governance action is recorded with a timestamp, actor, target, and reason.
+
+```json
+{
+  "log_format_version": 1,
+  "entries": [
+    {
+      "timestamp": "2026-06-16T19:00:00Z",
+      "action": "AUTO_FLAG",
+      "actor": "compiler-bot",
+      "target_type": "mod",
+      "target_id": "tech-mod",
+      "reason": "velocity_anomaly",
+      "details": {
+        "recent_downvotes": 150,
+        "historical_average": 5.2,
+        "poll_id": "D_kwDO123ABC"
+      }
+    },
+    {
+      "timestamp": "2026-06-16T20:30:00Z",
+      "action": "POLL_CREATED",
+      "actor": "compiler-bot",
+      "target_type": "mod",
+      "target_id": "tech-mod",
+      "reason": "community_triage",
+      "details": {
+        "discussion_id": 12345,
+        "duration_days": 7
+      }
+    },
+    {
+      "timestamp": "2026-06-23T20:30:00Z",
+      "action": "IMMUNITY_APPLIED",
+      "actor": "curator-alice",
+      "target_type": "mod",
+      "target_id": "tech-mod",
+      "reason": "vote_brigading_outside_scope",
+      "details": {
+        "override_justification": "Administrative Lock..."
+      }
+    },
+    {
+      "timestamp": "2026-06-23T21:00:00Z",
+      "action": "ARCHIVED",
+      "actor": "compiler-bot",
+      "target_type": "mod",
+      "target_id": "tech-mod",
+      "reason": "poll_result_remove",
+      "details": {
+        "keep_votes": 45,
+        "remove_votes": 312
+      }
+    }
+  ]
+}
+```
+
+**Action Types:**
+- `AUTO_FLAG` — Circuit breaker fired, item marked under_review
+- `POLL_CREATED` — GitHub Discussion triage poll created
+- `POLL_CLOSED` — Poll expired, results recorded
+- `IMMUNITY_APPLIED` — Curator applied immune override
+- `IMMUNITY_REMOVED` — Curator removed immune override
+- `ARCHIVED` — Item removed from registry by community vote
+- `RESTORED` — Item restored after successful "Keep" vote
+- `BLACKLIST_UPDATED` — Username added to `poll_blacklist.json`
+- `REACTION_SCRUBBED` — Malicious reaction deleted by compiler
+- `SIGNATURE_REJECTED` — Registry signature failed verification (logged by client, submitted via telemetry)
+
+**Retention:** The audit log is appended to nightly. When it exceeds 10,000 entries, the oldest 2,000 entries are moved to `/governance/audit_log_archive.{YYYYMMDD}.json`. The current log and the last 3 archived logs are included in `registry.db` as `audit_log_json` for in-app display in the Triage Center "Transparency Log" panel.
+
+---
+
+## 5. COMMUNITY GOVERNANCE
+
+### 5.1 The Code of Engagement
+
+The following text appears verbatim in three places:
+1. The central repository's `README.md`
+2. The GitHub Issue Form header (`review-form.yml`)
+3. The Tauri "Write a Review" modal — the user must check a consent box before the Submit button becomes active
+
+The canonical text lives in `CODE_OF_ENGAGEMENT.md` at the repository root. A CI workflow copies this file into the three required locations during the nightly build. This ensures a single source of truth.
+
+---
+
+> **📜 Platform Code of Engagement**
+>
+> This platform is a curated asset repository, not a general discussion forum or social media feed. We built this ecosystem to keep modding open, high-quality, and hyper-focused.
+>
+> **Rules of Engagement (Zero Tolerance):**
+> - Comments must strictly address the technical performance, stability, features, or usability of the mod or asset in question.
+> - No memes, no off-topic banter, no update-begging ("1.21 when?"), no philosophical discussions.
+> - No cultural, political, or social drama. Leave it at the door.
+> - No aggression, entitlement, or personal attacks against mod creators or curators.
+> - Violations result in immediate and permanent removal from the registry's review system.
+>
+> If you want to socialize, share memes, or debate off-topic things, visit our community spaces instead:
+> 🔗 [Project Discord] | 🔗 [Project Matrix/Lemmy]
+
+---
+
+### 5.2 GitHub Issue Form (`review-form.yml`)
+
+```yaml
+# .github/ISSUE_TEMPLATE/review-form.yml
+name: "Submit a Mod Review"
+description: "Leave a professional technical review for a curated asset."
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### 🚨 STOP: Read the Code of Engagement above before continuing.
+        Reviews must be strictly focused on technical stability, performance, and features.
+        Zero tolerance for version begging, memes, politics, or low-effort filler.
+  - type: input
+    id: mod_id
+    attributes:
+      label: "Mod Registry ID"
+      placeholder: "e.g., sodium"
+    validations:
+      required: true
+  - type: textarea
+    id: review_text
+    attributes:
+      label: "Your Technical Review (50 character minimum)"
+      placeholder: "Describe your experience with this asset's performance, stability, or features..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: guidelines_check
+    attributes:
+      label: "Community Affirmation"
+      options:
+        - label: "I confirm this review contains no toxic language, version begging, memes, or off-topic commentary."
+          required: true
+```
+
+### 5.3 The Under-Review State Machine
+
+```
+[Active Status]
+      │
+      ▼ (Net score drops below -10 organically, OR velocity spike detected)
+[Flagged / Under Review]
+      │ 
+      │ → Mod stays downloadable with warning banner
+      │ → GitHub Action auto-creates a 7-day Discussion poll:
+      │     Title: "[Community Triage] Should '<Mod Name>' be removed from the registry?"
+      │     Options: [Keep] / [Remove]
+      │ → Votes from poll_blacklist.json users are counted at weight 0
+      │
+      ▼ (7 days pass)
+      ├── [REMOVE wins] → Item archived. JSON moved to /registry/archived/. Removed from all future builds.
+      │
+      └── [KEEP wins] → status = 'active'. immunity_cooldown set to +30 days. Triage paused.
+```
+
+### 5.4 Curator Immune Override
+
+Applied by adding to the JSON manifest:
+```json
+{
+  "governance": {
+    "immune": true,
+    "override_justification": "Administrative Lock: The triage system was being weaponized by outside political drama. We are a modding platform, not a battleground. Locked to protect ecosystem stability.",
+    "allow_comments": false
+  }
+}
+```
+
+When `immune = true`:
+- The nightly compiler skips all score evaluation for this item.
+- The client UI renders a permanent non-dismissible **Curator Shield** banner (steel blue/gray, not warning red/yellow) at the very top of the mod's profile page, above the download button:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  🛡️ CURATOR PROTECTED ASSET                                     │
+├─────────────────────────────────────────────────────────────────┤
+│  This mod is permanently exempt from automated community triage │
+│  and negative review penalties.                                 │
+│                                                                 │
+│  Reasoning from the Curators:                                   │
+│  "[override_justification text rendered verbatim here]"         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+- The "Upvote / Downvote" buttons are **removed** from the UI (not just greyed out — the user should not be screaming into a void).
+- If `allow_comments = false`, the review section is hidden with: *"Review section locked by administration."*
+- This banner is **conditional** — it only renders if `is_immune = 1`. No visual clutter for non-immune items.
+
+### 5.5 In-App Comment Reporting
+
+The launcher's UI includes a "🚩 Flag Review" button on every comment. This must be rate-limited to prevent abuse.
+
+**Rate Limiting:** Each user is limited to **5 flag submissions per hour** and **20 per day**. If the limit is exceeded, the flag button is greyed out with a tooltip showing when the limit resets. This prevents a single user from generating thousands of admin tickets.
+
+```
+[User clicks 🚩 on a comment in the launcher]
+        │
+        ▼
+[Rate limit check — if exceeded, block and show cooldown timer]
+        │
+        ▼
+[Tauri app creates a GitHub Issue directly via the GitHub REST API]
+  Target: Private admin repo (e.g., `agora-mc/admin-alerts`)
+  Using: The user's OAuth token with `public_repo` scope
+  Title: "[REPORT] Low-effort/Toxic comment on Mod: <mod_name>"
+  Body: Direct link to the comment ID + quoted text + reporter's username
+  Labels: `triage`, `comment-report`
+        │
+        ▼
+[Curator reviews the flag, clicks Delete on GitHub]
+        │
+        ▼
+[Comment is deleted. It disappears from the next morning's database build.]
+```
+
+**Note:** The private admin repo must be created during project initialization. The Tauri app pre-configures its `owner/repo` path.
+
+### 5.6 Triage Center UI (In-App Tab)
+
+A dedicated sidebar tab labeled **"Community Governance"** or **"Triage Center"** shows:
+
+- **Active Triage Polls:** Live cards for every mod currently under review. Each card shows the mod name, reason for triage, live Keep/Remove percentage bars (fetched from GitHub Discussions API on page load), and a **"Cast Your Vote"** button that deep-links directly to the GitHub Discussion.
+- **Recent Resolutions:** A historical feed showing recently resolved votes (kept or removed), with the final percentages displayed. Maintains absolute platform transparency.
+- **Crash-to-Poll Connection:** If a user experiences a crash, and the crash log's `package_signatures` cross-reference reveals the crashing mod is currently under community review, the crash popup will dynamically say: *"This mod is currently being voted on by the community due to similar issues. Click here to read the report and view the active poll."*
+
+---
+
+## 6. THE TAURI DESKTOP APPLICATION
+
+### 6.1 App Structure Overview
+
+```
+Sidebar Tabs:
+  ├── 🏠 Home (Featured & Trending)
+  ├── 🔍 Browse (Curated Mod/Pack/Shader/etc. discovery)
+  ├── 📦 My Instances
+  ├── 🗳️ Community Governance (Triage Center)
+  └── ⚙️ Settings
+
+Main Content Area: Dynamic based on sidebar selection
+
+### 6.1a First-Run / Onboarding Flow
+
+On the app's first launch (or if `registry.db` has never been downloaded):
+
+1. **Welcome Screen:** Displays the "Agora" mission statement and project ethos. A "Get Started" button proceeds.
+
+2. **Integration Configuration (Optional — Default Disabled):**
+   Before any other setup, the user is presented with a clean, minimal screen titled **"Connect External Services"** with the subtitle *"These are completely optional. You can change your mind at any time in Settings."*
+
+   | Integration | Default | Description |
+   |---|---|---|
+   | **Modrinth Access** | `OFF` | Enable live Modrinth API queries for the raw Modrinth tab and version fallback for Modrinth-sourced mods. No Modrinth API calls are made when disabled. |
+   | **AI / MCP Server** | `OFF` | Enable the local MCP server so external AI tools (Claude, Cursor, Ollama) can connect with a per-session token. No AI features run when disabled. |
+
+   - Each integration has a large toggle switch with a short one-sentence description.
+   - **Both toggles default to OFF.** The user must explicitly enable them.
+   - A "Continue" button proceeds regardless of toggle state.
+   - These preferences are persisted to `tauri-plugin-store` immediately.
+   - **Rationale:** The platform's core philosophy is sovereignty and zero-mandatory-external-deps. Requiring opt-in for every non-essential service respects user agency and prevents accidental data leakage to third parties.
+
+3. **GitHub OAuth Setup:** The GitHub Device Flow is initiated. A code and verification URL are displayed.
+   - The user can click **"I'll do this later"** to skip OAuth. The app enters **Browse-Only Mode**.
+   - In Browse-Only Mode: the user can browse the curated catalog and assemble modpacks, but cannot vote, submit reviews, report crashes to GitHub, or use the Triage Center.
+   - A profile icon in the top-right corner shows a "Sign in with GitHub" badge. Clicking it resumes the Device Flow.
+
+4. **Database Download:** If online, the app queries the GitHub Releases API for the latest `registry-*` tag, downloads the attached `registry.db` and `registry.db.sig`, verifies the Ed25519 signature, and loads it into `tauri-plugin-sql`. If offline, the app uses the last cached DB or shows "Limited Offline Mode."
+
+5. **Optional Tutorial:** A brief interactive overlay highlights the sidebar tabs (Home, Browse, My Instances, Community Governance, Settings).
+
+6. **Home Screen:** The user lands on the Home tab showing "Featured Platform Packs."
+
+### 6.1b Integration Configuration UI (Settings → Integrations)
+
+After onboarding, users can revisit and modify their integration preferences at any time via **Settings → Integrations**. This panel mirrors the onboarding screen exactly:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ⚙️ Settings  >  Integrations                                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  External Services                                               │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                  │
+│  █  Modrinth Access                                              │
+│     ┌────────────────────────────────────────────────────────┐  │
+│     │ Allow live Modrinth API queries. Enables the Raw      │  │
+│     │ Modrinth tab and version fallback for Modrinth-sourced │  │
+│     │ curated mods. When off, Modrinth-sourced curated mods │  │
+│     │ are hidden from Browse and search results entirely.   │  │
+│     │ No Modrinth calls are made when off.                  │  │
+│     └────────────────────────────────────────────────────────┘  │
+│     [Toggle:  OFF  |  ON]                                       │
+│                                                                  │
+│  █  AI / MCP Server                                              │
+│     ┌────────────────────────────────────────────────────────┐  │
+│     │ Enable local MCP server for external AI tools to      │  │
+│     │ diagnose crashes and search mods. Generates a         │  │
+│     │ per-session token. No AI features run when off.       │  │
+│     └────────────────────────────────────────────────────────┘  │
+│     [Toggle:  OFF  |  ON]                                       │
+│                                                                  │
+│  Current token: mcp://localhost:39741?token=...                 │
+│  [Regenerate Token]  [Copy to Clipboard]                        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Toggle Behavior:**
+- **Modrinth Access `OFF → ON`:** The Raw Modrinth sidebar tab immediately appears. Modrinth-sourced curated mods reappear in Browse and search results.
+- **Modrinth Access `ON → OFF`:** The Raw Modrinth tab disappears immediately. **All curated mods with `download_strategy = 'modrinth_id'` are filtered out of Browse, search, and category queries via SQL:**
+  ```sql
+  -- When Modrinth is disabled, append to every catalog query:
+  WHERE download_strategy != 'modrinth_id'
+  ```
+  In-flight Modrinth downloads are allowed to finish but no new Modrinth API calls are initiated. Installed Modrinth-sourced mods in existing instances continue to work — they are already on disk.
+- **AI / MCP `OFF → ON`:** The MCP server starts on an ephemeral port. The token and URL are displayed. A system tray / OS notification says: *"MCP Server running on port XXXX. Share the token with your AI client."*
+- **AI / MCP `ON → OFF`:** The MCP server shuts down immediately. All active AI client connections are terminated. The token is invalidated. The UI shows: *"MCP Server stopped. Previous token is no longer valid."*
+
+**Browse-Only Mode Limitations (Updated):**
+
+| Feature | With OAuth | Browse-Only |
+|---|---|---|
+| Browse curated catalog | ✅ | ✅ |
+| Install curated packs (GitHub-sourced) | ✅ | ✅ |
+| Install curated packs (Modrinth-sourced, if Modrinth ON) | ✅ | ✅ |
+| Download raw Modrinth mods (if Modrinth ON) | ✅ | ✅ |
+| Create custom instances | ✅ | ✅ |
+| Use MCP AI tools (if AI ON) | ✅ | ❌ |
+| Vote on mods | ✅ | ❌ |
+| Submit reviews | ✅ | ❌ |
+| Access Triage Center | ✅ | ❌ |
+| Report crashes to GitHub | ✅ | ❌ |
+| Flag comments | ✅ | ❌ |
+
+All features work offline once `registry.db` is cached, except those requiring live API calls. Integration toggles are independent of OAuth state — a user can have Modrinth ON and AI OFF, or vice versa, in Browse-Only Mode.
+```
+
+### 6.2 Discovery & Sorting System
+
+All sorting and filtering is executed locally against the downloaded SQLite database. No API call is needed.
+
+**Sort Options (with Modrinth filter when disabled):**
+- Net Score (default): `SELECT * FROM registry_items WHERE download_strategy != 'modrinth_id' ORDER BY net_score DESC`
+- Trending (7-day velocity): `SELECT * FROM registry_items WHERE download_strategy != 'modrinth_id' ORDER BY velocity DESC`
+- Most Downvoted: `SELECT * FROM registry_items WHERE download_strategy != 'modrinth_id' ORDER BY downvotes DESC`
+- Newest additions: `SELECT * FROM registry_items WHERE download_strategy != 'modrinth_id' ORDER BY date_added DESC`
+- Most upvoted: `SELECT * FROM registry_items WHERE download_strategy != 'modrinth_id' ORDER BY upvotes DESC`
+
+When Modrinth integration is enabled, the `WHERE download_strategy != 'modrinth_id'` clause is omitted and all mods are shown.
+
+**Category Filter (with Modrinth filter when disabled):**
+```sql
+SELECT ri.*
+FROM registry_items ri
+JOIN item_categories ic ON ri.id = ic.item_id
+WHERE ic.category_id = 'tech'
+  AND ri.download_strategy != 'modrinth_id'
+ORDER BY ri.velocity DESC;
+```
+
+**Minecraft Version / Loader Filter:**
+When a user has selected a Minecraft version and loader (either in an active instance or via filter dropdown), the Browse tab shows only mods whose `compatible_versions_json` includes that combination. For Modrinth-sourced mods, the compiler populates this field from the Modrinth API. For GitHub-sourced mods, it is extracted from release filenames, descriptions, or an optional `version_info.json` attachment.
+
+Categories in the filter menu are dynamically generated from the `categories` table, including all freeform community tags. Users can filter by `"tech"`, `"create-addons"`, `"cozy-rpg"`, `"client-only"`, or any other tag that curators have used in `community_categories`.
+
+**"For You" Algorithm:**
+The Tauri app tracks which content_types and categories the user installs locally. If a user installs three mods tagged `"magic"`, the local UI boosts uninstalled mods sharing the `"magic"` category or with matching linguistic profiles in `curator_note`. This runs entirely on the user's machine; zero data leaves the device.
+
+#### Mod Detail Page: Version Picker
+
+When a user opens a mod's detail page from the Browse tab:
+- The mod's versions are queried from the source API (Modrinth or GitHub) **live** if the user is online, or from cached version metadata in `registry.db`.
+- Versions are **filtered by the user's currently selected Minecraft version and loader** (from their active instance or global filter).
+- The default selected version is the latest compatible one.
+- The user can pick a different compatible version from the dropdown.
+- For GitHub releases, versions are sorted by release date. The launcher's best-guess compatibility (from filename/description/`version_info.json`) is shown next to each version.
+- A "Version Mismatch Warning" appears if the user selects a version that the launcher cannot confirm is compatible with the active instance's MC version/loader.
+
+### 6.3 The "Boutique vs. Warehouse" UX Split
+
+- **Default View ("The Boutique"):** Only items from the curated `registry.db` are shown. No MCreator slop, no abandoned weekend projects. If a user searches for something and it isn't in the curated list, the UI shows a subtle message: *"Not finding what you need? Search all of Modrinth →"*
+- **Raw Modrinth Tab:** Clicking the above button (or selecting the Modrinth tab in the sidebar) flips to a live Modrinth API search. The launcher downloads mod files directly from Modrinth's CDN and **verifies each file against the SHA-1 hash published in Modrinth's API** before writing it to the instance. An uncurated mod is structurally unvetted by this community, but the file itself is integrity-checked against Modrinth's own records. This section displays a persistent warning banner: *"⚠️ These mods are uncurated by the community. Download at your own discretion."*
+
+**Modrinth Integration Toggle:** In Settings → Integrations, users can disable all Modrinth API access entirely. When disabled:
+- The "Search all of Modrinth →" link is hidden.
+- The Raw Modrinth sidebar tab is removed.
+- Curated mods with `download_strategy = "modrinth_id"` show a warning: *"This mod is hosted on Modrinth. Modrinth integration is disabled. Enable it in Settings to install, or download the file manually and drag it into the instance."*
+- All other features (GitHub-sourced curated mods, pack management, instance creation, governance) continue to work normally.
+
+### 6.4 Extended Content Types
+
+The same manifest system, data pipeline, and discovery algorithms support:
+- `mod` — Standard Minecraft modifications
+- `pack` — Curated modpacks (see §7)
+- `shader` — Iris/OptiFine-compatible shader packs
+- `resourcepack` — Texture/resource replacements
+- `server` — Listed public servers running curated packs
+- `datapack` — Vanilla-compatible data modifications
+- `world` — World downloads/saves
+
+### 6.5 Instance Management
+
+The app supports unlimited independent instances, each completely isolated from the user's default `.minecraft` directory.
+
+**Instance Directory Structure:**
+```
+~/your-app/instances/
+  optimized-survival/
+    mods/
+    config/
+    crash-reports/
+    logs/
+    saves/
+    screenshots/
+    instance_manifest.json   # Lightweight JSON manifest tracking all installed mods
+  creative-builds/
+    ...
+```
+
+**`instance_manifest.json` Schema:**
+Each instance directory contains a lightweight JSON file tracking every mod installed in the `mods/` folder:
+
+```json
+{
+  "instance_id": "optimized-survival",
+  "name": "Optimized Survival",
+  "created_from_pack": "optimized-survival",
+  "minecraft_version": "1.21",
+  "loader": "fabric",
+  "loader_version": "0.15.11",
+  "is_locked": true,
+  "mods": [
+    {
+      "filename": "sodium-fabric-0.5.8+mc1.21.jar",
+      "registry_id": "sodium",
+      "source": "github_release",
+      "version": "v0.5.8",
+      "sha256": "a1b2c3...",
+      "installed_at": "2026-06-15T14:30:00Z"
+    },
+    {
+      "filename": "xaeros-minimap-24.2.0-fabric-1.21.jar",
+      "registry_id": null,
+      "modrinth_id": "1bokaNcj",
+      "source": "modrinth_raw",
+      "version": "24.2.0",
+      "sha256": "d4e5f6...",
+      "installed_at": "2026-06-15T14:31:00Z"
+    },
+    {
+      "filename": "random-mod.jar",
+      "registry_id": null,
+      "modrinth_id": null,
+      "source": "manual_drag_drop",
+      "version": null,
+      "sha256": "g7h8i9...",
+      "installed_at": "2026-06-16T09:00:00Z"
+    }
+  ],
+  "user_preferences": {
+    "recommended_mods_enabled": ["iris"],
+    "optional_mods_enabled": ["xaeros-minimap"]
+  }
+}
+```
+
+**Design Rationale:**
+- **JSON over SQLite for instance metadata:** Avoids SQLite merge complexity when updating `registry.db`. The instance manifest is a standalone file that can be read, written, and exported without database joins.
+- **Reconstructible from scratch:** Given only the `instance_manifest.json`, the launcher can rebuild the entire instance (re-download all mods, re-inject loader, re-apply configs) on any machine.
+- **Lightweight backups:** Backing up an instance means copying `instance_manifest.json` + any custom configs. The `mods/` directory itself can be regenerated.
+- **Cross-tool compatibility:** The `.mrpack` export format is generated by transforming `instance_manifest.json` into `modrinth.index.json`.
+
+**`source` field values:** `github_release`, `modrinth_id`, `modrinth_raw`, `direct_hash`, `manual_drag_drop`, `curated_pack`.
+
+**Modpack Lock State Machine:**
+```
+[LOCKED (Default for curated packs)]
+  - UI hides "Add Mod" button
+  - Manifest is immutable; shows only installed mod list
+  - "Unlock" button is visible with a warning tooltip
+        │
+        ▼ (User clicks Unlock → confirms warning)
+[UNLOCKED]
+  - Rust copies instances/<pack>/ to instances/<pack>_backup/ recursively, then verifies that the file count and total size match the source. If verification fails, display: *'Backup creation failed. Unlock operation cancelled to prevent data loss.'*
+  - Note: directory copies are not atomic; this is a best-effort safeguard.
+  - UI exposes raw Modrinth search and manual .jar drag-and-drop
+  - "Revert to Original" button appears
+        │
+        ▼ (User clicks Revert)
+[REVERT]
+  - Rust deletes instances/<pack>/ and renames instances/<pack>_backup/ back
+  - Instance is perfectly restored to the curator's original state
+```
+
+### 6.5a Pack Updates
+
+When a curated pack manifest is updated in the registry (new mod versions added, config changes, dependency fixes), existing instances created from that pack can be updated:
+
+1. The instance settings shows a **"Check for Pack Update"** button.
+2. The launcher reads `instances/<pack>/instance_manifest.json` to determine the current state of installed mods (filename, version, hash).
+3. The launcher compares the manifest against the current pack definition in `registry.db` to compute a diff.
+4. If differences exist, a diff dialog appears:
+   - *"3 mods updated (Sodium 1.7.1 → 1.7.2, Iris 1.6.0 → 1.6.1, ...)*
+   - *"1 mod added (NEWMOD)*
+   - *"2 mods removed (OLDMOD1, OLDDMOD2)*
+5. The launcher respects the user's previous optional/recommended choices stored in `instance_manifest.json` under `user_preferences`.
+6. **If the instance was unlocked and has manual mods added:** the diff also shows these as *"3 manual mods not in pack (will be preserved)"*. They are not removed during the update.
+7. Before applying the update, the launcher automatically creates a backup: copies `instances/<pack>/instance_manifest.json` to `instances/<pack>_backup_update_YYYYMMDD/instance_manifest.json` plus any custom config files.
+8. The user can review and approve the update, or dismiss it.
+9. If approved: download new/changed mods, remove deleted mods, update `instance_manifest.json`, re-extract any changed override config files.
+10. After update, if the instance was originally LOCKED, it remains LOCKED. If it was UNLOCKED before the update, it remains UNLOCKED.
+
+### 6.5b Custom Instance Creation
+
+Users can create instances from scratch (not just from curated packs or `.mrpack` files):
+
+1. **Create Instance** button opens a dialog.
+2. User selects: Minecraft version (dropdown), loader (Fabric/NeoForge/Quilt/Forge), loader version (auto-populated from `loader_manifests.json`).
+3. Instance is created empty with the correct modloader injected.
+4. User can browse the curated registry and add mods individually.
+5. For each mod, the version picker shows versions compatible with the instance's MC version/loader.
+6. The instance is treated as an unlocked pack — mods can be freely added/removed.
+
+### 6.5c Pack Export
+
+Users can export any existing instance as a shareable pack:
+
+1. **"Export Pack"** button in instance settings.
+2. User chooses export format:
+   - **`.mrpack`**: Standard Modrinth format. Generates `modrinth.index.json` with all installed mod hashes and URLs. Compatible with any Modrinth launcher.
+   - **Custom `.json`**: Platform-native pack manifest compatible with this launcher. Includes mod IDs, versions, and optional/recommended status derived from the instance's current state.
+3. User can optionally include config overrides (generates a zip of `config/`, `kubejs/`, etc. that's been modified from defaults).
+4. The exported file is typically 5-20KB and can be shared over Discord or any platform.
+
+### 6.5d Instance Deletion
+
+1. Right-click on instance card → "Delete Instance" or settings menu → "Delete Instance".
+2. Confirmation modal: *"This will permanently delete the instance directory including all mods, configs, and saves. This cannot be undone."*
+3. On confirmation, the instance directory is moved to the OS trash/recycle bin (using platform-specific APIs like Windows `SHFileOperation` or macOS `NSWorkspace`) rather than immediately deleted.
+4. User can recover from trash if accidental.
+
+---
+
+## 7. MODPACK ARCHITECTURE (THREE-TIER)
+
+### Tier 1: Curated Platform Packs (Central Repo)
+Community curators submit `registry/packs/*.json` manifests via GitHub PR. Because mods are resolved via Modrinth ID or the existing mod manifest database, the pack itself is a tiny JSON file — no files are hosted by the platform. These appear on the launcher's home screen as "Featured Platform Packs."
+
+### Tier 2: Native Modrinth .mrpack Support
+1. User searches in the Modrinth tab (e.g., "Fabulously Optimized").
+2. App hits the Modrinth API, downloads the lightweight `.mrpack` zip file. Rust verifies the `.mrpack` file integrity against the SHA-1 hash provided by the Modrinth API (if available) or the download response.
+3. Rust unzips the `modrinth.index.json` and parses the file list. For each file entry, it extracts the SHA-1 hash from the index and verifies the downloaded `.jar` against that hash before writing it to the instance directory.
+4. Rust concurrently downloads all `.jar` files via Modrinth CDN.
+5. No platform hosting required.
+
+### Tier 3: Local Offline Sharing
+- A "Build Pack" UI lets users select their own installed mods and export a standard `.mrpack` or the platform's custom `.json` format.
+- The resulting file is typically 5-15KB and can be shared over Discord or any other platform.
+- Friends drag-and-drop the file into the launcher, and it builds the instance entirely locally.
+
+### 7.1 Pack Installation Flow (Full)
+
+1. **Parse Manifest:** Read the pack's `mods` array.
+2. **Present Configuration Screen:** Show required mods (locked + checked), recommended mods (pre-enabled toggle), and optional mods (pre-disabled toggle). Remember user preferences across pack updates.
+3. **Resolve Mod Versions:** For each selected mod, resolve the exact file to download:
+   - **Primary path (`github_release`):** Query the GitHub Releases API for `owner/repo` and match the exact release tag specified in `version`. If no `version` is specified, use the latest release. Verify the release asset SHA-256 hash against the pinned hash in `registry.db`.
+   - **Supplementary path (`modrinth_id`):** Query the Modrinth API for the exact version. If the exact version is not found, show a dialog offering the closest compatible version or a skip option. If no `version` is specified, query `GET /v2/project/{id}/version?loaders=["fabric"]&game_versions=["1.21"]` for the latest compatible.
+   - **Direct path (`direct_hash`):** Download from the provided URL and verify SHA-256.
+   - For GitHub releases without a `version_info.json`, the launcher searches release assets by filename pattern (e.g., `*1.21*.jar`) and release description as a best-effort compatibility guess.
+   - The resolved version ID, file URL, and hash are cached in the instance metadata for future reference (updates, crash reporting).
+
+4. **Fetch Mods:** Concurrently download all resolved mod files. See §7.1.1 for download failure handling.
+5. **Fetch Overrides:** Download `override_url` zip from GitHub raw CDN.
+6. **Sanitize Overrides (CRITICAL — see §7.2).**
+7. **Extract Config Files:** Write `.toml`, `.json`, `.properties`, `.png`, `.mcmeta`, `.js` (for KubeJS scripts) to the instance directory.
+8. **Inject Modloader (see §8.2).**
+9. **Mutate `launcher_profiles.json` (see §8.3).**
+10. **Launch.**
+
+#### 7.1.1 Download Failure Handling (Partial Pack Load)
+
+If one or more mod downloads fail during pack installation (network error, file not found, hash mismatch, Modrinth API error), the launcher **does not abort the entire installation**. Instead:
+
+1. Continue downloading and installing all other mods that succeed.
+2. After all downloads complete, present a summary dialog: *"<N> mods installed successfully. <M> mods failed to download:"* followed by a list of failed mods with their error reasons.
+3. For each failed mod, the user has three options:
+   - **Search Modrinth**: Query the Modrinth API directly for the mod by name/ID and show available versions filtered by the instance's `minecraft_version` and `loader`.
+   - **Check Registry**: Search the local `registry.db` for a matching mod entry with an alternative download strategy.
+   - **Install Manually**: Open a file picker to let the user drag-and-drop a `.jar` file they downloaded themselves.
+4. If the user dismisses the dialog without resolving all failures, the instance is created but flagged as *"Incomplete Installation"* in the UI. A persistent banner appears in the instance settings: *"This instance is missing <N> mods. Some features may not work correctly."*
+
+**Concurrency & Retry Settings:**
+- Maximum 6 concurrent download streams.
+- Per-file retry: 3 attempts with exponential backoff (1s, 2s, 4s delays).
+- If a file fails all retries, it moves to the failure summary.
+- Total download timeout per file: 60 seconds.
+
+#### 7.1.2 Disk Space Pre-Check
+
+Before starting any download, extraction, or instance creation:
+- Sum the expected download sizes (from API metadata or user-provided `.mrpack` index).
+- Add a 20% headroom buffer for extraction overhead.
+- Check available disk space on the target drive.
+- If insufficient: *"This installation requires ~X GB of free space. You have Y GB available. Please free up space or reduce your selection."*
+
+### 7.2 Override Sanitization Engine (Security Critical)
+
+The Rust backend acts as a strict gatekeeper when extracting any zip file from a pack's `override_url`.
+
+#### 7.2.1 Zip Bomb Mitigation (Pre-Extraction Checks)
+
+Before any file is extracted, the Rust backend enforces hard limits on the zip archive:
+
+```rust
+const MAX_ZIP_SIZE: u64 = 500 * 1024 * 1024;       // 500MB compressed
+const MAX_EXTRACTED_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2GB total extracted
+const MAX_FILE_COUNT: usize = 5000;                  // 5000 files max
+
+// Before extraction:
+// 1. Check compressed size of the zip against MAX_ZIP_SIZE
+// 2. Iterate all entries and sum the declared uncompressed sizes against MAX_EXTRACTED_SIZE
+// 3. Count entries against MAX_FILE_COUNT
+// 4. If any limit is exceeded: abort, delete zip, display fatal error
+```
+
+Zip bombs (e.g., a 10KB file expanding to 500GB) are structurally defeated by checking declared entry sizes before writing a single byte to disk. If the zip header is lying, the extraction loop also tracks actual bytes written and aborts mid-stream if the real total exceeds the limit.
+
+#### 7.2.2 Directory Whitelist (Replacing the Denylist)
+
+The previous design used a denylist of dangerous extensions (`.jar`, `.exe`, etc.). This is insufficient — dangerous content can exist in many forms beyond denylisted extensions (e.g., KubeJS scripts that are effectively code, malicious JSON payloads, OpenLoader resources that load additional content).
+
+The launcher instead uses a **directory whitelist**. Only files whose paths start with an allowed prefix are extracted; everything else is silently skipped and logged:
+
+| Allowed Prefix | Purpose |
+|---|---|
+| `config/` | Mod configuration files |
+| `defaultconfigs/` | Default server-side configs |
+| `resourcepacks/` | Embedded resource packs |
+| `kubejs/` | KubeJS scripts (sandboxed inside Java; no OS access) |
+| `mods/` | Not allowed via overrides — see below |
+
+**The `mods/` directory is explicitly excluded from the whitelist.** This structurally enforces the "Manifest Only" guarantee: all `.jar` files must enter the `/mods/` folder through the JSON manifest array and Modrinth API, never through pack overrides.
+
+Instead of a denylist (where anything not explicitly banned passes through), the whitelist ensures that only known-safe directory patterns are permitted. Unknown or unexpected paths are rejected by default.
+
+Additionally, within whitelisted directories, certain file types remain hard-banned regardless:
+```
+.jar, .class, .exe, .bat, .cmd, .sh, .ps1, .dll, .so, .dylib, .msi, .dmg
+```
+
+If any file with a banned extension is found inside the zip — even within a whitelisted directory — the installation is aborted, partially-extracted files are deleted, and the user sees:
+
+*"Installation Aborted: Security Violation. Pack overrides cannot contain executable files or mods. All mods must be routed through the platform manifest. This is a platform security requirement."*
+
+#### 7.2.3 Path Traversal Protection (Zip Slip)
+
+Before writing any extracted file to disk:
+- Strip all absolute path prefixes and `../` parent directory operators from the file's stored path.
+- Verify that the resolved canonical path is inside the designated instance directory sandbox.
+- If any path escapes the sandbox: abort the entire installation.
+
+#### 7.2.4 The "Manifest Only" Guarantee
+
+By enforcing the directory whitelist plus the executable extension ban, the platform structurally guarantees that the only way a `.jar` file enters the user's `/mods/` folder is if it was defined in the JSON manifest array, passed through Modrinth's API (respecting developer permissions and download statistics), and verified against its SHA-256 hash.
+
+#### 7.2.5 Why `.sh` and `.bat` Are Banned
+
+- Shell scripts can download and execute remote payloads at runtime. A curator might audit a "safe" script today, but a bad actor can change the remote URL's content after approval.
+- `.sh` files break Windows users; `.bat` files break macOS/Linux users. Cross-platform packs must not rely on OS-level scripts.
+- The correct solution for in-game scripting is **KubeJS** or **CraftTweaker** — mods that run `.js` scripts strictly inside the Java sandbox, with no OS-level access.
+
+---
+
+### 7.5 GITHUB OAUTH TOKEN SECURITY
+
+The platform relies heavily on user GitHub OAuth tokens for API calls, voting, crash reporting, and governance. These tokens are a high-value target — if stolen, they grant the attacker the ability to impersonate the user on GitHub, create issues, vote, and potentially access private repositories depending on granted scopes.
+
+#### 7.5.1 Authentication Flow
+
+The launcher uses the **GitHub Device Flow** (`POST https://github.com/login/device/code`) for authentication. This flow is designed for desktop applications that cannot securely embed a client secret:
+
+1. The launcher requests a device code and verification URL from GitHub.
+2. The user opens the URL in their browser and enters the code.
+3. The launcher polls for authorization. Once the user approves in the browser, the launcher receives an access token.
+
+**Token Scopes:** Only the minimum required scopes are requested:
+- `public_repo` — to create issues (crash reports) and interact with public repositories
+- `read:org` — for organization membership checks (if applicable for governance)
+
+No `repo` (full private access), `user`, `admin`, or other broad scopes are ever requested.
+
+#### 7.5.2 Token Storage
+
+The OAuth token is **never stored in plaintext** on the filesystem. Instead, it is secured using the operating system's native credential store:
+
+| OS | Credential Store |
+|---|---|
+| Windows | Windows Credential Manager (via `keyring` crate) |
+| macOS | Keychain (via `keyring` crate) |
+| Linux | Secret Service (via `keyring` crate) |
+
+The `keyring` Rust crate provides a cross-platform abstraction over these stores. The token is stored as a single entry (e.g., `io.agora-mc.github-token`) and is never written to configuration files, environment variables, or local SQLite databases.
+
+**Degraded Security Fallback:** If the keyring is unavailable (common on headless Linux, WSL, or minimal distributions without D-Bus/Secret Service), the launcher falls back to local encryption:
+- Derive a key from the OS username + machine ID (e.g., Windows SID, Linux machine-id, macOS hardware UUID) using PBKDF2.
+- Encrypt the token with AES-256-GCM and store the ciphertext in the app's local data directory (`%APPDATA%/agora-mc/tokens.enc` on Windows, `~/.config/agora-mc/tokens.enc` on Linux, `~/Library/Application Support/agora-mc/tokens.enc` on macOS).
+- Display a persistent warning in Settings: *"Credential store unavailable. Token encrypted with a machine-bound key. This is less secure than OS keychain storage."*
+- If the machine ID changes (e.g., OS reinstall, VM migration), the encrypted token becomes unreadable and the user must re-authenticate.
+
+#### 7.5.3 Token Usage Principles
+
+- **User's own rate limit:** Each user's API calls count against their personal 5,000 requests/hour quota. The launcher never makes API calls that count against a shared rate limit.
+- **No server-side token storage:** The platform has no backend. Tokens never leave the user's machine.
+- **Token revocation:** Users can revoke the launcher's access at any time via GitHub Settings → Applications. A "Disconnect GitHub" button in the launcher's Settings tab also deletes the token from the credential store.
+
+---
+
+## 8. THE EXECUTION ENGINE (MOJANG WRAPPER)
+
+The Rust backend **never touches Microsoft credentials, Xbox Live, XSTS tokens, or JVM execution**. All of this is delegated to the official Mojang Launcher. This eliminates an entire class of security liability, auth-chain complexity, and future API breakage risk.
+
+### 8.1 OS-Specific Path Resolution
+
+Rust must resolve the Minecraft directory dynamically at runtime:
+
+| OS | Path |
+|---|---|
+| Windows | `%APPDATA%\.minecraft` |
+| macOS | `~/Library/Application Support/minecraft` |
+| Linux | `~/.minecraft` |
+
+### 8.2 Modloader Injection Flow (Fabric, NeoForge, Quilt, Forge)
+
+To make the Mojang launcher understand a modded version:
+
+1. Rust downloads the modloader version JSON from the official CDN (e.g., Fabric Meta API: `https://meta.fabricmc.net/v2/versions/loader/<mc_version>/<loader_version>/profile/json`).
+2. Rust writes this file to `~/.minecraft/versions/<loader_name>/<loader_name>.json`.
+3. Rust downloads all required modloader library JARs and writes them to `~/.minecraft/libraries/`.
+
+Supported loaders (MVP scope):
+- **Fabric** (via Fabric Meta API)
+- **NeoForge** (via NeoForge Maven installer)
+- **Quilt** (via Quilt Meta API)
+- **Forge** (via MinecraftForge installer)
+
+#### 8.2.1 Supply Chain Verification (Modloader Downloads)
+
+Downloading modloader metadata and libraries from internet sources introduces a supply chain risk — if an upstream CDN is compromised, malicious code reaches every user.
+
+**Countermeasures:**
+
+1. **SHA-256 Hash Verification (Version JSON Only):** The nightly compiler fetches and pins the SHA-256 hash of the modloader **version JSON file only** (e.g., `fabric-loader-0.15.11-1.21.json`). The Rust client verifies this JSON file against the pinned hash before trusting its contents. The library list inside the JSON is trusted as the official modloader build output. The pinned hashes are stored in `loader_manifests.json` (see point 3 below). If verification fails, the download is rejected and the user is shown: *"Modloader download failed integrity check. This may indicate a network error or a supply chain compromise. Please try again or report this issue."*
+
+2. **Domain Pinning:** The Rust client only downloads modloader files from the official, hard-coded CDN domains:
+   - Fabric: `meta.fabricmc.net`, `maven.fabricmc.net`
+   - NeoForge: `neoforged.net`, `maven.neoforged.net`
+   - Quilt: `meta.quiltmc.org`, `maven.quiltmc.org`
+   - Forge: `minecraftforge.net`, `files.minecraftforge.net`
+   
+   Any redirect to an off-domain URL is blocked. This prevents DNS hijacking or MITM attacks from redirecting downloads to attacker-controlled servers.
+
+3. **Pinned Source Lists:** The compiler maintains a `loader_manifests.json` file in the registry mapping each supported `(loader, mc_version, loader_version)` tuple to its official source URL and pinned hash. This file is updated only via curator PR — the same governance process as mod manifests.
+
+### 8.3 `launcher_profiles.json` Mutation
+
+Rust reads the official `~/.minecraft/launcher_profiles.json`, then injects a new profile entry:
+
+```json
+"curated-optimized-survival": {
+  "name": "Optimized Survival (Agora)",
+  "type": "custom",
+  "created": "<ISO timestamp>",
+  "lastVersionId": "fabric-loader-0.15.11-1.21",
+  "icon": "Furnace",
+  "gameDir": "/home/user/your-app/instances/optimized-survival",
+  "javaArgs": "-Xmx8G -Xms8G -XX:+UseG1GC -XX:+UnlockExperimentalVMOptions -XX:+AlwaysPreTouch"
+}
+```
+
+Note: `javaArgs` is dynamically assembled from the JVM Argument Builder (§8.4). Note that `gameDir` points to the **isolated instance folder**, not the default `.minecraft` directory.
+
+#### 8.3.1 Atomic Write with Backup
+
+Directly mutating `launcher_profiles.json` is risky — a crash, power loss, or write interruption during mutation could corrupt the file, potentially destroying all of the user's launcher profiles.
+
+**Atomic Write Procedure:**
+
+1. Read the current `launcher_profiles.json` into memory.
+2. Parse the JSON and inject/update the profile entry.
+3. Serialize the mutated JSON back to a string.
+4. Write the serialized string to a **temporary file**: `launcher_profiles.json.tmp`.
+5. Create (or overwrite) a **backup file**: `launcher_profiles.json.bak` from the current on-disk file.
+6. Use `std::fs::rename()` to atomically replace `launcher_profiles.json` with the `.tmp` file. On most filesystems, `rename()` is atomic — the file is either the old version or the new version, never a partial write.
+7. If any step fails, the `.bak` file is used to restore the original state.
+
+**Recovery:** If the launcher detects that `launcher_profiles.json` is invalid JSON on startup:
+1. Attempt to restore from `launcher_profiles.json.bak`.
+2. If `.bak` is also invalid or missing, **regenerate a minimal valid `launcher_profiles.json`** containing only the curated launcher profiles managed by this app. Display a warning: *"`launcher_profiles.json` was corrupted and has been regenerated with your curated profiles. You may need to re-add any manually-created Mojang launcher profiles."*
+3. The regenerated file is a valid JSON object with empty `profiles` and `settings` objects plus any curated profiles stored in the app's local database.
+
+### 8.4 Process Execution
+
+**OS-Specific Launcher Discovery:**
+Rust resolves the Mojang launcher executable path at runtime using the following priority:
+
+1. **User override:** If set in Settings, use the user-provided path.
+2. **Windows:** Query registry key `HKEY_LOCAL_MACHINE\SOFTWARE\Mojang\Launcher\InstallPath` (legacy) or search `C:\Program Files (x86)\Minecraft Launcher\MinecraftLauncher.exe` and `C:\Program Files\Minecraft Launcher\MinecraftLauncher.exe`. Also check the Microsoft Store app package location via `Get-AppxPackage`.
+3. **macOS:** Check `/Applications/Minecraft.app/Contents/MacOS/launcher`.
+4. **Linux:** Check `$PATH` for `minecraft-launcher`, then common locations (`/usr/bin/minecraft-launcher`, `/opt/minecraft-launcher/minecraft-launcher`, `~/.local/bin/minecraft-launcher`).
+5. **Fallback:** If no executable is found, display an error: *"Minecraft Launcher not found. Please install the official Mojang Launcher or set its path in Settings."*
+
+The resolved path is cached in the app's local configuration for subsequent launches.
+
+```rust
+// Rust backend — uses cached path if available, otherwise discovers
+let launcher_path = config.get("mojang_launcher_path")
+    .unwrap_or_else(|| discover_mojang_launcher());
+std::process::Command::new(&launcher_path)
+    .arg("--profile")
+    .arg("curated-optimized-survival")
+    .spawn()?;
+```
+
+The Mojang launcher opens, sees the user is already logged in (we never touched auth), reads the modloader `lastVersionId`, downloads any missing vanilla assets it needs, points its read directory at the isolated instance folder, and boots the game.
+
+### 8.5 JVM Argument Builder (UI → Args)
+
+**Memory Slider:**
+- User drags a slider (e.g., 1GB – 32GB based on detected system RAM).
+- Rust translates: a selection of `8GB` → `-Xmx8G -Xms8G` (setting min and max to the same value is best practice for modded Minecraft; prevents GC pressure from heap resizing).
+
+**Garbage Collector Dropdown:**
+| UI Label | JVM Flag | Notes |
+|---|---|---|
+| Default (G1GC) | `-XX:+UseG1GC` | Standard for all modern Minecraft; recommended for most users |
+| ZGC (Low Latency) | `-XX:+UseZGC` | Eliminates lag spikes on high-end machines; higher memory overhead |
+| Shenandoah | `-XX:+UseShenandoahGC` | Alternative low-pause collector; good for midrange hardware |
+| Custom | *(empty)* | User manually enters GC flag in the text box below |
+
+**Custom JVM Arguments Text Box:**
+- A plain text input at the bottom of the JVM settings panel.
+- Appended to the memory and GC args in the final `javaArgs` string.
+- Useful for Aikar's flags, server-mode tweaks, or advanced optimization presets.
+
+**Final Assembly:**
+```
+[Memory Args] + " " + [GC Args] + " " + [Custom Args] + " " + [AlwaysPreTouch if enabled]
+```
+
+`-XX:+AlwaysPreTouch` is included by default for G1GC, but is a toggle in Settings (default: ON for G1GC, OFF for ZGC/Shenandoah). Tooltip: *'Pre-touches all heap pages at startup, increasing launch time but reducing in-game stutter. Recommended for G1GC; may cause issues with ZGC on memory-overcommitted systems.'*
+
+---
+
+## 9. CRASH DIAGNOSTICS SYSTEM
+
+### 9.1 Pre-Launch Crash Interceptor
+
+When the user clicks "Play":
+
+1. Rust checks `instances/<pack>/crash-reports/` for any files with a modification timestamp newer than `last_launched_at` (stored in `user_instances` table).
+2. **If a new crash report exists:**
+   - Halt the launch.
+   - Display a modal: *"⚠️ This instance crashed during its last session. Do you want to review the crash report before launching, or proceed anyway?"*
+   - Options: **[Review Crash]** | **[Launch Anyway]**
+3. If user clicks "Review Crash": open the Crash Diagnostic View (§9.2).
+4. After any crash review, update `last_launched_at` to now.
+
+**Timing Rule:** `last_launched_at` is updated to the current timestamp **immediately before launching the Mojang launcher process**, regardless of whether crash review was performed. This prevents infinite crash prompt loops when the user clicks "Launch Anyway."
+
+### 9.2 Community Regex Instant Triage (Layer 1)
+
+The crash log text is streamed through the local `crash_signatures` table in order of specificity:
+
+```rust
+for signature in db.query("SELECT * FROM crash_signatures") {
+    if Regex::new(&signature.regex_pattern)?.is_match(&crash_text) {
+        // Display solution_markdown to user
+        // Render action_button if present (e.g., "Install Fabric API" auto-installs the mod)
+        return Triage::Resolved(signature);
+    }
+}
+// If no match: escalate to AI (Layer 2) or manual review
+```
+
+If a match is found, the user sees a plain-English popup with a one-click "Fix It" button. Zero latency. Zero AI tokens consumed.
+
+The `crash-signatures/` folder is a community-maintained repository. Anyone can submit a new crash pattern via PR. Curators verify the regex works before merging.
+
+### 9.3 Manual Log Viewer
+
+Every instance has a **"Diagnostics / Logs" tab** in its settings screen:
+- Lists all crash reports and `latest.log` files with human-readable timestamps.
+- Rust reads and streams the file content to the React frontend.
+- **Syntax highlighting:** `[ERROR]` lines → red, `[WARN]` lines → amber/yellow, `[INFO]` → default, `[DEBUG]` → gray.
+- User can select any crash report at any time (not just on pre-launch intercept) and send it to the AI for analysis.
+
+### 9.4 Automated GitHub Issue Submission (Layer 0 — Duplicate Check)
+
+Before either the regex engine or AI runs, Rust checks if the crash is already a known issue:
+
+1. Extract the `Caused by:` block from the crash log using regex.
+2. Identify the offending Java package name (cross-referenced against `package_signatures` in the manifest DB).
+3. Use the user's GitHub OAuth token to call: `GET /search/issues?q=<offending_package_signature>+repo:<mod_owner>/<mod_repo>`
+4. **If existing issue found:** Display a link: *"This crash appears to be a known issue. See [GitHub Issue #123] for the current status and fix."*
+5. **If no existing issue found:** Offer the user a "Report This Crash" button.
+   - Clicking it **first displays a full preview** of the issue that will be submitted, containing: Java version, OS and architecture, modloader + version, full sorted mod list, and formatted stack trace. The user must explicitly review and approve the content before it is submitted. **The report is never auto-submitted.**
+   - This preview step is critical: it shows the user exactly what personal/identifying information (username in file paths, OS details, mod list, hardware hints) will be posted publicly. The user can redact any information they consider sensitive before approving.
+   - After user approval, Rust creates a GitHub Issue on the **mod developer's repository** (not the platform repo) using the user's token.
+
+---
+
+## 10. LOCAL AI / MCP SERVER
+
+The Tauri app exposes a local JSON-RPC MCP (Model Context Protocol) server on `localhost`. This is **entirely opt-in.** Users connect their own AI tools (Claude Desktop, Cursor, etc.) or local models (Ollama). No API key is stored by the platform.
+
+### 10.0 MCP Security (Authentication & Authorization)
+
+Without authentication, any local process could connect to the MCP server and execute privileged operations (disable all mods, read crash logs, manipulate installations). This is a **critical** attack surface.
+
+**Mandatory Security Controls:**
+
+1. **Localhost Binding Only:** The MCP server binds to `127.0.0.1` on an OS-assigned ephemeral port. The port is displayed in Settings → MCP Server. The user copies the full URL with token into their AI client.
+
+2. **Per-Session Authentication Token:** When the Tauri app starts the MCP server, it generates a cryptographically random 256-bit token. This token is displayed to the user once in the Settings panel (e.g., `mcp://localhost:PORT?token=...`). The user manually copies this token into their AI client's MCP configuration. Any connection without the correct token is immediately rejected.
+
+3. **User Approval Flow (Capability Permissions):** Destructive operations require explicit user approval. Each request is tracked in an internal `approval_state` enum in the Rust backend:
+   - `pending` — Waiting for user decision
+   - `approved_once` — Approved for this specific call only; deleted immediately after execution
+   - `approved_always` — User selected "Always Allow"; persisted to `local_state.db` in the `mcp_approval_grants` table
+   - `denied` — User denied the request; may be persisted if the user selects "Don't ask again for this tool/instance"
+
+   When an AI client calls a destructive tool like `disable_mod` or `enable_mod`, the Rust backend first checks `mcp_approval_grants`:
+   - If a matching `approved_always` grant exists for `(tool_name, instance_id)` or `(tool_name, "*")`, the call proceeds without UI interruption.
+   - If a matching `denied` grant exists, the call is rejected with `ERR_MCP_DENIED`.
+   - Otherwise, the Tauri app displays a native OS notification/modal:
+     ```
+     [AI Tool Name] requests to: disable_mod("sodium.jar")
+     Instance: my-survival-pack
+     
+     [Allow Once]  [Always Allow]  [Deny]  [Deny & Don't Ask Again]
+     ```
+
+   Read-only tools (`read_latest_crash`, `list_instance_mods`, `read_mod_manifest`, `search_knowledge_base`) are auto-approved without a prompt since they expose no destructive capability.
+
+4. **Persistent Approval Grants:** `approved_always` and remembered `denied` grants are stored in `local_state.db.mcp_approval_grants`. This table survives app restarts, preventing the user from being pestered by the same request every time they launch a mod. Each grant can be scoped to:
+   - A specific `(tool_name, instance_id)` pair, or
+   - A global `(tool_name, "*")` allowing the tool across all instances.
+
+   Users can review and revoke all grants in Settings → Integrations → MCP Server → "Clear Tool Approvals." Grants do not have a forced expiration, but the user can set one via the approval dialog (e.g., "Allow for 7 days").
+
+5. **Pending Approvals Queue:** Destructive tool calls (`disable_mod`, `enable_mod`) awaiting user response are placed in a queue. The Tauri UI displays a single "Pending MCP Approvals" panel showing all queued requests with Batch Approve/Deny options. If the queue exceeds 10 pending requests, the MCP server returns `JSON-RPC error -32002: Too many pending approvals. Please approve or deny existing requests first.` to the AI client.
+
+### 10.1 MCP Tool Definitions
+
+| Tool Name | Signature | Behavior |
+|---|---|---|
+| `read_latest_crash` | `(instance_id: string)` | Returns the last 200 lines of the newest crash report or `latest.log` for the given instance |
+| `list_instance_mods` | `(instance_id: string)` | Reads `instances/<id>/instance_manifest.json` and returns a JSON array of all installed mods with their `filename`, `registry_id` (null if raw/untracked), `source`, `version`, and `sha256`. Curated mods include extra metadata from `registry.db` (curator notes, categories). Raw/untracked mods show basic file info only. |
+| `read_mod_manifest` | `(mod_id: string)` | Fetches the community data for a specific mod from the local SQLite DB: curator notes, known dependencies, categories |
+| `disable_mod` | `(instance_id: string, mod_filename: string)` | Rust physically renames `mod.jar` → `mod.jar.disabled`. Provides immediate mechanical relief without deleting the file. Reversible. |
+| `enable_mod` | `(instance_id: string, mod_filename: string)` | Reverses a `disable_mod` call |
+| `search_knowledge_base` | `(query: string)` | Executes a parameterized `LIKE %query%` search against the `curator_note` column in the SQLite DB. The query string is bound as a parameter — never concatenated into the SQL string. Returns the top 3-5 matching items with their curator notes. Powers "vibe-based" semantic mod discovery. |
+
+### 10.2 System Context Injection
+
+When an AI connects to the MCP server, the launcher automatically injects a `system_context.md` file into the AI's context as a hidden system prompt. This turns any generic LLM into a Minecraft modding specialist:
+
+```markdown
+You are a Minecraft Modding Triage Expert connected to a curated mod launcher.
+
+CRASH ANALYSIS RULES:
+- Always locate and read the `Caused by:` block first. This is the root cause.
+- If a Mixin injection failure appears, identify the target class and cross-reference which other mods inject into the same class. Mixin conflicts are the most common crash cause in heavily modded instances.
+- Fabric loader errors appear near the top of the log. Forge/NeoForge errors often appear near the bottom.
+- If you see `OutOfMemoryError`, the first recommendation is always increasing heap allocation (`-Xmx`), not disabling mods.
+
+TOOL USAGE RULES:
+- Always use `list_instance_mods` to see the full environment before diagnosing.
+- If you identify an offending mod, use `disable_mod` to provide immediate relief. Never ask the user to manually navigate their file system.
+- If you need more context about a mod's known behavior or conflicts, use `read_mod_manifest`.
+- If you want to find a mod based on a user's natural language description (e.g., "something that makes caves feel eerie"), use `search_knowledge_base`.
+
+PROHIBITED ACTIONS:
+- Never recommend deleting the `.minecraft` folder.
+- Never recommend a full reinstall as a first step.
+- Never guess mod IDs from memory; always verify against `list_instance_mods`.
+```
+
+### 10.3 Token Efficiency Architecture
+
+**Do not** dump the entire `crash_signatures` database into the AI's context. Doing so causes context dilution, inflated token costs, and reduced accuracy.
+
+The efficient approach:
+1. The community Regex Engine (Layer 1) runs first. If it matches, AI is never invoked.
+2. If no regex match: AI receives **only** three things:
+   - The raw crash log filtered to the last 200 lines.
+   - The mod list environment from `list_instance_mods`.
+   - The 1-page system context prompt (injected by the server automatically).
+3. If the AI determines it needs community knowledge, it **calls the tool** `search_knowledge_base(keywords)`. The server returns only the 2-3 most relevant knowledge base entries, not the entire database.
+
+This keeps per-triage token consumption minimal while maintaining expert-level diagnostic accuracy.
+
+### 10.4 Semantic "Vibe" Discovery
+
+`search_knowledge_base` enables natural language mod discovery. A user can ask their connected AI: *"Find me a mod that makes the world feel incredibly lonely and eerie while keeping performance high."*
+
+The AI calls `search_knowledge_base("lonely eerie atmosphere performance")`. The Rust server searches the `curator_note` field using TF-IDF scoring and returns matching mods that a standard keyword tag search would completely miss (since no tag is literally called "eerie"). The AI synthesizes the results into a personalized recommendation.
+
+---
+
+## 11. DEV MODE (CURATOR TOOL)
+
+A dedicated **"Dev Mode"** panel is accessible to users who opt into curator workflows. This is the mechanism by which cutting-edge mods not yet on Modrinth can be compiled, tested, and submitted to the platform.
+
+**Workflow:**
+1. Curator enters a GitHub repository URL (e.g., `CaffeineMC/sodium`).
+2. Rust clones the repo locally and executes `./gradlew build` (configurable build command with directory offset support).
+3. The compiled `.jar` is installed into a test instance.
+4. The curator plays/tests the mod.
+5. A "Submit to Registry" button pre-populates a PR template with the manifest JSON for the curator to review and finalize before pushing.
+
+### 11.1 Build Sandbox (Critical Security Requirement)
+
+Running `./gradlew build` or any repository build system directly on the host OS is the single highest-risk operation in the entire platform. Build scripts (Gradle, Maven, etc.) execute arbitrary code — a malicious `build.gradle` can download and execute remote payloads, steal files, or install persistent malware. This is not theoretical; it is a common supply chain attack vector.
+
+**Mandatory Build Isolation:**
+
+All Dev Mode builds **must** execute inside an isolated sandbox. The launcher supports the following sandbox backends (selected automatically based on availability, or manually in Settings):
+
+| Sandbox | Platform | Isolation Level | Notes |
+|---|---|---|---|
+| Docker | All | Container-level | Requires Docker Desktop installed; most convenient |
+| Podman | Linux, macOS | Container-level | Rootless; no daemon required |
+| Firecracker microVM | Linux | VM-level | Highest isolation; requires KVM |
+| WSL2 + Docker | Windows | VM-level | Uses Windows Subsystem for Linux 2 |
+
+**Sandbox Enforcement:**
+
+1. The build command is executed **only** inside the sandbox — never on the host OS.
+2. The sandbox has **no network access** by default during build (prevents build scripts from downloading remote payloads). If a build legitimately requires network access (e.g., to fetch Maven dependencies), the curator must explicitly enable network for that build session via a toggle.
+3. The sandbox's filesystem is **ephemeral** — it is destroyed after the build completes. Only the output `.jar` file(s) are copied out to the test instance's `mods/` directory.
+4. The sandbox has **no access** to the host's home directory, SSH keys, browser profiles, or any other sensitive data.
+
+**Failure Mode:** If no sandbox backend is available, Dev Mode refuses to build and displays: *"Dev Mode builds require a sandbox environment (Docker, Podman, or Firecracker) for security. Please install one to continue."*
+
+---
+
+## 12. ANONYMOUS CRASH TELEMETRY (OPT-IN)
+
+Users who enable telemetry contribute to a global **Crash Matrix** that benefits the entire community.
+
+**Local collection:** Every time the app detects a crash, it records the pair of mods that co-occurred in `local_crash_telemetry`. Pairs are always stored alphabetically (e.g., always `(iris, sodium)`, never `(sodium, iris)`) to prevent duplicates.
+
+**Aggregation:** Once a week, the launcher compresses the local telemetry table and posts it as an anonymous line item to a public aggregation endpoint (e.g., a serverless form endpoint or a public GitHub Gist). The nightly compiler ingests these contributions to produce a global Crash Matrix JSON file.
+
+**User-facing warning:** When a user attempts to install a mod combination that appears in the Crash Matrix with a co-crash rate above a threshold (e.g., 30%+), the launcher shows: *"⚠️ Community data indicates these mods have a high co-crash rate. Proceed with caution."*
+
+**Privacy:** No intentional personal data is collected. Only mod ID pairs and counts are included in telemetry submissions. However, if using GitHub Gists or serverless endpoints as the aggregation point, the receiving service may inherently observe IP addresses, timing metadata, and user agent strings as part of standard HTTP request processing. Users are informed of this nuance in the telemetry opt-in dialog.
+
+---
+
+## 13. WEB DIRECTORY (NEXT.JS)
+
+A completely static Next.js website deployed for free on Vercel or GitHub Pages. It serves as the public face of the platform — a searchable, browsable directory that doesn't require the desktop app.
+
+**Data Source:** Fetches the latest `registry.db` from the GitHub Release asset URL (see §3.1 Step 13). The static Next.js build queries the GitHub Releases API for the latest `registry-*` tag and downloads the attached `registry.db` asset during its own CI build process.
+
+**Features:**
+- Full-text search across mod names and curator notes
+- Filter by `content_type`, `base_categories`, `community_categories`, Minecraft version, modloader
+- Sort by net score, velocity (trending), newest
+- Mod detail pages showing: curator note, top community reviews, download strategy, categories, vote counts
+- **No user login required.** Read-only public interface.
+
+---
+
+## 14. BUILD EXECUTION PIPELINE (AI AGENT PROMPTS)
+
+Feed these module prompts sequentially to your AI coding agent. Each is self-contained.
+
+### Module 1: The Nightly Compiler (Python)
+```
+Build a Python script for a GitHub Action that:
+1. Reads all JSON files in /registry/mods/, /registry/packs/, and other subdirectories.
+2. For github_release mods: queries the GitHub Releases API to fetch release asset metadata including SHA-256 hashes.
+3. For modrinth_id mods: queries the Modrinth API (batch endpoint for efficiency) to fetch version metadata, SHA-256 hashes, and icon/gallery URLs.
+4. Makes GraphQL/REST calls to the GitHub API to fetch +1/-1 reaction counts on Issues and comment text.
+5. Filters reactions by account trust score (age > 30 days, minimum org-scoped interactions).
+6. Runs comments through the profanity-check and vaderSentiment Python libraries.
+7. Applies velocity anomaly detection: if (recent_downvotes / historical_average) > 5.0 AND total_recent > 20, set status to 'under_review'.
+8. Compiles the data into a SQLite database using the schema defined in the architecture spec.
+9. Signs the database with an offline Ed25519 key.
+10. Deploys the database as a GitHub Release Asset (not a repository commit).
+```
+
+### Module 2: The React/Tauri Desktop UI
+```
+Build a React frontend for a Tauri desktop app. Create a tabbed sidebar with: Home (featured/trending), Browse (curated mods), My Instances, Community Governance (Triage Center), and Settings. The Browse tab fetches and queries a local SQLite database via tauri-plugin-sql. Implement sort controls for net score, velocity, upvotes, downvotes, and newest. Implement dynamic category filter chips generated from the categories table. Include a "For You" algorithmic feed based on locally tracked install preferences.
+```
+
+### Module 3: The Rust Instance Engine
+```
+Write a Rust Tauri backend module that:
+1. Manages isolated modpack instances in a local /instances/ directory.
+2. Maintains an instance_manifest.json per instance tracking all installed mods (source, version, hash, filename).
+3. Downloads mod .jar files concurrently via GitHub Releases API (primary) or Modrinth API (supplementary fallback) with SHA-256 hash verification for all strategies.
+4. Implements a zip override extractor with a directory whitelist (only config/, defaultconfigs/, resourcepacks/, kubejs/ — no mods/), hard-banned executable extensions (.jar, .exe, .bat, .sh, etc.), Zip Slip path traversal protection, and zip bomb limits (500MB compressed, 2GB extracted, 5000 files max).
+5. Injects modloader version JSON and library files into the official ~/.minecraft directory with domain pinning and JSON hash verification.
+6. Reads and mutates the official launcher_profiles.json atomically with backup and corruption recovery.
+7. Constructs javaArgs strings from user-selected memory (slider), GC type (dropdown), custom args (text box), and AlwaysPreTouch toggle.
+8. Discovers and executes the official Mojang Launcher via OS-specific paths (Windows Registry/Store, macOS Applications, Linux $PATH) with cached path.
+```
+
+### Module 4: The Crash Diagnostics Engine
+```
+Write a Rust module that:
+1. On "Play" button click, compares crash-reports/ directory mtime against last_launched_at from the local SQLite DB.
+2. If a new crash exists, halts launch and presents a review/skip modal.
+3. Streams the crash log through all regex patterns from the crash_signatures SQLite table.
+4. If a match is found, renders a human-readable solution with an optional 1-click fix button (e.g., auto-install a missing mod).
+5. If no match, uses the user's GitHub OAuth token to search the offending mod's GitHub repository for matching open issues.
+6. Provides a "Report Crash" flow that generates a standardized Markdown issue body, shows a full preview with redaction support, and submits it to the mod developer's GitHub repository after explicit user approval.
+7. Provides a manual log viewer with [ERROR]/[WARN]/[INFO] line-level syntax highlighting.
+8. Tracks crash telemetry in local_crash_telemetry using normalized pair IDs (registry_id, modrinth: prefix, or manual: prefix for untracked mods).
+```
+
+### Module 5: The Local MCP Server
+```
+Write a Rust module that exposes a local JSON-RPC MCP server on localhost with the following security requirements:
+- Bind exclusively to 127.0.0.1 (no external connections).
+- Generate a cryptographically random 256-bit per-session token on MCP server startup. Display it in Settings for the user to copy into their AI client.
+- Reject any connection without the correct token.
+- For destructive tools (disable_mod, enable_mod), display a native OS approval modal with [Allow Once], [Always Allow for This Tool], [Deny]. Read-only tools are auto-approved.
+- Maintain a pending approvals queue with a maximum of 10 queued requests; reject excess with JSON-RPC error -32002.
+- Clear all "Always Allow" grants when the Tauri app restarts.
+Implement the following tools:
+- read_latest_crash(instance_id): Returns the last 200 lines of the newest crash file.
+- list_instance_mods(instance_id): Returns a JSON array of installed .jar files with versions.
+- read_mod_manifest(mod_id): Fetches curator data for a mod from the local SQLite DB.
+- disable_mod(instance_id, mod_filename): Renames mod.jar to mod.jar.disabled.
+- enable_mod(instance_id, mod_filename): Reverses a disable operation.
+- search_knowledge_base(query): TF-IDF search against the curator_note column.
+On connection, expose the system_context.md content via the MCP resources/list capability so AI clients can fetch it as a resource.
+```
+
+### Module 6: The Static Next.js Web Directory
+```
+Build a static Next.js site hosted on GitHub Pages or Vercel. It fetches registry.db (or a compiled index.json) from a GitHub Pages CDN URL and renders a searchable, filterable mod directory. Implement filter controls for content_type, categories (dynamically generated), and sort order. Each mod card shows the name, curator_note excerpt, content_type badge, net_score, and a download link. The site requires no backend and no user accounts.
+```
+
+### Module 7: The Community Governance UI
+```
+Build a React "Community Governance" tab in the Tauri app that:
+1. Fetches active 'under_review' items from the local SQLite DB.
+2. For each item, makes a live GitHub Discussions API call to fetch current poll percentages.
+3. Renders a card per item with: mod name, reason for review, live Keep/Remove percentage bars, and a "Cast Your Vote" button deep-linking to the GitHub Discussion.
+4. Shows a "Recent Resolutions" history feed below.
+5. On each mod's profile page, checks is_immune and conditionally renders the non-dismissible steel-blue Curator Shield banner with the immunity_reason text.
+6. Disables vote UI elements on immune items.
+```
+
+---
+
+## 15. SECURITY ARCHITECTURE
+
+This section consolidates all cross-cutting security decisions, threat models, and hardening requirements. Individual sections throughout this document reference back to these principles.
+
+### 15.1 Threat Model Summary
+
+| # | Threat | Severity | Mitigation Location | Status |
+|---|---|---|---|---|
+| 1 | Dev Mode executing arbitrary Gradle/Maven builds | Critical | §11.1 — Build sandbox | Addressed |
+| 2 | Unauthenticated MCP tools allowing local process takeover | Critical | §10.0 — MCP Security | Addressed |
+| 3 | GitHub OAuth token theft from compromised app | Critical | §7.5 — OAuth Token Security | Addressed |
+| 4 | Zip bomb attacks via pack override downloads | High | §7.2.1 — Zip Bomb Mitigation | Addressed |
+| 5 | Override extraction relying on denylist instead of whitelist | High | §7.2.2 — Directory Whitelist | Addressed |
+| 6 | Supply-chain attacks on modloader downloads | High | §8.2.1 — Supply Chain Verification | Addressed |
+| 7 | Regex DoS via community crash signatures | High | §2.4.1 — Regex DoS Prevention | Addressed |
+| 8 | `launcher_profiles.json` corruption during mutation | High | §8.3.1 — Atomic Write with Backup | Addressed |
+| 9 | GitHub as a strategic dependency (not a vulnerability per se) | Medium | §15.2 below | Acknowledged |
+| 10 | Sybil attacks on governance voting | Medium | §3.1 Step 4 — Sybil Resistance | Partially addressed |
+| 11 | Privacy leakage in crash report submissions | Medium | §9.4 — Preview before submit | Addressed |
+| 12 | Telemetry not fully anonymous at transport level | Medium | §12 — Updated wording | Acknowledged |
+
+### 15.2 Strategic Dependency: GitHub as Implicit Backend
+
+This project's architecture describes itself as "serverless" and "$0/month." While technically true — no servers are rented, no databases are hosted — **GitHub functions as the de facto backend** for:
+
+- Database (Issues, Discussions, Reactions)
+- Authentication (OAuth provider)
+- Voting system (Reactions)
+- Governance (Discussions polls)
+- Telemetry aggregation (Gists or webhooks)
+- Content delivery (Release Assets / Pages CDN)
+
+This is a **strategic dependency risk**, not a security vulnerability. If GitHub:
+- Changes its API rate limits or pricing
+- Modifies or deprecates Discussions, Reactions, or Issue features
+- Introduces breaking changes to the GraphQL API
+- Experiences extended outages
+
+...portions of the platform break. This risk is accepted because:
+1. GitHub's free tier is extremely generous and has been stable for years.
+2. All data is stored as flat JSON files in the repository — migration to a different platform is structurally possible (if labor-intensive).
+3. The client-side SQLite model means the launcher remains functional offline even if GitHub is temporarily unreachable.
+
+**Offline Capability:** The downloaded `registry.db` is cached locally. If the user is offline, they can still browse the curated catalog, read curator notes, and assemble modpack configurations. Mod file downloads are deferred until an internet connection is available. The app displays a "Limited Offline Mode" banner when it cannot reach GitHub Releases or Modrinth.
+
+**Mitigation:** The nightly compiler logs all API assumptions and endpoint versions. If a GitHub API change breaks the pipeline, the compiler fails loudly (not silently) and curators are notified. The `registry.db` artifact from the last successful build continues to be served until the compiler is fixed.
+
+### 15.3 Security Principles (Cross-Cutting)
+
+1. **Whitelist over denylist.** When controlling what enters the filesystem (override extraction), only allow known-safe paths. Banning "known bad" is insufficient because unknown bad always exists.
+2. **Verify everything from the network.** Every downloaded file (mods, modloader libraries, override zips, registry.db itself) must be verified via SHA-256 hash or Ed25519 signature before being written to disk or executed.
+3. **Never store secrets in plaintext.** OAuth tokens live in the OS keychain, not in files, environment variables, or databases.
+4. **Treat all community data as untrusted.** Curator notes, reviews, category names, and crash signature markdown are all potentially malicious. Escape everything before rendering. Never use raw HTML passthrough.
+5. **Sandbox arbitrary code execution.** Any operation that compiles, builds, or executes code from an external source (Dev Mode, MCP tool invocation) must run in an isolated environment with explicit user approval.
+6. **Atomic writes for critical files.** When mutating user-owned files (launcher_profiles.json, instance configs), always write to a temporary file first, then rename atomically. Always maintain a backup.
+7. **Fail closed, not open.** When verification fails (hash mismatch, signature invalid, sandbox unavailable), the operation is blocked — not logged and allowed to proceed.
+8. **Accepted Ecosystem Limitations:** KubeJS scripts run within Minecraft's JVM without OS-level sandboxing. This is a limitation of the Minecraft modding ecosystem, not this launcher. The directory whitelist prevents OS-level scripting attacks (`.sh`, `.bat`), but in-game scripts with network access remain a broad Minecraft security concern outside this platform's scope.
+9. **Parameterized Queries Only.** All user input that reaches SQLite must use parameterized queries or prepared statements. Never concatenate user input into SQL strings. The `tauri-plugin-sql` API supports parameter binding natively. This applies to: browse search queries, category filters, instance IDs passed to crash diagnostics, and MCP `search_knowledge_base` tool inputs.
+
+---
+
+## 16. TECHNICAL DECISIONS LOG
+
+This section documents key architectural decisions made during design so future agents and contributors understand the "why."
+
+| Decision | Rationale |
+|---|---|
+| Delegate auth and JVM to the official Mojang launcher | Eliminates entire attack surface of Microsoft OAuth chains, token management, vanilla asset downloading, and JVM execution. Zero future maintenance burden when Microsoft changes auth APIs. |
+| GitHub Issues + Reactions for voting | $0 cost, built-in spam protections, open API, auditable public ledger. Scales infinitely with user base. |
+| SQLite for client-side database | Enables complex SQL sorting/filtering entirely locally. No API calls needed for discovery. No privacy leakage. |
+| Weight-0 for untrusted voters (not hard rejection) | Silent ignoring is more effective against bot farms than visible blocking; bots see success but have zero impact. |
+| No public repository check for voter trust | Would disenfranchise 95%+ of the player base who are gamers, not software engineers. Account age + comment history is sufficient. |
+| Ban .sh and .bat in pack overrides | Runtime payload injection attack vector. Platform dependency scripts break cross-platform compatibility. KubeJS/CraftTweaker are the correct in-game scripting tools. |
+| Do NOT dump crash signatures into AI context | Context dilution, token waste, hallucination risk. Use `search_knowledge_base` tool on demand instead. |
+| Separate curator_reviews table from registry_items | Allows compiler to update social metrics without overwriting curator-authored content. Enables complex joins. |
+| immunity_cooldown after "Keep" vote | Prevents immediate re-review-bombing after a successful defense. 30-day cooling period restores fairness. |
+| modrinth_id as supplementary (not primary) download strategy | Modrinth provides convenient hosting, but the project's ethos prioritizes developer sovereignty via GitHub releases. Modrinth is a fallback for mods that haven't self-hosted yet, not the default path. This keeps the platform independent of Modrinth's infrastructure and supports users who disable Modrinth entirely. |
+| Direct SHA-256 hash for closed-source mods | Prevents silent malicious updates. If a developer updates their file without submitting a new PR with an updated hash, every download is blocked for all users automatically. |
+| Crash Matrix is opt-in only | Privacy-first. Opt-in telemetry with no PII produces community-trusted data while respecting users who don't want to share. |
+| Deploy registry.db as GitHub Release Asset (not repo commit) | Committing a binary `.db` file daily would bloat the Git history irreversibly, making clones prohibitively slow. Release Assets support files up to 2GB and don't pollute repository history. |
+| Sign registry.db with Ed25519 offline key | Prevents a compromised GitHub account from distributing a malicious database. The Tauri client verifies the signature before trusting the data. |
+| Store image URLs, not binary images, in database | Hosting raw images in the repository would exhaust storage limits. Modrinth CDN already hosts mod icons and gallery images; custom assets use a dedicated `launcher-media` repo with GitHub Pages. |
+| Directory whitelist for override extraction (not denylist) | Denylists are fundamentally insufficient — dangerous content exists in many forms beyond banned extensions (KubeJS scripts, malicious JSON, OpenLoader resources). A whitelist of allowed paths structurally prevents unknown threats. |
+| Sandbox Dev Mode builds (Docker/Podman/Firecracker) | Build scripts execute arbitrary code. Running them on the host OS is the single highest-risk operation. Sandboxing with ephemeral filesystems and no host access prevents supply chain compromise. |
+| MCP server authentication with per-session tokens and user approval flow | Without auth, any local process could disable all mods, read crash logs, or manipulate installations. Per-session tokens + capability-level approval dialogs treat MCP tools as the privileged operations they are. |
+| Store OAuth tokens in OS keychain, never plaintext | Storing tokens in config files, environment variables, or local databases makes them trivially stealable. OS credential managers provide hardware-backed encryption and access auditing. |
+| Atomic writes with backup for launcher_profiles.json | Direct mutation of critical files risks corruption from crashes or power loss during writes. The `.tmp` → `rename()` pattern is atomic on most filesystems, and `.bak` files enable automatic recovery. |
+| Rust `regex` crate only for crash signature matching | The Rust regex engine avoids catastrophic backtracking by construction, structurally preventing ReDoS. Maximum pattern length and CI performance gates add defense-in-depth. |
+| SHA-256 hash verification for all download strategies (not just direct_hash) | Supply chain attacks can compromise any upstream source. Verifying hashes for Modrinth downloads, GitHub releases, and modloader libraries ensures integrity regardless of the source. |
+| GitHub as implicit backend — strategic dependency acknowledged | GitHub provides database, auth, voting, governance, and CDN at zero cost. This dependency is accepted because: data is portable (flat JSON files), the client works offline, and the compiler fails loudly on breaking API changes. |
+| Preview-before-submit for crash reports | Auto-submitting crash reports to developer repos leaks username, OS, mod list, and hardware hints without user awareness. Mandatory preview allows redaction of sensitive information before public posting. |
+| Realistic telemetry anonymity wording | Claiming "no personal data is ever collected" is inaccurate when HTTP transport inherently exposes IP, timing, and user agent. Honest wording ("no intentional personal data") sets correct user expectations. |
+| Trust score based on org interactions only | "3 comments anywhere on GitHub" is not queryable via any API. Org-scoped interactions are the only practical and verifiable metric. |
+| Remove org-level user ban from compiler | `PUT /orgs/{org}/blocks/{username}` requires `admin:org` scope; GitHub Action tokens have repo-level permissions only. Manual curator action is the only viable path. |
+| last_launched_at update before launch | Updating only after crash review causes infinite crash prompt loops for "Launch Anyway" users. Updating before launching ensures the current session's crash is detected on the next launch. |
+| Modloader hash pin: version JSON only | Pinning every transitive library JAR is a manual effort nightmare (50+ libs per version, frequent updates). Pinning the JSON root file + domain pinning is the same model the official launcher uses. |
+| OAuth keyring fallback with machine-bound encryption | Linux Secret Service requires D-Bus; headless/WSL setups fail. A degraded mode with PBKDF2+AES-256-GCM and explicit user warning is better than failing entirely. |
+| Modrinth batch endpoint for image URL hydration | Querying Modrinth individually per mod hits rate limits. The `/v2/projects?ids=[...]` endpoint accepts 500 IDs per request, dramatically reducing API call volume. |
+| Atomic write: regenerate on total corruption | Double-backup is overkill. Detecting invalid JSON and regenerating a minimal valid file from the app's local database is simpler and sufficient. |
+| MCP approval queue cap at 10 | Without a cap, rapid-fire tool calls flood the user with modals. A queue with batch approve/deny and an error response to the AI client provides a clean UX. |
+| SHA-256 mandatory for all download strategies | Marking it "optional" for Modrinth/GitHub leaves a supply-chain gap. The compiler auto-populates it from Modrinth API and GitHub release metadata, so there is no valid reason to skip verification. |
+| Raw Modrinth tab still verifies hashes | Even uncurated mods should be integrity-checked against Modrinth's published hashes. Curation is about quality, not file integrity. |
+| Flag review via direct GitHub issue creation | A "webhook" implies a backend, violating the $0 constraint. The Tauri app creates the issue directly in a private admin repo using the user's token. |
+| Regenerate launcher_profiles.json on corruption | Only way the file gets corrupted is manual user tampering or disk failure. Regenerating from the app's local database is simpler than maintaining multiple backup rotations. |
+| Pack manifests specify exact mod versions | Curators control what version users get. If the exact version disappears, the user is prompted to accept a fallback rather than silently installing something different. |
+| Version picker filtered by MC version/loader in mod detail page | Users need to see only compatible versions. Defaulting to the latest compatible avoids manual compatibility checking. |
+| GitHub release version_info.json (optional) | Filename pattern matching and description parsing are unreliable. An optional structured metadata file lets developers provide precise compatibility data without forcing it. |
+| Dependency resolution: crash-triggered, not auto-resolve | Modrinth's dependency graph is reliable but incorporating it into the primary pipeline couples the platform to Modrinth's system. Crash logs already reveal missing dependencies; offering to install found deps keeps the pipeline simple. |
+| Partial pack load on download failure | Aborting the entire installation because one mod failed is user-hostile. Installing what succeeded and offering remediation options for the rest is a better UX. |
+| Disk space pre-check with 20% headroom | Users shouldn't discover they're out of disk space halfway through a 200-mod download. A pre-check prevents wasted bandwidth and partial installations. |
+| Pack update with diff preview and backup | Users need to see exactly what changed before updating a pack. Automatic backups before update allow rollback if something breaks. |
+| Custom instance creation from scratch | Not all users want curated packs. Custom instances with manual mod assembly are a standard launcher feature and easy to support given the existing architecture. |
+| Pack export to .mrpack or custom JSON | Sharing modpacks between friends is a core use case. Supporting both standard Modrinth format and native format maximizes compatibility. |
+| Instance deletion to OS trash | Immediate deletion is unforgiving. Moving to trash gives users a recovery window without requiring us to build an undo system. |
+| Browse-Only Mode without GitHub OAuth | Some users don't want to create a GitHub account or share OAuth access. Allowing browse/install without auth broadens the user base while clearly communicating what requires auth. |
+| DB update detection via GitHub Releases API | The app needs to know when a new registry build is available without downloading the entire DB. Comparing release tags via the API is a single lightweight request. |
+| Settings persistence via tauri-plugin-store | A JSON-based key-value store is simple, reactive, and doesn't require a full database for user preferences. |
+| Full-text search via SQLite FTS5 or LIKE | Users expect to type "sodium" and find it. FTS5 is fast and native to SQLite; LIKE fallback ensures it works even if FTS5 is unavailable in the build. |
+| Original filenames preserved for mod JARs | Renaming causes confusion when users browse their mods folder manually and breaks some mods that check their own filename. Original names are zero-cost. |
+| github_release as primary download strategy | The project's ethos is developer independence and platform sovereignty. Sourcing directly from developer GitHub repos eliminates dependency on Modrinth's infrastructure and aligns with the anti-corporate-consolidation mission. Modrinth is supplementary, not essential. |
+| Modrinth integration fully disable-able | Users who object to Modrinth on principle (or are in regions where it's blocked) must still have full access to curated packs, discovery, and instance management. Only Modrinth-sourced mods and the raw Modrinth tab are affected by the toggle. |
+| instance_manifest.json per instance (not SQLite) | Avoids SQLite merge complexity when updating registry.db. JSON is human-readable, directly exportable to .mrpack, and reconstructible from scratch on any machine. Backups are lightweight (manifest + configs, mods are re-downloadable). |
+| Parameterized queries for all user input | SQL injection is a classic vulnerability that SQLite is not immune to. tauri-plugin-sql supports parameter binding natively. Explicitly mandating it prevents an entire class of attacks with zero performance cost. |
+| Crash telemetry uses prefixed identifiers | Curated mods use registry_id, raw Modrinth mods use modrinth: prefix, unknown mods use manual: prefix. This allows the telemetry system to track all mods uniformly without requiring every mod to be in the curated registry. |
+| Split `registry.db` and `local_state.db` | Treating the downloaded registry as read-only while mutable user state lives in a separate DB eliminates file-locking races, simplifies DB updates, and makes offline mode more robust. |
+| Database versioning protocol | Without a schema version check, a newer `registry.db` could crash an older launcher. Blocking forward-incompatible DBs and forcing a client update is safer than guessing. |
+| Offline / Degraded Mode | If GitHub is unreachable (outage, block, or user offline), the launcher must not brick. It falls back to cached data, existing instances, Modrinth direct input, and manual .jar installs. |
+| Upstream verification policy with known_good_hashes | Trusting official domains alone is insufficient if the domain is compromised. Embedding a hardcoded hash map and requiring curator PR review creates a real trust anchor. |
+| Human-centric error taxonomy | Standardized error codes let the React UI handle failures consistently and provide actionable user-facing messages instead of raw Rust error strings. |
+| Audit log / transparency black box | Automated governance must be auditable. An append-only log builds public trust and provides evidence in disputes about bias or unfair moderation. |
+| Persistent MCP approval grants | Asking the user to approve the same AI tool every app session is hostile. Persisting `approved_always` in `local_state.db` respects user intent while keeping revocation easy. |
+
+---
+
+## 17. IMPLEMENTATION ORDER & MVP SCOPE
+
+This section gives a concrete build order so a coding agent (or human developer) knows what to ship first.
+
+### Phase 0: Repository & Data Plumbing (Required Before Anything Else)
+
+1. **Create the central GitHub repository** with the directory structure from §1 (`registry/mods/`, `registry/packs/`, `crash-signatures/`, `loader-manifests/`, `.github/workflows/`, `CODE_OF_ENGAGEMENT.md`).
+2. **Seed registry with 5–10 example mods** (Sodium, Iris, Lithium, Fabric API, etc.) using `github_release` strategy.
+3. **Create `loader-manifests/known_good_hashes.json`** with pinned hashes for Fabric, NeoForge, Quilt, Forge for the current Minecraft version.
+4. **Create the separate `launcher-media` repository** for custom banners.
+5. **Create the private `agora-mc/admin-alerts` repository** for flag reports and triage alerts.
+
+### Phase 1: Compiler (Python GitHub Action) — Module 1
+
+1. Implement manifest JSON parser.
+2. Implement GitHub Releases API fetcher with SHA-256 hash extraction for `github_release` mods.
+3. Implement GraphQL/REST trust score fetcher (org interactions only).
+4. Implement NLP filtering (profanity-check, vaderSentiment).
+5. Implement velocity anomaly detection.
+6. Build `registry.db` with all schemas from §4 (registry tables only).
+7. Sign with Ed25519 offline key.
+8. Upload as GitHub Release Asset.
+
+**Acceptance test:** Compiler runs nightly, produces a `registry.db` with 5–10 mods, a valid signature, and uploads it to a tagged release.
+
+### Phase 2: Rust Tauri Skeleton & Instance Engine — Module 3
+
+1. Initialize Tauri project with React + Tailwind.
+2. Implement §4 dual-DB setup (`registry.db` + `local_state.db`).
+3. Implement first-run onboarding flow (§6.1a) with integration toggles.
+4. Implement downloader with SHA-256 verification, 6 concurrent, 3 retries, partial-pack fallback (§7.1.1).
+5. Implement override sanitization with whitelist + zip bomb limits (§7.2).
+6. Implement modloader injection with domain pinning + JSON hash verification (§8.2).
+7. Implement `launcher_profiles.json` atomic write + corruption recovery (§8.3).
+8. Implement Mojang launcher discovery (§8.4).
+9. Implement JVM argument builder with `AlwaysPreTouch` toggle (§8.5).
+10. Implement `instance_manifest.json` for each instance.
+
+**Acceptance test:** User can create a custom instance, install 3 mods, set JVM args, and successfully launch Minecraft via the Mojang launcher.
+
+### Phase 3: Browse, Discovery & Search — Module 2
+
+1. Implement React sidebar with 5 tabs.
+2. Implement Browse tab with sort, filter, search (FTS5 or LIKE).
+3. Implement category chips dynamically generated from `categories` table.
+4. Implement Modrinth SQL filter (`WHERE download_strategy != 'modrinth_id'` when disabled).
+5. Implement "For You" algorithm with local install tracking.
+6. Implement "Boutique vs. Warehouse" split.
+7. Implement "Search all of Modrinth →" link to Raw Modrinth tab.
+
+**Acceptance test:** User can browse curated mods, sort by net score, filter by category, and search by name.
+
+### Phase 4: Crash Diagnostics — Module 4
+
+1. Pre-launch interceptor with `last_launched_at` timing fix.
+2. Regex signature engine using Rust `regex` crate.
+3. Manual log viewer with syntax highlighting.
+4. GitHub issue duplicate check via search.
+5. Preview-before-submit crash reporting.
+6. Local crash telemetry in `local_state.db` with prefixed identifiers.
+
+**Acceptance test:** A simulated crash report matches a regex signature, displays the fix, and the user can optionally submit to GitHub after preview.
+
+### Phase 5: Governance & Triage — Module 7
+
+1. Triage Center tab with under-review items from `registry.db`.
+2. Live GitHub Discussions API integration for poll percentages.
+3. "Recent Resolutions" history feed.
+4. Curator Shield banner for immune items.
+5. Flag review system (GitHub issue direct creation).
+6. In-app Transparency Log display from `audit_log.json`.
+
+**Acceptance test:** An item marked under_review appears in the Triage Center with live poll data.
+
+### Phase 6: MCP Server — Module 5
+
+1. MCP server with localhost binding, ephemeral port, per-session auth token.
+2. Approval queue with persistent grants in `local_state.db`.
+3. All 6 MCP tools implemented.
+4. `system_context.md` via MCP `resources/list` capability.
+
+**Acceptance test:** Claude Desktop connects with the token, calls `list_instance_mods` and `disable_mod`, and the user sees the approval prompt.
+
+### Phase 7: Dev Mode — Optional
+
+1. Sandbox detection (Docker, Podman, Firecracker).
+2. Repo clone + build in sandbox with no network.
+3. `.jar` extraction to test instance.
+
+**Acceptance test:** User can build a mod from a GitHub URL inside a Docker container and test it.
+
+### Phase 8: Web Directory — Module 6
+
+1. Static Next.js site that fetches `registry.db` from GitHub Release Asset.
+2. Server-rendered mod cards.
+3. Search, filter, sort.
+4. React Markdown strict mode for safety.
+
+**Acceptance test:** Site loads, shows curated mods, and search works.
+
+### Phase 9: Polish & Hardening
+
+1. Code signing certificate for Windows / macOS notarization.
+2. Auto-update mechanism via Tauri's built-in updater.
+3. Disk space pre-check (§7.1.2).
+4. Instance deletion to OS trash.
+5. Pack export to `.mrpack` / custom JSON.
+6. Telemetry opt-in flow.
+7. Localization (i18n) framework.
+
+### MVP Definition (End of Phase 5)
+
+The **minimum viable product** is reached when:
+- Users can install curated packs and play them.
+- Browse, search, sort, and filter work.
+- Crash reports work with preview-before-submit.
+- Triage Center shows live poll data.
+- MCP server works with approvals.
+- All security controls from §15 are in place.
+- Offline Mode works with cached DB.
+- Modrinth integration can be fully disabled.
+- All GitHub OAuth features work or gracefully degrade.
+
+Dev Mode (Phase 7) and the Web Directory (Phase 8) can ship later. Phases 1–5 are the core product.
+
+---
+
+## 18. KNOWN LIMITATIONS & OPEN QUESTIONS
+
+This section is an honest disclosure of what the spec does not yet cover, what assumptions may need to be revisited, and what could be improved in future iterations.
+
+### 18.1 Known Limitations
+
+- **GitHub as a single point of failure for the central registry.** If GitHub is down, the curated catalog and updates are inaccessible. The "Bootstrap Bootstrap" emergency URL is a future concern (user deferred this). Current mitigation: Degraded Mode (§4.3) allows continuing with cached data.
+
+- **Modrinth is still reachable for its batch and version APIs even with the toggle off** in some code paths. The `modrinth_id` curated mods are filtered from Browse, but if a developer URL points to a Modrinth CDN (e.g., direct file hosting), those downloads would still work. The toggle is a UI/feature gate, not a network-level block.
+
+- **No code signing requirements are defined in the spec.** Windows SmartScreen and macOS Gatekeeper will block unsigned binaries with scary warnings. The spec mentions this in the decisions log but does not specify the signing infrastructure (HSM? cert provider? cost budget?).
+
+- **No i18n/localization framework.** All UI text is English. Adding localization would require restructuring all strings into a resource bundle.
+
+- **No accessibility (a11y) requirements.** WCAG compliance, screen reader support, and keyboard navigation are not specified.
+
+- **No conflict resolution for versions of transitive dependencies.** If two mods in a pack require different versions of the same library, the spec doesn't say what happens. The pack curator is responsible for ensuring compatibility.
+
+- **Concurrent instance launches are not specified.** What happens if a user clicks "Play" on two instances simultaneously? The atomic write to `launcher_profiles.json` is handled, but the Mojang launcher can only run one instance at a time.
+
+- **The `system_context.md` injection depends on the AI client's MCP implementation.** Not all MCP clients (e.g., older versions of Claude Desktop, custom clients) support `resources/list`. If unsupported, the AI will not have the system context.
+
+- **The Crash Matrix telemetry is opt-in but never actually aggregated.** The spec says "once a week, the launcher compresses the local telemetry table and posts it" but does not specify the aggregation endpoint. A serverless form or a GitHub Gist is mentioned but not implemented.
+
+- **No automated tests are defined.** The spec describes the system but does not include a testing strategy (unit tests, integration tests, end-to-end tests).
+
+- **No migration scripts for `registry.db` schema changes.** When the compiler adds a new column, existing client apps will fail. The versioning protocol (§4.1a) blocks forward-incompatible DBs but doesn't define what migrations look like.
+
+- **`local_state.db` migrations are specified as "robust against data loss" but no rollback strategy is defined.** If a migration fails halfway, what state is the user left in?
+
+### 18.2 Open Questions for Future Iterations
+
+- **Should the MCP server be exposed to remote (LAN) connections?** Currently localhost-only. Some users may want to run the launcher on a NAS and connect from their gaming PC.
+
+- **Should the audit log be append-only or should curators be able to edit it?** Append-only is more trustworthy but means a typo in a justification is permanent.
+
+- **How are mods removed from `registry.db` handled in active instances?** If a mod is archived by community triage, does the launcher warn users? Auto-remove from instances?
+
+- **What's the multi-user story?** If two users share a machine, each gets their own `local_state.db`? Or shared?
+
+- **What's the relationship between `local_crash_telemetry` and the global Crash Matrix?** The spec says "community data indicates these mods have a high co-crash rate" but doesn't define the aggregation math or threshold.
+
+- **How does the launcher handle modpack drift over time?** If a pack's manifest changes the MC version, what happens to users running the old version?
+
+- **What about server packs (the `server` content type)?** The spec mentions them but doesn't describe installation or hosting.
+
+- **Should there be a "Verified Curator" badge system?** Currently, all curators have equal power. Some form of reputation system might help with spam-resistant governance.
+
+- **What happens when a mod is deleted from GitHub but still appears in packs?** The download fails. The user sees an error. But should the pack be auto-archived? Or flagged for curator review?
+
+- **Mobile companion app?** The spec is desktop-only. A Tauri mobile build might be feasible but is out of scope.
+
+### 18.3 What This Spec Does Well
+
+- **Clear separation of concerns:** Data layer (registry.db), execution layer (Tauri/Rust), presentation layer (React), governance layer (GitHub Issues).
+- **Security by delegation:** Microsoft auth and JVM execution are fully delegated to the Mojang launcher.
+- **Zero server cost:** No backend, no database, no CDN bills.
+- **User sovereignty:** Modrinth integration is opt-in. OAuth is opt-in. Telemetry is opt-in. Dev Mode is opt-in.
+- **Transparency:** Audit log, curator immune override justification, visible vote weights.
+- **Extensibility:** New content types (shaders, resourcepacks, datapacks, worlds, servers) plug into the same pipeline.
+
+### 18.4 What an Implementer Should Watch Out For
+
+1. **Tauri's `tauri-plugin-sql` API surface.** Check the version compatibility with the SQLite version used by the compiler. Schema migration tools differ.
+
+2. **Ed25519 key management.** The offline key must be generated once, stored securely (not in a developer's home directory), and used only by the GitHub Action via a `secrets.ED25519_PRIVATE_KEY` secret. Rotation is a future problem.
+
+3. **GitHub API rate limits.** Even with user OAuth, hitting 5,000 requests/hour is possible if the launcher makes many small calls. Batch where possible.
+
+4. **Cross-platform testing.** The spec defines behavior on Windows, macOS, and Linux but most testing will be on one platform initially. All OS-specific paths need explicit test coverage.
+
+5. **The `loader_manifests.json` maintenance burden.** Every new modloader version requires a curator PR to add the hash. If the curator team is small, this becomes a bottleneck.
+
+6. **The audit log grows unboundedly.** Even with rotation, this is a 10,000-entry file. Performance is fine for `append` operations but reading the whole file for the Triage Center Transparency Log could be slow.
+
+7. **Race conditions in the readers-writer lock on `registry.db`.** A simple lock works but has edge cases. Consider using a SQLite-native approach or a proper RWLock with timeout.
+
+8. **The `known_good_hashes.json` is embedded at compile time.** This means a security fix requires a new app release. The downside of a hardcoded trust anchor.
+
+---
+
+## Final Readiness Assessment
+
+**Status: READY FOR EXECUTION**
+
+The spec is comprehensive, internally consistent, and covers all major architectural concerns. An AI coding agent or human developer can use this document as a self-contained implementation guide.
+
+**Confidence levels by area:**
+
+| Area | Confidence | Notes |
+|---|---|---|
+| Core architecture (Tauri + React + SQLite) | High | Standard stack, well-documented |
+| Data pipeline (GitHub + flat JSON + compiled DB) | High | Proven pattern |
+| Security controls | High | Multiple layers, no obvious gaps |
+| Mojang launcher integration | Medium | OS-specific behavior may need runtime testing |
+| MCP server | High | Standard protocol, well-specified |
+| Offline / Degraded Mode | High | Clear fallback paths |
+| Crash diagnostics | Medium | Regex patterns need community curation over time |
+| Dev Mode sandboxing | High | Docker/Podman/Firecracker are well-understood |
+| Governance (GitHub Issues as voting) | High | Creative use of existing infrastructure |
+| Audit log | High | Append-only, well-defined format |
+
+**Recommended next steps:**
+1. Begin Phase 0 (repository setup) and Phase 1 (compiler) immediately — these are prerequisites for everything else.
+2. Build a working prototype of the Rust instance engine (Phase 2) before investing heavily in the React UI.
+3. Get 2–3 curators to seed the registry with real mods and test the pack installation flow end-to-end.
+4. Set up CI for the compiler with sample test data.
+5. Establish a security review process before the public launch — all Critical/High items in §15.1 should be verified.
+
+**This document is the source of truth.** When implementation questions arise that are not answered here, prefer the simplest interpretation that is consistent with the existing decisions. Update this document as those questions are resolved.
+```
+
+
+## 19. ARCHITECTURAL EVOLUTION & IMPLEMENTATION STATUS
+
+> Status notes and smaller decisions that supersede §0–§18. Major areas that grew here have
+> moved into their own sections (§20–§25); new large changes should get a section of their own
+> rather than another §19 subsection. Old numbers still resolve:
+
+| Was | Now |
+|---|---|
+| §19.3 | §22.1 |
+| §19.7 | §24.1 |
+| §19.8 | §24.2 |
+| §19.13 | §23.1 |
+| §19.14 | §23.2 |
+| §19.15 | §23.3 |
+| §19.16 | §24.3 |
+| §19.17 | §20.3 |
+| §19.18 | §24.4 |
+| §19.19 | §23.4 |
+| §19.20 | §20.1 |
+| §19.21 | §20.2 |
+| §19.22 | §25.1 |
+| §19.23 | §22.2 |
+| §19.24 | §21.1 |
+| §19.25 | §22.3 |
+| §19.26 | §22.4 |
+| §19.27 | §20.4 |
+| §19.28 | §21.2 |
+
+### 19.1 Workspace Layout (supersedes section 1)
+
+`
+D:/Agora/
++-- registry/                 # Curated flat-file manifests (the GitHub database)
+|   +-- mods/ packs/ shaders/ resourcepacks/ servers/ datapacks/ worlds/
+|   +-- governance/            # audit_log.json, known_conflicts.json, poll_blacklist.json
+|   +-- pack-overrides/        # Config/resource override zips
+|   +-- archived/              # Retired entries (compiler skips)
++-- crash-signatures/         # Regex triage definitions
++-- loader-manifests/         # loader_manifests.json + known_good_hashes.json + minecraft_versions.json
++-- compiler/                  # Python nightly compiler -> registry.db (+ .sig)
++-- crates/
+|   +-- agora-core/           # Shared business-logic library (no tauri/clap types) -- Phase 1 of v1 refactor
+|   +-- agora/                # Standalone agora CLI binary (Phase 9 of v1 refactor)
++-- desktop/                   # Tauri GUI app (crate package name: agora-desktop)
+|   +-- src/                   # React + Tailwind + Vite frontend
+|   +-- src-tauri/             # Rust backend -- thin facades delegating to agora-core
+|   +-- e2e/                   # Playwright end-to-end tests
++-- web/                       # Static Next.js public directory (static export)
++-- scripts/                   # verify_db.py, deploy_release_assets.py, refresh_loader_manifests.py
++-- .github/                   # workflows (compile, release-desktop, web-build, e2e), ISSUE_TEMPLATE
++-- .kilo/                     # Kilo agent config, commands, agent profiles, skills, MASTER_SPEC.md
++-- AGENTS.md                  # Canonical agent guide
++-- README.md                  # Project overview + setup + release cutting
++-- BACKLOG.md                 # Phase-by-phase task tracker
++-- CODE_OF_ENGAGEMENT.md      # Canonical review-conduct rules
++-- REGISTRY_CURATION_REFERENCE.md   # Self-contained manifest-authoring guide
++-- Cargo.toml                 # Workspace root (members: crates/agora-core, desktop/src-tauri, crates/agora)
++-- .env.example               # Compiler env vars (GITHUB_TOKEN, ED25519_PRIVATE_KEY, DISCORD_WEBHOOK_URL)
+`
+
+### 19.2 Migration Status: desktop to agora-core (v1 refactor)
+
+Goal (per the deleted v1-launcher-refactor plan): move all business logic into crates/agora-core/, leaving desktop/src-tauri/src/ as thin facades, and expose a standalone agora CLI binary from crates/agora/.
+
+**Fully migrated to agora-core (desktop delegates):** error, models, paths, download, loader_manifests, registry, registry_sync, crash_diagnostics, dependency_ops, launcher_profiles (with section 8.3 atomic write + .bak recovery), override_sanitizer, mod_cache, snapshot, import, clone, loadout, server_export, github_ratelimit, ai_assistant, msa (full 9-step account chain), launch (direct Java spawn + Forge/NeoForge install), gc, java (JRE detection), health (pre-launch scanner), modrinth (search/versions/install), jar_metadata, browse_cache, pack_install. Desktop db.rs::run_migrations now delegates to agora_core::db::run_migrations.
+
+**Still thick in desktop (not yet migrated):** crash_investigator.rs (~1968 lines -- contains scoring algorithm), mod_install.rs (~2275 lines), instances.rs, mojang.rs, mcp.rs (plan: move into core with agora serve CLI), version_cache.rs. The desktop governance.rs duplicates fetch_triage_poll / flag_review network logic not yet in core. Future migration work should target these modules.
+
+**Dead code removed during 2026-07-05 audit:** dead REGISTRY_SCHEMA_VERSION = 1 constants, commands::greet template leftover, the duplicate compiler/_test_social_metrics.py (merged into test_compile.py), compiler/analyze_sha256.py, desktop/src-tauri/neoforge-installer.jar.log, the stray root browse search response.md debug dump, and the entire desktop/src/pages/ModrinthRaw.tsx (separate Modrinth UI merged into Browse).
+
+### 19.4 Crash Investigator (signal-based dynamic scoring)
+
+From the deleted 1782081355093-crash-investigator-plan.md: when a curated regex signature (section 9.2) does not match a crash log, the launcher runs a **dynamic weighted scoring algorithm** in desktop/src-tauri/src/crash_investigator.rs to rank suspect mods. Score contributions per mod:
+
+- **A -- stack-frame attribution:** the mod Java packages (extracted from .jar manifests at install time) appear in the crash Caused by: / stack trace. The strongest single signal.
+- **B -- fingerprint recurrence:** the crash fingerprint (normalized Caused by block hash) has co-occurred with this mod in past local crashes.
+- **C -- co-crash signal:** this mod co-occurs in historical crashes with another direct suspect (local_crash_telemetry table).
+- **D -- survival ubiquity dampener:** penalty for mods installed on >50 percent of instances (they appear everywhere so their presence is weak evidence).
+- **E -- confirmed prior:** the user previously confirmed this mod caused a similar crash (attribution recorded as a prior).
+- **F -- recency factor:** recent attributions weighted higher than stale ones.
+- **G -- curated conflict:** the mod appears in a curated known_conflicts.json entry with another suspect.
+
+Indirect suspects (mods that depend on a direct suspect via the mod_dependencies manifest field) are listed separately with reduced scores. The algorithm writes attributions back into local_crash_telemetry and the priors store via 
+ecord_crash_event (now wired into investigate_crash per A5 of the 2026-07-05 audit).
+
+### 19.5 Dependency-Aware Mod Operations
+
+From the deleted dependency-aware-mod-ops-plan.md: manifests may declare mod_dependencies: {required: [...], optional: [...], incompatible: [...]} and mod_jar_aliases: [...] to let the install/dependency system match across sources (curated registry ID, Modrinth project ID, jar-declared ID). crates/agora-core/src/dependency_ops.rs and desktop/src-tauri/src/dependency_ops.rs implement a unified dependency graph; crates/agora-core/src/jar_metadata.rs parses fabric.mod.json / mods.toml from jars at install time. fabric-api.json is the canonical example of a manifest with mod_dependencies.
+
+### 19.6 MCP Server -- Implemented Tool Set & Roadmap
+
+Per the E2 user decision (combine spec section 10.1 with the implemented v1 set), the MCP server exposes this ten-tool **superset** from `desktop/src-tauri/src/mcp.rs` and `agora-core`'s dispatcher:
+
+1. list_instances -- list all instance IDs + metadata.
+2. list_instance_mods(instance_id) -- read instance_manifest.json, return mod jar info + java packages.
+3. disable_mod(instance_id, filename) -- destructive; requires per-instance approval grant (ERR_MCP_DENIED if not granted).
+4. search_crash_signatures(crash_text) -- local regex triage against crash_signatures table.
+5. suggest_mod_incompatibility(instance_id, crash_text) -- runs the section 19.4 dynamic scoring algorithm.
+6. get_system_context -- markdown overview returnable to AI clients.
+7. read_latest_crash(instance_id) -- return the bounded tail of the newest crash report.
+8. read_mod_manifest(mod_id) -- fetch curator data from local SQLite.
+9. enable_mod(instance_id, filename) -- destructive reverse of `disable_mod`; requires approval.
+10. search_knowledge_base(query) -- local curated-catalog search.
+
+The server binds only to `127.0.0.1` and requires a persistent Bearer token for every request. The token is generated when MCP is enabled, displayed and regenerable in Settings, and accepted through the Authorization header or SSE query parameter. Requests also retain the per-instance destructive-tool approval boundary and rate limiting.
+
+### 19.9 Deferred / Removed Features
+
+- **Anonymous Crash Telemetry (section 12) -- removed (E5):** the opt-in prompt UI and the crash_telemetry_opt_in setting have been deleted. The local_crash_telemetry table is still populated locally (for section 19.4 signal B/C), but no aggregation endpoint exists and nothing leaves the device. The spec text in section 12 is kept for historical reference only.
+- **Raw Modrinth Tab (section 6.3 / desktop/src/pages/ModrinthRaw.tsx) -- removed (E4):** instead, Modrinth search results are federated directly into the Browse grid via the browse_search command (desktop/src-tauri/src/commands.rs), with the Modrinth-on setting still gated by the modrinth_enabled toggle in Settings.
+- **Strict allowedElements markdown rendering (section 4.1c number 2):** the original spec mandated a strict allow-list (p, strong, em, code, a, pre, ul, ol, li). In practice this broke Modrinth about-page rendering (which legitimately uses tables, headings, images, <center> elements). The current implementation keeps 
+ehypeRaw + 
+ehypeSanitize (with a tightened schema that strips <script>/<iframe>/<input>/<video>/<form>/etc. but allows structural + image tags). See web/src/components/MarkdownRenderer.tsx and desktop/src/pages/ModDetail.tsx SANITIZE_SCHEMA.
+
+### 19.10 CLI (crates/agora/) -- Current Capability Set
+
+The standalone agora CLI binary (Phase 9 of v1 refactor) implements: instances list/details, mods install/remove, health <instance>, 
+egistry status/sync, snapshots list/create/restore, import <path> (mrpack/zip/directory), launch <instance> (MSA check + health gate + direct Java spawn), auth login/status/logout.
+
+Not yet implemented: agora serve (MCP server mode -- returns stub), the --yes health-confirm skip flag (currently always gates on health). The CLI mod-download path enforces a host allowlist + redirect policy (MOD_ALLOWED_HOSTS in crates/agora/src/main.rs) parallel to the desktop MOD_DOWNLOAD_ALLOWLIST.
+
+### 19.11 Implementation Phase Status
+
+Cross-referenced against section 17 phase definitions:
+
+| Phase | Status | Notes |
+|---|---|---|
+| 0 (Repo & Data plumbing) | Done | registry/, loader-manifests/, crash-signatures/, .github/workflows/. |
+| 1 (Compiler) | Done | All of section 3 incl. trust filtering, velocity breaker, Raid Shield, NLP scrubbing, audit log (post-E8 expansion), Modrinth hydration, Ed25519 signing, GitHub Release Asset deploy. |
+| 2 (Tauri skeleton + instance engine) | Done (with v1 crate migration in progress) | agora-core holds most logic; desktop still has thick mod_install/instances/crash_investigator/mcp modules pending migration. |
+| 3 (Browse, discovery, search) | Done | Browse + Modrinth federated into single page; For-You algorithm; debounce + removed per-item log spam during 2026-07-05 audit. |
+| 4 (Crash diagnostics) | Done | Pre-launch interceptor, regex triage, GitHub issue search, preview-before-submit, manual log viewer, section 19.4 dynamic investigator wired (A5). |
+| 5 (Governance & Triage) | Done | Triage Center tab, Curator Shield, Flag Review, Transparency Log. |
+| 6 (MCP Server) | Done | All 6 currently-implemented tools functional; per-session auth deferred (B2 approval pending user re-decision). |
+| 7 (Dev Mode sandboxed builds) | Not started | Spec section 11. |
+| 8 (Web directory) | Done | Static Next.js, registry.db fetched at CI build via scripts/fetch_registry_db.py (since deleted; the web build compiles the catalog itself), react-markdown with tightened sanitize schema, CSP header in 
+ext.config.js. |
+| 9 (Polish & Hardening) | Partial | Auto-update done, i18n engine present but ~99 percent of UI strings still hard-coded English (separate cleanup session), code signing not started, telemetry removed (E5), disk pre-check fixed (cross-platform now), atomic writes fixed for instance manifest (A8). |
+
+### 19.12 Future Cleanup Backlog (low-priority)
+
+- Migrate crash_investigator.rs, mod_install.rs, instances.rs, mojang.rs, mcp.rs, version_cache.rs from desktop to agora-core (finish v1 refactor Phase 1).
+- Implement the 4 missing MCP tools (
+ead_latest_crash, 
+ead_mod_manifest, enable_mod, search_knowledge_base) per E2 superset.
+- Add the MCP Bearer token (section 10.0 number 2) per user re-decision.
+- Delete the unused crates/agora-core/src/catalog/ trait + ModrinthSource impl (zero callers) -- was speculative design from a prior planning iteration.
+- Delete the unused crates/agora-core/src/ctx.rs Ctx struct + state.rs AppState re-export (zero callers) -- replaced by ad-hoc per-module DB connection patterns; a proper Ctx struct may be reintroduced when finishing the v1 refactor.
+
+---
+
+## 20. CONTENT SOURCES & RESOLUTION
+
+Where content comes from and how a request becomes a file: the curated catalog's ordered sources, the two settings axes that govern visibility, and how packs are identified and pinned.
+
+### 20.1 Ordered Download Sources (formerly §19.20)
+
+A registry entry no longer names one place its file comes from. It carries an **ordered list** of
+download sources, `download_sources_json` in `registry_items` (registry schema v8), each entry a
+`{strategy, identifier}` pair drawn from the same strategy vocabulary as before
+(`github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, and
+`provider_pack` from §21.2). Index 0 is the
+curator's preference; the rest are fallbacks in order.
+
+`download_strategy` and `source_identifier` remain in the schema and describe the *preferred*
+source only. The compiler derives them from index 0, so every consumer that cares only about the
+primary — the website's header line, browse-card subtitles, older launcher builds reading a newer
+registry — keeps working unchanged.
+
+**Resolution.** `Resolver::list_curated_versions` walks the list in order and returns the first
+source that yields candidates. A source that is disabled in Settings, erroring, or simply has
+nothing for the requested `(mc_version, loader)` falls through to the next. The first failure is
+the one reported, because it belongs to the preferred source. When every source of an entry is
+disabled the resolve fails with `ERR_NO_ENABLED_SOURCE` rather than silently contacting a source
+the user opted out of.
+
+**Origin travels with the candidate.** `ModVersionCandidate` carries `source_strategy` and
+`source_identifier`, stamped by the resolver. Install-time policy keys off those rather than off
+the item: a pinned fallback authorizes *its own* host in the staging fetch, and the registry's
+pinned SHA-256 is applied only to candidates that came from a pinned source. Judging a
+fallback-served file against the preferred source's rules would be both wrong and unsafe.
+
+**Content-axis filtering.** The per-source opt-out (`curated_source_<strategy>_enabled`, default
+on) now applies at install time as well as in Browse, and Browse's whitelist became "any of this
+entry's sources is enabled" rather than "its single strategy is enabled" — an entry that is still
+installable stays visible. Filtering remains a whitelist and still fails closed.
+
+**Curator contract.** Every pinned source in a list is held to the full `direct_hash` contract at
+compile time, not just the preferred one; a fallback that only fails when the preferred source is
+down would be worse than no fallback. All sources of an entry share one `sha256`, so additional
+pinned sources are mirrors of identical bytes rather than alternate builds. Manifests may still
+use the legacy single-source form: the compiler normalizes it into a list, preserving the implicit
+Modrinth fallback a `modrinth_id`-carrying entry has always had.
+
+---
+
+### 20.2 Two Content Axes, and What Each One Governs (formerly §19.21)
+
+Two settings axes decide what a user sees, and they answer different questions.
+Conflating them is what made a curated entry look broken while it was perfectly
+installable, so the boundary is stated here as an invariant rather than left to
+each call site.
+
+**Axis A — curated sources** (`curated_source_<strategy>_enabled`, default
+**on**, one per entry in `CURATED_DOWNLOAD_STRATEGIES`). Governs curated catalog
+entries: whether they appear in Browse, and which of an entry's ordered download
+sources the resolver may use. An entry stays visible and installable while *any*
+of its sources is enabled (§20.1).
+
+**Axis B — live third-party browsing** (`modrinth_enabled`, `technic_enabled`,
+default **off**). Governs discovery *outside* the catalog: searching Modrinth's
+whole library, the Technic platform API, and live project pages fetched for
+extra metadata such as changelogs and category tags.
+
+**The invariant.** A curated entry's listability and installability depend on
+Axis A alone. Axis B may add richer presentation on top, and must never be the
+reason a curated entry cannot be listed, resolved, or installed. Concretely:
+the version list falls back to the catalog resolver for any registry-backed
+item; an item resolved from the registry installs through the curated pipeline
+even while live Modrinth data is on screen, keeping its registry id, curated
+dependency graph and source order; and curated `technic_pack` artifacts are
+fetched under the signed-manifest host policy rather than the Technic consent
+gate, which belongs to live Technic browsing.
+
+The privacy/network axis (`network_*_enabled`, Lockdown Mode) is separate again
+and legitimately hard-blocks either of the above: it is about whether a host may
+be contacted at all.
+
+**`browse_curated_only` is retired** (local-state schema v10). It was a master
+switch that suppressed live browsing regardless of Axis B — but Axis B is
+already off by default, so curated-only *is* the default state rather than a
+mode to switch into, and a second expression of the same intent could only drift
+from the first. The migration folds the intent forward before dropping the key:
+a stored `true` forces `modrinth_enabled` and `technic_enabled` off, so removing
+the switch never silently re-enables a source the user had opted out of.
+
+### 20.3 Canonical Registry Identity for Packs (formerly §19.17)
+
+Every registry manifest uses `id` as its canonical top-level identity and declares its kind through `content_type`. Pack manifests therefore use `id` plus `content_type: "pack"`; the older top-level `pack_id` field is a deprecated compiler input alias. The compiler normalizes that alias before metadata hydration or governance, rejects mismatched `id` and `pack_id` values, and keeps relational names such as `pack_mods.pack_id` unchanged because those identify the owning pack in a relationship rather than defining a separate identity system.
+
+---
+
+### 20.4 Curated Packs Have Locked Releases and a Flexible Recipe (formerly §19.27)
+
+§2.3 gave a curated pack one Minecraft version and a mod list with optional pins, and the desktop
+resolved that list itself in React: it ignored the pins, ignored `status`, and silently fell
+back to the newest build of a mod whether or not it fit. A pack could be installed on any
+Minecraft version with no signal about what would break. This subsection replaces that with two
+explicit shapes, planned in core.
+
+**Locked releases.** A manifest's optional `versions` array, newest first, lists releases. Each
+has an exact Minecraft version, loader and loader version, and a pinned `version` for every mod;
+the compiler rejects a release with an unpinned mod. They compile into `pack_versions` and
+`pack_version_mods`, and they are the default install whenever a pack has any. This is what a
+pack's Versions tab lists, and it matches what players expect from Modrinth and CurseForge.
+
+**The flexible recipe.** The top-level `mods` list keeps working unchanged and can be aimed at
+any Minecraft version and loader. Each mod takes its pin while that build fits the chosen target,
+otherwise the newest compatible build. This keeps the old behaviour as a feature rather than an
+accident: an older pack, or a newer Minecraft version the curator has not released for yet,
+still installs.
+
+**`status` finally decides failure handling, in both modes.** A `required` mod that cannot be
+resolved blocks the install before an instance is created; a Create pack without Create is not
+that pack. `recommended` and `optional` mods with no build are left out and listed in the review.
+An unrecognised status is treated as required, so the default fails closed.
+
+**Core owns the plan.** `curated_pack::CuratedPackService::plan` resolves a selection (a release,
+or the recipe plus a target) through the existing `Resolver`, returning the planned mods with
+their resolved versions, the dropped mods and the blocking mods. Planning writes nothing. The
+desktop only asks for a plan, shows it, creates the instance, and hands the planned mods to a
+normal `batch-install` review, so snapshots, hash verification and the health gate all apply as
+before. The CLI uses the same planner (`agora pack versions`, `agora pack curated`).
+
+**The storage change is additive.** `pack_versions` and `pack_version_mods` are new tables, and
+`pack_mods` gains a `modrinth_id` column so Modrinth-sourced entries keep their project id. The
+schema version does not move: clients refuse a registry whose schema is newer than they support,
+so a bump would lock every older client out of catalog updates for a change they can ignore.
+New clients check for the tables and columns and treat their absence as "flexible only".
+
+**Not yet covered.** Moving an instance created from one release to a newer release of the same
+pack is left to the pack-update flow (§6.5a) and is not implemented here. The flexible recipe
+does not yet let a player untick optional mods before installing.
+
+---
+
+### 20.5 About-Text Images Come From Any Public Host, Confirmed as Images
+
+Community-written project descriptions link images from anywhere (badge
+services, personal hosts). The webview's CSP `img-src` stays limited to
+first-party hosts; every other HTTPS image is fetched by core under
+`ClientCategory::CommunityImage` with `HostPolicy::AnyPublicHost`, which is
+valid for that category only. Every other request gate still applies (HTTPS,
+port 443, no IP literals, no private or loopback addresses, per-hop redirect
+checks, Lockdown), responses are capped at 5 MiB, and the bytes must carry a
+known image signature (PNG, JPEG, GIF, WebP, AVIF, BMP, ICO, or an SVG root
+element) before the page receives them as a `data:` URL. SVG is accepted
+because it is displayed through `<img>`, where its scripts and external
+references do not run. Anything else is dropped and the image is hidden.
+
+### 20.6 Data Packs Reach Worlds by Sync
+
+Minecraft loads data packs only from `<instance>/saves/<world>/datapacks/`; the instance-root
+`datapacks/` folder is never read. An installed data pack therefore does nothing until it is
+copied into a world. The instance's data pack list (`datapacks/` plus `manifest.datapacks`) stays
+the source of truth, and `datapack_sync` in core mirrors it into worlds:
+
+- **Scope.** Each data pack goes to all worlds (default) or a chosen set of existing worlds. The
+  choice is stored in `manifest.user_preferences.datapack_world_scopes`, keyed by the pack's
+  catalog identity (registry or Modrinth id, else filename) so an update that renames the file
+  keeps it. Absent means all worlds, so existing manifests need no migration. It is a
+  per-instance preference, not content: it may be changed on pack-managed (locked) instances.
+- **Sync.** Every enabled data pack is copied (temp file, hash check, rename) into every
+  in-scope world; copies Agora placed earlier are removed when the pack is disabled, removed or
+  out of scope. A world is a folder under `saves/` containing `level.dat`.
+- **Only Agora's own files.** Each world keeps `<world>/datapacks/.agora-managed.json` (filename
+  and SHA-256 of what Agora placed). A file is removed or replaced only if it is recorded and
+  still has the recorded hash. A same-named file the user placed, or an Agora copy the user
+  edited, is left alone and reported as a warning. The record lives beside the files so a
+  restore of `saves/` brings both back together.
+- **When.** After the pre-launch snapshot and before the process or official-launcher handoff
+  starts; after an install, update or removal commits (after its health gate); after enabling or
+  disabling a data pack; and after a scope change or an explicit "sync now". Pre-launch snapshots
+  exclude `saves/`, so syncing neither invalidates their reuse nor enters them; full snapshots
+  that include `saves/` capture copies and record together, and the next sync reconciles after
+  any restore. Failures are warnings and never block a launch. Sync is skipped while the game
+  runs.
+- **New worlds.** A world created during a session receives the packs at the next sync, normally
+  the next launch (its second session); the UI says so.
+- **Pack instances.** Modpack-shipped data packs are inventoried into `manifest.datapacks` and
+  synced the same way. Sync does not change the instance's declared content, so locking does not
+  block it.
+- **Not covered.** Data packs that are directories, and files Agora did not install, are never
+  synced.
+
+## 21. EXTENSIBILITY: PLUGINS & CONTENT PROVIDERS
+
+Community plugins and the content-provider interface built on them. Guiding principle (see AGENTS.md): modding is user customization — protect users with warnings and explicit opt-in rather than by blocking.
+
+### 21.1 Community Plugins: Core Owns Policy, an Adapter Owns the Engine (formerly §19.24)
+
+Agora is extensible: a community author can add pages, instance panels, commands, themes,
+diagnostics and pre-launch checks without rebuilding the launcher. The design choices below
+are the ones that are *not* recoverable from reading the code.
+
+**QuickJS, chosen on a measurement rather than a preference.** The runtime question was
+settled by a spike before any of the surrounding system was written. `rquickjs` 0.13 built
+clean on MSVC in 15 seconds with no external toolchain, and a full release binary carrying
+tokio, `serde_json` and the engine came to 2 MB. A V8-based host (`deno_core`) would have
+added tens of megabytes to a launcher whose stated position is that it costs nothing to run,
+and Agora's `$0.00/month` ethos extends to what the user downloads. The spike also had to
+prove async host calls, ES module loading, cancellation, error isolation and a memory
+ceiling; all five hold, and `crates/agora-plugin-host/tests/host.rs` is those gates in
+executable form.
+
+**The engine is deliberately not in core.** `agora-core` holds an `Arc<dyn ScriptHost>`
+defined in `agora-plugin-api`, the same way it holds a `dyn Clock`. Core decides what may run
+and what it may do; an adapter supplies the thing that runs it. This is not ceremony — it is
+what makes a second runtime (a companion process speaking C#, Python or Rust) a matter of
+writing a new `ScriptHost` rather than reworking plugin policy, and it keeps the contract
+crate depending on nothing but `serde`, `semver` and `thiserror`.
+
+**A plugin proposes; core disposes.** Plugins never perform operations. A diagnostic returns
+findings plus a `RepairProposal` drawn from a **closed set** of `RepairAction` variants, each
+mapping onto an existing core service. The user approves, core re-validates the world *as it
+is now*, and then calls the same service the GUI would have called — same locks, same
+operation state, same recovery. The closed set is the point: if a plugin could return "run
+this command", the repair path would be an arbitrary-execution API wearing a diagnostic's
+clothes. Adding a variant is an API change reviewed on its own merits, which is exactly the
+friction that should exist before plugins gain a new way to change someone's game.
+
+**Capability grants are stored, not re-read.** The set of capabilities a plugin holds is
+recorded in `plugin_installs` alongside the manifest at the moment the user consented. It is
+not re-derived from the manifest on load. An update that asks for more permission therefore
+does not silently receive it; `widens_capabilities` detects the difference and the user has
+to be asked again.
+
+**Plugin UI is data, not markup.** A host-rendered view is a `ViewModel` — stats, tables,
+lists, status callouts, actions — that React draws with Agora's own components. There is no
+HTML string anywhere in that path, so there is nothing for `dangerouslySetInnerHTML` to
+receive and no sanitiser to get wrong, and plugin views inherit theming, accessibility and
+controller navigation for free. A plugin picks a semantic `Tone`, never a colour, so it
+cannot produce unreadable contrast or ignore the user's theme.
+
+A prototype **custom view** exists for authors who need their own HTML/CSS/JS: an
+opaque-origin `data:` iframe with `sandbox="allow-scripts"`, its own `default-src 'none';
+connect-src 'none'` CSP, and a narrow `postMessage` bridge that can only invoke commands the
+plugin declared in its manifest. It has no launcher IPC of its own. Treat it as experimental.
+`desktop/e2e/plugins.spec.ts` drives the frame in a real browser and confirms it cannot reach
+parent IPC or the network -- that part is the browser's own sandbox enforcement, not a mock --
+but the Tauri bridge around it in that test *is* mocked, so it is evidence about the frame
+boundary rather than about the packaged desktop app. The host-rendered path is the supported
+one.
+
+This required widening the application CSP in `tauri.conf.json` by exactly one directive,
+`frame-src data:` — enough for an opaque-origin document and nothing else. It does not permit
+`'self'` frames or remote ones, so the only thing that can be framed is a document the host
+itself constructed from a manifest-declared file inside the plugin's own package.
+
+**Network access is an allowlist, not a switch.** Holding the `network` capability is not
+permission to reach the internet; it is permission to reach the hosts the plugin *declared in
+its manifest* and the user saw at install time. `HostPolicy::PluginDeclared` enforces that
+list on the initial request and on every redirect hop. IP literals, ports and loopback names
+are rejected at manifest-validation time — an IP literal would sidestep the DNS checks that
+protect the user's own network. A declared host always covered its subdomains, so
+`*.example.com` is accepted as another spelling of `example.com`. Reaching *any* host (`*`) or
+more than 10 hosts is allowed only under Reduced security mode (§21.3). `network_plugins_enabled` defaults to **off**, and Lockdown Mode overrides
+everything regardless.
+
+**Both switches are opt-in.** `plugins_enabled` defaults to off. A user who never opts in
+never has a plugin runtime in their process. This is the whitelist-over-denylist rule from
+`AGENTS.md` applied to the extension system itself: a default-on extension surface is a
+default-on attack surface.
+
+**Activation events gate activation, and are not decorative.** `activate_all` starts only the
+plugins that asked for startup — `onStartup`, or a manifest declaring no activation at all,
+since that has no lazy path that could ever start it. A plugin contributing only a page or a
+command is started the moment something needs it; one declaring `onEvent:` is started when
+that event first fires, which is why adapters publish through `PluginService::publish_event`
+rather than straight to the bus. A plugin that has not run has not subscribed to anything, so
+going directly to the bus would deliver to nobody and the declaration would silently never
+fire. Without this, a dozen installed plugins would be a dozen runtimes at boot and the
+manifest's activation list would be documentation of an intention rather than a mechanism.
+
+**Be precise about what the isolation buys.** Each plugin gets its own OS thread, its own
+QuickJS runtime, its own heap and stack ceiling, and its own interrupt flag. Two mechanisms
+stop a misbehaving plugin, and both are needed: a QuickJS **interrupt handler** stops
+JavaScript that is *running* (the `while (true) {}` case), and a Tokio **timeout** stops a
+task that is *awaiting* (a slow host call). Neither alone suffices — the interrupt never
+fires while the engine is parked on a future, and the timeout never fires while the engine is
+in a tight loop that yields to nothing.
+
+| Failure | Contained? | How |
+|---|---|---|
+| Plugin throws on activation | Yes | Recorded as `last_error`, held back next start, other plugins unaffected |
+| Plugin loops forever | Yes | Interrupt handler; the call returns `Timeout` and the plugin stays usable |
+| Plugin exhausts its heap | Yes | Per-runtime memory limit; returns `ResourceExhausted` |
+| Plugin floods events | Yes | Bounded per-plugin queue; events are dropped and counted, never back-pressured onto the emitting operation |
+| Plugin refuses to shut down | Yes | `disable_all` interrupts rather than asking politely, so recovery does not need plugin cooperation |
+| Plugin is simply malicious within its granted capabilities | **No** | Capabilities are the boundary. A plugin granted `content:write` may disable mods; that is what the user agreed to |
+
+That last row is the honest limit. This is a **capability** boundary enforced by the method
+table in `agora-core/src/plugins/dispatch.rs`, not a security sandbox against hostile native
+code, and the install prompt is therefore load-bearing. Claims of stronger isolation would
+have to be justified by the runtime, and QuickJS-in-process does not justify them.
+
+**Event loops are broken structurally.** Every event carries an origin and a depth. A plugin
+is never told about its own effects, and a chain of plugin-caused events stops at
+`MAX_EVENT_DEPTH`. The alternative — hoping plugin authors are careful — is not a design.
+
+### 21.2 Content Providers: One Interface for Every Source Outside the Catalog (formerly §19.28)
+
+Agora's position is that it does not structurally depend on any one hosting platform. Modrinth
+held a special place because the curated registry is still small and a practical fallback was
+needed, and Technic was added the same way: each as its own branch through Browse, the adapter
+and the frontend. That made "which platforms exist" a property of Agora's source code. It is now a
+property of what is installed.
+
+**The interface.** `agora_core::providers::ContentProvider` answers `search`, `project`,
+`versions` and `resolve`. The vocabulary — projects, versions, dependencies, filter definitions,
+and an `InstallPlan` that is either a single `File` or a `Pack` — lives in
+`agora_plugin_api::provider`, so a plugin and Agora's own code speak exactly the same types.
+Modrinth and Technic implement the trait in Rust; `PluginProvider` implements it by calling a
+plugin's exports through the script host. A plugin contributes one with a `contentProviders`
+manifest entry and the `content:provide` capability (plugin API 0.1.1, additive).
+
+**Official is not privileged.** The official providers stay compiled in rather than being
+rewritten as JavaScript plugins. The property "just another plugin" was meant to buy — no
+capability a community provider lacks — holds structurally through the shared trait and plan
+type, without paying for a rewrite, a mandatory plugin runtime for Modrinth users, or an
+official signing key. A later port is a registration change.
+
+**Provenance, which is why providers were first declined.** A provider supplies both URL and
+digest, so a matching hash proves integrity, never trustworthiness. Trust is therefore an
+explicit, recorded user decision: `content:provide` is granted at install time alongside the
+plugin's declared hosts; every provider-installed file records
+`ProviderOrigin { provider_id, project_id, version_id }` in the instance manifest, and packs
+record `PackPlatform::Provider` with the provider in `source_key`.
+
+**Security tiers, one rule for every provider** (generalised from Technic, whose Solder packs
+always warned and whose bare zips always needed an opt-in):
+
+| Planned file | Outcome |
+|---|---|
+| HTTPS from a declared host, SHA-256/512 | installs |
+| undeclared host, plain HTTP, or only MD5/SHA-1 | warning; the user may continue |
+| no digest at all | hidden and not installable unless **Allow low security downloads** is on |
+
+Agora warns and asks rather than blocks (see `AGENTS.md`, *Modding is user customization*). The
+setting keeps its old key (`allow_unverified_packs`) so existing choices carry over, and it is no
+longer switched off as a side effect of turning Technic off. A provider marks search results
+`lowSecurity` so Browse can hide them for users who have not opted in. Downloads use
+`ClientCategory::ConsentedContent` — `HostPolicy::ProviderDeclared` for declared hosts, the
+consented policy otherwise — so Lockdown, the private-address floor and per-hop redirect checks
+all still apply, and every published digest (including MD5) is checked.
+
+**Browse moved to core.** The merge, per-source paging and ranking that lived in the Tauri
+adapter are now `providers::browse`, with a cursor per provider. A provider that fails is
+reported in `providerFailures` and the rest of Browse still renders.
+
+**Ranking and categories are declared, not hard-coded.** A provider's `ranking` profile says
+where its downloads and endorsements saturate and which of its categories mark libraries; the
+ranker scales each item against its own provider's profile, so it no longer names Modrinth or
+Technic. Categories come from providers too (Modrinth fetches its tags; a plugin declares a
+list), merged into Browse's picker. Curated content keeps its own band above every provider.
+
+**Switches and updates.** The Modrinth and Technic toggles remain the entry points for the
+official providers. A plugin provider's switch is its plugin's enable state. Plugin updates stay
+with the plugin updater; Settings' "Check everything / Update all" asks the app updater and the
+plugin subsystem and never accepts a capability widening on the user's behalf. Content installed
+from a provider is update-checked against that provider (`update_cache`, the background sweep
+using the official providers only) and updated through the same resolver.
+
+**Curated provider packs.** The catalog strategy `provider_pack` (identifier
+`<provider-id>:<project-id>@<version-id>`) lists a provider's pack as its author ships it. Its
+`sha256` is the *plan digest* — SHA-256 of the resolved plan's JSON, printed by
+`agora provider plan-digest` — so a version whose files change after review is caught at install
+(`ERR_PROVIDER_PACK_CHANGED`) and installs only if the user accepts it as uncurated. This is what
+makes Technic Solder packs curatable. It must be an entry's only source and is packs-only.
+
+**Native plugins are not planned.** Each would need a build per platform per plugin; providers
+gain nothing from native speed. Plugins stay on QuickJS; official providers stay Rust built-ins.
+
+**Still source-specific**, tracked in `docs/plugins/providers.md` (*Migration debt* and *Where
+this is going*): Modrinth's single-file install and the Modrinth and Technic detail pages still
+have their own code, `.mrpack` stays with the mrpack importer, and the official providers are
+compiled in rather than shipped as plugins.
+
+### 21.3 Reduced Security Mode: One Opt-In for Limits That Are Reasonable to Lift
+
+**Why.** Several limits existed to protect users who never chose anything: a plugin's host list
+capped at 10 exact names, and pack contents limited to a handful of folders (`config/`,
+`resourcepacks/`, …) with no `.jar` outside the manifest. Real plugins and packs outgrow them — a
+search plugin that follows links, a pack that ships mods or `options.txt` in its overrides. The
+project principle (`AGENTS.md`) is to let users choose rather than block, so these limits become
+one setting, `reduced_security_mode`, off by default, turned on behind a confirmation that says
+exactly what changes.
+
+**What it lifts.**
+
+| Limit | Default | With reduced security mode |
+|---|---|---|
+| Plugin `network.hosts` | ≤ 10 named hosts | `*` (any public host) or up to 200 |
+| `.mrpack` / provider-pack / Standard override folders | `config/`, `defaultconfigs/`, `resourcepacks/`, `shaderpacks/`, `datapacks/`, `kubejs/`, `scripts/`, `global_packs/`, `openloader/`, `patchouli_books/` | anywhere inside the instance |
+| `.jar` in overrides or outside `mods/` | refused | allowed |
+| Technic zip packs | only top-level `mods/` extracted | everything except `bin/` |
+
+**What it never lifts**, because the reward is nil and the risk is large: anything outside the
+instance directory (traversal, absolute paths); native executables and scripts (`.exe`, `.dll`,
+`.so`, `.sh`, `.bat`, `.ps1`, …) which Minecraft never runs; `instance_manifest.json` and
+`.agora*` files that Agora owns; IP-literal and loopback plugin hosts and the private-address
+DNS floor; Lockdown Mode; and digest verification.
+
+**Enforcement.** Install time: `PluginService::guard_consent` refuses an elevated manifest
+(`NetworkDeclaration::is_elevated`) while the mode is off, and the install preview carries
+`needsReducedSecurity`. Run time: `net_fetch_json` denies an elevated plugin's requests once the
+mode is turned off again, so switching it off takes effect without uninstalling anything.
+Packs: `override_sanitizer::OverridePolicy` (Standard / Permissive) is read from settings when an
+import starts; `providers::authorize_plan` lists `outsideContentFolders` and refuses them while
+the mode is off. The default folder list gained `scripts/` (CraftTweaker, not inert — the same
+caveat as `kubejs/`), `global_packs/`, `openloader/` and `patchouli_books/`.
+
+**Not covered.** Pack inventory (drift detection) still tracks only the default folders.
+
+## 22. CREDENTIALS & AUTHENTICATION
+
+Microsoft sign-in, direct launch, and how tokens are protected at rest on each platform.
+
+### 22.1 MSA Authentication & Direct Launch (supersedes section 0, section 8.1) (formerly §19.3)
+
+Per the v1 refactor (decision E9): the launcher now optionally performs **Microsoft Account (MSA) authentication and direct JVM execution in-process** -- crates/agora-core/src/msa.rs implements the full: device code, then MSA token, then XSTS, then Minecraft services token, then profile + Xbox profile, then DRM header token flow. crates/agora-core/src/launch.rs then constructs the classpath + args + natives and spawns java directly.
+
+This deliberately relaxes the original *security by delegation* constraint because in-launcher features (one-click version selection, accurate launch errors, native version manifest caching via piston-meta.mojang.com, OAuth token refresh) cannot be implemented on top of the Mojang-launcher-delegation model. The Mojang-launcher-path (section 8.4 -- discover official launcher binary, mutate launcher_profiles.json) is retained as a fallback for users who prefer not to use the in-process MSA flow.
+
+MSA tokens use the same storage backend as GitHub OAuth tokens: OS keyring first, with a PBKDF2 + AES-256-GCM encrypted-file fallback (tokens.enc) per section 7.5.2 -- implemented during the 2026-07-05 audit (was previously a hard error).
+
+### 22.2 Keyring Fallback Keys Come From a Random Secret, Not Public Inputs (supersedes 7.5.2) (formerly §19.23)
+
+Section 7.5.2 specifies deriving the fallback encryption key from "the OS username +
+machine ID ... using PBKDF2". That construction shipped, and every input to it was
+public: the PBKDF2 *password* was a constant compiled into the binary, and the salt was
+the home-directory name plus the platform string. Anyone holding an encrypted file could
+rederive the key from the open source, and the ciphertext was portable between machines.
+CodeQL flagged it as `rust/hard-coded-cryptographic-value`.
+
+**The key material is now a 32-byte random per-profile secret.** It is generated on first
+store from the CSPRNG, written owner-only to `device-key.bin` beside the encrypted files,
+and used as the PBKDF2 password. The context constants (`agora-msa-credentials-fallback`,
+`agora-mcp-keyring-fallback`) remain, but as domain separation in the salt -- keeping the
+MSA and GitHub keys distinct -- which is what they were always doing. The home-directory
+name and platform are gone from the derivation: public, contributing nothing once the
+password is full-entropy, and a renamed home directory silently produced a different key.
+
+**Adding a machine ID would not have fixed the actual weakness.** A machine ID is public
+too; it defeats copying one file, not copying the profile. Be precise about what the
+current design buys, because 7.5.2's "machine-bound key" wording overstates it:
+
+| Attacker capability | Old | Current |
+|---|---|---|
+| Obtains only `tokens.enc` / `msa-credentials.enc` | Key rederivable from source | Cannot recover the 256-bit secret |
+| Copies the whole profile directory | Recoverable | Recoverable -- the key travels with the ciphertext |
+| Runs as the logged-in user | Recoverable | Recoverable |
+
+The key sits in the same directory as what it protects, so **its file permissions, not
+AES, are the boundary**. This defeats an attacker who obtains a single encrypted file and
+nothing else. Real machine binding needs DPAPI, a TPM, or an OS credential service --
+whose absence is the reason this path exists at all. Meaningful protection against
+whole-profile theft requires a user-held passphrase, hardware-protected key material, or
+not persisting these credentials; there is no portable trick that lets an unattended
+application decrypt a local file while denying the same to an attacker holding the same
+files and privileges.
+
+**Consequences that are deliberate, not oversights:**
+
+- **No legacy migration.** Files written under the old derivation cannot be read. Keeping
+  the old key for decrypt-only migration would have preserved a genuine hard-coded-key
+  finding in the permanent read path. Affected users -- only those whose OS keyring was
+  unavailable at sign-in -- sign in once more. 7.5.2 already anticipated re-authentication
+  when the key input changes.
+- **Load paths never delete.** An undecryptable credential is reported absent, not removed.
+  A missing device key and one that merely failed to read are indistinguishable, so
+  deleting would turn a transient I/O error into permanent credential loss. A stale file is
+  inert and the next store overwrites it.
+- **Deleting the local ciphertext is not revocation.** No provider request is made. If old
+  storage is treated as evidence of exposure rather than a design flaw, server-side token
+  revocation is a separate decision.
+
+**The Settings warning is implemented, with corrected wording.** 7.5.2's string says the
+token is "encrypted with a machine-bound key", which was never true and is certainly not
+true now; a warning that overstates the protection is worse than none, because it is read
+at exactly the moment a user decides whether to trust the state. The shipped text is:
+*"Credential store unavailable. Your sign-in is encrypted in a file in Agora's data folder
+instead. This is less secure than OS keychain storage -- anyone who can read that folder can
+read your sign-in."* It deliberately does not promise that only the user's own account can
+read the file: owner-only permissions are set explicitly on Unix, but elsewhere the file
+inherits whatever the data directory grants -- and that directory now follows
+`AGORA_DATA_DIR` and portable roots, which can be a removable drive with no per-user
+permissions at all. It renders only when the backend positively reports the fallback, so
+an unknown or failed lookup shows nothing rather than inventing a warning.
+`keyring_fallback_available()` is gone; `CredentialBackend` reports what actually holds each
+credential. The string is English-only for now: translations are deferred rather than
+guessed, since an unverifiable translation of a security warning is its own hazard.
+
+**The fallback files follow the configured data root.** They resolve through `AppPaths`
+rather than reconstructing `dirs::data_local_dir()/agora`, so `AGORA_DATA_DIR` and a
+portable install move them along with everything else. The platform default is byte-identical
+to the old hardcoded path, so an ordinary install has nothing to migrate; a test pins that.
+
+Be aware of the limit: this governs the *fallback* only. Credentials that reach the OS
+keyring are held per-user by the OS, and no data-root setting relocates them -- a portable
+install on a machine with a working keyring still leaves them on that machine. Making
+portable mode genuinely self-contained for credentials would mean preferring the encrypted
+file over the keyring when running portable, which trades the OS's protection for
+portability. That is a product decision and has not been made.
+
+**Key rotation is an accepted limitation, not an open item.** One device key serves both
+the GitHub and MSA credentials and survives sign-out. Reviewed and deliberately left alone:
+the two credentials already get separate derived keys via domain separation, and a key with
+no ciphertext beside it is inert random bytes -- retaining it does not retain a deleted
+credential. Rotation would only help an attacker who obtained the key and a ciphertext
+through *separate* leaks at *different* times across a sign-out boundary. Every dominant
+threat -- profile theft, file-stealing malware, continuing access as the user -- takes both
+at once, and takes any replacement key too.
+
+Against that, rotating carries a concrete data-loss hazard: deleting `device-key.bin` while
+either ciphertext survives makes that credential permanently unreadable, and the load paths
+correctly report it as "nothing stored". Tying rotation to sign-out is worse still, since
+both credentials clear themselves automatically on permanent refresh failure -- background
+auth failure would silently become part of the shared-key lifecycle. Trading a certain
+rare data loss for a speculative narrow gain is the wrong trade.
+
+The question worth revisiting is not "when should sign-out rotate the key" -- sign-out is
+not a compromise signal. It is *what recovery does Agora promise if a user believes their
+local files were exposed?* Today: none beyond signing out and revoking at the provider,
+which is honest, because local deletion never revokes a token an attacker already copied.
+If that promise ever changes, the right unit is an explicit all-credentials reset plus
+provider-revocation guidance, not opportunistic deletion inside a per-credential sign-out.
+
+### 22.3 DPAPI Holds the Windows Fallback Key (supersedes 22.2 on Windows) (formerly §19.25)
+
+19.23 replaced a hard-coded key derivation with a random per-profile secret and was explicit
+about the limit it did not clear: the key lives in the same directory as the ciphertext it
+protects, so file permissions -- not AES -- are the boundary. It named the fix in passing:
+"Real machine binding needs DPAPI, a TPM, or an OS credential service, which is the thing
+whose absence puts us on this path in the first place." On Windows that last clause turned
+out to be wrong, and this subsection acts on it.
+
+**The keyring is not absent on Windows; it is too small.** Windows Credential Manager caps a
+generic credential at `CRED_MAX_CREDENTIAL_BLOB_SIZE` = 2560 bytes, and `keyring` encodes the
+secret as UTF-16, so the real ceiling is 1280 ASCII characters. `MsaCredentials` carries a
+Minecraft access-token JWT *and* an Entra refresh token; Microsoft's own guidance is to budget
+2 KB for the refresh token alone. Every Microsoft sign-in therefore exceeds the cap and lands
+on the fallback -- not on a broken machine, but on every Windows machine. Measured directly
+against the live store: 1280 characters succeed, 1281 return `TooLong`. A GitHub token, at
+roughly 80 characters, stores in the keyring normally, which is how the two cases were told
+apart.
+
+Nothing in the credential is waste. No profile blob, no skin or entitlement data, no Xbox or
+XSTS tokens, and the Entra *access* token is deliberately not persisted -- only the refresh
+token. Trimming the Minecraft access token is the one reduction available, and it would cost
+the full XBL -> XSTS -> Minecraft chain on every start while still not reliably fitting under
+1280 characters. Slimming is not a fix.
+
+**So the Windows fallback is now DPAPI-protected, which is what Microsoft does.** The
+`msal-extensions` libraries persist a token cache with DPAPI on Windows, the Keychain on
+macOS and LibSecret on Linux; on Windows they do not use Credential Manager at all. Agora now
+matches that split. There is no key file: `CryptProtectData` with `CRYPTPROTECT_UI_FORBIDDEN`
+binds the ciphertext to the Windows account, and the per-credential key context is passed as
+optional entropy so a blob protected for one purpose cannot be unprotected for another.
+
+Be precise about what this buys. Credential Manager is itself DPAPI plus a storage service,
+and any process running as the user can read it back through `CredRead`. A DPAPI file and a
+Credential Manager entry therefore sit at the same threat model; neither defends against code
+already running as the user. What changes is the comparison against 19.23's scheme, where
+copying the profile directory yields both the ciphertext and the key. That specific weakness
+is gone. This is also why chunking the credential across several Credential Manager entries
+was rejected: it buys reassembly, partial-write recovery and cleanup code in exchange for no
+security.
+
+**A relocated data root keeps the old scheme, deliberately.** DPAPI ciphertext is
+undecryptable on another machine or under another Windows account -- the same property that
+makes it worth having. `AGORA_DATA_DIR` and a `portable.txt` marker are the only available
+signal that a profile may travel, so either one disqualifies OS protection and the device-key
+scheme applies instead. A portable install keeps a weaker credential that works when the stick
+is moved, rather than a stronger one that silently stops working.
+`AppPaths::data_root_is_platform_default()` is that predicate, and it mirrors
+`platform_default()`'s precedence exactly so the two cannot drift.
+
+**The file says which scheme wrote it.** An eight-byte header marks an OS-protected file;
+legacy files are a bare nonce and ciphertext, and a read that finds the header but fails to
+unprotect falls through to the device-key path anyway, so a chance collision is unreachable
+rather than merely improbable. 19.23 accepted a forced re-authentication when the key input
+changed; this change does not need one, because both formats remain readable and a credential
+is only rewritten in the new format when it is next stored.
+
+**The Settings warning now distinguishes three states, not two.** `CredentialBackend` gains
+`OsProtectedFile`, and the degraded notice does not render for it. 19.23 established that a
+warning overstating the protection is worse than none; the converse holds too. "Anyone who can
+read that folder can read your sign-in" is false once the OS holds the key, and a warning a
+user cannot act on is the kind they learn to dismiss. The warning still fires, unchanged, for
+the device-key scheme -- including on a portable install, where it is exactly true.
+
+**What this does not do.** It does not put Microsoft credentials in the Windows keyring; they
+do not fit, and no keyring version changes that. It does not protect against malware running
+as the signed-in user. It does not apply to macOS or Linux, where the keyring has no
+comparable ceiling and is still the primary path. And deleting a local credential is still not
+revocation: no provider request is made.
+
+### 22.4 A Portable Copy Never Uses the OS Keyring (refines 22.3) (formerly §19.26)
+
+19.25 kept the keyring as the first stop everywhere and only changed what happens when a write
+does not fit. On a portable copy that left the two sign-ins behaving differently for no reason a
+player could see: the Microsoft credential overflows Credential Manager and lands in the portable
+data folder, so it travels with the stick, while the roughly 80-character GitHub token fits and
+stays on whichever machine it was entered on. The portable README then told people they might
+need to sign in again on another computer, which is the opposite of what a portable build is for.
+
+**When the data root is the one a `portable.txt` marker names, `auth.rs` does not read, write,
+report or clear the keyring at all.** Every credential goes to the device-key file in the portable
+data folder, the same scheme 19.25 already chose for relocated roots.
+`AppPaths::data_root_is_portable()` is the predicate. It is true only when the marker is present
+*and* `AGORA_DATA_DIR` does not override it, so it describes the root actually in use, matching
+`platform_default()`'s precedence. `AGORA_DATA_DIR` on its own does not trigger this: it is also
+the disposable-profile mechanism for development, where sharing the keyring is the documented
+behaviour.
+
+Two consequences are deliberate. Signing out of a portable copy no longer deletes the shared
+keyring entry, which would otherwise have signed an installed copy on the same machine out as
+well. And a portable copy that previously stored its GitHub token in the keyring asks for one
+new sign-in; importing it from the keyring was rejected because that import would then repeat
+after every portable sign-out. The Settings notice names portable mode as the reason for the
+degraded storage, because on a portable copy it is the reason.
+
+---
+
+## 23. RELIABILITY, RECOVERY & REPRODUCIBILITY
+
+Keeping instances safe to change: safe operations, Last Known Good, content-addressed snapshots, and launch health.
+
+### 23.1 Desktop Reliability, UX Coherence, and Safe Operations (formerly §19.13)
+
+> Approved principles for the Desktop Upgrade Execution Plan (packages A1–D5). Last updated 2026-07-10.
+
+**Architecture principles:**
+
+1. **One canonical launch orchestration path.** There is exactly one route through health preflight, user decision, launch mode selection, process spawn, PID tracking, and exit handling. Dialogs return decisions; they do not launch.
+2. **One canonical install transaction path.** Every mod/update/removal entry point resolves an `InstallIntent` → `ResolvedInstallPlan` → verified staging → atomic application → health scan → result. No page bypasses the plan.
+3. **React dialogs return user decisions and do not execute business operations.** A dialog's only side effect is calling `onConfirm()` or `onCancel()`. The parent component dispatches backend commands.
+4. **Process state survives navigation.** Running-instance identity, PID, console subscription, and exit status live in a controller that outlives page components. React may query backend state after remount.
+5. **User-changing operations are previewable and reversible.** Every manifest mutation produces a plan that shows what changes before execution. Snapshots enable rollback.
+6. **Existing snapshots become the basis of last-known-good recovery.** A successful launch establishes LKG state. Changes since LKG are visible. One-click restore returns to LKG.
+7. **Desktop UX work must include meaningful integration tests.** Mocked UI tests, Rust integration tests, and native smoke checks are separate layers. A test that only asserts the page rendered is not sufficient.
+
+#### 19.13.3 Release C canonical install-transaction architecture
+
+> Approved design from C0 Sol architect call. Implementation packages C1-C4.
+
+**Five-phase pipeline (all in `agora-core`):**
+
+1. **Resolve** — pure data, no instance changes. Takes `InstallIntent`, returns `ResolvedInstallPlan` with required/optional deps, conflicts, files to add/remove/disable, snapshot requirement, disk estimate, warnings, and blocking errors.
+2. **Stage** — download all artifacts into `<instance_dir>/.agora/staging/<fingerprint>/`. Verify every artifact before touching the live instance. Any verification failure aborts with zero live instance changes.
+3. **Snapshot** — create recovery snapshot of `mods/` + `instance_manifest.json` immediately before application. `.agora/` excluded.
+4. **Apply** — atomic stage-then-swap: remove/disable/add files, then write `instance_manifest.json.tmp` -> fsync -> atomic rename over `instance_manifest.json`. **The manifest rename is the single commit point.** Pre-application manifest backup at `.bak.<fp>` enables fast rollback.
+5. **Health scan** — run `check_instance_health` post-apply. Failure triggers automatic snapshot restore, guaranteeing the instance ends in either (healthy + new install) or (pre-install state).
+
+**Key invariants:**
+- InstallIntent -> ResolvedInstallPlan: plan makes zero instance changes. Deterministic for unchanged input (intent + instance state + registry revision).
+- Plan fingerprint = SHA-256(canonical_json(intent) || canonical_json(resolved_candidates) || instance_state_hash || registry_revision). Stale plans are rejected at apply time.
+- Required dependencies: fail closed. Missing -> blocking error, plan cannot proceed.
+- Optional dependencies: governed by OptionalDepsPolicy (Include/ExcludeAll/Prompt). Prompt returns choices to frontend; user picks, intent re-submitted.
+- Conflicts: structured DepConflict with resolution_options (Replace/Skip/DisableExisting/Abort) and blocking flag.
+- Existing-file: same item same version -> Skip (no-op). Same item different version -> Update (remove old + add new). Different item same filename -> conflict.
+- Staging: same-volume as mods/ -> moves are atomic renames. Orphan staging dirs cleaned on next launcher startup.
+- Verification: SHA-256 required for curated items. Modrinth uses strongest available (SHA-512 > 256 > 1). SHA-1 only accepted with Modrinth's published hash. No hash -> blocking error.
+- Snapshot: always required for mutating operations (install/update/remove). Label encodes plan fingerprint.
+- Atomic application: remove phase (move targets to staging trash), disable phase (.jar -> .jar.disabled), add phase (atomic rename from staging into mods/), manifest commit (.tmp -> fsync -> rename). Every pre-commit step is reversible.
+- Fast rollback (pre-commit): reverse file moves, restore manifest .bak. Snapshot restore (post-commit or crash): restore from snapshot zip. Health scan failure -> automatic snapshot restore.
+
+**State ownership:**
+- `agora-core`: `InstallPipeline` struct with `resolve_plan()`, `apply_plan()`, `cancel()`. Owns all business logic, dependency resolution, staging, application, hashing, health checks. No Tauri dependency. Communicates progress via `&dyn ProgressReporter` trait.
+- Tauri facade: thin commands (`resolve_install_plan`, `apply_install_plan`, `cancel_install`). Provides ProgressReporter impl that emits Tauri events. Maps core errors to Tauri errors.
+- React: constructs InstallIntent from user action, renders plan, handles interactive prompts, subscribes to progress events, sends cancel on user request. Never touches filesystem or makes integrity decisions.
+
+**CLI reuse:** `agora-cli` depends on `agora-core`, calls `InstallPipeline` directly. Provides ProgressReporter impl for stdout progress bar. Cancellation via Ctrl+C. `--dry-run` resolves + prints, no mutation. `--yes` skips interactive prompts.
+
+**Migration sequence (behind feature flag INSTALL_PIPELINE_V2):**
+1. Build core InstallPipeline with unit tests.
+2. Add Tauri facade commands alongside existing commands.
+3. Migrate ModDetail main install -> plan UI component -> apply pipeline.
+4. Migrate Versions tab.
+5. Migrate raw Modrinth install (wraps intent with SourceType=Modrinth).
+6. Migrate InstanceEditor Add Mod.
+7. Remove old commands + feature flag.
+
+**Required tests:** resolution (missing dep, optional, cycles, conflicts); fingerprint staleness; staging verification (hash mismatch, no hash, network failure); snapshot (create + restore, .agora exclusion); application atomicity (pre-commit rollback, post-commit snapshot restore, crash recovery); health scan (success + failure rollback); cancellation (each phase); E2E (full install via Tauri mock/CLI); migration flag toggling.
+
+**Rejected alternatives:**
+- Dialogs or frontend code invoking install commands directly.
+- Skipping dependency resolution for Modrinth or manual installs.
+- Verifying artifacts after touching the live instance.
+- Incremental/file-level snapshot in v1 (full zip only for correctness).
+- Staging on a different volume than the instance (atomic rename fails cross-volume).
+- Plan submitted by the client without backend re-validation (backend must own the plan or re-resolve under transaction lock).
+
+**Current status (2026-07-10):** C0 design documented; C1 core types present; C2 execution scaffold exists with cfg-gated commands and stub resolver. Unsafe commands (`apply_install_plan`, `cancel_install`) are NOT registered in production builds. Legacy install paths remain active. Full implementation deferred to Release C2-C4.
+
+### 23.2 Last-Known-Good and Reproducibility Architecture (formerly §19.14)
+
+> Approved design from D2 architect call. LKG is an additive marker on the existing zip-snapshot system, driven by a pure `LaunchOutcome` classifier in `agora-core`. Lockfiles are a separate canonical, content-addressed, hash-authoritative export format that excludes config contents for privacy.
+
+**Data model.** LKG is a label on a snapshot, not separate storage. Three artifacts per instance: snapshot index (inside snapshot zip with `isLkg`, `promotedAt`, `launchSessionId`), `lkg.json` (convenience pointer), and `launches.jsonl` (append-only audit trail). Current LKG = snapshot with highest `promotedAt`.
+
+**Promotion rule.** Pre-launch snapshot → classify outcome → promote iff `Success`. Optimization: skip snapshot creation if `contentHash` unchanged since last snapshot. Promotion gated by per-instance mutex.
+
+**Launch classification.** `classify_launch()` in `agora-core`: `Success` (exit 0, runtime >= 60s, no crash file/signature), `Crash` (non-zero exit, crash file, signal), `Cancelled` (user stop), `Unknown` (process vanished), `Abandoned` (exit 0 but runtime < 60s). Only `Success` promotes LKG.
+
+**Retention policy.** Keep current LKG, N most-recently-promoted LKG (default 3), 1 most-recent non-LKG, 1 most-recent pre-restore. Size cap 2 GB per instance. Current LKG is last evicted.
+
+**Diff representation.** `compute_diff(indexA, indexB)` in `agora-core`: added/removed/modified paths with SHA-256. No rename detection. `diff_since_lkg()` compares live scan of mods/ + manifest against current LKG snapshot index.
+
+**Restore semantics.** Transactional with pre-restore snapshot: block active game, snapshot current, verify staged files, atomic swap, rollback on failure. Pre-restore snapshot enables undo.
+
+**Lockfile schema.** Portable canonical instance definition. Contains mods (id, filename, SHA-256, source URL, hashes), loader manifest hash, manifest hash, content hash. Optional Ed25519 signature for authorship attribution. Config excluded for privacy (`configPolicy.included: false`). Import verification: parse → check schema version → recompute contentHash → verify signature → verify each artifact hash → reject with precise error on any failure.
+
+**Config policy.** Tracked in snapshots (mods/ + manifest + small config files). **Excluded** from lockfile entirely (privacy: no server IPs, world data). Optional `configHash` for drift detection without content exposure.
+
+**Drift detection.** `detect_drift()` compares current mods/ hashes against reference (lockfile or LKG). Returns `DriftReport { status: InSync|Drifted, differences[] }`. Triggers on launch, instance view, manual command. Remediation: restore-to-LKG.
+
+**Ownership.** `agora-core` owns all pure logic: LkgState, LaunchOutcome, classify_launch(), promote_to_lkg(), Diff, compute_diff(), Lockfile, detect_drift(), RetentionPolicy. Desktop crate owns filesystem impl, process capture, IPC, keychain. React owns UI.
+
+**Migration sequence.** Phase 1: core types + pure logic + unit tests. Phase 2: pre-change snapshots. Phase 3: launch classification + promotion. Phase 4: diff viewer. Phase 5: LKG restore. Phase 6: lockfile export/import. Phase 7: drift detection. Phase 8: retention automation. Phase 9: backfill existing instances.
+
+**Required tests.** Pure unit: classify_launch outcomes, promote_to_lkg failure rejection, compute_diff symmetry, lockfile canonicalization round-trip, detect_drift, retention_plan boundary. Integration: pre-change snapshot on install, lkg.json written on success, crash does not overwrite, restore transactionality. E2E: snapshot → launch → promote → diff → restore → content hash match; export lockfile → import → verify → reject tampered lockfile.
+
+### 23.3 Content-Addressed Recovery Snapshots (formerly §19.15)
+
+The recovery snapshot implementation evolved from full Deflate ZIP archives to
+immutable per-file SHA-256 objects plus an atomic per-snapshot JSON manifest.
+Each manifest records the tracked relative path, size, and object hash. Objects
+are shared below the app data root, so unchanged mods and configuration files
+are written once across snapshots and instances. New snapshot writes stream
+through a bounded buffer, hash and persist each object once, and restore reads
+and verifies objects before the existing atomic root-swap protocol. Existing
+v1/v2 ZIP snapshots remain readable and restorable.
+
+Initial imports register the instance and then finalize their first recovery
+manifest on a blocking worker. While that worker runs, the instance reports a
+pending snapshot state: inspection is allowed, but launch and mutating
+operations are blocked. A failed worker records an actionable failed state;
+creating a manual snapshot clears the state. Launch and install backends also
+enforce the readiness check so the UI is not the security boundary.
+
+Retention accounts for manifest and referenced object storage and removes an
+object only after no remaining snapshot manifest references it.
+
+Each snapshot records its origin: `user` (created by hand), `migration` (the
+recovery point of a Minecraft version change) or `automatic` (pre-launch,
+pre-install, pre-template, pack merge, import). Automatic snapshots rotate
+among themselves; they never evict user or migration snapshots, which are kept
+by their own count (10) and are the last to go under the storage cap.
+Snapshots written before the field existed are classified by label. A single
+shared count used to let the next launch delete a user's or a migration's
+recovery point without warning.
+
+### 23.4 Health, Crash Doctor, Memory, Authentication, and Launch Reliability (formerly §19.19)
+
+Health reports separate blockers, warnings, and non-interrupting recommendations. Recommendation-only reports remain green and never stop launch. Warning mutes use stable structured keys with legacy-setting migration; blockers cannot be muted. A health scan carries an identity derived from the instance manifest plus observed mod-file and registry-database content hashes. Core launch reuses that scan only while the identity remains unchanged, preventing duplicate healthy scans without trusting stale frontend approval.
+
+Crash Doctor is local-first and instance-aware. Automatic evidence collection considers the newest coherent launch window across `crash-reports/*.txt`, `logs/latest.log`, `logs/debug.log`, and `hs_err_pid*.log`; bounded user-selected text files and pasted text are supported without exposing a generic arbitrary-path read command. Evidence paths are never returned to the webview, text is size-bounded and cleaned, and no evidence is uploaded. Curated signatures, fingerprints, and installed-mod scoring analyze the coherent evidence set together. Recovery snapshots are created lazily before the first mutation, not during read-only diagnosis. Guided disable experiments wait for a correlated launch outcome: the same crash rules a suspect out, a changed crash starts a new hypothesis without claiming causality, a successful run asks for confirmation, and an abandoned run restores state as inconclusive. The built-in doctor does not search or submit GitHub issues; an external AI agent may optionally research upstream sources after local findings are exhausted and must label those findings as external hypotheses.
+
+Schema v9 adds `user_instances.jvm_memory_mode` with `auto` and `manual` values. Existing rows migrate to Manual because their prior allocation does not establish consent to automatic changes; newly created instances default to Auto unless an explicit imported or CLI memory value is present. Auto derives a 512 MiB-rounded recommendation from enabled mod count, enabled archive bytes, resource-pack load, and system headroom, and calculates the effective value at launch without overwriting Manual allocations. Both desktop and CLI expose the recommendation and insufficient-system-RAM warning.
+
+Direct launch obtains classified Microsoft credentials through a single-flight refresh path. Delegated launch does not read Microsoft credentials because the official launcher owns authentication. GitHub preflight and post-401 recovery use the same fallible token path; post-401 refresh carries the exact failed access token under the refresh mutex so concurrent failures rotate once. Permanent refresh failures clear credentials, transient failures preserve them, and secret values are never logged.
+
+Launch records `last_launched_at` immediately after successful handoff or process spawn so a newly written crash report is discoverable. Warm Java discovery uses a bounded five-minute cache. Launch progress records loading, health, resolution, materialization, and snapshot durations; the CLI exposes these with `launch --timings`. Content-addressed snapshot indexes use immutable manifest hashes for comparison rather than rereading every object blob, while restore continues verifying bytes before mutation.
+
+---
+
+---
+
+## 24. GOVERNANCE OPERATIONS
+
+How community votes are audited, quarantined and monitored in production.
+
+### 24.1 Audit Log Schema (replaces section 4.6 compile-only entries) (formerly §19.7)
+
+Per the E8 user decision (expand to match section 4.6), the compiler (compiler/compile.py) now writes audit entries with the full section 4.6 schema -- every entry includes timestamp, action, actor, target_type, target_id, 
+eason, details. Action types cover: compile (every nightly run), AUTO_FLAG (velocity circuit breaker), POLL_CREATED, POLL_CLOSED, IMMUNITY_APPLIED, IMMUNITY_REMOVED, ARCHIVED, RESTORED, BLACKLIST_UPDATED, REACTION_SCRUBBED, SIGNATURE_REJECTED (client-side). The root audit_log object carries log_format_version: 1. Rotation per section 4.6: at 10,000 entries, the oldest 2,000 move to 
+egistry/governance/audit_log_archive.{YYYYMMDD}.json (new archive file per day; existing archive appended to).
+
+### 24.2 Triage Poll Resolution Bugs (fixed 2026-07-05) (formerly §19.8)
+
+Per the A4 fixes during the 2026-07-05 audit:
+
+- **Tied polls** (keep_votes == remove_votes with total_votes > 0): now treated as KEEP-win, with an audit entry noting the tie. Items with **zero total votes** remain under_review (no resolution) and an audit entry is written explaining the no-vote situation.
+- **Organic anomaly_window_start is now preserved** across nightly runs -- it is only set when the item first transitions to under_review. Previously every nightly build overwrote it with 
+ow, so the 7-day poll timer never elapsed.
+- **KEEP-win now writes immunity_cooldown_until** -- a 30-day ISO timestamp populated on the 
+egistry_items row. (Previously the column was always NULL.)
+
+### 24.3 Governance Sandbox and Persistent Vote Quarantine (formerly §19.16)
+
+Production registry and governance data remain in the main Agora repository by default. The compiler may explicitly target a separate governance repository and registry fixture root for sandbox testing; compiler code remains exclusively in the main repository. Governance repository resolution is `--governance-repo`, `AGORA_GOVERNANCE_REPO`, `AGORA_REGISTRY_REPO`, then `GITHUB_REPOSITORY`.
+
+Compiler governance modes are `off`, `read-only`, and `monitor`. All modes are non-mutating with respect to GitHub. `monitor` may write persistent local governance state and send deduplicated Discord alerts for new, expanded, or resolved quarantine events. Review Issues are identified only by the `community-review` label. Votes are read only from direct `+1` and `-1` reactions on canonical Issues mapped in `registry/governance/vote_issues.json`; review and comment reactions never count.
+
+Schema 7 adds per-item `governance_summary` and persistent `governance_events` tables while retaining final counted values and compatibility fields on `registry_items`. Pending and rejected reaction IDs remain excluded across compiles; an accepted curator decision restores them. The desktop supports schema 6 fallback, compile-time production/sandbox governance configuration, read-only diagnostics, and a debug-only validated `AGORA_DEV_REGISTRY_DB` override. The v1 review-report/admin-alert path is removed.
+
+### 24.4 Governance Monitor and Tracked State (Work Package 7) (formerly §19.18)
+
+> Operational model, file ownership, and safety constraints for the compiler governance sandbox. Last updated 2026-07-29.
+
+**State file location and format.** Production tracks `registry/governance/governance-state.json` and passes it explicitly as both state input and output. The compiler's isolated-run default remains `<output-dir>/governance-state.json`. The file carries `schema_version`, `governance_repository`, `policy`, an `events` array, and `generated_at` after the first meaningful transition. Each event has `event_id`, `item_id`, `event_type`, `status`, `detected_at`, `affected_reactions`, and `details_json`. Growth merges new reactions into the original stable event rather than creating overlapping duplicates.
+
+**Production repo and policy resolution.** Governance repo: `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`. Policy constants: production uses 30-day account-age threshold, 6-hour window, 5×-baseline ratio with 20-reaction floor; sandbox uses 0-day age, 10-minute window, 3-reaction threshold, no baseline. State files embed `governance_repository` and `policy`; `load_governance_state()` discards mismatched state to prevent cross-environment corruption.
+
+**Monitor semantics.** State is persisted only when `mode=monitor`. A write represents a meaningful change: new event creation, event growth (additional reactions in the same bucket), or status transition from curator decision application. Compiles with zero state delta produce no file modification. This prevents spurious diffs on every nightly run.
+
+**Curator decision input.** `registry/governance/quarantine_decisions.json` is curator-authored; the compiler never writes it. Each entry maps `event_id` to `accepted` or `rejected`. The pipeline applies these as overrides over stored event statuses: `accepted` lifts the quarantine and `rejected` permanently excludes those reaction IDs.
+
+**Public audit rationale.** Every state event captures the full anomaly context in `details_json`: threshold, window, historical average, baseline ratio, raw/eligible/counted/quarantined up/down counts, conflict users, and the exact reaction IDs. This enables any community member to independently verify that the quarantine decision matches the policy criteria. The `audit_log.json` separately records compile-level actions.
+
+**Non-release-asset rationale.** `governance-state.json` is consumed exclusively by the compiler on subsequent runs, not by the desktop app or web directory. It must reside in the repository working tree for the nightly governance commit. It is intentionally excluded from `registry.db` and the GitHub Release Asset pipeline.
+
+**Local monitor command and warning.**
+
+```powershell
+# WARNING: This changes tracked production state and can send real alerts.
+$env:GITHUB_TOKEN = (gh auth token)
+$env:DISCORD_WEBHOOK_URL = "YOUR_PRODUCTION_WEBHOOK"
+python compiler/compile.py `
+  --governance-mode monitor `
+  --governance-policy production `
+  --governance-repo agora-mc/Agora-Launcher `
+  --governance-state-in D:/Agora/registry/governance/governance-state.json `
+  --governance-state-out D:/Agora/registry/governance/governance-state.json `
+  --no-governance-write `
+  --skip-sign `
+  --out D:/Agora/registry.db
+```
+
+**Read-only diagnostics.**
+
+```powershell
+$env:GITHUB_TOKEN = (gh auth token)
+python compiler/compile.py `
+  --governance-mode read-only `
+  --governance-policy production `
+  --governance-repo agora-mc/Agora-Launcher `
+  --governance-state-in D:/Agora/registry/governance/governance-state.json `
+  --skip-sign `
+  --out D:/Agora/registry.db
+```
+
+`read-only` runs the full detection pipeline in memory but never writes state, never sends Discord alerts, and has no effect on the working tree or remote.
+
+**State recovery.** Production preflight rejects missing or malformed JSON, unsupported schemas, duplicate or incomplete events, and mismatched `governance_repository` or `policy`. Recovery restores the last valid file from Git history or, after curator review, commits an empty production envelope and validates it with `scripts/validate_governance_state.py`. Production state must not be silently truncated or regenerated.
+
+**Workflow ownership boundaries.**
+- The loader-refresh workflow is the sole committer for the three tracked loader-manifest files. The nightly compile may regenerate them for compilation but never stages them in the governance commit.
+- The nightly governance commit stages only `registry/governance/governance-state.json`. Signed database and web exports are user-facing release assets, not Git commits.
+- `quarantine_decisions.json` and `vote_issues.json` are curated manually via PR.
+
+**Production mode is currently read-only.** The CI `compile.yml` workflow runs governance in `read-only` mode (observation, no state writing, no Discord). Full `monitor` mode (state commits + real Discord alerts) is **not yet activated in production** — it requires completion of sandbox testing gates and explicit manual curator sign-off. Until those gates pass, production runs are observation-only.
+
+---
+
+---
+
+## 25. CONTROLLER SUPPORT
+
+### 25.1 Controller Support Is App-Wide, Not a Second Application (formerly §19.22)
+
+Handheld mode originally shipped as a separate full-screen shell that could list
+instances and launch one. That was the whole feature. The failure was structural
+rather than a matter of missing screens: a parallel controller UI is a second
+place every future feature must be built, so it is built once and then stops
+being maintained. The offer dialog that exists *because* the user is holding a
+controller could not be answered with that controller, which is what the pattern
+produces at its logical end.
+
+**The pivot: one application, navigable by any input device.** Controller support
+is an input layer over the same pages, not a rendering of a chosen few. The
+separate handheld shell is retired: what remains is a *presentation* of the
+ordinary app — larger hit targets, bigger type, opened-up spacing — applied to
+the same destinations, never a separate destination tree. A component-level
+presentation variant is fine; a duplicated workflow is not.
+
+**Presentation follows controller presence, not a setting.** This keeps the
+decision the old handheld mode was built on: picking the pad up *is* the
+request, and the Web Gamepad API only reports a pad once a button has actually
+been pressed, so it follows a deliberate act rather than a device left plugged
+in. Note this is a different signal from the input-modality marker that drives
+the focus ring: modality flips the instant a mouse is touched, which is right
+for a ring and wrong for layout, because resizing the interface every time a
+hand moves between pad and mouse would be unusable.
+
+**Input ownership is explicit and exclusive.** A global enable/disable flag can
+only say "everything off", never "the dialog owns input now", which is why the
+Controlify offer was unreachable and why overlays such as HealthDialog left the
+shell live behind them. Instead, a layer stack: components claim ownership while
+mounted, the topmost layer receives every intent, and it either handles an intent
+or lets it fall through to that layer's default navigation. Nothing infers
+ownership from `defaultPrevented`, because a handler that silently swallows an
+intent is indistinguishable from a controller that stopped working.
+
+**Intents are semantic, never button labels.** Nothing above the sampler sees
+`a`/`b`: those are Xbox names, physically swapped on Nintendo layouts and
+different again on a DualSense. The physical mapping is sealed inside
+`lib/useGamepad`; everything above reasons about `accept`, `cancel`, `secondary`,
+`context`, `menu`, `page` and `scroll`.
+
+**The provider mounts above `App`.** `App` early-returns during onboarding, so a
+provider mounted inside it would leave first run with no controller support while
+claiming whole-app coverage. Whole-app has to mean whole-app, including the parts
+that run before the shell exists.
+
+**Geometry is a fallback, not the architecture.** Element counts say the DOM is
+mostly focusable already; they do not say who owns the arrows at a given moment.
+Spatial navigation, scrollport awareness and navigation groups sit *inside* the
+ownership model rather than replacing it.
+
+**Text entry goes through a service boundary.** A home-grown on-screen keyboard
+is a basic-Latin fallback, not the answer: it does not solve composition/IME,
+caret and selection editing, dead keys, RTL or clipboard behaviour. Platform
+adapters (Steam's overlay where genuinely available, a narrow native helper where
+supported) sit behind one `TextInputService` seam in the desktop backend, reached
+through `invoke()`. That seam never justifies a general `shell:allow-execute`
+capability; a fixed, argument-free command is the most that may be added.
+
+Coverage expands by *interaction class* — native `select`, `range`, `color`,
+tables, text entry — fixed once each at the primitive level, rather than page by
+page. Until every class is covered, the honest description is limited coverage,
+not controller support.
+
+---
+
+## 26. MULTI-GAME SUPPORT
+
+**Status: planned, not built.** A post-v1 initiative. It replaces the `BACKLOG.md` line that put
+"MO2 integration, Steam discovery, generic game adapters" out of scope for v1: they stay out of v1,
+and this section is the plan for after it. Every measured claim below cites
+`scripts/spikes/game-support/FINDINGS.md` (F1–F8), which cites the raw reports next to it.
+
+### 26.1 What This Is, and What It Is Not
+
+Agora becomes a launcher and mod manager for games beyond Minecraft. Each game gets the same things
+Minecraft already has: instances that do not interfere with each other, a pinned runtime, content
+with provenance, snapshots and recovery, diagnostics before launch rather than a crash after it.
+Skyrim is the first target because its modding is the most fragile: a store update breaks the
+script extender, tools such as Nemesis generate files nobody tracks, and recovery is manual.
+
+It is **not** a universal mod loader. Agora does not make incompatible mods compatible, and does not
+replace the frameworks a game's community has built (SKSE, BepInEx, UE4SS, REDmod). It runs them,
+pins them to the runtime they were built for, and says when they do not match.
+
+Three requirements from the user shaped the rest of this section:
+
+1. **Full mod management, not a companion to another tool.** People do not want a tool that needs a
+   second tool. Agora does the managing itself; it does not drive a hidden MO2.
+2. **Community support is mandatory.** A game that ships in Agora must be one a community author
+   could have added. First-party code is allowed to be faster to write, never more privileged.
+3. **Correct over inherited.** Existing Agora structure is kept where it is right and changed where
+   it is not, including the plugin system. Minecraft-only users see no change and download nothing
+   new.
+
+### 26.2 Evidence and the Decisions It Forced
+
+The design was not settled on paper. A PowerShell spike (`scripts/spikes/game-support/`) was run on
+a real Windows 11 machine with Steam, GOG, Epic and Microsoft Store games, three Skyrim installs and
+two MO2 setups, one of them a 214,592-file pack.
+
+| Finding | Decision |
+|---|---|
+| A private copy of Skyrim builds in 0.1 s at ~50 MB of real disk; SKSE runs from it and loads its plugins from it; Steam does not relaunch it from its own folder (F1) | Every instance runs a **pinned base** of its game version (§26.4). A store update cannot break an instance. |
+| The game, and a tool run, rewrote `d3dx9_42.log` inside the base; the base was a hardlink, so the real Steam install changed (F2, F4) | A base is a **lower layer that is never written**: writes go to the instance's own layer, which protects the store install and every other instance sharing the base (§26.4, §26.5). |
+| Steam replaces files on repair and on a real update; 14 of 331 files replaced, none patched in place, no `.pak` touched (F3) | A **Linked** base (hardlinked archives) is frozen against replace-style updates, the only kind observed, and costs tens of MB. An archive changed in place is detected, never absorbed; a **Copied** base guarantees against anything (§26.4). |
+| Under MO2's usvfs, new files go to `overwrite`, but BodySlide and Nemesis edit existing files **in place** in their mod folders (F4) | Agora's content store is shared, so its files may never be the write target: the VFS must **copy on write, or fail closed** (§26.5), and this is measured before the layer contract is fixed. |
+| Nemesis's real output is ~46 files under `meshes\actors\character` plus its own cache (F4) | Tool output is a **generated layer** Agora owns, fingerprints and rolls back (§26.9). |
+| Steam 1.6.1170, GOG 1.6.1179 and an untracked 1.7.104 on one machine; an Address Library covering twelve runtimes but not the one its MO2 instance uses (F5) | A game's runtime identity is **store + exact version**, and compatibility is checked against it before launch (§26.6). |
+| 101 of 107 MO2 mods record a Nexus id and archive name; a forgotten MO2 setup turned up only when drives were scanned (F6) | MO2 import is a flagship path; discovery scans rather than trusting default locations (§26.10). |
+| Store executables are unreadable, but Agora can start them, and `ck3.exe` starts CK3 with no launcher (F7) | Store games get no pinned base and no executable hashing, but Agora launches them itself (§26.3). |
+| Stores list DLC, tools and the Unreal editor as "games"; several games match no engine family; `nxm://` belongs to Vortex (F8) | Store adapters classify what they find; engine families are optional parents; games declare rather than guess (§26.11). |
+
+### 26.3 Games, Installs and Runtime Identity
+
+**A game definition** says what a game is: its id and name, the store ids that identify it (Steam app
+id, GOG product id, Epic app name, Microsoft Store package name), how to read its version, which
+folders mods go into, which frameworks exist for it, how to launch it, where its logs and crash
+reports are, and which deployment strategy it needs. It is data first (§26.11).
+
+**A game install** is one copy found on the machine, produced by a **store adapter**. Steam
+(`libraryfolders.vdf`, `appmanifest_*.acf`), GOG (registry), Epic (launcher manifests) and the
+Microsoft Store (`XboxGames` folders, `MicrosoftGame.config`, `Get-AppxPackage`) each implement one
+trait in core. Every adapter classifies what it finds as *base game*, *add-on* or *tool*, because
+every store reports all three (F8): GOG lists Cyberpunk three times for one folder, Xbox installs
+each CK3 DLC as its own folder, Epic lists the Unreal Engine editor. Discovery also records the drive
+and file system, because pinning depends on them (§26.4).
+
+**Runtime identity** is `(game, store, version, build)`. The store is part of it because the same
+nominal version differs between stores: GOG Skyrim 1.6.1179 needs its own SKSE build (F5). Version
+comes from the executable's file version where readable, otherwise the store's own record (Steam
+build id, GOG `ver`, package version). Everything version-sensitive (frameworks, native plugins,
+Address Library, load-order rules) is matched against this identity.
+
+**Store capabilities differ, and the model says so rather than papering over it.** A store adapter
+reports per install whether its executables are readable (Microsoft Store: no, F7), whether its folder
+accepts new files (Microsoft Store: yes), and whether its game can run from outside its folder. An
+install whose executables cannot be read gets no pinned base (§26.4) and no executable hash; its
+runtime identity comes from the package version.
+
+**The user decides which folder is the game** (decided with the user, 2026-10-05). Discovery only
+proposes. The user can add a folder discovery did not find (a copy on another drive, a store-less or
+portable install, a folder another manager prepared), and can change, at any time, which folder a
+game or an instance tracks. A custom folder's identity comes from its executable's version where
+readable; otherwise the user states the version, and it is shown as stated rather than detected.
+Re-pointing a pinned instance builds or picks a base from the new folder; re-pointing an unpinned or
+direct-install instance (§26.5) simply uses the new folder. This is a freedom, not a fast or
+guaranteed-safe path: Agora warns when the new folder is a different version than the instance's
+content expects, or looks modified by something else, and then does what the user chose.
+
+**Launching a game is Agora's job, not the store's.** Steam cannot express profiles, and a
+Steam-launched Skyrim loads no instance at all. Agora starts the recipe the game definition gives
+(executable or framework loader, arguments, environment, working directory) from the instance's
+pinned base. Store games are started through their real executable: `ck3.exe` directly opens CK3
+without the Paradox Launcher, and Minecraft Dungeons starts from its own executable (F7). Process
+tracking reuses `process_identity` and `process_session_manager`, and treats "the game kept running
+after it was quitted" as a normal state to resolve rather than an error.
+
+**Launching, as built (Phase 2, slice 4).** `agora_core::game_launch`, shown by
+`agora games launch <base> [--wait] [--launch-anyway]`:
+
+- The definition's recipe resolves against host roots (runtime and base are the base folder,
+  install the store folder, user data through the OS); roots that need instances or layers are
+  refused until they exist. A game whose package prepares its own recipe (Minecraft) has none.
+- **Before launch, the base is quick-verified.** Problems refuse the launch, naming each file;
+  `--launch-anyway` is the explicit override, with the problems shown as warnings.
+- **Declared writes** (`GameDefinition::declared_writes`; Skyrim: `d3dx9_42.log`) are files the
+  game writes into its own folder. Until Phase 3's write layer, they land in the base's own copy and
+  verification reports them as game writes, not damage. A declared write may never match a linked
+  file: that would write into the store install, so `build_base` refuses such a definition.
+- **Running means a process whose executable is inside the base**, not the spawned PID, because
+  launchers re-exec. A copy of the game's executable started after the launch from anywhere else is
+  reported as having relaunched outside the base.
+- Steam games get `SteamAppId`/`SteamGameId` set to their app id, as MO2 does, so the relocated
+  game attaches to Steam instead of relaunching from Steam's folder.
+- **Measured on the spike machine:** vanilla Skyrim reached the main menu from both bases. GOG
+  1.6.1179 ran as one process from the base and wrote nothing into it. Steam 1.6.1170 ran from the
+  base, did not relaunch through Steam, and wrote only `d3dx9_42.log`: the file that, in the spike,
+  went through a hardlink into the real Steam install (F2), now in the base's own copy. Both store
+  installs were unchanged afterwards (GOG's only difference was an archive timestamp from an earlier
+  deliberate tamper test). With an archive patched in place, launch was refused naming
+  `Data/ccQDRSSE002-Firewood.bsa`, exit code 1, and no game process started.
+
+**Discovery, as built (Phase 2, slice 1).** `agora_core::game_discovery`, shown by
+`agora games discover`. Read-only: unlike the spike, it writes no probe files. Each store's
+classification uses the signal that store itself records, measured on the spike machine:
+
+| Store | Found through | Add-on when | Tool when |
+|---|---|---|---|
+| Steam | `libraryfolders.vdf`, `appmanifest_*.acf` | `appinfo.vdf` type is `dlc` | type is anything but `game`, `demo` or `dlc` (Blender, Proton, redistributables) |
+| GOG | registry `GOG.com\Games` | `dependsOn` names a product | — |
+| Epic | launcher `.item` manifests | `MainGameAppName` names another app | `AppCategories` lacks `games` (the Unreal editor, its plugins) |
+| Microsoft Store | `.GamingRoot`/`XboxGames` per drive, then AppModel packages | `MicrosoftGame.config` has `MainPackageDependency` | — |
+
+A broken file skips its entry with a warning naming it; a store that is not installed adds nothing.
+Steam's binary `appinfo.vdf` (v28/v29) is parsed for types and launch executables; without it,
+known tool app ids are the fallback. The real-machine run listed 64 installs with no warnings: 35
+base games, 23 add-ons (CK3's 16 Store DLC under the game), 6 tools.
+
+### 26.4 Pinned Bases
+
+**Every instance of a game whose install is readable and relocatable runs from a pinned base**: a
+private copy of one game version, shared by all instances pinned to that version. This is the
+Wabbajack "Stock Game" practice made automatic, and it is what fixes the problem that started this
+initiative: a Steam update changes the Steam install and no instance.
+
+**A base is a lower layer, never written.** Games and tools do write inside their own folder (F2,
+F4), and a base is shared, so every write is redirected by the deployment strategy (§26.5) into the
+instance's own layer. That protects the store install *and* the other instances pinned to the same
+base; copying files out of the store install protects only the first.
+
+**Two ways to build one, and what each guarantees.**
+
+| Mode | Built from | Disk | Guarantee |
+|---|---|---|---|
+| **Linked** (default) | Hardlinks for the large archives a game definition lists (`.bsa`/`.ba2`, `.pak`/`.utoc`/`.ucas`, `.archive`…); copies of everything else (executables, DLLs, INIs, small data) | Tens of MB | Frozen against stores that *replace* files, which is what Steam did for a repair and for a real update (F3). Not frozen against a store that patches an archive in place: a hardlink shares the file, and a read-only attribute is shared too. Such a change is **detected, never absorbed**. |
+| **Copied** | Copies of everything | The game's full size | Frozen against anything. |
+
+Linked is the default because the evidence so far supports it and Copied costs 16 GB for Skyrim and
+145 GB for Baldur's Gate 3. The user can make any base Copied, and an instance can require it. Where
+a volume offers copy-on-write file clones (ReFS, including Windows 11 Dev Drive), Copied costs no more
+than Linked and is used automatically.
+
+**Verification.** Building a base records a manifest: path, size, SHA-256, and for linked files the
+file identity. Before every launch the base is checked cheaply (identity, size, modification time);
+the full hash runs at build time, on demand, and whenever the cheap check fails.
+
+**Repair restores exact bytes or says it cannot.** A damaged base file is restored only from a source
+whose hash matches the manifest: the store install if it has not moved on, another base of the same
+version, or a Copied base. If no such source exists, Agora says so, names the files, and does not
+launch that instance on a mixed-version base. The choices offered are to move the instance to the
+store's current version (below) or to rebuild the base from a matching copy the
+user supplies.
+
+Hardlinks need the base on the same volume as the store install; elsewhere, a base is Copied, with
+the cost shown before the user agrees. A base is kept while an instance uses it; when no instance is
+pinned to it, Agora offers to remove it.
+
+**Updating is a choice.** When the store install's runtime identity changes, Agora shows which of an
+instance's frameworks and native plugins support the new version and offers to move the instance.
+Moving takes a snapshot first.
+
+**Installs that cannot be pinned.** Two kinds: executables that cannot be read (Microsoft Store, F7),
+and games the store will not run from outside its folder (a store adapter records this per install,
+§26.3; Steam Skyrim and GOG Skyrim both ran relocated, F1). Both run from their store folder,
+unpinned, with the VFS mounted over that folder where the game needs one, as MO2 does; the instance
+page says the instance is unpinned and why. Microsoft Store mods rarely need the game folder anyway
+(CK3 and Dungeons read Documents and AppData).
+
+**As built (Phase 2, slice 3).** `agora_core::game_base`, shown by `agora games base
+build|list|verify|remove`:
+
+- **Where a base lives.** A base's files sit on the install's volume, because hardlinks cannot cross
+  volumes: in the data folder's `bases/` when it is on that volume, otherwise in
+  `<volume root>\AgoraBases\`, the way Steam keeps a library per drive. Manifests always live in the
+  data folder, so Agora finds bases on every drive without scanning. A base id is
+  `{game}_{store}_{version}_{build}`, one per exact runtime, shared by every instance pinned to it.
+- **What is linked.** Skyrim's definition links `Data/*.bsa`, `*.esm`, `*.esl` and `*.bik`, matched
+  case-insensitively; everything else is copied. Linking only `.bsa` would have copied ~440 MB per
+  base, most of it the `.esm` masters.
+- **Building** walks the install without following links or junctions, stages into
+  `<id>.partial-*`, hashes every file in parallel, renames the folder into place, then writes the
+  manifest. Any error deletes the staging folder. A folder left by a build interrupted between the
+  rename and the manifest is cleared and rebuilt. Linked never falls back to copying silently: when
+  linking is impossible it fails with the size a Copied base would take.
+- **Removing** deletes only a folder named after the base, directly inside a bases root, and not
+  overlapping its source install, because the manifest that names it is a user-writable file.
+- **Measured on the spike machine** (debug build, throwaway data folder on C:, games on D:):
+
+  | | GOG 1.6.1179 | Steam 1.6.1170 |
+  |---|---|---|
+  | Files | 224 | 117 |
+  | Linked | 32.01 GB | 16.09 GB |
+  | Copied | 78 MB | 197 MB |
+  | Build (mostly hashing) | 144 s | 99 s |
+  | Quick verify | 0.1 s, no file hashed | the same |
+  | Store install afterwards | unchanged: all 224 files' size, time, attributes and hashes | unchanged, all 117 |
+
+  An archive patched in place in the GOG install was reported by name (`Data/ccQDRSSE002-Firewood.bsa:
+  size changed`), as was a stray file written into the base; an `.esl` the "store" replaced by
+  rename left the base clean. Restoring the archive's bytes changed its modified time, so the quick
+  check hashed that one file and passed.
+- **A store folder is not always pristine** (decided with the user, 2026-10-03). 130 MB of the
+  Steam base's copies were `Data/SSEEdit Backups/`, left by a mod tool, and its masters had been
+  cleaned in place by xEdit before Agora saw them. So:
+  - **Known tool leftovers are skipped by default.** A game definition lists them (Skyrim:
+    `Data/SSEEdit Backups/`, xEdit's `*.backup.*` files), the manifest records each skipped path,
+    and a setting turns skipping off for users who want the folder pinned exactly as found.
+  - **Agora offers to check an install before pinning it,** against the store's own file list
+    (Steam depot manifests, GOG's build files), and offers the store's repair when it differs.
+    It is an offer the user can decline: pinning a deliberately modified install is legitimate
+    (*Modding is user customization*), and the base then says it was modified.
+
+**Fetching older versions (planned).** Pinning keeps a version; fetching gets one back, for the
+user whose store already updated past the version their mods need. Researched 2026-10-03:
+
+| Route | What exists | Cost |
+|---|---|---|
+| **Store branches and rollback** | Many Steam games keep old versions as beta branches (listed in `appinfo.vdf`); GOG Galaxy offers rollback, and GOG's content system lists a product's builds | No credentials in Agora. Switching a Steam branch changes the store install, so Agora guides it: pin the current version, switch, pin the old one, switch back. Pinning is what makes this safe |
+| **Download a specific build** | Steam: [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (`-app -depot -manifest`) or the client's own `download_depot`; old manifests need an owning account ([request codes](https://steamdb.info/blog/manifest-request-codes), since 2022). GOG: Galaxy Gen 2 builds through [lgogdownloader](https://pkgsrc.se/games/lgogdownloader) or Heroic's gogdl; Gen 1 builds are not reachable | A store sign-in, opt-in only. DepotDownloader's QR login (`-qr`) means Agora never sees a password. Which manifest is which version needs a map, best kept as curated catalog data and checked by hash after download. A downloaded base is a full copy: nothing to hardlink to |
+| **Community downgrade patchers** | Skyrim's [downgrade patcher](https://www.pcgamer.com/uk/this-mod-rolls-back-skyrim-anniversary-edition-to-special-edition-version-1597/) binary-patches a valid install back to 1.5.97, shipping no game files | Runs as a declared tool (§26.9) into a new base. Known trap: patching the executable but not the data gives a 1.5 engine reading 1.6 content |
+
+**One pipeline, a transport per store** (decided with the user, 2026-10-03):
+
+- **Agora owns everything around the bytes:** the curated map (a catalog entry names the store,
+  product and build, and the expected hash of every file), staging, progress, verification, the
+  base build, and the sign-in UI. Because every file is checked against curated hashes, a transport
+  is never trusted for correctness, only for moving bytes.
+- **Transport is a core host service, not a package's.** It holds a store session, and a community
+  plugin should not hold someone's Steam sign-in. Packages and the catalog supply data only.
+- **GOG: Agora's own Rust client.** The content system is HTTP and JSON (a builds list per product,
+  zlib-compressed manifests, CDN chunks), documented by the community
+  ([gogapidocs](https://github.com/Yepoleb/gogapidocs)); a few hundred lines beat shipping a Python
+  or C++ runtime.
+- **Steam: not written from scratch.** Its protocol (CM login with Steam Guard or QR, manifest
+  request codes, AES chunks, Valve LZMA) is large and Valve changes it. **A spike decides between**
+  [`steamroom`](https://docs.rs/crate/steamroom/latest) (Rust, MIT/Apache, young: 0.3.0, July 2026)
+  and [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (.NET, GPL-2.0, mature): can
+  steamroom sign in by QR and download an old manifest of an owned Skyrim? If so, Steam stays in
+  Rust with an in-app sign-in; if not, DepotDownloader is fetched as a separate component (§26.5,
+  *components are fetched*), never linked, behind the same interface.
+
+### 26.5 Deployment: How Mods Reach the Game
+
+Deployment is a strategy chosen by the game definition, implemented in core, one interface with
+several backends.
+
+**The layer stack**, lowest first. A higher layer hides the same path in a lower one.
+
+1. The pinned base, or the store folder when unpinned (§26.4). Read-only.
+2. Content from the content store, in the instance's mod priority order. Read-only, shared.
+3. Generated layers (§26.9), one per tool, in the order the tools declare. Owned by the instance.
+4. The instance's writable layer: whatever the game writes while running.
+5. During a tool run only, that run's staging layer (§26.9).
+
+Only layers 4 and 5 are ever written. Deleting a path that exists in a lower layer records a
+*whiteout* in the writable layer; the lower file is untouched.
+
+| Strategy | For | How |
+|---|---|---|
+| **Redirect** | Games or frameworks that can be pointed at another folder: Factorio (`--mod-directory`), BepInEx and Unity Doorstop, Paradox mod descriptors, Minecraft | Agora builds the mod folder per instance and points the game at it. Nothing touches the game. |
+| **Virtual file system** | Games that load mods only from their own folder: Creation Engine, REDengine, many Unreal games | The stack is mounted over layer 1 at launch. Windows: Agora's own copy-on-write VFS, or link deployment where a DLL cannot be injected (below). Linux: overlayfs (`fuse-overlayfs` without root). |
+| **Journaled swap** | Per-user files a Redirect game reads from fixed places | See *Per-user files* below. |
+
+**Copy-on-write is a requirement, not an option.** Layers 1–3 are shared or must stay exactly as
+recorded. A tool that edits a file in its own mod folder (BodySlide's config, Nemesis's `nemesis.ini`,
+F4), or a game that rewrites a log in its root (F2), must write a copy into layer 4 or 5, never the
+lower file. overlayfs does this natively (copy-up).
+
+**Write isolation on Windows, as decided by Spike 2** (2026-10-04, with the user;
+`scripts/spikes/game-support/write-isolation/`, whose `FINDINGS.md` has the measurements). Three
+mechanisms, each covering what the one before cannot:
+
+1. **Agora's own copy-on-write VFS** (`agvfs`, Rust), not usvfs. usvfs has no copy-on-write (its
+   header lists it as "maybe"; no fork has it): of 30 changes to existing lower files in the spike's
+   matrix, 24 changed the real file, through a hardlink into the store install too, and handle-based
+   rename and `ReplaceFileW` bypass it entirely. Forking it would mean rewriting its write path, its
+   least developed part, while keeping its C++/Boost toolchain and its per-file-link model, which has
+   no place for layers or whiteouts. agvfs is built around the layer stack instead:
+   - It is a DLL injected into the game (and, through a `CreateProcessInternalW` hook, every process
+     the game starts) that hooks the NT calls every Win32 file API funnels through: `NtCreateFile`,
+     `NtOpenFile`, `NtSetInformationFile`, `NtQueryAttributesFile`, `NtQueryFullAttributesFile`,
+     `NtQueryInformationByName` (Windows 11 24H2's `GetFileAttributes*`), `NtQueryDirectoryFile(Ex)`,
+     `NtClose`.
+   - A lower file is never opened with write or delete rights. Writing to it copies it to layer 4
+     first; a whole-file rewrite (`OVERWRITE`, `SUPERSEDE`) needs no copy. Deleting it records a
+     whiteout, a marker file in layer 4 (`.agvfs-wh\<path>.wh`). Renaming it copies it to the new name
+     and whites out the old one. Folder listings merge every layer, the higher hiding the lower,
+     whiteouts hidden.
+   - Relative names arrive relative to a directory handle (usually the current directory, opened
+     before the hooks existed), so a handle's path is looked up when it is not one agvfs opened.
+   - **Every `.exe` and `.dll` is physically present at its path in the launch folder**, hardlinked
+     from the base's own copies (§26.4 already copies them). Windows maps a process's image, and the
+     loader resolves its static imports, before any hook exists: with them only virtual, Skyrim
+     exits `STATUS_DLL_NOT_FOUND` and Satisfactory's launcher cannot start its game.
+   - Measured: the matrix (ten ways to change a file, three lower layers, game and child process)
+     changes no shared file and fails no operation, and what the game can open, list and query is
+     always the same set. Skyrim SE and Witcher 3 ran to the menu and into play from their bases,
+     Skyrim opening the same 177 files as under usvfs; Witcher 3's `metadata.store` rewrite landed in
+     layer 4 with no copy. RimWorld, Slay the Spire, Balatro and Satisfactory ran from their store
+     installs as the lower layer, each install unchanged afterwards.
+   - Still to build before Phase 3 relies on it (usvfs hooks 47 functions, agvfs 12): virtual current
+     directories, handle-name queries (`NtQueryInformationFile`'s name classes, `NtQueryObject`),
+     `GetModuleFileName` for binaries loaded from a lower layer, 32-bit processes,
+     `FILE_OPEN_BY_FILE_ID`, the newer listing classes, and per-user files mapped through the VFS
+     (below). The spike's matrix and real-game runs become its conformance tests.
+2. **ACL deny on everything Agora owns and shares**: the content store, and the files of Copied
+   bases. Files are denied `WriteData`, `AppendData`, `WriteExtendedAttributes` and `Delete` for the
+   user; folders `CreateFiles`, `CreateDirectories` and `DeleteSubdirectoriesAndFiles`. Windows itself
+   then refuses any change, whatever opened the file, inside a game or outside Agora; agvfs's copy-up
+   only ever reads, so the two stack (the matrix is unchanged with both). `WriteAttributes` stays open
+   because creating a hardlink needs it, and deny entries must not include `SYNCHRONIZE` (`icacls
+   /deny` adds it, which denies every open, reads included). An ACL or a read-only attribute belongs
+   to the file, not the link, so neither can protect a base file hardlinked to the store install
+   without changing the store's file: those are protected by agvfs alone, and post-session
+   verification (§26.4) stays as detection. Agora removes its deny entries before deleting its own
+   files, including on uninstall.
+3. **Link deployment, for games that cannot take an injected DLL** (anti-cheat, or agvfs not yet
+   compatible): the instance's game folder is a real folder of hardlinks, the content over the base,
+   and the game runs on it directly. With the ACLs, an in-place edit of a deployed file fails closed
+   and nothing shared changes. Agora grants the user delete-child on the deployment folder it creates,
+   so deleting or renaming a deployed file removes only that instance's link (measured: with it, only
+   the 12 in-place edits of the 62 fail; without it, all 62). Switching instances re-links, which is
+   fast but not free, and the content store must be on the instance's volume.
+
+**When a write is refused** (link deployment, or a path agvfs cannot redirect), in link mode small text files likely to be rewritten (matching core default patterns `**/*.ini`, `**/*.cfg`, `**/*.json`, `**/*.toml`, `**/*.xml`, `**/*.yaml`, `**/*.yml`, `**/*.conf`, `**/*.config`, `**/*.properties` or the game's `copy_patterns`, up to 1 MiB) are placed as copies rather than links so in-place edits succeed. For other files, copies are made a mod at a time: both observed writes were a tool editing its *own* mod folder (F4). A mod that contains a tool the instance runs gets its own writable copy in that instance automatically; any other mod can be given an own copy via the per-mod `own_copy` switch (`agora games instance content own-copy <instance> <item> on|off`) or from its menu; turning it off harvests changed files into the writable layer; paths a game is declared to write (logs, INIs in its root) are materialised before launch.
+
+A write can never silently reach a shared file. Hash checks after a session (the content store,
+§26.6; bases, §26.4) remain as detection of anything missed, not as the protection.
+
+**Deployment backends and graceful fallback** (decided with the user, 2026-10-05). Deployment is one
+interface in core with several backends, ordered best first. Each instance uses the best one its game
+and machine support, and says which, and why, on its page.
+
+| Rung | Backend | When | What it gives up |
+|---|---|---|---|
+| 0 | **Redirect** | The game or its framework can be pointed at a mod folder (BepInEx, Paradox, Factorio, Minecraft) | Nothing; the game definition's first choice when it applies |
+| 1 | **agvfs** | Default for games that load mods only from their own folder | — |
+| 2 | **Link deployment** | agvfs cannot run: anti-cheat, a protected process, an unsupported architecture, a failed trial | Switching instances re-links; an in-place edit of a mod file fails closed, so small config files (≤ 1 MiB) are copied automatically and a mod can be given a per-instance own copy (`own_copy`). Needs the base's writable files to be Agora's own (a Copied base), because an ACL cannot protect a file hardlinked to the store install |
+| 3 | **Copy deployment** | Hardlinks are impossible: the content store is on another volume, or the volume is exFAT/FAT32 or a network share | Disk space and switching time; where the file system has no ACLs, post-session verification is the only protection |
+| 4 | **Direct install into the game folder** | The game must run from its own install (some DRM and anti-cheat check the path; Microsoft Store packages), **or the user chooses it** | Agora modifies the real install. Content is copied in, never linked, so the content store stays protected; a journal records what was replaced and added, restores it after the session or when switching instance, and the user may choose to leave it deployed instead |
+
+- **Stepping down is never silent, and never to rung 4 on its own.** When rung 1 cannot start
+  (agvfs missing, injection refused, the process ended before it confirmed its hooks), core
+  reports `VfsUnavailable` with the next rung (`DeployMode::next_fallback`: agvfs to links, links to
+  copies) and launches nothing, whether or not the user chose the rung; the front end says what
+  failed and why, what the next rung gives up, and asks. Yes runs that launch from the next rung
+  for this launch only, and the way to keep it (`set-deployment`) is printed. `--fall-back` is the
+  yes given in advance (`VfsFailure::FallBack`). Rung 4 is never offered by that question: Agora
+  asks separately, says what it will change, and offers it.
+- **The user can always choose any rung for an instance, rung 4 included**, even where a better one
+  works. It does not have to be fast or safe; it has to be possible. Agora explains what is lost and
+  does what was chosen (§26.3 gives the same freedom over which game folder is tracked).
+- **Choosing the rung, cheapest evidence first:** what the game definition declares (strategies,
+  known incompatibilities, paths that must be physical, declared writes); what discovery sees
+  (anti-cheat folders, Microsoft Store packaging, 32-bit or ARM executables, volume capabilities);
+  community compatibility reports per game version in the curated catalog (§26.8), when they exist;
+  a pre-flight handshake (the game is started suspended, agvfs is injected and must confirm its hooks
+  before the game is resumed, which catches antivirus blocks and protected processes before anything
+  runs); and the first launch on a backend as a trial (an exit within seconds, `STATUS_DLL_NOT_FOUND`,
+  or calls agvfs reports it could not handle). A failed check is a launch-time finding in the usual
+  form (finding, why it matters, repair), such as offering link deployment for that instance.
+- **agvfs degrades by refusing, never by passing through.** A call it cannot handle that could change
+  a lower file is answered "access denied" and logged; a refusal is a bug report, a pass-through would
+  be corruption. The ACL floor covers its own bugs.
+- **Machine problems are pre-flight findings with a repair**: antivirus blocking injection (agvfs is
+  code-signed and uses one documented injection method), Controlled Folder Access blocking Documents,
+  Agora's folders inside a OneDrive-synced folder (cloud placeholders), Windows on ARM (needs an
+  ARM64 agvfs), and too little disk space for a copy-up or a copy deployment.
+- **Build order:** the interface and link deployment come first, because they need no injection,
+  work for any game and get Phase 3 working end to end soonest; agvfs then arrives as the upgrade
+  behind the same interface, with the fallback already exercised.
+
+**Per-user files.** Skyrim AE rewrites `plugins.txt` at launch (F2), and a game's INIs live in the
+user's profile, shared by every instance of that game.
+
+- For **VFS games**, these paths are mapped through the VFS to the instance's own copies, as MO2
+  maps its profile files. The real files are never touched.
+- For **Redirect games** that read them from a fixed place, they are swapped in by a journal:
+  - The swap is owned through a lock on the shared resource itself (`GameUserFiles(game, store)`, a
+    new `LockResource`), not the instance lock, and is held for the lifetime of the game's and any
+    tool's processes, not just the launch call. A second instance of the same game waits or is
+    refused with the name of the holder.
+  - The journal records the original bytes and what Agora wrote. Restoring puts the original back
+    only if the file still holds what Agora wrote; if something else changed it meanwhile, both
+    versions are kept and the user is asked.
+  - After a restart, Agora checks whether the journaled session's processes are still alive
+    (`process_identity`). If they are, the session is re-attached and nothing is restored under a
+    running game.
+
+**Saves are the user's choice per instance**, as in other mod managers: either the game's shared
+save folder (the default, and what a player expects) or saves owned by the instance, redirected
+through the game's own setting where it has one (`sLocalSavePath` for Creation Engine, which is how
+MO2's "local saves" works). Switching offers to copy or move the existing saves. Loading a save made
+with different content is a launch-time warning, not a block.
+
+**Components are fetched, not bundled,** when they are someone else's: a runtime component is
+downloaded and hash-verified the first time a game needs it, through the same machinery that
+provisions Java runtimes (`runtime_catalog`, `runtime_manager`), generalised from "Java runtime" to
+"runtime component". agvfs is Agora's own code, built and signed with Agora, so it ships with it (a
+Minecraft-only install carries it unused).
+
+### 26.6 Content, Frameworks and Compatibility
+
+**The content store** is content-addressed and immutable: an archive is extracted once, each file
+stored by hash, and every instance's layers refer to it. Provenance is recorded per item as it is
+today (`ProviderOrigin`), extended with the sources other games need: an `nxm://` download, an
+imported mod manager, a local archive.
+
+**Archives and installers are core.** zip, 7z and rar extraction, and FOMOD installers (used by
+Creation Engine, REDengine and others) are implemented once in core, with the installer's choices
+rendered by Agora's own UI and recorded so a reinstall replays them. A community plugin never
+re-implements FOMOD.
+
+**Classification is per game.** "Where does this archive's content go?" is a game rule (Skyrim:
+`Data/`, except SKSE's loader at the root; Cyberpunk: `archive/pc/mod`, `r6/scripts`, `red4ext/`…).
+Game definitions declare simple rules; a script handles the rest.
+
+**Native code is allowed per game, with a badge, not a block.** §21.3's rule that native executables
+are never installed is right for Minecraft, which never runs them. For other games it is wrong: SKSE
+plugins are DLLs. A game definition declares where native code is legitimate
+(`Data/SKSE/Plugins/*.dll`); content placing native code there installs with a "contains native code"
+marker and its source's security tier (§21.2) shown. Native code anywhere else needs the user's
+explicit approval for that item, with a warning that says where it goes and that the game definition
+does not expect it there: a new framework must not wait on a definition update (`AGENTS.md`, *Modding
+is user customization*).
+
+**Frameworks are content with runtime constraints.** SKSE, Address Library, BepInEx, MelonLoader,
+UE4SS, RED4ext and CET are what Fabric and Forge are to Minecraft. Each declares which runtime
+identities it supports. Before launch, core checks every framework and every native plugin that
+declares a constraint against the instance's runtime identity. The case the spike found (an
+Address Library with twelve runtimes, none of them the game's, F5) becomes a pre-launch finding with a
+repair, not a crash to desktop.
+
+**Load order is a core concept with per-game semantics.** Core owns ordered lists with rules,
+locking and diffs. Meaning belongs to the game: Creation Engine plugin masters and light plugins, via
+the LOOT project's GPL-3.0 Rust crates (`esplugin`, `loadorder`, and libloot, whose Rust port is to
+be verified); Factorio dependency graphs; Bannerlord module order.
+
+### 26.7 Providers and Nexus
+
+No new built-in providers. Everything outside the curated catalog stays behind the content-provider
+interface (§21.2), and community plugins supply providers for other games.
+
+**The provider API loses its Minecraft vocabulary.** Today's request and plan types carry
+`minecraft_version` and `loader` fields. They become a `GameTarget`: game id, runtime identity, and the
+frameworks installed. This is a breaking change in plugin API 0.2, acceptable because 0.1 is
+unreleased, experimental and off by default; the 0.1 fixtures keep pinning what 0.1 accepted.
+
+**`nxm://` is routed by core, owned by nobody by default.** Windows gives one application a URL
+scheme; the spike found Vortex holding it (F8). Agora registers for `nxm://` only when the user turns
+it on, says which application it takes it from, and gives it back when turned off. Core parses the
+link and hands it to whichever provider plugin declares the scheme. Agora ships no Nexus provider:
+Nexus's download model (API keys, premium-only direct downloads) sits badly with Agora's
+no-forced-sign-in position, the same reason CurseForge was declined, and a community plugin can go
+as deep as its author wants.
+
+### 26.8 The Curated Catalog for Other Games
+
+**Skyrim support is not complete until curated Skyrim mods install from the catalog** through the
+same two strategies self-hosted Minecraft mods use: `github_release` and `direct_hash`. Curation is
+Agora's core idea; a game without it is a mod manager, not Agora.
+
+What already fits: both strategies are game-agnostic. A GitHub release or a pinned HTTPS URL with a
+SHA-256 identifies a file regardless of what it is for, and the compiler, signature and
+governance pipeline around them does not care either.
+
+What changes, all additive so existing manifests keep compiling unchanged:
+
+- **A `game` field**, defaulting to `minecraft`. Entries for other games live under
+  `registry/games/<game>/`, so a reviewer sees which game a change touches.
+- **Compatibility is expressed against runtime identity and frameworks** (§26.3, §26.6) instead of
+  `{mc_version, loader, mod_version}`: for example "Steam or GOG Skyrim 1.6.1170–1.6.1179, requires
+  SKSE ≥ 2.2.6". The Minecraft form stays as the Minecraft case.
+- **Archives, not only jars.** A curated entry is usually a `.7z` or `.zip` installed through the
+  game's classification or its FOMOD; the entry can pin installer choices so every install of it is
+  the same. SKSE plugins built per runtime are one entry per file, as `direct_hash` already requires
+  for per-version Minecraft files.
+- **Release asset selection.** A GitHub release often carries one asset per runtime or variant, so a
+  `github_release` entry for another game names the asset pattern it wants per compatibility entry.
+- **Hashes as today** (`REGISTRY_CURATION_REFERENCE.md` §8): mandatory for `direct_hash`, hydrated
+  by the compiler for `github_release`, verified at install.
+
+Governance (known conflicts, quarantine, crash signatures) gains a game scope. A catalog for a game
+is created when that game's support is, not before.
+
+### 26.9 Tools and Generated Output
+
+A game definition or plugin declares **tools**: executable, arguments, which layers it reads, and
+where its output belongs. Nemesis, Pandora, BodySlide, xEdit, DynDOLOD, REDmod's deploy step and
+Script Merger are all tools.
+
+**Core runs tools, plugins only declare them.** That is kept from §21.1 for reasons of user
+experience, not caution: only if core starts the tool can it snapshot before the run, run it inside
+the instance's VFS, and capture what it wrote.
+
+**Each run writes into its own staging layer** (layer 5, §26.5), above everything else, so a tool's
+writes never mix with what the game writes during play (layer 4). When the run succeeds, its staging
+layer is **promoted**: it replaces that tool's previous generated layer, and the previous one is
+kept for rollback. When the run fails or is cancelled, the staging layer is discarded and kept aside
+for the diagnostics view; the previous generated layer stays in effect. Generated layers sit in the
+order the tools declare (an animation patcher above a body builder), and conflicts between two tools'
+outputs show in the same conflict view as mods.
+
+**Output becomes a generated layer.** Everything a run writes (Nemesis: ~46 behaviour files and its
+cache, F4) is captured into a layer owned by the instance and labelled with the tool and a fingerprint
+of its inputs: the enabled content, load order and relevant settings. When any input changes, the
+layer is marked **stale** and the launch check says "Nemesis output is out of date: rebuild?". The
+layer can be rolled back as a unit, compared with the previous run, or removed without touching
+anything else. Rolling back is judged by what the game reads: the test is that the bytes visible
+through the mounted stack change, not that a record says they did. This is the feature the initiative was proposed for, and the spike shows the output is
+small and well defined enough to support it.
+
+**Tools work on the real install's path** (measured 2026-10-08/09; decided with the user,
+2026-10-09; not built yet).
+- **The problem:** Skyrim tools do not use the folder they are started in.
+  - The real Nemesis 0.84 reads the install path from the registry (its log:
+    `Data Directory: D:\SteamLibrary\steamapps\common\Skyrim Special Edition\data\`).
+  - BodySlide's `Config.xml` hard-codes `GameDataPath`.
+  - xEdit and DynDOLOD behave the same way.
+  - MO2 works because its VFS shows the mods *at the real path*. Agora's VFS and link capture show
+    them at the deployment's own path, so such a tool sees a vanilla game.
+- **What the 2026-10-09 real runs found** (the Data swap of slice 4c, then 4d):
+  - with a junction in place of the real `Data`, Nemesis saw the whole 368-mod list;
+  - it then failed on files it opens with write access but never changes (its own
+    `Papyrus Compiler\scripts\Actor.psc`, then XPMSE's `skeleton_female.hkx`), because a
+    link-deployed file is the ACL-protected content object;
+  - it exited 0 anyway. The output checks (`required_outputs`, `failure_markers`, slice 4d)
+    discarded it, after an earlier run without them had been promoted and had to be rolled back.
+- **The plan:**
+  1. **A real-path view in the VFS: the default.**
+     - For an injected process tree only, the deployment is visible at the real install's path.
+       Nothing in the install changes, and copy-on-write applies as everywhere else.
+     - This needs reverse-name hooks (a handle's path is reported as the real-path name), explicit
+       handling of every path form (`\\?\UNC\`, volume GUIDs, 8.3 input, drive-relative paths),
+       and the established listing order.
+     - 32-bit tools such as Nemesis need an x86 build of `agora_vfs.dll` and a small 32-bit
+       injection helper, as usvfs does with its proxy.
+     - The design input, with citations to usvfs's code and bug history, is in
+       `D:\Agora-bench\research\usvfs-report.md` (outside the repository).
+  2. **Link capture (built, slice 4b):** used when the VFS cannot host the tool. It captures
+     writes to the deployment, not to the real path.
+  3. **A full-copy swap, the slow universal fallback, offered when a tool keeps failing:**
+     - the instance is deployed as **copies**, so every file is a real, writable file;
+     - the real `Data` is renamed aside, and the copy put in its place;
+     - the tool runs;
+     - then the copy is taken back out, the changes are captured, and the real `Data` is
+       renamed back.
+     On the same volume every move is a rename, and the copy is kept between runs, so only the
+     first run is slow. Across volumes the copy goes in and the changed files come back, which
+     is slower every run and needs free space on the game's drive. Agora deletes only a copy it
+     can prove it made: a marker file inside it, matched by the journal. The journal and
+     recovery of slice 4c carry over; the junction swap itself is replaced, since it fails for
+     tools that open protected files for writing.
+     **The offer states its costs:** the disk space (the whole instance's size), the time for
+     the first and later runs, and that the real `Data` is renamed during the run, so Steam and
+     the game must not run.
+  4. **Switching the instance to link deployment** is offered alongside, for failures where
+     injection is the problem (anti-virus, anti-tamper), not for real-path tools.
+- **Pandora Behaviour Engine** is the recommended behaviour engine. It is 64-bit and takes the game
+  data folder on its command line (`-o`), plus `-autorun -autoclose`, so Agora can rebuild stale
+  output without the user clicking.
+
+### 26.10 Importing Existing Setups
+
+Most people who will try this already have a setup. Import has to be good.
+
+- **MO2**: instances are found by the usual locations *and* a shallow scan of each drive for
+  `ModOrganizer.ini` (a forgotten setup appeared only that way, F6). What is imported:
+  - **Bytes first.** Every mod folder is copied into the content store as it is on disk, whether or
+    not it could be downloaded again. Local edits survive; nothing is replaced by a download.
+  - **Provenance where it is real.** `meta.ini` names the Nexus mod id and archive name for most
+    mods (101 of 107, F6). That is recorded as the source, and a file is linked to a specific
+    download only when a hash proves it matches.
+  - **Two orders.** MO2's mod priority (`modlist.txt`, which decides which file wins) and the
+    plugin load order (`plugins.txt`, which decides which plugin wins) are separate, and both are
+    imported.
+  - **`overwrite`.** It becomes its own layer. Files in it that a known tool produces (Nemesis's
+    output and engine folder, F4) become that tool's generated layer, marked **inputs unknown**:
+    Agora cannot tell what they were built from, so the launch check offers a rebuild rather than
+    calling them current or stale.
+  - Profiles become instances with their local saves and local INIs.
+  The MO2 setup is left untouched and working.
+- **Vortex**: deployment manifests (`vortex.deployment*.json`) list every deployed file and its
+  staging source; the staging folder holds the mods. Import copies from staging and offers to purge
+  Vortex's deployment and verify the store install, since Vortex leaves the game folder modified.
+  Not measured yet: no Vortex-managed Skyrim was available (FINDINGS, *Not measured*).
+- **Wabbajack** lists are MO2 setups with a stock-game folder and import as MO2, with the stock game
+  recognised as a base.
+
+### 26.11 Game Support Packages and the Plugin System
+
+**The plugin system is extended, not replaced.** Its foundations hold: the `ScriptHost` seam, grants
+recorded at consent, signed author updates, host-rendered views. What changes is what a plugin may
+contribute and what the host provides.
+
+**A game support package** is a plugin that contributes one or more of: game definitions, content
+classification rules, load-order semantics, framework definitions, tool definitions, pre-launch
+diagnostics, importers, and providers. Most of a game should be expressible as **declarative data**
+(identity, stores, folders, strategy, frameworks, launch recipe, logs): the spike's inventory suggests
+a large share of the user's library (Valheim, BTD6, Palworld, Satisfactory, Balatro, Minecraft Dungeons)
+needs no script at all. Scripts (QuickJS, §21.1) handle what data cannot.
+
+**Engine families are optional parents, grouped by toolchain rather than engine.** Unity and Unreal
+are not modding pipelines: RimWorld (own mod folder), Valheim (BepInEx), BTD6 (MelonLoader) and KSP
+(GameData) are all Unity. The parents are therefore Creation Engine, REDengine, BepInEx, MelonLoader,
+UE4SS/pak, Paradox and so on. A game package declares the parents it needs, and they are installed
+with it after one consent. Parents are optional because several games match none (Baldur's Gate 3,
+Enshrouded, Kingdom Come, JWE2, F8): a game package must be able to stand alone.
+
+**Games declare rather than guess.** Detecting an engine from files fails in practice (the Microsoft
+Store Brotato has no separate `.pck`, F8). Detection helps the "unsupported game found" hint in the
+UI; support comes from a definition.
+
+**New capabilities** (API 0.2), each shown at install time like today's:
+
+| Capability | Lets a plugin |
+|---|---|
+| `game:define` | contribute game, framework and classification definitions |
+| `game:read` | read inside a discovered install of a game it defines (version detection) |
+| `tool:declare` | declare tools core may run for the user, with their inputs and outputs |
+| `content:native` | mark folders of a game it defines as legitimate for native code |
+| `nxm:handle` | receive `nxm://` links routed by core |
+
+**One registration path, one set of host services.** Every game package, compiled or plugin,
+registers through one `GamePackage` interface in `agora-game-api`: its definitions (data) and
+optional behaviour (classification, version detection, load-order semantics, diagnostics, launch
+preparation). Core calls packages; packages reach core only through **`GameHost` services**, also
+defined in `agora-game-api`: policy-checked downloads, reading inside the game's install, running a
+declared tool, events, and the shared algorithms (archive extraction, FOMOD, load-order engines such
+as the Creation Engine sorter). A script package reaches the same services through the existing
+`HostBridge`, as one method table like `plugins/dispatch.rs`. So anything a compiled package can ask
+of core, a script package can ask by the same name: community parity is structural, not promised.
+
+**Heavy algorithms are host services, not private code.** Creation Engine load order (the LOOT
+crates) lives in core as a host service any package may use. Only Minecraft and Creation Engine are
+compiled packages, and they get nothing a plugin cannot also call, as the Modrinth and Technic
+providers stayed compiled-in without privilege (§21.2).
+
+**Community packages from the start, not the end.** The tracer games (§26.13) are external packages
+loaded through the plugin path from Phase 2, so the route a community author takes is exercised as
+each interface lands. What waits for Phase 5 is publishing the SDK and the spec, not proving they
+work.
+
+**The script runtime, examined rather than inherited.** QuickJS was introduced in one commit whose
+message states a measurement (a 15 s MSVC build, a 2 MB binary) with no spike or benchmark anywhere in
+history, compared only against V8. Its containment properties are real: the 21 host tests pass. The
+decision is kept: game packages are mostly data, the heavy work (VFS, archives, FOMOD, load order,
+hashing) is in Rust core, and JavaScript and TypeScript have the widest author pool. What changes is the
+escape hatch: a **companion-process** `ScriptHost` (C# first, the language of most Unity modding tools)
+is added when the first package needs one, which the `ScriptHost` seam was designed for.
+
+### 26.12 The Core Refactor
+
+**Shape.** A new contract crate `agora-game-api` (like `agora-plugin-api`) defines games, installs,
+runtime identity, layers, deployment strategies, frameworks, tools, load order, `GamePackage` and
+`GameHost`. `agora-core` becomes game-agnostic and holds a registry of game packages. Minecraft moves
+to `agora-game-minecraft`; Creation Engine support is `agora-game-creation`.
+
+**Dependency direction.** Contracts at the bottom, no cycles, no side door:
+
+```
+agora-plugin-api    agora-game-api                 (contracts: serde, semver, thiserror only)
+        ^              ^        ^
+        |              |        |
+    agora-core --------+        agora-game-minecraft, agora-game-creation
+        ^                                   ^
+        +---- adapters (Tauri, CLI, MCP) ---+   build core, register packages into it
+```
+
+Packages depend on `agora-game-api`, never on `agora-core`. Core implements `GameHost`. Today's
+`launch_planner` calls core's download and network services directly; after the move it calls the
+same services through `GameHost`, which is the path a plugin package uses too.
+
+**What moves where**, from each module's own description:
+
+| Stays in core, generic | Moves to the Minecraft package | Split |
+|---|---|---|
+| `lock_manager`, `operation_manager`, `task_scheduler`, `snapshot`, `snapshot_service`, `backup`, `lkg`, `artifact_receipt`, `download`, `http_client`, `network_gate`, `event_sink`, `process_identity`, `process_session_manager`, `instance_runtime`, `plugins/*`, `providers/*` (vocabulary generalised), `ranking`, `icon`, `mod_groups`, `bisect`, `launch_history`, `lockfile` | `java`, `gc`, `memory_recommendation`, `minecraft_metadata`, `minecraft_runtime`, `launch`, `launch_planner`, `loader_*`, `msa`, `official_launcher`, `launcher_profiles`, `launcher_ui_state`, `jar_metadata`, `version_match`, `version_migration`, `migration_report`, `server_export`, `controller_service` (Controlify), `modrinth`, `technic`, `prune_service` | `instance_service`, `launch_service`, `install_pipeline`, `resolver`, `dependency_ops`, `crash_*`, `health`, `models`, `runtime_catalog`/`runtime_manager` (Java becomes one component kind), `app_paths`, `launcher_import*` |
+
+**Instance manifest.** Today it carries `minecraft_version`, `loader`, `loader_version` and per-kind
+content lists. The next manifest version carries `game`, `runtime_identity`, `base`, `frameworks` and
+typed layers, with a Minecraft section holding what is Minecraft-only. Existing manifests migrate
+where manifest upgrades already happen (`models.rs`, which already upgrades version 1 to 2 on read);
+`data_migration` relocates data roots and is not involved. The contract:
+
+- the original manifest is kept beside the new one before the first write;
+- the new manifest is written to a temporary file and renamed into place, so an interrupted
+  migration leaves either the old manifest or the new one, never half of each;
+- migrating an already-migrated manifest is a no-op;
+- a manifest newer than the running Agora is opened read-only and never rewritten;
+- instance contents are not touched: a migrated Minecraft instance is byte-for-byte the same on disk
+  apart from the manifest.
+
+**Enforced by script.** `scripts/check_architecture.py` gains three rules:
+- `agora-core` does not reference the Minecraft package.
+- `agora-game-api` depends only on `serde`, `semver` and `thiserror`. (The spec once said "like
+  `agora-plugin-api`", but that crate also uses `serde_json`.)
+- A game package depends on `agora-core` only within a budget recorded in
+  `scripts/game_package_core_budget.json`. The budget counts the package's `agora_core` references,
+  may only fall, and must be lowered whenever the count drops. A package with no entry may not
+  depend on core at all.
+
+The rules that guard core's internals scan game packages too. Otherwise, code leaving core would
+escape them.
+
+**Phase 1, as built.** Slice 1 added the contract crate and manifest v3; slice 2 moved Minecraft
+out of `agora-core`. It differs from the table above in three ways.
+
+1. **The service layer moved whole.** `instance_service`, `launch_service`, `install_*`,
+   `resolver`, `health`, `import*`, `runtime_manager`/`runtime_catalog`, the browse and update
+   caches and MCP dispatch all live in `agora-game-minecraft` for now. Their generic halves are
+   extracted when the second game needs them, in Phase 2, because a generic instance or launch
+   service designed without one would be a guess. The pack modules (`pack_*`, `curated_pack`,
+   `export_service`) and `installed_profile` are Minecraft and moved too. `launch_planner` and
+   `installed_artifact` belong in the Split column: their process supervision, hash verification
+   and hardlinking are what bases and launch need for every game.
+2. **Core gained `game_hooks`, the seams a package registers into at startup:**
+   - catalog hooks, run at startup and on registry reload;
+   - startup hooks;
+   - compiled-in content providers;
+   - network host classifiers;
+   - typed context extensions, replacing core's Minecraft fields;
+   - an `InstanceBackend` for the plugin host.
+
+   Adapters call `agora_game_minecraft::register()` before building a context. This is a
+   scaffold, not §26.11's registry. Phase 2 reshapes it into that registry, because today the
+   hooks:
+   - are a second registration path beside `GamePackage`;
+   - take core types (`Ctx`, a raw registry connection, `ContentProvider`), which a package that
+     depends only on `agora-game-api` cannot implement;
+   - are process-global plain functions, not keyed by game, with no way to unregister, so a
+     second package would displace Minecraft's instance backend.
+
+   The registry Phase 2 builds is held by core per context, keyed by game, reached through
+   `GameHost`, and able to admit plugin packages. Network categories are still Minecraft-named
+   (`Mojang*`), and the host classification the launch planner trusts stays the package's own
+   function, not a hook another package could answer.
+3. **The package still depends on `agora-core`,** within the budget above: 1,162 references at
+   the end of Phase 1. Removing them means designing core's generic data model: the instance
+   table and manifest with an opaque per-game section, an error envelope, and a game-scoped
+   catalog. Each budget family moves onto a `GameHost` service when Phase 2 builds the generic
+   version of what it uses. That includes the 51 parameterized SQL statements that moved with
+   Minecraft's modules: until then, `AGENTS.md`'s "SQL lives in `agora-core`" is true only of new
+   SQL.
+
+**Phase 2, the registry as built (slice 2).** `agora_core::game_registry::GameRegistry` is the one
+place a game package registers, compiled or plugin. It is held by each context
+(`CoreContext::games`), built by the adapter, and keyed by game:
+
+- **A package is admitted whole or not at all.** `add` refuses it, leaving the registry as it was,
+  if its `api_range` excludes the running API, it defines no game, a game id is taken, a
+  `(store, product)` is claimed by another game, or a framework or tool names a game it does not
+  define. A community package therefore cannot displace or half-register over another.
+- **Skyrim SE is data.** `agora-game-creation` deserializes `data/package.json` into a
+  `PackageDefinition` and has no `agora-core` dependency, not even in tests: the route a community
+  package takes. Its game id is `skyrim-se`, since Legendary Edition and VR are separate runtimes.
+- **Minecraft is registered too,** with no store claims and `launch: None`. `GameDefinition.launch`
+  became optional because Minecraft's command line comes from version metadata through
+  `prepare_launch`; a declarative recipe would be fiction.
+- **Matching** (`identify_installs`) turns a discovered base game a definition claims into an
+  identified install with its add-ons, and lists the rest as unsupported. Runtime identity follows
+  the definition's version sources: the executable's PE file version when readable, then the store
+  record. On the spike machine: Steam 1.6.1170.0 and GOG 1.6.1179.0. `GameInstall.volume` became
+  optional, because an unknown volume must never compare equal to another.
+- **Install ids** are `{store}:{product}`, stable across runs because bases and instances will
+  refer to them. A product that is not already a valid id part is sanitised and suffixed with a
+  hash of the original, so `A.B` and `a-b` never collide.
+
+**The scaffold is gone (slice 2b).** The process-global hooks of Phase 1 are now
+`CompiledServices` attached to a compiled package's registry entry (`add_compiled`): catalog
+loading, startup recovery, content providers and instances, each still in core's own types until it
+moves onto a `GameHost` service. Nothing is process-global any more, so `register()`, its `Once` and
+the test binaries' `ctor` registration are deleted; tests ask for `testing_context`. Instances fan
+out across every package that provides them: listing concatenates, and an operation goes to the
+backend that owns the instance, so a second game can never displace Minecraft's. The package's
+core budget fell to 1,160. Merging master's UX fixes of September 2026 (data packs synced to
+worlds, Java provisioning progress, captured launch output) raised it to 1,206: they were written
+against core while Minecraft still lived there, and moved into the package with the merge.
+Per-store user paths (Steam's `Skyrim Special Edition` and GOG's `Skyrim Special Edition GOG`
+under Documents and AppData) cannot be expressed by `GamePath` yet; Phase 3 needs them.
+
+**Instances for every game, as built (Phase 2, slice 5).** `agora_core::game_instance`, shown by
+`agora games instance create|list|launch|delete`:
+
+- A game instance is a `game_instances` row (the index) and a folder holding a generic v3
+  `instance_manifest.json`: game, runtime identity, base reference, frameworks and layers (empty
+  for now), with no Minecraft section. Minecraft's instances keep their own table and manifest
+  until its package stops depending on core; ids never repeat across the two tables.
+- Whether an instance is pinned comes from its install: readable and relocatable installs pin
+  (building or reusing the one base of that runtime), others are unpinned with the reason recorded
+  and launch from the store's own folder without verification.
+- A base is kept while any instance pins it. "Which instances pin it" fails closed: an unreadable
+  instance table or row means the base is kept, never removed.
+- `list_all` shows every game's instances, Minecraft's through its registered backend, and reports
+  a source it could not read instead of showing it as empty.
+- Minecraft code that scans every instance folder (runtime pruning, the "installed" registry ids)
+  skips manifests of other games. Pruning would otherwise have marked its survey incomplete on the
+  first Skyrim instance and stopped pruning for good.
+- **Measured on the spike machine:** two GOG instances shared the existing base with no rebuild,
+  a Steam instance got the Steam base, removing the shared GOG base was refused naming both
+  instances, one list showed a Minecraft instance beside the three Skyrim ones, and the "Survival
+  Run" instance launched vanilla Skyrim from its base, recorded the launch, and left it clean.
+
+**Tracers through the plugin path, as built (Phase 2, slice 6).** A plugin holding the new
+`game:define` capability contributes `game_packages`: JSON `PackageDefinition`s, the format the
+compiled Skyrim package uses. At startup core adds the enabled, granted ones to the registry as
+`PackageSource::Plugin`, after the compiled packages, so a community package never displaces a
+compiled one; a package that cannot be read or is refused is skipped with a warning naming it, and
+never stops startup. Five tracers live in `packages/tracers/` and were installed exactly as a user
+installs a plugin. A launch recipe's executable must be in the game's runtime, base or install
+folder: defining a game is not consent to run a program from the user's Documents or AppData.
+
+Measured on the spike machine, every installed reference game was discovered, identified and
+launched vanilla to its main menu by an instance: CK3 unpinned from the Microsoft Store folder
+through `binaries/ck3.exe` with no Paradox launcher (F7, now through Agora); Satisfactory, Cyberpunk
+and Witcher 3 from pinned bases, their store installs unchanged except where noted below. Valheim
+is not installed there; its definition waits for Phase 3. What the tracers taught:
+
+- **Launch what the store launches.** Satisfactory started from its Unreal shipping executable
+  exits before logging: Steam starts the root bootstrap `FactoryGameSteam.exe`, which passes the
+  project. Discovery already records each store's declared launch executable; a definition without
+  a recipe should default to it.
+- **Watch the base, not the PID.** Satisfactory ran as three processes (bootstrap, engine, crash
+  handler) and Cyberpunk as three (game, error reporter, script compiler), all tracked.
+- **Excluded paths give a mostly vanilla base, not a provably vanilla one.** Cyberpunk's base left
+  out 11,751 mod files, but the game still ran redscript: the mod hooks into vanilla paths
+  (`engine/tools`, `engine/config`, the compiled `r6/cache/final.redscripts`), same path, different
+  bytes. Only checking the install against the store's own file list (§26.4, offered before pinning)
+  makes a base provably vanilla.
+- **An undeclared write to a linked file reaches the store install.** Witcher 3 rewrote
+  `content/metadata.store` at startup; the tracer linked all of `content/`, so the write went
+  through the hardlink into the real GOG install (F2's failure mode, re-created by an over-broad
+  pattern; the file is a cache the game rebuilds, and GOG's repair restores it). Now: Witcher 3
+  links only `.w3speech`, `.cache` and `.bundle` (90.5 of 91 GB) and declares `metadata.store`
+  a game write; a declared write excuses a change only to a file the base copied, never to a linked
+  one; and every problem on a linked file says the store install changed too. A launch from the
+  rebuilt base left the GOG install with 0 differences in 1,765 files (that run did not rewrite the
+  cache, so the redirect itself is covered by a test, not this measurement). The protection
+  itself is Phase 3's write layer, decided by Spike 2; until then linking is safe only for files the
+  game never writes, so patterns name file types, not folders.
+- **Debug symbols are data.** Satisfactory ships 14 GB of `.pdb`, which its first base copied
+  (19 GB of copies); its definition now links them, which should leave about 5 GB (not yet
+  rebuilt).
+
+**Phase 2 status.** Its done-when is met on the spike machine except Valheim, which is not installed
+there, and the Minecraft budget, which moved to Phase 5. Phase 2 is closed.
+
+**Deployment, as built (Phase 3, slices 1-8, 2026-10-05/06).** Shown by `agora games content …` and
+`agora games instance content|deploy|undeploy|plugins|set-deployment|launch`:
+- **Content store** (`agora_core::content_store`): items are file trees stored once by content hash,
+  their id defined by their content (a zip and a folder of the same files are one item); zip, 7z
+  and RAR, chosen by the file's bytes; untrusted paths, sizes and Windows-only collisions refused;
+  objects ACL-protected as §26.5 decides; verification; removal that fails closed. RAR is read
+  through Windows' own `tar.exe` (libarchive, run by absolute path), never a bundled library (the
+  only mature one is not GPL-compatible): the listing is checked by the same rules before anything
+  is extracted, and the extracted tree must match it exactly.
+- **Placement** (`ContentLayout`, `suggest_placement`): wrapper folders are unwrapped until a marker
+  decides between the data folder and the game root; a content layer can deploy a subfolder of its
+  item (`Layer.source_path`).
+- **FOMOD** (`agora_core::content_fomod`): installers become content items derived from the
+  archive's objects, recording their choices so a reinstall replays them.
+- **Deployment** (`agora_core::game_deploy`): the instance's `LayerStack` over its base, deployed
+  beside the base (`<bases root>/deployments/<instance>/`) as links, copies, or links under the VFS
+  (rungs 3, 2 and 1). Harvest returns a link or copy deployment's writes to the writable layer; under
+  the VFS they land there directly. The rung is the user's choice per instance or launch, else the
+  game's default; when the DLL is missing or cannot be injected the launch reports it and asks
+  whether to step down (§26.5; slice 13).
+- **The VFS** (`crates/agora-vfs`): the Spike 2 prototype as product code, with the write matrix as
+  its conformance test in three topologies, including the product's link farm mounted over itself.
+- **Per-user files** (`agora_core::game_user_files`): swapped in by a journal that survives Agora
+  being killed; restore derives every path itself rather than trusting the journal.
+- **Plugins and loaders** (`agora_core::game_plugins`, `launch_alternatives`): plugins deployed from
+  content are activated in the instance's list (layer order; LOOT sorting is Phase 4); SKSE's loader
+  replaces the executable when present, with `--plain` to opt out.
+
+What reality changed: Skyrim appends plugins it finds in `Data` to `Plugins.txt` itself, inactive, so
+an inactive line Agora never managed is the game's and is activated when Agora starts managing it;
+the managed set lives in the instance (`plugin_list_state.json`), because `deployment.json` is
+deleted by every undeploy; `--wait` must watch the folder the game runs from, not the base. Measured
+on the spike machine with GOG Skyrim: a 7z mod written by another tool was unwrapped into `Data` and
+deployed; the profile files were swapped and restored byte-for-byte; and the game ran under
+`agora_vfs.dll` from its deployment, its new folders landing in the writable layer and the base
+verifying clean.
+
+**Phase 3's done-test, measured (2026-10-06, Steam Skyrim 1.6.1170 and Valheim, a data dir on the
+games' drive so everything links):**
+- **Skyrim with SKSE and 23 mods runs.** Seven archives (zip and 7z), XP32 through its real FOMOD
+  installer with chosen options, and fifteen extracted folders from an MO2 setup, each placed by
+  `suggest_placement`. The deployment was 1,984 links and no copies, built in 1.3 s, with ten
+  plugins activated. The game started through SKSE's loader under `agora_vfs.dll`; SKSE 2.2.6
+  loaded all 17 of its plugins from the deployment, and `kDataLoaded` was dispatched. The SKSE
+  plugins' rewrites of their own INIs landed in the writable layer, the content store re-hashed
+  clean, the base verified clean, and the Steam profile files were restored byte-for-byte.
+- **Switching instances needs no redeploy:** modded, vanilla and modded launches of one base, the
+  last one reusing its deployment.
+- **Valheim with BepInEx runs.** BepInEx 5.4.2351 with Jotunn, PlantEverything and AzuClock loaded
+  all three, both from link deployment and under the VFS. Valheim's definition says Redirect; until
+  a Redirect backend exists, that rung is link deployment, which leaves the game untouched just the
+  same.
+- The failure gates (an unexpected write never changes a shared file; two launches contend; a failed
+  launch restores; a killed Agora restores nothing under a running game; an external edit is kept)
+  are tests, and the real runs above exercised the first and the restores.
+
+What the done-test changed:
+- **DLLs Windows loads while starting a game run before the VFS's hooks.** Engine Fixes' preloader
+  rewrote its log through a farm link into the base. Declared writes are now the instance's copy in
+  every mode; the general fix is import-table injection (Detours-style), so the DLL loads before
+  the game's own imports (slice 12, below).
+- **BepInEx rewrites its own config at start.** Under link deployment the protected link refused it,
+  as designed, and BepInEx stopped. Valheim's definition now declares `BepInEx/config/**`.
+- **The plugin system must be on for community game packages to load** in a fresh data dir; the
+  tracers were invisible until it was.
+
+**Phase 3 status: done-when met**, with follow-ups:
+- Thunderstore's package layout, so BepInEx packs and mods place themselves (they were placed with
+  `--from`/`--into`);
+- linked archive patterns for Valheim's base (it copied 4.3 GB);
+- per-user files mapped through the VFS rather than swapped;
+- the desktop app's views of all of this.
+
+**Slice 12: the DLL loads before the game's own imports** (`crates/agora-vfs-inject`). The launcher
+and the DLL's `CreateProcessInternalW` hook used to start a remote `LoadLibraryW` thread in the
+suspended process, and starting that thread is what makes Windows initialise the process, so the
+game's static imports ran their `DllMain`s first. Now the suspended process's import table is
+rewritten in memory (Microsoft Detours' `DetourUpdateProcessWithDll`, MIT, built from the
+`detours-sys2` crate's bundled source with the `cc` crate) so `agora_vfs.dll` is its first import,
+and the loader initialises it before any of the others. The DLL exports an `agora_vfs_ordinal1` at
+ordinal 1, which is how Detours names it.
+- The DLL calls `DetourRestoreAfterWith` first thing on attach, putting back the headers and import
+  table the injection rewrote. Without it real Skyrim hung at start-up (SteamStub reads them). With
+  it, Skyrim through SKSE's loader ran to `kDataLoaded` with all 16 plugins, and Engine Fixes' early
+  `d3dx9_42.log` write landed in the writable layer. Valheim's BepInEx loaded its three plugins the
+  same way, and Unity's crash handler, a child of the game, was injected too. A test compares a fixture's in-memory headers
+  with its file.
+- Core resumes the game, then waits for the ready event or for the process to end, and kills it on
+  timeout or early exit. A DLL that cannot read its configuration (one was named) or install its hooks
+  ends its own process at once (`0xA6F50001`), so a failure costs a start-up, not a timeout. For
+  the game itself that is a `VfsUnavailable` the user is asked about (slice 13). For a child the game
+  starts it would be silent, so before ending a process the DLL logs `[pid] ending the process
+  <exe>: <why>` (to `AGORA_VFS_LOG` when it could not read the configuration that names the log), and
+  after a `--wait` session under agvfs the CLI reads what was appended
+  (`game_launch::processes_ended_since`), names each program and why, and offers to start the game
+  again from linked files.
+- A child process the game starts is injected the same way, so SKSE's loader's `SkyrimSE.exe` is
+  covered. A child started with its own environment block has no configuration to find and runs
+  unhooked, as before.
+- If the import table cannot be rewritten (a protected or unusual executable, a path the loader
+  cannot read as an ANSI import name and that has no 8.3 name) the remote thread is the fallback, and
+  the VFS log says which was used. `AGORA_VFS_INJECTION=remote-thread` forces the fallback.
+- A process of another architecture is refused before anything is written, with the existing
+  "built for another architecture" message; the fallback cannot load it either.
+- What still runs before the hooks: the system DLLs and the DLL's own dependencies (kernel32, ntdll,
+  the C runtime), which are resolved before it initialises, and in the fallback case everything
+  the old way ran.
+
+### 26.13 Phases
+
+Each phase ends with a run on a real Windows machine, because that is where every surprise in the
+spike came from. No durations are given: implementation is fast; verification on real installs is
+the pace-setter.
+
+**One game deep, several thin.** Building three games in full at once would triple the verification
+on real installs (the slowest part) and delay the first thing anyone can play. Building one game
+alone would let the interfaces quietly become Skyrim-shaped. So Skyrim is built to completion, while
+cheaper **tracer games** from other families exercise each new interface as it lands, as minimal
+definitions rather than finished support. Minecraft is the first tracer from Phase 1: it has to
+keep working behind every interface. The rule: **no core interface is final until Minecraft and at
+least one tracer from another family use it.**
+
+| Phase | Delivers | Done when |
+|---|---|---|
+| **0. Spike** | `scripts/spikes/game-support/` | Done (F1–F8). |
+| **0b. Spike 2: write isolation** | usvfs against content and base files: write an existing file, replace by rename, delete, create, and each from a child process; an archive in a Linked base changed in place | Done (2026-10-04): usvfs has no copy-on-write; Agora builds its own copy-on-write VFS, with ACLs on what it owns and link deployment as the fallback (§26.5). |
+| **1. Game interface** | `agora-game-api` with `GamePackage` and `GameHost`; the dependency direction above; Minecraft behind it; manifest migration; architecture rules | Every existing test passes; a Minecraft user sees no change; the new rules pass; migration tests cover interruption, re-running, and a manifest from a newer Agora. `agora-core` contains no Minecraft; `agora-game-minecraft` may still use core within its shrinking budget (§26.12, *as built*). |
+| **2. Discovery, bases, launch** | Store adapters with classification; runtime identity; Linked and Copied bases with verification; generic launch recipe and process tracking | Agora lists the machine's games correctly, builds bases for Steam and GOG Skyrim, and launches vanilla Skyrim from them with the store install unchanged afterwards. A base archive changed in place is detected and the instance refuses to launch on it, naming the files. Tracers, **as external packages through the plugin path**: every reference game is discovered and launches vanilla, including CK3 from the Microsoft Store. The generic halves of the instance and launch services exist and serve both Minecraft and Skyrim. The Minecraft package's `agora-core` budget has fallen with every generic service built (it reaches zero in Phase 5). |
+| **3. Deployment** | Content store, archives, FOMOD, the layer stack, Redirect, VFS (Windows) with the isolation Spike 2 chose, per-user files (done 2026-10-06; §26.12, as built) | A Skyrim instance with SKSE and twenty mods runs; switching instances needs no redeploy. **Failure gates:** an unexpected write by a game or tool never changes a content or base file; two launches of one game contend on `GameUserFiles` and the second is told why; a failed launch restores per-user files; Agora killed while the game runs, then restarted, restores nothing under the running game; a file edited externally before recovery is kept, not overwritten. Tracer: a Valheim instance with BepInEx mods runs through Redirect. |
+| **4. Creation Engine (Skyrim complete)** | Load order (LOOT crates as a host service); framework and Address Library checks; per-profile INIs; save choice; tools with staging and generated layers; MO2 import including `overwrite` and both orders; the catalog for Skyrim (§26.8) | The 214,592-file salvage pack imports with its bytes, both orders and its Nemesis output (inputs unknown), and plays; changing a mod marks Nemesis output stale; rebuilding and rolling back both change the bytes the game reads; curated Skyrim mods install from a `github_release` and a `direct_hash` entry with verified hashes. |
+| **5. Plugin API 0.2** | Game packages, family parents, new capabilities, `GameTarget` providers, `nxm://` routing, published game-definition spec; the Minecraft package reaches core only through `GameHost` | The tracers become finished support written as plugins: Valheim (BepInEx) and Satisfactory (Unreal), then CK3 (Paradox, Microsoft Store) and Cyberpunk (REDengine). The Minecraft package's `agora-core` budget is zero, so nothing a compiled package does is beyond a community one. |
+| **6. Breadth** | Linux overlayfs backend and Proton; Vortex import; Wabbajack recognition; companion-process scripts when a package needs them | Each backed by a real run, like everything above. |
+
+**When the Minecraft package stops using core directly** (decided with the user, 2026-10-04). The
+goal stands: Minecraft reaches core's universal services through `GameHost`, the door a community
+package uses, so first-party code is never more privileged and the contract is proven complete.
+The timing moved from Phase 2 to Phase 5. Removing 1,160 references at once would mean designing
+each generic service before a second game needs it, which §26.12 already warns is a guess, and
+redesigning it when the real need arrives. Instead each service is designed when a tracer or
+Skyrim needs it (Phase 2 tracers, Phase 3 deployment, Phase 4 Creation Engine), and Minecraft's
+matching code moves onto it then; the budget ratchet keeps the count falling. Phase 5, which
+publishes the plugin API, is when parity has to be true rather than trending.
+
+### 26.14 What the User Sees
+
+Nothing changes for someone who only plays Minecraft: the game picker does not appear until a second
+game is enabled, and no component is downloaded. Enabling another game starts from discovery ("Agora
+found Skyrim on Steam, 1.6.1170, and on GOG, 1.6.1179"). A Skyrim instance's page shows its runtime
+(store, version, pinned or not, whether its frameworks match), its content in load order with
+per-layer origin, its plugins list, and its tools with a stale badge when their output is out of date.
+Launch checks read like Agora's Minecraft ones: a finding, why it matters, a repair. Controller
+support, themes and plugin views carry over, since they are app-wide already (§25).
+
+### 26.15 Open Questions
+
+- **Tools that edit in place** (BodySlide, Nemesis: F4) under agvfs: how often copy-on-open copies
+  bytes, and how large. The games measured so far never needed a copy except Slay the Spire
+  appending to its log. usvfs's own question is settled (§26.5); it is not distributed, and its
+  licence (GPL-3.0-or-later with a FOSS exception) would allow porting code from it with its notice.
+- **Anti-cheat and link deployment**: no game with anti-cheat has been run from a link deployment
+  yet; the one installed (PlanetSide 2, BattlEye) is online-only.
+- **CK3 without its launcher** (F7): `ck3.exe` started directly most likely loads either no mods or
+  the playset last set in the launcher. Checked in Phase 5, together with whether Agora can supply
+  the list itself (playset database or `dlc_load.json`).
+- **Fetching older versions** (§26.4): which routes ship first, where the version → manifest map
+  lives, and whether a store sign-in through a fetched tool fits the no-forced-sign-in position
+  when it is strictly opt-in.
+- **Anti-cheat**: out of scope. Games that forbid modification are not supported for modding.
+
+---
+
+**This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

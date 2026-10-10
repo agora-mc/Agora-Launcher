@@ -133,5 +133,17 @@
     "code": "INVALID_MANIFEST",
     "messageContains": "unknown content type",
     "why": "Content types are Agora's own closed vocabulary. A provider claiming one Agora does not understand would show results nothing can install."
+  },
+  "game-package-without-capability.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "game:define",
+    "why": "A game package defines games, their stores, versions, folders, and how to launch them. Contributing a game package without the game:define capability is refused."
+  },
+  "game-package-escapes-package.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "climbs out of the package",
+    "why": "A game package path must stay inside the package directory."
   }
 }

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 15;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 16;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -589,6 +589,23 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (15)",
+            [],
+        )?;
+    }
+
+    if current < 16 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS game_instances (
+                 instance_id TEXT PRIMARY KEY,
+                 game TEXT NOT NULL,
+                 name TEXT NOT NULL,
+                 base_json TEXT NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 last_launched_at TEXT
+             );",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (16)",
             [],
         )?;
     }

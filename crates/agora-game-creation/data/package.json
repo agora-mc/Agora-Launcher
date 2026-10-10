@@ -1,0 +1,393 @@
+{
+  "id": "agora.creation-engine",
+  "version": "0.1.0",
+  "api_range": ">=0.1, <0.2",
+  "parents": [],
+  "games": [
+    {
+      "id": "skyrim-se",
+      "name": "The Elder Scrolls V: Skyrim Special Edition",
+      "mo2_game_name": "Skyrim Special Edition",
+      "stores": [
+        {
+          "store": "steam",
+          "product": "489830"
+        },
+        {
+          "store": "gog",
+          "product": "1711230643"
+        }
+      ],
+      "version_sources": [
+        {
+          "kind": "executable",
+          "path": "SkyrimSE.exe"
+        },
+        {
+          "kind": "store_record"
+        }
+      ],
+      "deployment": "virtual_file_system",
+      "content_rules": [],
+      "content_layout": {
+        "data_path": "Data",
+        "data_markers": [
+          "*.esp",
+          "*.esm",
+          "*.esl",
+          "*.bsa",
+          "textures",
+          "meshes",
+          "scripts",
+          "interface",
+          "sound",
+          "music",
+          "skse",
+          "strings",
+          "video",
+          "materials",
+          "lodsettings",
+          "seq",
+          "grass",
+          "shadersfx",
+          "facegen",
+          "lod",
+          "terrain",
+          "dyndolod",
+          "nemesis_engine",
+          "calientetools",
+          "tools",
+          "source",
+          "platform"
+        ],
+        "root_markers": [
+          "*.exe",
+          "*.dll",
+          "enbseries",
+          "enb*.ini",
+          "reshade-shaders"
+        ]
+      },
+      "native_code_patterns": [
+        "Data/SKSE/Plugins/*.dll"
+      ],
+      "framework_ids": [
+        "skse"
+      ],
+      "tool_ids": [
+        "nemesis",
+        "bodyslide"
+      ],
+      "launch": {
+        "executable": {
+          "root": "runtime",
+          "path": "SkyrimSE.exe"
+        },
+        "arguments": [],
+        "environment": {},
+        "working_directory": {
+          "root": "runtime",
+          "path": ""
+        }
+      },
+      "log_paths": [],
+      "crash_paths": [],
+      "user_files": [
+        {
+          "source": {
+            "root": "user_data",
+            "location": "local_app_data",
+            "path": "Skyrim Special Edition/Plugins.txt"
+          },
+          "instance_path": "user/Plugins.txt",
+          "strategy": "journaled_swap",
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition/Skyrim.ini"
+          },
+          "instance_path": "user/Skyrim.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition/SkyrimPrefs.ini"
+          },
+          "instance_path": "user/SkyrimPrefs.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition/SkyrimCustom.ini"
+          },
+          "instance_path": "user/SkyrimCustom.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "local_app_data",
+            "path": "Skyrim Special Edition GOG/Plugins.txt"
+          },
+          "instance_path": "user/Plugins.txt",
+          "strategy": "journaled_swap",
+          "stores": [
+            "gog"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG/Skyrim.ini"
+          },
+          "instance_path": "user/Skyrim.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "gog"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG/SkyrimPrefs.ini"
+          },
+          "instance_path": "user/SkyrimPrefs.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "gog"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG/SkyrimCustom.ini"
+          },
+          "instance_path": "user/SkyrimCustom.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "gog"
+          ]
+        }
+      ],
+      "save_location": [
+        {
+          "ini": "user/Skyrim.ini",
+          "section": "General",
+          "key": "SLocalSavePath",
+          "own_value": "Saves\\Agora\\{instance}\\",
+          "shared_dir": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition/Saves"
+          },
+          "relative_to": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition"
+          },
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "ini": "user/Skyrim.ini",
+          "section": "General",
+          "key": "SLocalSavePath",
+          "own_value": "Saves\\Agora\\{instance}\\",
+          "shared_dir": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG/Saves"
+          },
+          "relative_to": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG"
+          },
+          "stores": [
+            "gog"
+          ]
+        }
+      ],
+      "save_paths": [],
+      "linked_archive_patterns": [
+        "Data/*.bsa",
+        "Data/*.esm",
+        "Data/*.esl",
+        "Data/*.bik"
+      ],
+      "declared_writes": [
+        "d3dx9_42.log"
+      ],
+      "excluded_paths": [
+        "Data/SSEEdit Backups/**"
+      ],
+      "plugin_list": {
+        "user_file": "user/Plugins.txt",
+        "plugin_folder": "Data",
+        "patterns": [
+          "*.esm",
+          "*.esl",
+          "*.esp"
+        ],
+        "active_prefix": "*",
+        "header": [
+          "# This file is used by Skyrim to keep track of your downloaded content.",
+          "# Please do not modify this file."
+        ],
+        "semantics": "creation_engine",
+        "implicit": [
+          "Skyrim.esm",
+          "Update.esm",
+          "Dawnguard.esm",
+          "HearthFires.esm",
+          "Dragonborn.esm"
+        ],
+        "implicit_list_file": "Skyrim.ccc"
+      },
+      "launch_alternatives": [
+        {
+          "id": "skse",
+          "when_present": "skse64_loader.exe",
+          "executable": {
+            "root": "runtime",
+            "path": "skse64_loader.exe"
+          },
+          "reason": "SKSE is installed, so the game starts through its loader"
+        }
+      ],
+      "runtime_files": [
+        {
+          "id": "skse",
+          "name": "Skyrim Script Extender (SKSE)",
+          "family": "skse64_*.dll",
+          "expected": "skse64_{1}_{2}_{3}.dll",
+          "repair": "Install the SKSE build for Skyrim {version} from skse.silverlock.org"
+        },
+        {
+          "id": "address-library",
+          "name": "Address Library for SKSE Plugins",
+          "family": "Data/SKSE/Plugins/version*-*.bin",
+          "expected": "Data/SKSE/Plugins/versionlib-{1}-{2}-{3}-{4}.bin",
+          "applies_to": [
+            "1.6.*"
+          ],
+          "repair": "Install the Address Library build for Skyrim {version} (the versionlib file for that version) into Data/SKSE/Plugins"
+        },
+        {
+          "id": "address-library-se",
+          "name": "Address Library for SKSE Plugins",
+          "family": "Data/SKSE/Plugins/version*-*.bin",
+          "expected": "Data/SKSE/Plugins/version-{1}-{2}-{3}-{4}.bin",
+          "applies_to": [
+            "1.5.*"
+          ],
+          "repair": "Install the Address Library build for Skyrim {version} (the version-*.bin file for that version) into Data/SKSE/Plugins"
+        }
+      ]
+    }
+  ],
+  "frameworks": [
+    {
+      "id": "skse",
+      "game": "skyrim-se",
+      "name": "Skyrim Script Extender",
+      "version": "2.2.6",
+      "supported_runtimes": [],
+      "required_frameworks": [],
+      "content": [],
+      "launch": null,
+      "detection": {
+        "marker": "skse64_loader.exe",
+        "version": "pe_file_version"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "id": "nemesis",
+      "game": "skyrim-se",
+      "name": "Nemesis",
+      "launch": {
+        "executable": {
+          "root": "runtime",
+          "path": "Data/Nemesis_Engine/Nemesis Unlimited Behavior Engine.exe"
+        },
+        "arguments": [],
+        "environment": {},
+        "working_directory": {
+          "root": "runtime",
+          "path": "Data/Nemesis_Engine"
+        }
+      },
+      "relevant_settings": [],
+      "after_tools": [],
+      "uses_install_path": true,
+      "output_patterns": [
+        "Data/meshes/actors/character/**",
+        "Data/meshes/animationdatasinglefile.txt",
+        "Data/meshes/animationsetdatasinglefile.txt",
+        "Data/Nemesis_Engine/**",
+        "Data/scripts/FNIS.pex",
+        "Data/scripts/FNIS_aa.pex",
+        "Data/scripts/Nemesis_AA_Core.pex"
+      ],
+      "required_outputs": [
+        "Data/meshes/actors/character/behaviors/0_master.hkx",
+        "Data/meshes/actors/character/characters/defaultmale.hkx",
+        "Data/meshes/actors/character/characters female/defaultfemale.hkx"
+      ],
+      "failure_markers": [
+        {
+          "file": "Data/Nemesis_Engine/PatchLog.txt",
+          "contains": "Failed to generate behavior"
+        }
+      ]
+    },
+    {
+      "id": "bodyslide",
+      "game": "skyrim-se",
+      "name": "BodySlide",
+      "launch": {
+        "executable": {
+          "root": "runtime",
+          "path": "Data/CalienteTools/BodySlide/BodySlide x64.exe"
+        },
+        "arguments": [],
+        "environment": {},
+        "working_directory": {
+          "root": "runtime",
+          "path": "Data/CalienteTools/BodySlide"
+        }
+      },
+      "relevant_settings": [],
+      "after_tools": [],
+      "uses_install_path": true,
+      "output_patterns": [
+        "Data/meshes/actors/character/**",
+        "Data/meshes/clothes/**"
+      ]
+    }
+  ]
+}

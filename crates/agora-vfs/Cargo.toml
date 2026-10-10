@@ -1,0 +1,34 @@
+[package]
+name = "agora-vfs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Copy-on-write virtual file system (VFS) injected into game processes for Agora"
+
+[lib]
+name = "agora_vfs"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "agora-vfs-probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+agora-vfs-inject = { path = "../agora-vfs-inject" }
+retour = "0.3"
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_IO",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+] }

@@ -22,6 +22,7 @@ registry/
 ├── datapacks/         ← Datapacks
 ├── worlds/            ← Pre-built worlds
 ├── pack-overrides/    ← (Optional) zip bundles of configs for a pack
+├── games/             ← Entries for other games: games/<game>/mods/ (see "Catalog entries for other games")
 ├── governance/        ← Cross-cutting policy files (see §5)
 │   ├── known_conflicts.json
 │   ├── poll_blacklist.json
@@ -37,7 +38,7 @@ A nightly compiler (`.github/workflows/compile.yml`) walks the 7 content dirs (`
 
 ## 2. Mod manifest schema (`registry/mods/<id>.json`)
 
-Required fields: `id`, `name`, `content_type`, `author`, `license`, `sha256`, and a statement of
+Required fields: `id`, `name`, `content_type`, `author`, `license`, and a statement of
 where the file comes from — either `download_sources` (preferred) or the legacy
 `download_strategy` + `source_identifier` pair. Other fields are optional or auto-populated.
 
@@ -68,14 +69,58 @@ Rules:
 - The list is what the launcher walks, so **every pinned source in it is held to the full
   `direct_hash` contract**, not just the first. A fallback that only fails once the preferred
   source is down would be worse than no fallback at all.
-- Additional `direct_hash` sources are *mirrors of the same bytes*. All sources of an entry share
-  one `sha256`; a genuinely different file needs its own catalog entry.
+- Additional `direct_hash` sources are *mirrors of the same bytes*. The pinned sources of an entry
+  (`direct_hash`, `technic_pack`) share its one `sha256`; a `github_release` or `modrinth_id` source is
+  checked against the hash its own source published. A genuinely different file needs its own catalog entry.
 - `download_strategy` and `source_identifier` may be omitted when `download_sources` is present —
   the compiler derives them from index 0 for the website and for older launcher builds. If you do
   write them, they must match index 0 or the build fails.
 - Omitting `download_sources` entirely is still valid: the compiler builds the list from
   `download_strategy` + `source_identifier`, plus `modrinth_id` as an implicit fallback. That is
   exactly what the launcher already did for such entries.
+
+### What a download is checked against
+
+Curators do not hash files by hand for catalog entries. Each file is checked against the hash its own source published, and when the source published none, the user is told so before anything is installed:
+
+| Strategy | Checked against | Manifest `sha256` | When the source published no hash |
+|---|---|---|---|
+| `github_release` | GitHub's per-asset `digest` for that release file | Optional. Never used to check a file: it describes one file, not every release. | The install goes ahead after the user sees "GitHub published no checksum for <file>, so Agora could not verify it." The SHA-256 of the bytes is recorded, marked as not verified. |
+| `modrinth_id` | The hashes Modrinth publishes for that version's file | Optional | The same, with "Modrinth" in the notice. |
+| `direct_hash` | The manifest `sha256`, which names the one file this entry is for | **Required** | Not possible: the hash is always there, and a mismatch blocks the install. |
+| `technic_pack`, `provider_pack` | The manifest `sha256` (a provider pack's is its plan digest) | **Required** | Not possible, as above. |
+
+A published hash that does not match the download always blocks the install, and no override lets it through.
+
+Two expectations can also stop an install, even when the source published a hash, and the user can then confirm it:
+
+- a **curator pin** (see below), for the exact release file it names;
+- a **hash remembered from an earlier install**: when a release file was installed without a published hash, Agora recorded its SHA-256. Downloading the same release and asset again, with different bytes, asks the user.
+
+Either mismatch stops the install with `ERR_HASH_CONFIRMATION_REQUIRED`. The error names the file, the release, the expected and downloaded SHA-256, and whether the expectation came from the curator's pin or from an earlier install. The user may install it anyway: in the desktop app with **Install anyway**, and on the command line with `--install-anyway`. Only install a file the user has checked.
+
+#### Curator pins
+
+A `github_release` source may carry `pins`, which name exact release files. Pins are optional and rare:
+
+```json
+"download_sources": [
+  {
+    "strategy": "github_release",
+    "identifier": "example-author/example-mod",
+    "pins": [
+      { "tag": "v1.2.0", "asset": "example-mod-1.2.0.jar", "sha256": "(64 hex characters)" }
+    ]
+  }
+]
+```
+
+- A pin is compared only with the file it names. A pin for `v1.2.0` says nothing about `v1.3.0`, nor about another asset in the same release.
+- `tag` and `asset` must be non-empty. `asset` is a file name, without a `/` or `\`.
+- `sha256` must be 64 hex characters. The same tag and asset may not be pinned twice.
+- Pins are allowed only on `github_release` sources.
+
+Use a pin when you have reviewed one release file and want a changed copy of it to stop the install.
 
 ### Full example (Modrinth preferred, GitHub fallback)
 
@@ -228,7 +273,7 @@ does not inherit the preferred source's host policy.
 | `download_sources` | array | Yes, unless the legacy pair is used | Ordered `{strategy, identifier}` objects, best first. The launcher installs from the first source that is enabled and reachable. See "Where the file comes from" above. |
 | `download_strategy` | string | Only without `download_sources` | One of: `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, `provider_pack`. Describes the *preferred* source; derived from `download_sources[0]` when that list is present. |
 | `source_identifier` | string | Only without `download_sources` | Depends on strategy: `github_release` → GitHub `"owner/repo"`; `modrinth_id` → Modrinth project ID; `direct_hash` → direct HTTPS URL ending in the file's name. |
-| `sha256` | string | Yes | SHA-256 hash of the downloadable file (64 lowercase hex chars). For `github_release` and `modrinth_id`, the compiler populates this from API metadata. For `direct_hash`, it MUST be manually provided. One hash covers the whole entry, so every pinned source must serve identical bytes. The launcher **blocks download** if the computed hash doesn't match. |
+| `sha256` | string | Required for `direct_hash`, `technic_pack` and `provider_pack`; optional otherwise | SHA-256 of the downloadable file (64 hex characters). It identifies the one file of a pinned source. It is never used to check a `github_release` or `modrinth_id` file, which is checked against what its source published (see "What a download is checked against"). One hash covers a pinned entry, so every pinned source must serve identical bytes. The launcher **blocks download** if the computed hash doesn't match. |
 | `package_signatures` | string[] | Recommended | Java package prefixes used to attribute crash-log stack frames to this mod (e.g. `me.jellysquid.mods.sodium`). Use 2+ segments; single top-level like `net` is too broad. |
 | `base_categories` | string[] | Recommended | Official curated category tags. Free-form lowercase strings. |
 | `community_categories` | string[] | Optional | Freeform community tags. Auto-discovered by the compiler if absent. |
@@ -568,9 +613,9 @@ Not under `registry/` — these live at the repo root in `crash-signatures/`. Ea
 
 ## 8. SHA-256 hash requirements
 
-The `sha256` field (and `sha256` for packs) must be:
+Curators never compute the hash of a `github_release` or `modrinth_id` file: the install checks it against what GitHub or Modrinth publishes, and leaves `sha256` out. The hashing below is for a `direct_hash` entry (and the other pinned strategies), where the manifest hash is the only record of which file the entry names. Where the manifest states a `sha256`, it must be:
 - A string (not a number).
-- Exactly 64 lowercase hexadecimal characters.
+- Exactly 64 hexadecimal characters.
 - The actual SHA-256 of the downloadable file the user will receive.
 
 How to compute it locally before submitting a PR:
@@ -591,14 +636,14 @@ print(hashlib.sha256(open("mod-file.jar", "rb").read()).hexdigest())
 sha256sum mod-file.jar | cut -d' ' -f1
 ```
 
-For `github_release` and `modrinth_id` strategies, the compiler populates the hash automatically from API metadata — you don't need to compute it yourself, but the field must still be present (it will be overwritten on compile).
+For `github_release` and `modrinth_id` entries, leave `sha256` out. Agora checks each file against the hash its source published, and the compiler does not fill one in.
 
 ---
 
 ## 9. Submitting a new entry (PR workflow)
 
 1. **Create the manifest file** in the appropriate `registry/<type>/` directory. The filename must match the `id` (e.g. `registry/mods/my-cool-mod.json` → `"id": "my-cool-mod"`).
-2. **Compute the SHA-256** of the downloadable file (§8) and put it in the `sha256` field.
+2. **For a `direct_hash` entry, compute the SHA-256** of the downloadable file (§8) and put it in the `sha256` field. For `github_release` and `modrinth_id`, leave `sha256` out.
 3. **For mods**: populate `package_signatures` with the Java package prefixes found inside the `.jar` (open it as a zip and look at the top-level directories). Use 2+ segments.
 4. **Test locally** (if you have the repo checked out):
    ```bash
@@ -632,7 +677,7 @@ Before submitting a PR, verify:
 - [ ] Every `download_sources` strategy is one of `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, `provider_pack`.
 - [ ] Each identifier matches its strategy's format (GitHub `owner/repo`, Modrinth ID, or HTTPS URL).
 - [ ] The sources are in genuine preference order, and every fallback actually serves this entry's file.
-- [ ] `sha256` is 64 lowercase hex chars (compute via §8).
+- [ ] `sha256` is present on `direct_hash` (and the other pinned strategies) and is 64 hex characters (compute via §8). It is omitted on `github_release` and `modrinth_id` entries.
 - [ ] `package_signatures` uses 2+ segment prefixes (for mods).
 - [ ] `governance.immune` is `false` unless you have an `override_justification`.
 - [ ] No file in `registry/archived/` has the same `id`.
@@ -673,4 +718,134 @@ For mods with no Modrinth presence (pure GitHub-release mods whose slug doesn't 
 7. **Setting `governance.immune: true` without `override_justification`** — the compiler rejects it.
 8. **Inventing a strategy** like `"curseforge"` — only `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, and `provider_pack` are supported.
 9. **Using a URL as the identifier for `github_release`** — it must be `owner/repo` format (e.g. `CaffeineMC/sodium`), not a full URL.
-10. **Forgetting `sha256` on a `direct_hash` mod** — it's required for all strategies; for `direct_hash` it's the only integrity guarantee and must be manually provided.
+10. **Forgetting `sha256` on a `direct_hash` mod** — it's required for `direct_hash` (and the other pinned strategies), where it is the only integrity guarantee and must be provided. For `github_release` and `modrinth_id` it is optional, and leaving it out is correct.
+
+---
+
+## Catalog entries for other games
+
+Entries for games other than Minecraft live under `registry/games/<game>/mods/`, one JSON file per
+entry, for example `registry/games/skyrim-se/mods/crash-logger.json`. Minecraft entries are
+unchanged and stay in `registry/mods/`. The rules below are enforced by the compiler, and every
+refusal names the file and the field (MASTER_SPEC §26.8).
+
+### Where the entries are stored
+
+Entries for other games are written to their own table, `game_catalog_items`, and never to
+`registry_items`. `registry_items` and the schema version are unchanged, so existing clients keep
+receiving catalog updates, and they never select the new table. The table holds `id`, `game`,
+`name`, `author`, `content_type`, `download_strategy`, `source_identifier`, `sha256`,
+`download_sources_json`, `game_compatibility_json`, `description`, `license_id`, `page_url`,
+`icon_url`, `status` and `date_added`.
+
+Not carried over, because they are Minecraft catalog features and none is an install input for
+another game yet: votes and net score, governance (immunity, comments), categories, curator notes,
+gallery, the Modrinth body and source-update time, changelogs, `compatible_versions` and
+`modrinth_id`.
+
+### The game and its folder
+
+- The manifest must say `"game": "<game>"`, and that must match the folder it sits in. A folder
+  whose name is not a game that a game package defines is a compile error.
+- A Minecraft manifest has no `game` field and means `minecraft`. A Minecraft manifest may also say
+  `"game": "minecraft"`. Only `mods/` is open for other games at present, and an entry for another
+  game must have `"content_type": "mod"`.
+- The games a manifest may name are the ones game packages declare: `skyrim-se` from
+  `crates/agora-game-creation/data/package.json`, and the games under `packages/tracers/*/games/`.
+- Item ids are unique across all games. Two entries with the same `id` fail the build, and the error
+  names both files.
+
+### Compatibility: `game_compatibility`
+
+An entry for another game replaces `compatible_versions` with `game_compatibility`, a non-empty
+array. Each element has these fields:
+
+| Field | Required | Rule |
+|---|---|---|
+| `stores` | Yes | Non-empty. Each store must be one the game declares (for `skyrim-se`: `steam` and `gog`). |
+| `game_versions` | Yes | Non-empty. Each entry is an exact version such as `1.6.1179.0`, or a `*` glob on whole dot-separated components such as `1.6.1170.*`. Versions are opaque, so there are no ranges. |
+| `requires` | No | Frameworks the game declares, each `{"framework": "<id>", "min_version": "<dotted numbers>"}`. `min_version` is optional, and every component must be a number. |
+| `asset` | For `github_release` | The release asset to pick, as a name pattern such as `CrashLogger-*.7z`. Required whenever the entry has a `github_release` source, and forbidden on a `direct_hash`-only entry. |
+
+Unknown keys are refused, so a misspelt field fails the build instead of being ignored.
+
+An entry for another game must not carry `compatible_versions`, `mod_dependencies`,
+`package_signatures`, `mod_jar_aliases` or `modrinth_id`. A Minecraft entry must not carry
+`game_compatibility`.
+
+### Strategies
+
+Only `github_release` and `direct_hash` are available for another game. `modrinth_id`, `technic_pack`,
+`curated_pack` and `provider_pack` are Minecraft-only, and using one is a compile error.
+
+- **`direct_hash`** keeps the Minecraft contract: an `https://` URL whose last path segment is the
+  file name (`.jar`, `.zip`, `.7z` and `.rar` are all accepted), a mandatory `sha256`, and no
+  `latest`. The Minecraft `compatible_versions` requirement is replaced by `game_compatibility`.
+- **`github_release`** takes `owner/repo` as its identifier and needs `asset` on every compatibility
+  entry. `sha256` is optional: the install checks the file against the GitHub asset's digest, as Minecraft's
+  does, and tells the user when GitHub published none. `pins` work as they do for Minecraft.
+- `scripts/pin_hashes.py` accepts these manifests, and pins the hash of a `direct_hash` entry in
+  place, as it does for Minecraft.
+
+### Example: a `github_release` entry
+
+```json
+{
+  "id": "crash-logger",
+  "name": "CrashLogger",
+  "content_type": "mod",
+  "author": "example-author",
+  "license": "MIT",
+  "game": "skyrim-se",
+  "download_strategy": "github_release",
+  "source_identifier": "example-author/crash-logger",
+  "game_compatibility": [
+    {
+      "stores": ["steam", "gog"],
+      "game_versions": ["1.6.1170.*", "1.6.1179.0"],
+      "requires": [{ "framework": "skse", "min_version": "2.2.6" }],
+      "asset": "CrashLogger-*.7z"
+    }
+  ],
+  "curator_note": "Writes a crash log for every failed launch.",
+  "base_categories": ["tools"],
+  "community_categories": []
+}
+```
+
+There is no `sha256` here: the install checks the file against the GitHub asset's digest. If GitHub
+published no digest for the asset, the user is told that Agora could not verify it.
+
+### Example: a `direct_hash` entry
+
+```json
+{
+  "id": "skyrim-archive-mod",
+  "name": "Archive Mod",
+  "content_type": "mod",
+  "author": "Developer Name",
+  "license": "LicenseRef-Proprietary",
+  "game": "skyrim-se",
+  "download_strategy": "direct_hash",
+  "source_identifier": "https://developer.com/releases/Mod-1.0.7z",
+  "sha256": "a1b2c3d4e5f6...(64 lowercase hex chars)",
+  "game_compatibility": [
+    { "stores": ["steam"], "game_versions": ["1.6.1170.0"] }
+  ],
+  "curator_note": "",
+  "base_categories": ["content"]
+}
+```
+
+A `direct_hash` entry names no `asset`, because its URL already names the file. The hash is pinned
+by hand, as for Minecraft, and must stay the same for every mirror.
+
+### Frameworks
+
+A framework in `requires` must be declared by the game's package: a top-level `frameworks` entry
+whose `game` is that game, and listed in the game's `framework_ids`. An undeclared framework is a
+compile error.
+
+The Skyrim SE package declares `skse` (Skyrim Script Extender, version 2.2.6). Its
+`supported_runtimes` is empty, because the game's `runtime_files` already enforce which SKSE build
+matches which Skyrim runtime. The example above compiles against the real package.

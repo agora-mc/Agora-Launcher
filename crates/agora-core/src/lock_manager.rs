@@ -21,6 +21,7 @@
 use crate::app_paths;
 use crate::error::{LauncherError, LauncherResult};
 use crate::event_sink::CancellationToken;
+use agora_game_api::{GameId, StoreId};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -167,6 +168,10 @@ pub enum LockResource {
     Materialization,
     /// Per-instance lock for install/remove/update operations.
     Instance(String),
+    /// Exclusive access to the content store for adding or removing items.
+    ContentStore,
+    /// Exclusive access for per-user game files journaled swap.
+    GameUserFiles(GameId, StoreId),
 }
 
 impl LockResource {
@@ -192,6 +197,16 @@ impl LockResource {
             LockResource::Instance(id) => {
                 app_paths::validate_path_component(id)?;
                 Ok(format!("instance-{id}"))
+            }
+            LockResource::ContentStore => Ok("content-store".into()),
+            LockResource::GameUserFiles(game, store) => {
+                app_paths::validate_path_component(game.as_str())?;
+                app_paths::validate_path_component(store.as_str())?;
+                Ok(format!(
+                    "game-user-files-{}-{}",
+                    game.as_str(),
+                    store.as_str()
+                ))
             }
         }
     }
@@ -293,26 +308,10 @@ impl LockManager {
                     let mut recovered = false;
                     while corrupt_start.elapsed() < CORRUPT_GRACE && !recovered {
                         std::thread::sleep(Duration::from_millis(500));
-                        if let Ok(meta) = read_lock_metadata(&lock_path) {
-                            if is_stale_lock(&meta) {
-                                eprintln!(
-                                    "[lock_manager] Breaking stale lock '{}' \
-                                     (PID {}). Metadata recovered after grace.",
-                                    lock_name, meta.pid
-                                );
-                                let _ = std::fs::remove_file(&lock_path);
-                                recovered = true;
-                            } else {
-                                // Metadata recovered and owner is alive.
-                                return Err(LauncherError::Generic {
-                                    code: "ERR_LOCK_CONTESTED".into(),
-                                    message: format!(
-                                        "Resource '{lock_name}' is locked by \
-                                         PID {} (recovered metadata)",
-                                        meta.pid,
-                                    ),
-                                });
-                            }
+                        // The owner finished writing, or already released the lock: the next
+                        // attempt sees which, and waits, breaks a stale lock or takes it.
+                        if !lock_path.exists() || read_lock_metadata(&lock_path).is_ok() {
+                            recovered = true;
                         }
                     }
                     if !recovered {
@@ -748,6 +747,21 @@ mod tests {
     fn test_lock_name_accepts_valid_instance() {
         let r = LockResource::Instance("my-instance".into());
         assert_eq!(r.lock_name().unwrap(), "instance-my-instance");
+    }
+
+    #[test]
+    fn test_lock_name_accepts_content_store() {
+        let r = LockResource::ContentStore;
+        assert_eq!(r.lock_name().unwrap(), "content-store");
+    }
+
+    #[test]
+    fn test_lock_name_accepts_game_user_files() {
+        let r = LockResource::GameUserFiles(
+            GameId::new("skyrim-se").unwrap(),
+            StoreId::new("steam").unwrap(),
+        );
+        assert_eq!(r.lock_name().unwrap(), "game-user-files-skyrim-se-steam");
     }
 
     #[test]

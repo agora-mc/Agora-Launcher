@@ -635,6 +635,21 @@ pub fn host_matches_domain(host: &str, domain: &str) -> bool {
 }
 
 /// Decide whether `host` is authorized under `policy`.
+/// The hosts a curator-pinned host always redirects its downloads to. A GitHub release URL
+/// (`github.com/<owner>/<repo>/releases/download/…`) answers with a redirect to GitHub's asset CDN,
+/// so a `direct_hash` pin on `github.com` could never download without them. The list is fixed and
+/// names the same origin's own hosts only; the pinned SHA-256 still has to match the bytes.
+fn pinned_host_redirects(pinned: &str) -> &'static [&'static str] {
+    if pinned.eq_ignore_ascii_case("github.com") {
+        &[
+            "objects.githubusercontent.com",
+            "release-assets.githubusercontent.com",
+        ]
+    } else {
+        &[]
+    }
+}
+
 fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>) -> bool {
     match policy {
         HostPolicy::Allowlist => {
@@ -643,7 +658,12 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
                 .iter()
                 .any(|allowed| host_matches_domain(host, allowed))
         }
-        HostPolicy::SignedManifest(pinned) => host_matches_domain(host, pinned),
+        HostPolicy::SignedManifest(pinned) => {
+            host_matches_domain(host, pinned)
+                || pinned_host_redirects(pinned)
+                    .iter()
+                    .any(|allowed| host_matches_domain(host, allowed))
+        }
         HostPolicy::UserConsented => {
             // Host authorization is delegated to the core consent check that
             // precedes this request. The empty ConsentedContent allowlist
@@ -1632,6 +1652,40 @@ mod tests {
                 "{lookalike} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn a_github_pin_allows_only_githubs_own_asset_hosts() {
+        // A direct_hash pin on a GitHub release URL is redirected to GitHub's asset CDN.
+        let pinned = HostPolicy::SignedManifest("github.com");
+        for host in [
+            "github.com",
+            "release-assets.githubusercontent.com",
+            "objects.githubusercontent.com",
+        ] {
+            assert!(
+                host_authorized(ClientCategory::PinnedArtifact, host, pinned),
+                "{host}"
+            );
+        }
+        for host in [
+            "raw.githubusercontent.com",
+            "githubusercontent.com",
+            "release-assets.githubusercontent.com.attacker.example",
+            "evil-release-assets.githubusercontent.com",
+        ] {
+            assert!(
+                !host_authorized(ClientCategory::PinnedArtifact, host, pinned),
+                "{host}"
+            );
+        }
+        // Another pinned host gains nothing.
+        let other = HostPolicy::SignedManifest("cdn.example.com");
+        assert!(!host_authorized(
+            ClientCategory::PinnedArtifact,
+            "release-assets.githubusercontent.com",
+            other
+        ));
     }
 
     #[test]

@@ -1,0 +1,846 @@
+{
+    "spikeVersion":  2,
+    "mode":  "StoreProbe",
+    "games":  [
+                  {
+                      "name":  "Crusader Kings III",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III\\Content",
+                      "isBaseGame":  true,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.ProjectTitus",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.289.0",
+                                     "executables":  [
+                                                         {
+                                                             "name":  "launcher/bin/Paradox Launcher.exe",
+                                                             "id":  "",
+                                                             "deviceFamily":  "PC",
+                                                             "overrideDisplayName":  ""
+                                                         }
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "DependencyList":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "ExecutableList",
+                                                              "StoreId",
+                                                              "MSAAppId",
+                                                              "TitleId",
+                                                              "Resources",
+                                                              "ShellVisuals",
+                                                              "DesktopRegistration"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+                                               {
+                                                   "name":  "launcher/bin/Paradox Launcher.exe",
+                                                   "id":  "",
+                                                   "exists":  true,
+                                                   "readable":  false,
+                                                   "peHeader":  false,
+                                                   "error":  "Exception calling \"Open\" with \"4\" argument(s): \"Access to the path \u0027C:\\XboxGames\\Crusader Kings III\\Content\\launcher\\bin\\Paradox Launcher.exe\u0027 is denied.\""
+                                               }
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.ProjectTitus_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  "launcher.bin.Paradox.Launcher",
+                                               "executable":  "GameLaunchHelper.exe",
+                                               "aumid":  "ParadoxInteractive.ProjectTitus_zfnrdv2de78ny!launcher.bin.Paradox.Launcher"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- All Under Heaven",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- All Under Heaven\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CursaderKingsIIIExpansion4",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.7.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CursaderKingsIIIExpansion4_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CursaderKingsIIIExpansion4_1.1.7.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- All Under Heaven\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CursaderKingsIIIExpansion4_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Couture of The Capets",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Couture of The Capets\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIIICoutureoftheCap",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.1.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIIICoutureoftheCap_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIICoutureoftheCap_1.1.1.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Couture of The Capets\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIIICoutureoftheCap_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Elegance of the Empire",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Elegance of the Empire\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIII-EleganceoftheE",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.1.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIII-EleganceoftheE_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII-EleganceoftheE_1.1.1.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Elegance of the Empire\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIII-EleganceoftheE_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Fashion of the Abbasid Court",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Fashion of the Abbasid Court\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.29199FB5DFDDF",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.0.9.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.29199FB5DFDDF_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.29199FB5DFDDF_1.0.9.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Fashion of the Abbasid Court\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.29199FB5DFDDF_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Flavor Pack 2",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Flavor Pack 2\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIIIFlavorPack2",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.5.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIIIFlavorPack2_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIIFlavorPack2_1.1.5.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Flavor Pack 2\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIIIFlavorPack2_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Garments of the Holy Roman Empire",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Garments of the Holy Roman Empire\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.281122D138B03",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.0.9.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.281122D138B03_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.281122D138B03_1.0.9.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Garments of the Holy Roman Empire\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.281122D138B03_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Khans of the Steppe",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Khans of the Steppe\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIIICoreExpansion2",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.6.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIIICoreExpansion2_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIICoreExpansion2_1.1.6.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Khans of the Steppe\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIIICoreExpansion2_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Legacy of Persia",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Legacy of Persia\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIII-FlavorPack3",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.5.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIII-FlavorPack3_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII-FlavorPack3_1.1.5.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Legacy of Persia\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIII-FlavorPack3_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Legends of the Dead",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Legends of the Dead\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIIILegendsoftheDea",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.4.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIIILegendsoftheDea_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIILegendsoftheDea_1.1.4.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Legends of the Dead\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIIILegendsoftheDea_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Roads to Power",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Roads to Power\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIIIPathstoPower",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.8.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIIIPathstoPower_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIIPathstoPower_1.1.8.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Roads to Power\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIIIPathstoPower_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Royal Court",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Royal Court\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIIIExpansion1",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.4.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIIIExpansion1_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIIExpansion1_1.1.4.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Royal Court\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIIIExpansion1_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- The Northern Lords",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- The Northern Lords\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIIIFlavorPack1",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.6.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIIIFlavorPack1_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIIFlavorPack1_1.1.6.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- The Northern Lords\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIIIFlavorPack1_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Tours and Tournaments",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Tours and Tournaments\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIII-ToursTournamen",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.5.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIII-ToursTournamen_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII-ToursTournamen_1.1.5.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Tours and Tournaments\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIII-ToursTournamen_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Wandering Nobles",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Wandering Nobles\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIIITravels",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.1.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIIITravels_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIITravels_1.1.1.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Wandering Nobles\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIIITravels_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  },
+                  {
+                      "name":  "Crusader Kings III- Wards and Wardens",
+                      "contentDir":  "C:\\XboxGames\\Crusader Kings III- Wards and Wardens\\Content",
+                      "isBaseGame":  false,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "ParadoxInteractive.CrusaderKingsIII-WardsWardens",
+                                     "publisher":  "CN=412027F1-C440-4D27-9222-E4024A430F78",
+                                     "version":  "1.1.4.0",
+                                     "executables":  [
+
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "MainPackageDependency":  "",
+                                                                 "ProcessorArchitecture":  "x64"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "ShellVisuals",
+                                                              "AllowedProducts",
+                                                              "DesktopRegistration",
+                                                              "TargetDeviceFamilyForDLC",
+                                                              "Resources"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "ParadoxInteractive.CrusaderKingsIII-WardsWardens_zfnrdv2de78ny",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII-WardsWardens_1.1.4.0_x64__zfnrdv2de78ny",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Crusader Kings III- Wards and Wardens\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  null,
+                                               "executable":  null,
+                                               "aumid":  "ParadoxInteractive.CrusaderKingsIII-WardsWardens_zfnrdv2de78ny!"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  }
+              ],
+    "launchAttempts":  [
+                           {
+                               "method":  "direct executable",
+                               "startError":  null,
+                               "processSeen":  true,
+                               "processes":  [
+                                                 {
+                                                     "name":  "Paradox Launcher",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny\\launcher\\bin\\Paradox Launcher.exe",
+                                                     "pathError":  null
+                                                 },
+                                                 {
+                                                     "name":  "Paradox Launcher",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny\\launcher\\bin\\Paradox Launcher.exe",
+                                                     "pathError":  null
+                                                 },
+                                                 {
+                                                     "name":  "Paradox Launcher",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny\\launcher\\bin\\Paradox Launcher.exe",
+                                                     "pathError":  null
+                                                 }
+                                             ],
+                               "userSaysGameStarted":  "y",
+                               "notes":  "launcher rather than the full game, typical CK3 behaviour"
+                           },
+                           {
+                               "method":  "gamelaunchhelper.exe",
+                               "startError":  null,
+                               "processSeen":  true,
+                               "processes":  [
+                                                 {
+                                                     "name":  "Paradox Launcher",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny\\launcher\\bin\\Paradox Launcher.exe",
+                                                     "pathError":  null
+                                                 },
+                                                 {
+                                                     "name":  "Paradox Launcher",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny\\launcher\\bin\\Paradox Launcher.exe",
+                                                     "pathError":  null
+                                                 },
+                                                 {
+                                                     "name":  "Paradox Launcher",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny\\launcher\\bin\\Paradox Launcher.exe",
+                                                     "pathError":  null
+                                                 }
+                                             ],
+                               "userSaysGameStarted":  "y",
+                               "notes":  "still launcher"
+                           },
+                           {
+                               "method":  "app id (shell:AppsFolder)",
+                               "startError":  null,
+                               "processSeen":  true,
+                               "processes":  [
+                                                 {
+                                                     "name":  "Paradox Launcher",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny\\launcher\\bin\\Paradox Launcher.exe",
+                                                     "pathError":  null
+                                                 }
+                                             ],
+                               "userSaysGameStarted":  "y",
+                               "notes":  "still launcher"
+                           }
+                       ]
+}

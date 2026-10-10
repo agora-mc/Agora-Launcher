@@ -10,28 +10,33 @@ Canonical reference for which code belongs where.
 
 ## Ownership Rules
 
-### Core Layer (`agora-core`) — owns everything below
+### Core and game packages — own everything below
+
+`agora-core` is game-agnostic. Minecraft's behaviour lives in the `agora-game-minecraft` package,
+which core never references; the adapter registers it into the context's `GameRegistry` at startup
+(MASTER_SPEC §26.12). Where a row below names the Minecraft package, a second game supplies its own
+equivalent.
 
 | Domain | Owner | Notes |
 |---|---|---|
 | AppPaths / data layout | `agora-core` | Canonical path derivation for runtimes, instances, cache, receipts |
 | Database access (all SQLite) | `agora-core` | Both `registry.db` (the catalog) and `local_state.db`; parameterized queries only |
-| Catalogs (runtime, modrinth, etc.) | `agora-core` | Typed catalog sources; search, version resolution |
-| LaunchService (spawn + orchestrate) | `agora-core` | Includes process spawning, process identity verification, exit classification, PID tracking. The adapter provides only the raw `std::process::Command` or equivalent handle — core owns the lifecycle |
-| InstallService (resolve + stage + apply) | `agora-core` | The full install pipeline: `InstallIntent` → `ResolvedInstallPlan` → verified staging → atomic apply → health rollback |
-| Dependency resolution | `agora-core` | Required/optional/incompatible resolution; alias matching across sources |
-| Import / export / snapshot / clone | `agora-core` | mrpack, Prism, directory import; zip snapshots; instance clone |
-| Health / pre-launch checks | `agora-core` | JAR metadata parsing, version matching, incompatibility classification |
+| Catalogs (runtime, modrinth, etc.) | Signed registry: `agora-core`; Java runtime, loader and Modrinth catalogs: `agora-game-minecraft` | Typed catalog sources; search, version resolution |
+| LaunchService (spawn + orchestrate) | `agora-game-minecraft` | Includes process spawning, process identity verification, exit classification, PID tracking. The adapter provides only the raw `std::process::Command` or equivalent handle — core owns the lifecycle |
+| InstallService (resolve + stage + apply) | `agora-game-minecraft` | The full install pipeline: `InstallIntent` → `ResolvedInstallPlan` → verified staging → atomic apply → health rollback |
+| Dependency resolution | `agora-game-minecraft` (alias and version-range types in `agora-core`) | Required/optional/incompatible resolution; alias matching across sources |
+| Import / export / clone | `agora-game-minecraft`; snapshots in `agora-core` | mrpack, Prism, directory import; zip snapshots; instance clone |
+| Health / pre-launch checks | `agora-game-minecraft` | JAR metadata parsing, version matching, incompatibility classification |
 | Crash diagnostics | `agora-core` | Regex signature matching, scoring algorithm, telemetry recording |
-| Authentication (MSA + GitHub OAuth) | `agora-core` | Full device-flow chains; token storage via keyring or encrypted fallback |
+| Authentication (MSA + GitHub OAuth) | MSA: `agora-game-minecraft`; GitHub OAuth and the secret store: `agora-core` | Full device-flow chains; token storage via keyring or encrypted fallback |
 | Network policy / security policy | `agora-core` | Host allowlists, redirect validation, hash verification, rate limiting |
-| Java runtime operations | `agora-core` | Managed runtime catalog, download, extraction, validation, promotion |
-| Loader operations | `agora-core` | Loader manifest resolution, installer execution, profile adoption |
-| MCP dispatcher | `agora-core` | Tool routing, argument deserialization, approval policy, system context generation. Adapter provides only transport framing |
+| Java runtime operations | `agora-game-minecraft` | Managed runtime catalog, download, extraction, validation, promotion |
+| Loader operations | `agora-game-minecraft` | Loader manifest resolution, installer execution, profile adoption |
+| MCP dispatcher | `agora-game-minecraft` | Tool routing, argument deserialization, approval policy, system context generation. Adapter provides only transport framing |
 | Locks / operation state | `agora-core` | Per-instance mutex, catalog read-writer lock, operation state machine |
 | Process identity verification | `agora-core` | PID → executable path → start-time verification; os-identifier abstraction behind a core trait |
-| Controller support policy | `agora-core` | Whether to offer Controlify for an instance, which loaders it supports, and which instances the user declined. Gamepad *detection* is the Web Gamepad API and belongs to React — core never asks whether a pad is plugged in, only what to do about an instance |
-| Content providers | `agora-core` | Which providers exist (`providers::ProviderRegistry`), Browse orchestration across them (`providers::browse`), whether a provider's install plan is permitted (`providers::authorize_plan`), and installing it. Modrinth and Technic implement the same `ContentProvider` trait as plugin providers. Adapters build the registry and move data; React renders descriptors and never decides which providers exist |
+| Controller support policy | `agora-game-minecraft` | Whether to offer Controlify for an instance, which loaders it supports, and which instances the user declined. Gamepad *detection* is the Web Gamepad API and belongs to React — core never asks whether a pad is plugged in, only what to do about an instance |
+| Content providers | `agora-core` (registry, authorization); `agora-game-minecraft` (Modrinth, Technic, browse, install) | Which providers exist (`providers::ProviderRegistry`) and whether a provider's install plan is permitted (`providers::authorize_plan`) are core's; browsing them alongside the curated catalog and installing a plan are Minecraft's (`agora_game_minecraft::providers`). Modrinth and Technic implement the same `ContentProvider` trait as plugin providers and are registered as compiled-in providers. Adapters build the registry and move data; React renders descriptors and never decides which providers exist |
 | Plugin policy | `agora-core` | What is installed, what is enabled, which capabilities were granted, what order plugins activate in, which host method each call maps to, and what happens when a plugin misbehaves. Core does **not** own the script engine — see below |
 
 ### Plugin Layer — `agora-plugin-api` / `agora-plugin-host`
@@ -84,6 +89,11 @@ This ensures the core owns the **interface and policy** while the adapter provid
 
 ## Dependency Direction
 
+The game contract is in `agora-game-api`, below core and game packages. Core must not reference
+`agora-game-minecraft`; packages register into each context's `GameRegistry` through the contract. Until
+Phase 5, `agora-game-minecraft` may still use `agora-core` within a budget that only shrinks
+(`scripts/game_package_core_budget.json`). See [game API and manifest v3](game-api.md).
+
 ```
 agora-plugin-api  ←  agora-core
 agora-plugin-api  ←  agora-plugin-host
@@ -108,7 +118,7 @@ agora-core        ←  MCP dispatcher (future agora serve or desktop adapter)
 ### ✅ Allowed — Core owns LaunchService including spawn
 
 ```rust
-// agora-core/src/launch_service.rs
+// agora-game-minecraft/src/launch_service.rs
 pub struct LaunchService {
     planner: LaunchPlanner,
     process_factory: Box<dyn ProcessFactory>,

@@ -1,0 +1,59 @@
+{
+    "spikeVersion":  2,
+    "mode":  "StockRoot",
+    "flavor":  "Steam",
+    "exeVersion":  "1.6.1170.0",
+    "method":  "hardlink",
+    "steamAppIdFileWritten":  false,
+    "stockRoot":  "D:\\AgoraSpike\\stock-steam",
+    "build":  {
+                  "hardlinked":  110,
+                  "copied":  7,
+                  "hardlinkFailedCopied":  0,
+                  "skipped":  {
+
+                              },
+                  "buildSeconds":  0.1,
+                  "gbHardlinked":  16.24,
+                  "gbCopied":  0.04
+              },
+    "launchedVia":  "skse64_loader.exe",
+    "processSeen":  true,
+    "processPath":  "D:\\AgoraSpike\\stock-steam\\SkyrimSE.exe",
+    "ranFromStockRoot":  true,
+    "reachedMainMenu":  "y",
+    "keptRunningAfterQuit":  false,
+    "endedByScript":  false,
+    "userNotes":  "",
+    "skse":  {
+                 "logPath":  "C:\\Users\\<user>\\Documents\\My Games\\Skyrim Special Edition\\SKSE\\skse64.log",
+                 "ranThisLaunch":  true,
+                 "head":  [
+                              "SKSE64 runtime: initialize (version = 2.2.6 01064920 01DD50937F78C4CD, os = 6.2 (9200))",
+                              "imagebase = 00007FF756860000",
+                              "reloc mgr imagebase = 00007FF756860000",
+                              "config path = D:\\AgoraSpike\\stock-steam\\Data\\SKSE\\skse.ini",
+                              "plugin directory = D:\\AgoraSpike\\stock-steam\\Data\\SKSE\\Plugins\\",
+                              "scanning plugin directory D:\\AgoraSpike\\stock-steam\\Data\\SKSE\\Plugins\\",
+                              "dispatch message (0) to plugin listeners",
+                              "no listeners registered",
+                              "dispatch message (1) to plugin listeners",
+                              "no listeners registered",
+                              "init complete",
+                              "hooked dinput",
+                              "dispatch message (6) to plugin listeners",
+                              "no listeners registered",
+                              "dispatch message (8) to plugin listeners",
+                              "no listeners registered"
+                          ]
+             },
+    "realInstallFilesChanged":  [
+                                    "D:\\SteamLibrary\\steamapps\\common\\Skyrim Special Edition\\d3dx9_42.log"
+                                ],
+    "filesCreatedInStockRoot":  [
+
+                                ],
+    "userFilesChangedByGame":  [
+                                   "plugins.txt"
+                               ]
+}

@@ -23,7 +23,7 @@ pub use agora_core::crash_service::{
 ///
 /// On ANY error (not a zip, io failure, etc.), returns `vec![]`. Never panics.
 pub fn parse_jar_packages(jar_path: &Path) -> Vec<String> {
-    agora_core::jar_metadata::parse_jar_metadata(jar_path).java_packages
+    agora_game_minecraft::jar_metadata::parse_jar_metadata(jar_path).java_packages
 }
 
 // ---------------------------------------------------------------------------

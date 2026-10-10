@@ -1,9 +1,9 @@
 //! Loader manifest helpers.
 //!
-//! Delegates to `agora_core::loader_manifests` which provides the `LoaderCatalog`
+//! Delegates to `agora_game_minecraft::loader_manifests` which provides the `LoaderCatalog`
 //! type with runtime registry override and embedded fallback.
 
-pub use agora_core::loader_manifests::{
+pub use agora_game_minecraft::loader_manifests::{
     ensure_allowed_domain,
     find_entry,
     is_allowed_host,
@@ -93,13 +93,13 @@ mod tests {
 
     #[test]
     fn test_manifest_has_nonempty_allowlist() {
-        let catalog = agora_core::loader_manifests::LoaderCatalog::embedded();
+        let catalog = agora_game_minecraft::loader_manifests::LoaderCatalog::embedded();
         assert!(!catalog.domain_allowlist.is_empty(), "domain_allowlist must not be empty");
     }
 
     #[test]
     fn test_manifest_has_known_loaders() {
-        let catalog = agora_core::loader_manifests::LoaderCatalog::embedded();
+        let catalog = agora_game_minecraft::loader_manifests::LoaderCatalog::embedded();
         let loaders: Vec<String> = catalog.loaders.keys().cloned().collect();
         assert!(loaders.contains(&"fabric".to_string()), "fabric loader must be present");
         assert!(loaders.contains(&"quilt".to_string()), "quilt loader must be present");

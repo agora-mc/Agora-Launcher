@@ -109,6 +109,15 @@ def _validate_direct_hash_contract(item: dict[str, Any]) -> str:
             f"{item_id}: direct_hash source_identifier must end in a filename "
             f"(e.g. https://example.com/files/my-mod-1.2.3.jar)"
         )
+    game = item.get("game", "minecraft")
+    if game != "minecraft":
+        # An entry for another game states its compatibility in game_compatibility
+        # (MASTER_SPEC §26.8); the per-entry rules are the compiler's to enforce.
+        if not item.get("game_compatibility"):
+            raise SystemExit(
+                f"{item_id}: direct_hash for {game} requires a non-empty game_compatibility list"
+            )
+        return source
     declared = item.get("compatible_versions")
     if not declared:
         raise SystemExit(

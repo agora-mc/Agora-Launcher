@@ -23,6 +23,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/agora-core/**"
+      - "crates/agora-game-api/**"
+      - "crates/agora-game-minecraft/**"
       - "crates/agora/**"
       - "desktop/src-tauri/**"
       - "desktop/src/lib/useTypedSettings.ts"
@@ -36,6 +38,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/agora-core/**"
+      - "crates/agora-game-api/**"
+      - "crates/agora-game-minecraft/**"
       - "crates/agora/**"
       - "desktop/src-tauri/**"
       - "desktop/src/lib/useTypedSettings.ts"
@@ -78,10 +82,10 @@ jobs:
             crates/agora-core -> target
             crates/agora -> target
 
-      # Compile-only check: build agora-core without running tests.
-      # This catches compilation errors early and primes the cache.
-      - name: Build agora-core
-        run: cargo build -p agora-core
+      # Compile-only check: build core and the Minecraft package without
+      # running tests. This catches compilation errors early and primes the cache.
+      - name: Build agora-core and agora-game-minecraft
+        run: cargo build -p agora-core -p agora-game-minecraft
 
       # Narrow deterministic launch-planner integration tests.
       # These construct fully materialized synthetic plans on disk and
@@ -89,13 +93,13 @@ jobs:
       # fake Java, argument parsing, fixture deserialization, and paths
       # with spaces/Unicode — all without contacting remote servers.
       - name: Launch-planner integration tests
-        run: cargo test -p agora-core --test launch_planner_integration
+        run: cargo test -p agora-game-minecraft --test launch_planner_integration
 
-      # agora-core unit tests (module-level tests in launch_planner, network,
-      # java, etc.). These exercise argument parsing, native extraction,
-      # atomic writes, Java selection, and URL classification.
-      - name: Core unit tests
-        run: cargo test -p agora-core --lib
+      # Unit tests: launch_planner, java, etc. live in agora-game-minecraft;
+      # network policy in agora-core. These exercise argument parsing, native
+      # extraction, atomic writes, Java selection, and URL classification.
+      - name: Core and Minecraft package unit tests
+        run: cargo test -p agora-core -p agora-game-minecraft --lib
 
       # Build the agora CLI as a dependent-compile check: any breaking
       # change to agora-core's public API surfaces here.

@@ -112,8 +112,8 @@ fn test_msa_credentials_json() -> String {
         access_token: "test_access_token".into(),
         refresh_token: "test_refresh_token".into(),
         expires: chrono::Utc::now() + chrono::Duration::hours(1),
-        client_id: agora_core::msa::AGORA_MSA_CLIENT_ID.into(),
-        auth_version: agora_core::msa::MSA_AUTH_VERSION,
+        client_id: agora_game_minecraft::msa::AGORA_MSA_CLIENT_ID.into(),
+        auth_version: agora_game_minecraft::msa::MSA_AUTH_VERSION,
     })
     .expect("serialize fake MSA credentials")
 }
@@ -197,6 +197,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "lockfile",
     "plugin",
     "provider",
+    "games",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
@@ -260,6 +261,67 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["plugin", "restore-data"],
     &["plugin", "keygen"],
     &["plugin", "sign"],
+    &["games", "discover"],
+    &["games", "list"],
+    &["games", "base"],
+    &["games", "base", "build"],
+    &["games", "base", "list"],
+    &["games", "base", "verify"],
+    &["games", "base", "remove"],
+    &["games", "catalog"],
+    &["games", "catalog", "list"],
+    &["games", "catalog", "install"],
+    &["games", "content"],
+    &["games", "content", "add"],
+    &["games", "content", "list"],
+    &["games", "content", "show"],
+    &["games", "content", "verify"],
+    &["games", "content", "remove"],
+    &["games", "content", "fomod"],
+    &["games", "content", "fomod", "show"],
+    &["games", "content", "fomod", "install"],
+    &["games", "instance"],
+    &["games", "instance", "create"],
+    &["games", "instance", "list"],
+    &["games", "instance", "launch"],
+    &["games", "instance", "check"],
+    &["games", "instance", "delete"],
+    &["games", "instance", "content"],
+    &["games", "instance", "content", "add"],
+    &["games", "instance", "content", "list"],
+    &["games", "instance", "content", "remove"],
+    &["games", "instance", "content", "enable"],
+    &["games", "instance", "content", "disable"],
+    &["games", "instance", "content", "move"],
+    &["games", "instance", "deploy"],
+    &["games", "instance", "undeploy"],
+    &["games", "instance", "set-deployment"],
+    &["games", "instance", "plugins"],
+    &["games", "instance", "plugins", "enable"],
+    &["games", "instance", "plugins", "disable"],
+    &["games", "instance", "plugins", "sort"],
+    &["games", "instance", "plugins", "move"],
+    &["games", "instance", "plugins", "lock"],
+    &["games", "instance", "plugins", "unlock"],
+    &["games", "instance", "plugins", "check"],
+    &["games", "instance", "tools"],
+    &["games", "instance", "tools", "list"],
+    &["games", "instance", "tools", "run"],
+    &["games", "instance", "tools", "rollback"],
+    &["games", "instance", "tools", "remove"],
+    &["games", "instance", "tools", "diff"],
+    &["games", "instance", "ini"],
+    &["games", "instance", "saves"],
+    &["games", "launch"],
+    &["games", "user-files"],
+    &["games", "user-files", "status"],
+    &["games", "user-files", "restore"],
+    &["games", "tools-swap"],
+    &["games", "tools-swap", "status"],
+    &["games", "tools-swap", "restore"],
+    &["games", "import"],
+    &["games", "import", "mo2"],
+    &["games", "import", "mo2", "scan"],
 ];
 
 // ---------------------------------------------------------------------------
@@ -1148,7 +1210,7 @@ fn registry_status_no_desktop_button_instruction() {
 // ---------------------------------------------------------------------------
 
 use agora_core::download::sha1_hex;
-use agora_core::msa::MsaCredentials;
+use agora_game_minecraft::msa::MsaCredentials;
 
 /// Platform key used in natives directory name.
 fn platform() -> &'static str {
@@ -1432,6 +1494,34 @@ fn launch_fake_java_success() {
         stdout.contains("Abandoned") || stdout.contains("abandoned"),
         "stdout should mention Abandoned (exit 0, short runtime):\n{stdout}"
     );
+}
+
+#[test]
+fn launch_migrated_manifest_uses_cold_and_warm_plan_cache() {
+    let (_tmp, data_dir) = temp_data_dir();
+    run_agora(&data_dir, &["paths"]);
+    let instance_id = prepare_launch_state(&data_dir, 0, 21);
+    let manifest_path = data_dir
+        .join("instances")
+        .join(&instance_id)
+        .join("instance_manifest.json");
+    let manifest = agora_core::helpers::read_manifest(&manifest_path).unwrap();
+    agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest).unwrap();
+
+    for cache_state in ["miss", "hit"] {
+        let output =
+            run_agora_json_with_test_credentials(&data_dir, &["launch", &instance_id, "--yes"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "{cache_state} launch failed:\n{stderr}"
+        );
+        assert_json_stdout(&output);
+        assert!(
+            stderr.contains(&format!("durable plan cache {cache_state}")),
+            "{stderr}"
+        );
+    }
 }
 
 #[test]
@@ -3009,5 +3099,1281 @@ fn removal_reports_whether_stored_data_was_kept() {
     assert!(
         stdout.to_lowercase().contains("kept"),
         "removal should state that data was kept: {stdout}"
+    );
+}
+
+#[test]
+fn games_base_cli_list_verify_remove() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 1. List when empty
+    let output = run_agora(&data_dir, &["games", "base", "list"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No pinned bases found"));
+
+    let output_json = run_agora_json(&data_dir, &["games", "base", "list"]);
+    assert!(output_json.status.success());
+    let json_val: serde_json::Value =
+        serde_json::from_slice(&output_json.stdout).expect("valid json array");
+    assert_eq!(json_val, serde_json::json!([]));
+
+    // 2. Verify nonexistent base -> error
+    let output_ver = run_agora(&data_dir, &["games", "base", "verify", "nonexistent-base"]);
+    assert!(!output_ver.status.success());
+
+    // 3. Remove nonexistent base -> error
+    let output_rem = run_agora(&data_dir, &["games", "base", "remove", "nonexistent-base"]);
+    assert!(!output_rem.status.success());
+
+    // 4. Build with nonexistent install -> error
+    let output_build = run_agora(&data_dir, &["games", "base", "build", "steam:nonexistent"]);
+    assert!(!output_build.status.success());
+
+    // 5. Launch with nonexistent base -> error
+    let output_launch = run_agora(&data_dir, &["games", "launch", "nonexistent-base"]);
+    assert!(!output_launch.status.success());
+}
+
+#[test]
+fn games_content_cli_lifecycle() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 1. List when empty
+    let output = run_agora(&data_dir, &["games", "content", "list"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No content items found"));
+
+    let output_json = run_agora_json(&data_dir, &["games", "content", "list"]);
+    assert!(output_json.status.success());
+    let json_val: serde_json::Value =
+        serde_json::from_slice(&output_json.stdout).expect("valid json array");
+    assert_eq!(json_val, serde_json::json!([]));
+
+    // 2. Add folder
+    let mod_dir = tempfile::tempdir().unwrap();
+    std::fs::write(mod_dir.path().join("readme.txt"), b"mod content").unwrap();
+    let mod_dir_str = mod_dir.path().to_str().unwrap();
+
+    let output_add = run_agora(
+        &data_dir,
+        &["games", "content", "add", mod_dir_str, "--name", "test-mod"],
+    );
+    assert!(output_add.status.success());
+    let add_stdout = String::from_utf8_lossy(&output_add.stdout);
+    assert!(add_stdout.contains("Added item"));
+
+    // 3. List
+    let output_list = run_agora(&data_dir, &["games", "content", "list"]);
+    assert!(output_list.status.success());
+    let list_stdout = String::from_utf8_lossy(&output_list.stdout);
+    assert!(list_stdout.contains("test-mod"));
+
+    let output_list_json = run_agora_json(&data_dir, &["games", "content", "list"]);
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&output_list_json.stdout).expect("valid json list");
+    let item_id = list_json[0]["item_id"].as_str().unwrap().to_string();
+    let prefix = &item_id[..8];
+
+    // 4. Show
+    let output_show = run_agora(&data_dir, &["games", "content", "show", prefix]);
+    assert!(output_show.status.success());
+    let show_stdout = String::from_utf8_lossy(&output_show.stdout);
+    assert!(show_stdout.contains("readme.txt"));
+
+    // 5. Verify clean
+    let output_verify = run_agora(&data_dir, &["games", "content", "verify", prefix]);
+    assert!(output_verify.status.success());
+    let verify_stdout = String::from_utf8_lossy(&output_verify.stdout);
+    assert!(verify_stdout.contains("verified clean"));
+
+    // 6. Remove
+    let output_remove = run_agora(&data_dir, &["games", "content", "remove", prefix]);
+    assert!(output_remove.status.success());
+    let remove_stdout = String::from_utf8_lossy(&output_remove.stdout);
+    assert!(remove_stdout.contains("removed"));
+
+    // 7. Verify nonexistent fails
+    let output_ver_err = run_agora(&data_dir, &["games", "content", "verify", prefix]);
+    assert!(!output_ver_err.status.success());
+
+    // 8. Remove nonexistent fails
+    let output_rem_err = run_agora(&data_dir, &["games", "content", "remove", prefix]);
+    assert!(!output_rem_err.status.success());
+}
+
+#[test]
+fn games_content_fomod_cli_show_and_install() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let mod_dir = tempfile::tempdir().unwrap();
+    let root = mod_dir.path();
+    std::fs::create_dir_all(root.join("fomod")).unwrap();
+    std::fs::create_dir_all(root.join("Core")).unwrap();
+    std::fs::create_dir_all(root.join("Heavy")).unwrap();
+    std::fs::create_dir_all(root.join("Light")).unwrap();
+    std::fs::write(root.join("Core").join("core.esp"), b"core").unwrap();
+    std::fs::write(root.join("Heavy").join("armor.nif"), b"heavy").unwrap();
+    std::fs::write(root.join("Light").join("armor.nif"), b"light").unwrap();
+    std::fs::write(
+        root.join("fomod").join("ModuleConfig.xml"),
+        r#"<config>
+  <moduleName>CLI Mod</moduleName>
+  <requiredInstallFiles><folder source="Core" destination=""/></requiredInstallFiles>
+  <installSteps order="Explicit"><installStep name="Armor"><optionalFileGroups>
+    <group name="Weight" type="SelectExactlyOne"><plugins>
+      <plugin name="Heavy"><files><folder source="Heavy" destination="meshes"/></files>
+        <typeDescriptor><type name="Recommended"/></typeDescriptor></plugin>
+      <plugin name="Light"><files><folder source="Light" destination="meshes"/></files></plugin>
+    </plugins></group>
+  </optionalFileGroups></installStep></installSteps>
+</config>"#,
+    )
+    .unwrap();
+
+    let add = run_agora_json(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "add",
+            root.to_str().unwrap(),
+            "--name",
+            "cli-mod",
+        ],
+    );
+    assert!(add.status.success());
+    let added: serde_json::Value = serde_json::from_slice(&add.stdout).unwrap();
+    let item_id = added["item"]["item_id"].as_str().unwrap().to_string();
+    let prefix = &item_id[..12];
+
+    // show: human and JSON.
+    let show = run_agora(&data_dir, &["games", "content", "fomod", "show", prefix]);
+    assert!(show.status.success());
+    let text = String::from_utf8_lossy(&show.stdout);
+    assert!(text.contains("CLI Mod"));
+    assert!(text.contains("Group: Weight (select exactly one)"));
+    assert!(text.contains("--choose \"Armor/Weight/Heavy\""));
+    let show_json = run_agora_json(&data_dir, &["games", "content", "fomod", "show", prefix]);
+    let installer: serde_json::Value = serde_json::from_slice(&show_json.stdout).unwrap();
+    assert_eq!(
+        installer["steps"][0]["groups"][0]["group_type"],
+        "select_exactly_one"
+    );
+
+    // install without choices names the group and its rule.
+    let none = run_agora(&data_dir, &["games", "content", "fomod", "install", prefix]);
+    assert!(!none.status.success());
+    let err = String::from_utf8_lossy(&none.stderr);
+    assert!(
+        err.contains("Armor/Weight") && err.contains("select exactly one"),
+        "{err}"
+    );
+
+    // An unknown option is an error too.
+    let bad = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "fomod",
+            "install",
+            prefix,
+            "--choose",
+            "Armor/Weight/Nope",
+        ],
+    );
+    assert!(!bad.status.success());
+
+    // --choose installs one option; --defaults picks the recommended one.
+    let light = run_agora_json(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "fomod",
+            "install",
+            prefix,
+            "--choose",
+            "armor/weight/light",
+        ],
+    );
+    assert!(
+        light.status.success(),
+        "{}",
+        String::from_utf8_lossy(&light.stderr)
+    );
+    let light: serde_json::Value = serde_json::from_slice(&light.stdout).unwrap();
+    let dests: Vec<&str> = light["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["destination"].as_str().unwrap())
+        .collect();
+    assert_eq!(dests, ["core.esp", "meshes/armor.nif"]);
+
+    let heavy = run_agora_json(
+        &data_dir,
+        &["games", "content", "fomod", "install", prefix, "--defaults"],
+    );
+    assert!(heavy.status.success());
+    let heavy: serde_json::Value = serde_json::from_slice(&heavy.stdout).unwrap();
+    assert_eq!(heavy["choices"][0]["plugins"][0], "Heavy");
+    assert_ne!(heavy["item_id"], light["item_id"]);
+
+    // Both derived items are listed with their provenance, and verify clean.
+    let list = run_agora(&data_dir, &["games", "content", "list"]);
+    let list_text = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        list_text.contains("CLI Mod (FOMOD)") && list_text.contains("fomod:"),
+        "{list_text}"
+    );
+    let verify = run_agora(&data_dir, &["games", "content", "verify", "--full"]);
+    assert!(verify.status.success());
+}
+
+#[test]
+fn games_instance_content_and_deploy_cli() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 1. Nonexistent instance errors
+    let out = run_agora(
+        &data_dir,
+        &["games", "instance", "content", "list", "no-such-inst"],
+    );
+    assert!(!out.status.success());
+
+    let out_json = run_agora_json(
+        &data_dir,
+        &["games", "instance", "content", "list", "no-such-inst"],
+    );
+    assert!(!out_json.status.success());
+
+    let out_deploy = run_agora(&data_dir, &["games", "instance", "deploy", "no-such-inst"]);
+    assert!(!out_deploy.status.success());
+
+    let out_undeploy = run_agora(
+        &data_dir,
+        &["games", "instance", "undeploy", "no-such-inst"],
+    );
+    assert!(!out_undeploy.status.success());
+
+    let out_set = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "set-deployment",
+            "no-such-inst",
+            "virtual",
+        ],
+    );
+    assert!(!out_set.status.success());
+
+    // A mode name nobody knows is refused before anything is touched.
+    let out_bad = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "set-deployment",
+            "no-such-inst",
+            "fastest",
+        ],
+    );
+    assert!(!out_bad.status.success());
+    assert!(String::from_utf8_lossy(&out_bad.stderr).contains("unknown deployment"));
+
+    // The plugin list commands fail closed on an instance that is not there.
+    for args in [
+        &["games", "instance", "plugins", "no-such-inst"][..],
+        &["games", "instance", "ini", "no-such-inst"][..],
+        &[
+            "games",
+            "instance",
+            "ini",
+            "no-such-inst",
+            "user/Skyrim.ini",
+            "General",
+            "k",
+        ][..],
+        &["games", "instance", "saves", "no-such-inst"][..],
+        &["games", "instance", "saves", "no-such-inst", "own"][..],
+        &[
+            "games",
+            "instance",
+            "plugins",
+            "enable",
+            "no-such-inst",
+            "A.esp",
+        ][..],
+        &[
+            "games",
+            "instance",
+            "plugins",
+            "disable",
+            "no-such-inst",
+            "A.esp",
+        ][..],
+    ] {
+        let out = run_agora(&data_dir, args);
+        assert!(!out.status.success(), "{args:?} should fail");
+        let out_json = run_agora_json(&data_dir, args);
+        assert!(!out_json.status.success(), "{args:?} --json should fail");
+    }
+    // Naming no instance is a usage error, not an empty list.
+    let out = run_agora(&data_dir, &["games", "instance", "plugins"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn games_launch_commands_offer_plain_to_skip_a_framework_loader() {
+    let (_tmp, data_dir) = temp_data_dir();
+    for command in [
+        &["games", "launch"][..],
+        &["games", "instance", "launch"][..],
+    ] {
+        let mut args = command.to_vec();
+        args.push("--help");
+        let out = run_agora(&data_dir, &args);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("--plain"));
+    }
+}
+
+#[test]
+fn games_user_files_cli_status_and_restore() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 1. Status with no sessions should succeed and be empty
+    let out = run_agora(&data_dir, &["games", "user-files", "status"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("No user-file swap sessions"));
+
+    let out_json = run_agora_json(&data_dir, &["games", "user-files", "status"]);
+    assert!(out_json.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out_json.stdout)).unwrap();
+    assert_eq!(parsed, serde_json::json!([]));
+
+    // 2. Status with game filter
+    let out_game = run_agora(&data_dir, &["games", "user-files", "status", "skyrim-se"]);
+    assert!(out_game.status.success());
+
+    // 3. Restore with nonexistent session errors
+    let out_restore = run_agora(
+        &data_dir,
+        &["games", "user-files", "restore", "skyrim-se", "steam"],
+    );
+    assert!(!out_restore.status.success());
+
+    let out_restore_json = run_agora_json(
+        &data_dir,
+        &["games", "user-files", "restore", "skyrim-se", "steam"],
+    );
+    assert!(!out_restore_json.status.success());
+}
+
+#[test]
+fn games_instance_content_add_thunderstore_and_fallback_to_suggest_placement() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 0. Enable plugins
+    let out_set = run_agora(&data_dir, &["settings", "set", "plugins_enabled", "true"]);
+    assert!(out_set.status.success());
+
+    // 1. Install Valheim tracer plugin so valheim game definition is available
+    let valheim_pkg =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/tracers/valheim");
+    let valheim_pkg_str = valheim_pkg.to_string_lossy().to_string();
+    let out_plugin = run_agora(
+        &data_dir,
+        &[
+            "plugin",
+            "install",
+            "--yes",
+            "development",
+            valheim_pkg_str.as_str(),
+        ],
+    );
+    assert!(
+        out_plugin.status.success(),
+        "failed to install valheim plugin: {}",
+        String::from_utf8_lossy(&out_plugin.stderr)
+    );
+
+    // 2. Create Valheim instance manifest directly in instances/valheim-test
+    let inst_dir = data_dir.join("instances").join("valheim-test");
+    std::fs::create_dir_all(&inst_dir).unwrap();
+    let manifest_json = serde_json::json!({
+        "manifest_version": 3,
+        "game": "valheim",
+        "instance_id": "valheim-test",
+        "name": "Valheim Test",
+        "base": {
+            "kind": "unpinned",
+            "install": "steam:892970",
+            "reason": "testing"
+        },
+        "frameworks": [],
+        "layers": []
+    });
+    std::fs::write(
+        inst_dir.join("instance_manifest.json"),
+        serde_json::to_string_pretty(&manifest_json).unwrap(),
+    )
+    .unwrap();
+
+    // 3. Add a non-Thunderstore folder to content store
+    let non_ts_dir = tempdir();
+    std::fs::write(non_ts_dir.path().join("readme.txt"), b"not a ts package").unwrap();
+    let out_add_content = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "add",
+            non_ts_dir.path().to_str().unwrap(),
+            "--name",
+            "non-ts-mod",
+        ],
+    );
+    assert!(out_add_content.status.success());
+    let list_out = run_agora_json(&data_dir, &["games", "content", "list"]);
+    let list_json: serde_json::Value = serde_json::from_slice(&list_out.stdout).unwrap();
+    let non_ts_item_id = list_json[0]["item_id"].as_str().unwrap().to_string();
+
+    // 4. Try `games instance content add` without flags on non-Thunderstore item:
+    // It falls back to suggest_placement, which fails with Suggestion::Unknown
+    let out_place_unknown = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "content",
+            "add",
+            "valheim-test",
+            &non_ts_item_id,
+        ],
+    );
+    assert!(!out_place_unknown.status.success());
+    let stderr = String::from_utf8_lossy(&out_place_unknown.stderr);
+    assert!(
+        stderr.contains("Cannot determine placement for content")
+            || stderr.contains("Specify --into"),
+        "stderr should mention placement failure: {stderr}"
+    );
+
+    // 5. Specifying --into works on non-Thunderstore item
+    let out_place_manual = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "content",
+            "add",
+            "valheim-test",
+            &non_ts_item_id,
+            "--into",
+            "BepInEx/plugins",
+        ],
+    );
+    assert!(
+        out_place_manual.status.success(),
+        "manual --into should succeed: {}",
+        String::from_utf8_lossy(&out_place_manual.stderr)
+    );
+
+    // 6. Now add a Thunderstore package (with manifest.json)
+    let ts_dir = tempdir();
+    std::fs::write(
+        ts_dir.path().join("manifest.json"),
+        r#"{"name": "MyMod", "version_number": "1.0.0", "dependencies": ["Author-OtherMod-1.0.0"]}"#,
+    )
+    .unwrap();
+    std::fs::write(ts_dir.path().join("MyMod.dll"), b"assembly").unwrap();
+    let out_add_ts = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "add",
+            ts_dir.path().to_str().unwrap(),
+            "--name",
+            "Author-MyMod-1.0.0.zip",
+        ],
+    );
+    assert!(out_add_ts.status.success());
+    let list_out2 = run_agora_json(&data_dir, &["games", "content", "list"]);
+    let list_json2: serde_json::Value = serde_json::from_slice(&list_out2.stdout).unwrap();
+    let ts_item_id = list_json2
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"].as_str().unwrap_or("").contains("MyMod"))
+        .unwrap()["item_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 7. Add Thunderstore item without flags: places itself automatically and warns missing dependency!
+    let out_place_ts = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "content",
+            "add",
+            "valheim-test",
+            &ts_item_id,
+        ],
+    );
+    assert!(
+        out_place_ts.status.success(),
+        "thunderstore add should succeed: {}",
+        String::from_utf8_lossy(&out_place_ts.stderr)
+    );
+    let stdout_ts = String::from_utf8_lossy(&out_place_ts.stdout);
+    let stderr_ts = String::from_utf8_lossy(&out_place_ts.stderr);
+    assert!(stdout_ts.contains("Thunderstore package Author-MyMod 1.0.0:"));
+    assert!(stderr_ts.contains("Warning: MyMod needs Author-OtherMod; it is not in this instance"));
+}
+
+// ---------------------------------------------------------------------------
+// The virtual file system cannot start: say so, and ask before stepping down
+// ---------------------------------------------------------------------------
+
+/// A pinned Skyrim SE instance in a disposable data root, built from a fake install whose
+/// `SkyrimSE.exe` is a copy of `cmd.exe` (so a launch that runs ends at once). Nothing here reads
+/// or writes the machine's real Skyrim, its Documents or its AppData.
+struct VfsFixture {
+    _tmp: TempDir,
+    data_dir: PathBuf,
+    user_data: PathBuf,
+    missing_dll: PathBuf,
+    instance_id: String,
+}
+
+fn vfs_fixture() -> VfsFixture {
+    skyrim_fixture("1.6.1170.0", &[])
+}
+
+/// A Skyrim SE instance (no content) whose runtime is `version`. Each of `extra_files`, a path
+/// relative to the install folder, is written into the install before the instance is created.
+fn skyrim_fixture(version: &str, extra_files: &[&str]) -> VfsFixture {
+    use agora_core::game_discovery::{DiscoveredInstall, InstallCapabilities};
+    use agora_core::game_registry::{GameRegistry, IdentifiedInstall, PackageSource};
+    use agora_game_api::{GameId, InstallId, InstallKind, RuntimeIdentity, StoreId};
+
+    let tmp = tempdir();
+    let data_dir = tmp.path().join("app_data");
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(install_dir.join("Data")).unwrap();
+    if cfg!(windows) {
+        std::fs::copy(
+            r"C:\Windows\System32\cmd.exe",
+            install_dir.join("SkyrimSE.exe"),
+        )
+        .unwrap();
+    } else {
+        std::fs::write(install_dir.join("SkyrimSE.exe"), b"fake game binary").unwrap();
+    }
+    std::fs::write(install_dir.join("Data").join("Skyrim.esm"), b"ESM").unwrap();
+    for extra in extra_files {
+        let path = install_dir.join(extra);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fake framework file").unwrap();
+    }
+
+    let mut builder = GameRegistry::builder();
+    builder
+        .add(
+            PackageSource::Compiled {
+                crate_name: "agora-game-creation".to_string(),
+            },
+            agora_game_creation::game_package(),
+        )
+        .expect("register the Creation Engine package");
+    let ctx = agora_core::ctx::CoreContext::for_testing(data_dir.clone())
+        .with_games(std::sync::Arc::new(builder.build()));
+    agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
+
+    let store = StoreId::new("steam").unwrap();
+    let runtime = RuntimeIdentity {
+        game: GameId::new("skyrim-se").unwrap(),
+        store: store.clone(),
+        version: version.into(),
+        build: None,
+    };
+    let volume =
+        agora_core::game_discovery::volume::VolumeDetector::new().get_volume_info(&install_dir);
+    let install = IdentifiedInstall {
+        game: runtime.game.clone(),
+        install_id: InstallId::new("steam:489830").unwrap(),
+        discovered: DiscoveredInstall {
+            store,
+            product: "489830".into(),
+            name: "Skyrim Special Edition".into(),
+            kind: InstallKind::BaseGame,
+            parent_product: None,
+            location: install_dir.clone(),
+            store_version: Some(runtime.version.clone()),
+            store_build: None,
+            executables: vec!["SkyrimSE.exe".into()],
+            capabilities: InstallCapabilities {
+                executables_readable: true,
+                accepts_new_files: true,
+                relocatable: true,
+            },
+            volume,
+        },
+        add_ons: vec![],
+        runtime: agora_core::game_registry::RuntimeResolution::Identified {
+            runtime,
+            source: "executable".into(),
+        },
+    };
+    let definition = ctx
+        .games
+        .game(&GameId::new("skyrim-se").unwrap())
+        .expect("the Skyrim SE definition")
+        .clone();
+    let record = agora_core::game_instance::create(
+        &ctx,
+        &install,
+        &definition,
+        "Vfs Fallback",
+        Some("vfs-fallback".to_string()),
+        agora_core::game_base::BaseMode::Linked,
+        &|_| {},
+    )
+    .expect("create the instance");
+
+    let user_data = tmp.path().join("user_data");
+    let missing_dll = tmp.path().join("no-such-dir").join("agora_vfs.dll");
+    VfsFixture {
+        _tmp: tmp,
+        data_dir,
+        user_data,
+        missing_dll,
+        instance_id: record.instance_id,
+    }
+}
+
+/// Run the CLI against the fixture with no agora_vfs.dll to be found and per-user files redirected
+/// into the fixture. Standard input is not a terminal, so nothing can be asked.
+fn run_vfs_fixture(fixture: &VfsFixture, args: &[&str]) -> std::process::Output {
+    let mut cmd = agora_command(&fixture.data_dir, args);
+    cmd.env("AGORA_VFS_DLL", &fixture.missing_dll);
+    cmd.env("AGORA_TEST_USER_DATA_ROOT", &fixture.user_data);
+    run_command(cmd, args)
+}
+
+#[test]
+fn a_launch_that_cannot_start_the_vfs_says_why_and_prints_both_ways_to_run_from_links() {
+    let fixture = vfs_fixture();
+    let id = fixture.instance_id.clone();
+    let launch_cmd = format!("agora games instance launch {id} --deployment links");
+    let keep_cmd = format!("agora games instance set-deployment {id} links");
+
+    // Nobody chose a rung: it still asks (here: reports and exits) rather than stepping down.
+    let out = run_vfs_fixture(&fixture, &["games", "instance", "launch", &id]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    println!(
+        "--- stderr ---\n{stderr}--- stdout ---\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("the virtual file system could not start"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("AGORA_VFS_DLL") || stderr.contains("only available on Windows"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Linked files cannot catch writes"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&launch_cmd), "{stderr}");
+    assert!(stderr.contains(&keep_cmd), "{stderr}");
+    // No prompt without a terminal.
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("[y/N]"));
+    assert!(!stderr.contains("[y/N]"));
+
+    // The same when the user chose the virtual rung for the instance.
+    let set = run_vfs_fixture(
+        &fixture,
+        &["games", "instance", "set-deployment", &id, "virtual"],
+    );
+    assert!(set.status.success());
+    let out = run_vfs_fixture(&fixture, &["games", "instance", "launch", &id]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&launch_cmd) && stderr.contains(&keep_cmd),
+        "{stderr}"
+    );
+
+    // --json never prompts: the error object names the next rung and the two commands.
+    let out = run_vfs_fixture(&fixture, &["--json", "games", "instance", "launch", &id]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // Other warnings may precede the object on stderr.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error: serde_json::Value = serde_json::from_str(&stderr[stderr.find('{').unwrap()..])
+        .expect("the error is one JSON object");
+    assert_eq!(error["status"], "error");
+    assert_eq!(error["exitCode"], 1);
+    assert_eq!(error["nextDeployment"], "links");
+    assert_eq!(error["retry"], serde_json::json!([launch_cmd, keep_cmd]));
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("the virtual file system could not start"));
+}
+
+#[test]
+fn the_fall_back_flag_runs_from_linked_files_without_asking() {
+    let fixture = vfs_fixture();
+    let id = fixture.instance_id.clone();
+
+    let out = run_vfs_fixture(
+        &fixture,
+        &["games", "instance", "launch", &id, "--fall-back", "--wait"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    println!("--- stderr ---\n{stderr}--- stdout ---\n{stdout}");
+    assert!(!stdout.contains("[y/N]") && !stderr.contains("[y/N]"));
+    if !cfg!(windows) {
+        // The fake game only runs on Windows; elsewhere the flag still must not ask.
+        return;
+    }
+    assert!(
+        stderr.contains("Notice: the virtual file system could not start")
+            && stderr.contains("running from linked files instead"),
+        "{stderr}"
+    );
+    assert!(stdout.contains("Program:"), "{stdout}");
+    // Nothing is remembered: the next launch asks again.
+    let after = run_vfs_fixture(&fixture, &["games", "instance", "launch", &id]);
+    assert_eq!(after.status.code(), Some(1));
+
+    // --json carries the same facts.
+    let out = run_vfs_fixture(
+        &fixture,
+        &[
+            "--json",
+            "games",
+            "instance",
+            "launch",
+            &id,
+            "--fall-back",
+            "--wait",
+        ],
+    );
+    // stdout is the one JSON object and nothing else.
+    let value = assert_json_stdout(&out);
+    assert_eq!(value["status"], "exited");
+    assert_eq!(value["deployment"], "links");
+    assert!(value["notice"]
+        .as_str()
+        .unwrap()
+        .contains("running from linked files instead"));
+}
+
+#[test]
+fn a_json_launch_prints_only_one_json_object_on_stdout_with_or_without_wait() {
+    if !cfg!(windows) {
+        // The fake game only runs on Windows.
+        return;
+    }
+    // Without --wait: the launch is reported at once.
+    let fixture = vfs_fixture();
+    let id = fixture.instance_id.clone();
+    let out = run_vfs_fixture(
+        &fixture,
+        &["--json", "games", "instance", "launch", &id, "--fall-back"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let value = assert_json_stdout(&out);
+    assert_eq!(value["status"], "launched");
+    assert_eq!(value["deployment"], "links");
+    assert!(value["deploy_summary"]["status"].is_string(), "{value}");
+
+    // With --wait: the session's per-user files and deployment come back in the object.
+    let fixture = vfs_fixture();
+    let id = fixture.instance_id.clone();
+    let out = run_vfs_fixture(
+        &fixture,
+        &[
+            "--json",
+            "games",
+            "instance",
+            "launch",
+            &id,
+            "--fall-back",
+            "--wait",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let value = assert_json_stdout(&out);
+    assert_eq!(value["status"], "exited");
+    assert!(value["user_files_restored"]["restored"].is_u64(), "{value}");
+    assert!(value["deploy_summary"]["status"].is_string(), "{value}");
+    assert!(value["session_ended_quickly"].is_boolean(), "{value}");
+}
+
+#[test]
+fn launch_help_offers_fall_back() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let out = run_agora(&data_dir, &["games", "instance", "launch", "--help"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("--fall-back"));
+}
+
+#[test]
+fn games_instance_check_names_a_framework_built_for_another_version() {
+    // SKSE for 1.6.1179 sits in a game that is 1.6.1170.0: the check refuses and names SKSE.
+    let fixture = skyrim_fixture("1.6.1170.0", &["skse64_1_6_1179.dll"]);
+    let id = fixture.instance_id.clone();
+
+    let out = run_agora(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Skyrim Script Extender (SKSE)"), "{stdout}");
+    assert!(stdout.contains("skse64_1_6_1170.dll"), "{stdout}");
+    assert!(stdout.contains("skse64_1_6_1179.dll"), "{stdout}");
+
+    let out_json = run_agora_json(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(out_json.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
+    assert_eq!(json["status"], "findings");
+    assert_eq!(json["findings"][0]["rule_id"], "skse");
+    assert_eq!(json["findings"][0]["problem"]["kind"], "wrong_version");
+    assert_eq!(json["findings"][0]["found"][0], "skse64_1_6_1179.dll");
+
+    // A launch makes the same check and refuses before it starts anything.
+    let out_launch = run_agora(
+        &fixture.data_dir,
+        &["games", "instance", "launch", &id, "--deployment", "links"],
+    );
+    assert_eq!(out_launch.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out_launch.stderr);
+    assert!(stderr.contains("Skyrim Script Extender (SKSE)"), "{stderr}");
+    assert!(stderr.contains("--launch-anyway"), "{stderr}");
+}
+
+#[test]
+fn games_instance_check_passes_a_runtime_with_its_own_frameworks() {
+    let fixture = skyrim_fixture("1.6.1170.0", &["skse64_1_6_1170.dll"]);
+    let id = fixture.instance_id.clone();
+
+    let out = run_agora(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("No framework problems"));
+
+    let out_json = run_agora_json(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(out_json.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
+    assert_eq!(json["findings"].as_array().map(Vec::len), Some(0));
+    // The fixture's Skyrim.esm is not a real plugin, so the load order warns that its header cannot
+    // be read. That is a warning: it never fails the check.
+    assert_eq!(json["status"], "warnings");
+    assert_eq!(json["load_order_findings"][0]["kind"], "unreadable_header");
+    assert_eq!(json["load_order_findings"][0]["plugin"], "Skyrim.esm");
+}
+
+#[test]
+fn games_instance_check_lists_a_rule_it_cannot_check_but_exits_zero() {
+    // A three-part version cannot fill the Address Library rule's {4}: a definition-side
+    // finding, listed as a warning. It does not fail the check.
+    let fixture = skyrim_fixture("1.6.1170", &[]);
+    let id = fixture.instance_id.clone();
+
+    let out = run_agora(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cannot be checked"), "{stdout}");
+    assert!(stdout.contains("component 4"), "{stdout}");
+
+    let out_json = run_agora_json(&fixture.data_dir, &["games", "instance", "check", &id]);
+    assert_eq!(out_json.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
+    assert_eq!(json["status"], "warnings");
+    assert_eq!(json["findings"][0]["problem"]["kind"], "cannot_check");
+}
+
+#[test]
+fn games_instance_ini_and_saves_round_trip_through_the_cli() {
+    // The game's files live in a temporary user-data root, never the real Documents folder: the
+    // child process is pointed at it.
+    let fixture = skyrim_fixture("1.6.1170.0", &[]);
+    let id = fixture.instance_id.clone();
+    let real_ini = fixture
+        .user_data
+        .join("documents")
+        .join("My Games")
+        .join("Skyrim Special Edition")
+        .join("Skyrim.ini");
+    std::fs::create_dir_all(real_ini.parent().unwrap()).unwrap();
+    let original = "[General]\r\nsLanguage=ENGLISH\r\n[Display]\r\nfGamma=1.0\r\n";
+    std::fs::write(&real_ini, original).unwrap();
+
+    let run = |args: &[&str]| {
+        let mut cmd = agora_command(&fixture.data_dir, args);
+        cmd.env("AGORA_TEST_USER_DATA_ROOT", &fixture.user_data);
+        run_command(cmd, args)
+    };
+    let text = |out: &std::process::Output| String::from_utf8_lossy(&out.stdout).into_owned();
+
+    let listed = run(&["games", "instance", "ini", &id]);
+    assert_eq!(listed.status.code(), Some(0));
+    assert!(
+        text(&listed).contains("user/Skyrim.ini"),
+        "{}",
+        text(&listed)
+    );
+    assert!(text(&listed).contains("copy: no"), "{}", text(&listed));
+
+    let missing = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "General",
+        "SLocalSavePath",
+    ]);
+    assert_eq!(
+        missing.status.code(),
+        Some(1),
+        "a key that is not set exits 1"
+    );
+
+    let set = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "Display",
+        "fGamma",
+        "2.2",
+    ]);
+    assert_eq!(set.status.code(), Some(0));
+    let got = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "display",
+        "fgamma",
+    ]);
+    assert_eq!(text(&got).trim(), "2.2");
+
+    let saves = run(&["games", "instance", "saves", &id]);
+    assert_eq!(saves.status.code(), Some(0));
+    assert!(text(&saves).contains("shared"), "{}", text(&saves));
+
+    let own = run(&["games", "instance", "saves", &id, "own"]);
+    assert_eq!(
+        own.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&own.stderr)
+    );
+    assert!(text(&own).contains("stay where they are"), "{}", text(&own));
+    let own_value = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "General",
+        "SLocalSavePath",
+    ]);
+    assert_eq!(own_value.status.code(), Some(0));
+    assert!(
+        text(&own_value).trim().starts_with(r"Saves\Agora\"),
+        "{}",
+        text(&own_value)
+    );
+
+    let json_shared = run(&["--json", "games", "instance", "saves", &id, "shared"]);
+    assert_eq!(json_shared.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&json_shared.stdout).unwrap();
+    assert_eq!(json["choice"], "shared");
+    assert_eq!(json["previous"], "own");
+    assert_eq!(json["setting"]["action"], "removed");
+
+    let gone = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "General",
+        "SLocalSavePath",
+    ]);
+    assert_eq!(
+        gone.status.code(),
+        Some(1),
+        "shared removed the key it added"
+    );
+
+    let bad = run(&["games", "instance", "saves", &id, "fastest"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("not a save choice"));
+
+    let unset = run(&[
+        "games",
+        "instance",
+        "ini",
+        &id,
+        "user/Skyrim.ini",
+        "Display",
+        "fGamma",
+        "--unset",
+    ]);
+    assert_eq!(unset.status.code(), Some(0));
+
+    assert_eq!(
+        std::fs::read_to_string(&real_ini).unwrap(),
+        original,
+        "the game's own file was never edited"
+    );
+}
+
+#[test]
+fn the_shipped_skyrim_package_gives_each_store_its_own_save_location() {
+    use agora_game_api::StoreId;
+
+    let package = agora_game_creation::game_package();
+    let skyrim = package
+        .definition()
+        .games
+        .iter()
+        .find(|g| g.id.as_str() == "skyrim-se")
+        .expect("the package defines skyrim-se");
+    let steam = skyrim
+        .save_location
+        .iter()
+        .find(|r| r.applies_to_store(&StoreId::steam()))
+        .expect("steam has a save location");
+    let gog = skyrim
+        .save_location
+        .iter()
+        .find(|r| r.applies_to_store(&StoreId::gog()))
+        .expect("gog has a save location");
+    assert_eq!(steam.ini.as_str(), "user/Skyrim.ini");
+    assert_eq!(steam.section, "General");
+    assert_eq!(steam.key, "SLocalSavePath");
+    assert_eq!(steam.own_value, r"Saves\Agora\{instance}\");
+    assert_ne!(steam.shared_dir, gog.shared_dir);
+    // GOG's folder is named as its own user files name it.
+    assert!(
+        serde_json::to_string(&gog.shared_dir)
+            .unwrap()
+            .contains("Skyrim Special Edition GOG/Saves"),
+        "{:?}",
+        gog.shared_dir
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Catalog entries for other games (MASTER_SPEC §26.8)
+// ---------------------------------------------------------------------------
+
+/// A registry database as the compiler writes it: schema 9, with the other
+/// games' entries in `game_catalog_items`. One Skyrim SE entry whose
+/// compatibility names stores, versions, SKSE and an asset.
+///
+/// Written outside the data directory and handed to the debug build through
+/// `AGORA_DEV_REGISTRY_DB`, because a cached registry without an Ed25519
+/// signature is quarantined and no test can sign one.
+fn write_catalog_fixture(db_path: &Path) {
+    let sha = "a".repeat(64);
+    let skyrim_compat = r#"[{"stores":["steam","gog"],"game_versions":["1.6.1170.*"],"requires":[{"framework":"skse","min_version":"2.2.6"}],"asset":"CrashLogger-*.7z"}]"#;
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version (version) VALUES (9);
+         CREATE TABLE game_catalog_items (
+            id TEXT PRIMARY KEY, game TEXT NOT NULL, name TEXT NOT NULL,
+            author TEXT, content_type TEXT NOT NULL, download_strategy TEXT NOT NULL,
+            source_identifier TEXT NOT NULL, sha256 TEXT NOT NULL,
+            download_sources_json TEXT NOT NULL DEFAULT '[]',
+            game_compatibility_json TEXT NOT NULL, description TEXT,
+            license_id TEXT, page_url TEXT, icon_url TEXT,
+            status TEXT NOT NULL DEFAULT 'active', date_added TEXT
+         );
+         INSERT INTO game_catalog_items (id, game, name, content_type, download_strategy,
+            source_identifier, sha256, download_sources_json, game_compatibility_json, license_id)
+         VALUES ('crash-logger', 'skyrim-se', 'CrashLogger', 'mod', 'github_release',
+            'example-author/crash-logger', '{sha}',
+            '[{{\"strategy\":\"github_release\",\"identifier\":\"example-author/crash-logger\"}}]',
+            '{}', 'MIT');",
+        skyrim_compat.replace('\'', "''")
+    ))
+    .unwrap();
+}
+
+/// Run agora against the fixture registry, with `--json` when asked.
+fn run_agora_with_catalog(
+    data_dir: &Path,
+    catalog_db: &Path,
+    json: bool,
+    args: &[&str],
+) -> std::process::Output {
+    let mut full_args: Vec<&str> = Vec::new();
+    if json {
+        full_args.push("--json");
+    }
+    full_args.extend_from_slice(args);
+    let mut cmd = agora_command(data_dir, &full_args);
+    cmd.env("AGORA_DEV_REGISTRY_DB", catalog_db);
+    run_command(cmd, &full_args)
+}
+
+#[test]
+fn games_catalog_list_shows_the_other_game_entries_human_and_json() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let catalog = tempfile::tempdir().unwrap();
+    let catalog_db = catalog.path().join("registry.db");
+    write_catalog_fixture(&catalog_db);
+
+    let output = run_agora_with_catalog(
+        &data_dir,
+        &catalog_db,
+        false,
+        &["games", "catalog", "list", "skyrim-se"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("crash-logger"), "{stdout}");
+    assert!(stdout.contains("steam/gog"), "{stdout}");
+    assert!(
+        !stdout.contains("sodium"),
+        "Minecraft entries are not listed for Skyrim:\n{stdout}"
+    );
+
+    let json_output = run_agora_with_catalog(
+        &data_dir,
+        &catalog_db,
+        true,
+        &["games", "catalog", "list", "skyrim-se"],
+    );
+    assert!(
+        json_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let entries: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    let entries = entries.as_array().expect("a JSON array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"], "crash-logger");
+    assert_eq!(
+        entries[0]["game_compatibility"][0]["asset"],
+        "CrashLogger-*.7z"
+    );
+    assert_eq!(
+        entries[0]["game_compatibility"][0]["requires"][0]["min_version"],
+        "2.2.6"
+    );
+}
+
+#[test]
+fn games_catalog_list_refuses_minecraft_and_unknown_games() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let catalog = tempfile::tempdir().unwrap();
+    let catalog_db = catalog.path().join("registry.db");
+    write_catalog_fixture(&catalog_db);
+    for game in ["minecraft", "no-such-game"] {
+        let output = run_agora_with_catalog(
+            &data_dir,
+            &catalog_db,
+            false,
+            &["games", "catalog", "list", game],
+        );
+        assert!(!output.status.success(), "{game} should be refused");
+    }
+}
+
+#[test]
+fn games_catalog_install_refuses_an_unknown_entry_or_instance_before_any_download() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let catalog = tempfile::tempdir().unwrap();
+    let catalog_db = catalog.path().join("registry.db");
+    write_catalog_fixture(&catalog_db);
+
+    let unknown_entry = run_agora_with_catalog(
+        &data_dir,
+        &catalog_db,
+        false,
+        &[
+            "games",
+            "catalog",
+            "install",
+            "no-such-instance",
+            "no-such-entry",
+            "--dry-run",
+        ],
+    );
+    assert!(!unknown_entry.status.success());
+    let stderr = String::from_utf8_lossy(&unknown_entry.stderr);
+    assert!(
+        stderr.contains("No catalog entry 'no-such-entry'"),
+        "{stderr}"
+    );
+
+    let unknown_instance = run_agora_with_catalog(
+        &data_dir,
+        &catalog_db,
+        false,
+        &[
+            "games",
+            "catalog",
+            "install",
+            "no-such-instance",
+            "crash-logger",
+            "--dry-run",
+        ],
+    );
+    assert!(!unknown_instance.status.success());
+    let stderr = String::from_utf8_lossy(&unknown_instance.stderr);
+    assert!(stderr.contains("not found"), "{stderr}");
+    assert!(
+        !String::from_utf8_lossy(&unknown_instance.stdout).contains("Downloading"),
+        "nothing is announced for a download that cannot start"
     );
 }

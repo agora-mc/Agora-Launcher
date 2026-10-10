@@ -26,6 +26,8 @@ export type PackInstallTask = {
   bytesDownloaded: number;
   bytesTotal: number;
   error: string | null;
+  /** After a pack import: mods not installed (with reasons), and unverified installs. */
+  notes?: string[];
   healthReport?: { blockers: { message: string; suggested_action: string | null; filename: string | null }[]; warnings: { message: string }[]; score: string } | null;
   snapshotId?: string | null;
   /** Completion message for plan tasks ("Removed 7 files."). */
@@ -259,16 +261,19 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     }, 8000);
   };
 
-  const completeImportedTask = (id: string, instanceId: string, label: string) => {
+  const completeImportedTask = (id: string, instanceId: string, label: string, notes: string[] = []) => {
     setTaskMap((current) => updateTask(current, id, {
       instanceId,
       instanceName: label,
       status: 'completed',
       phase: 'done',
-      message: 'Pack installed successfully.',
+      message: notes.length > 0 ? 'Pack installed, with notes.' : 'Pack installed successfully.',
       progress: 1,
+      notes,
     }));
     setRevision((value) => value + 1);
+    // A pack with notes stays until the user dismisses it, so the notes can be read.
+    if (notes.length > 0) return;
     window.setTimeout(() => {
       setTaskMap((current) => {
         if (!current[id] || current[id].status === 'running') return current;
@@ -356,7 +361,10 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       [id]: initialTask(id, label, 'pack-file', null, label),
     }));
     void importInstancePack(sourcePath)
-      .then((instanceId) => completeImportedTask(id, instanceId, label))
+      .then((result) => completeImportedTask(id, result.instanceId, label, [
+        ...result.skipped.map((mod) => `Not installed: ${mod.name}. ${mod.message}`),
+        ...result.unverified,
+      ]))
       .catch((cause) => failTask(id, formatError(cause)));
   };
 
@@ -454,6 +462,9 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
         {detail && <span className="shrink-0">{detail}</span>}
       </div>
       {task.error && <p className="text-xs text-destructive">{task.error}</p>}
+      {task.notes?.map((note, index) => (
+        <p key={index} className="text-xs text-amber-700 dark:text-amber-300">{note}</p>
+      ))}
     </div>
   );
 }

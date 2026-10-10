@@ -1,0 +1,12 @@
+[package]
+name = "agora-game-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Game support contract shared by Agora core, compiled packages and community packages."
+
+[dependencies]
+serde = { workspace = true }
+semver = { workspace = true }
+thiserror = { workspace = true }

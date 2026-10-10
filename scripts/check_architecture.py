@@ -14,12 +14,17 @@ Checks:
 6. No direct HTTP request building in mod_install/modrinth_raw/crash_investigator
 7. Core crate has no tauri dependency
 8. Tauri binding name-manifest check runs (typed signatures explicitly waived)
+9. Update checks have one core implementation
+10. Live instance reads use the canonical manifest loader
+11. Game API depends only on serde, semver and thiserror (all dependency sections)
+12. Core must not reference the future Minecraft package's modules or crate
 """
 
 import json
 import os
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,8 +32,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DESKTOP_SRC = REPO_ROOT / "desktop" / "src-tauri" / "src"
 CORE_SRC = REPO_ROOT / "crates" / "agora-core" / "src"
 CLI_SRC = REPO_ROOT / "crates" / "agora" / "src"
+# Game packages hold game logic that used to live in core; the rules that
+# scanned core scan them too, or code moving out of core would escape them.
+MC_SRC = REPO_ROOT / "crates" / "agora-game-minecraft" / "src"
 
 CORE_CARGO = REPO_ROOT / "crates" / "agora-core" / "Cargo.toml"
+GAME_API_CARGO = REPO_ROOT / "crates" / "agora-game-api" / "Cargo.toml"
 
 # ---- Documented thin adapter modules ---------------------------------------
 # These modules share a name with a crate/agora-core module but are explicitly
@@ -150,7 +159,13 @@ def check_duplicate_modules() -> None:
         for m in re.finditer(r'^\s*pub\s+mod\s+(\w+)', text, re.MULTILINE):
             desktop_mods.add(m.group(1))
 
-    core_files = {p.stem for p in CORE_SRC.rglob("*.rs") if p.stem != "lib"}
+    core_files = {
+        p.stem
+        for root in (CORE_SRC, MC_SRC)
+        if root.exists()
+        for p in root.rglob("*.rs")
+        if p.stem not in ("lib", "mod")
+    }
 
     shared = desktop_mods & core_files
     unknown = shared - THIN_ADAPTER_MODULES
@@ -190,6 +205,10 @@ def check_orphaned_modules() -> None:
                 name = name.strip()
                 if name:
                     declared.add(name)
+        # ...and single-name re-exports, e.g.
+        # `pub use agora_game_minecraft::loader_manifests;`
+        for m in re.finditer(r'^\s*pub\s+use\s+(?:\w+::)+(\w+)\s*;', text, re.MULTILINE):
+            declared.add(m.group(1))
 
     found_files: set[str] = set()
     for p in DESKTOP_SRC.rglob("*.rs"):
@@ -298,6 +317,7 @@ def check_tauri_bindings_manifest() -> None:
 
 # The one module allowed to decide "does this installed item have an update?".
 UPDATE_CHECK_OWNER = "update_cache.rs"
+UPDATE_CHECK_OWNER_DIR = MC_SRC
 
 # Entry points that answer that question. An adapter reaching for either is
 # building a second implementation.
@@ -323,15 +343,15 @@ def check_single_update_check() -> None:
     and nothing enforced it, so a fix to one would have silently drifted from
     the other and shown up to the user as the badge disagreeing with the panel.
     Both now route through
-    `agora_core::update_cache::check_single_instance_updates_with`.
+    `agora_game_minecraft::update_cache::check_single_instance_updates_with`.
     """
-    search_roots = [DESKTOP_SRC, CLI_SRC, CORE_SRC]
+    search_roots = [DESKTOP_SRC, CLI_SRC, CORE_SRC, MC_SRC]
     hits: list[str] = []
     for root in search_roots:
         if not root.exists():
             continue
         for path in sorted(root.rglob("*.rs")):
-            if path.parent == CORE_SRC and path.name == UPDATE_CHECK_OWNER:
+            if path.parent == UPDATE_CHECK_OWNER_DIR and path.name == UPDATE_CHECK_OWNER:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             for lineno, line in enumerate(text.splitlines(), 1):
@@ -345,10 +365,10 @@ def check_single_update_check() -> None:
                         break
     if hits:
         err(
-            "Update-check logic found outside crates/agora-core/src/"
+            "Update-check logic found outside crates/agora-game-minecraft/src/"
             f"{UPDATE_CHECK_OWNER} — there must be exactly one implementation, "
             "or the update badge and the update panel can disagree. Call "
-            "agora_core::update_cache::check_single_instance_updates_with "
+            "agora_game_minecraft::update_cache::check_single_instance_updates_with "
             "instead"
         )
         for h in hits:
@@ -356,7 +376,7 @@ def check_single_update_check() -> None:
     else:
         print(
             "OK: update-check matching rules live only in "
-            f"agora-core/src/{UPDATE_CHECK_OWNER}"
+            f"agora-game-minecraft/src/{UPDATE_CHECK_OWNER}"
         )
 
 
@@ -393,7 +413,7 @@ def check_instance_manifest_raw() -> None:
     any read, but the file on disk must not be rewritten until the next write.
     That is only guaranteed if every live read goes through helpers::read_manifest.
     """
-    search_roots = [DESKTOP_SRC, CLI_SRC, CORE_SRC]
+    search_roots = [DESKTOP_SRC, CLI_SRC, CORE_SRC, MC_SRC]
     hits: list[str] = []
     for root in search_roots:
         if not root.exists():
@@ -421,7 +441,9 @@ def check_instance_manifest_raw() -> None:
                 #       serde_json::from_str(&text)...
                 # across two lines. Matching only the annotation's own line
                 # missed 28 real sites, so scan a small window.
-                if "InstanceManifest" not in line:
+                # A word match: `GameInstanceManifest` (generic instances) is a
+                # different type with no pack backfill, and must not trip this.
+                if not re.search(r"\bInstanceManifest\b", line):
                     continue
                 window = chr(10).join(lines[lineno - 1 : lineno + 2])
                 if "from_str" in window or "from_slice" in window or "from_reader" in window:
@@ -443,9 +465,200 @@ def check_instance_manifest_raw() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# 11–12. Game package dependency boundaries
 # ---------------------------------------------------------------------------
 
+def dependency_tables(manifest: dict):
+    """Include development/build and target-specific dependencies, too."""
+    for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
+        yield from manifest.get(kind, {}).items()
+    for target in manifest.get("target", {}).values():
+        yield from dependency_tables(target)
+
+
+def resolved_dependency(name: str, specification, workspace: dict) -> tuple[str, dict]:
+    if isinstance(specification, dict) and specification.get("workspace"):
+        specification = workspace.get("workspace", {}).get("dependencies", {}).get(name, specification)
+    details = specification if isinstance(specification, dict) else {}
+    return details.get("package", name), details
+
+
+def check_game_api_dependencies() -> None:
+    allowed = {"serde", "semver", "thiserror"}
+    if not GAME_API_CARGO.exists():
+        err("agora-game-api Cargo.toml missing")
+        return
+    try:
+        manifest = tomllib.loads(GAME_API_CARGO.read_text(encoding="utf-8"))
+        workspace = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        err(f"Cannot inspect agora-game-api dependencies: {exc}")
+        return
+    forbidden = []
+    for alias, specification in dependency_tables(manifest):
+        package, details = resolved_dependency(alias, specification, workspace)
+        # A local crate named serde is not the approved contract dependency.
+        if package not in allowed or "path" in details or "git" in details:
+            forbidden.append(alias)
+    if forbidden:
+        err(f"agora-game-api dependencies must be serde, semver or thiserror only: {sorted(forbidden)}")
+    else:
+        print("OK: agora-game-api depends only on serde, semver and thiserror")
+
+
+def is_game_package(name: str, path: str = "") -> bool:
+    if name in ("agora-game-api", "agora_game_api"):
+        return False
+    if name.startswith("agora-game-") or name.startswith("agora_game_"):
+        return True
+    path_norm = path.replace("\\", "/").rstrip("/")
+    if "agora-game-" in path_norm and not path_norm.endswith("agora-game-api"):
+        return True
+    return False
+
+
+def check_core_no_game_packages() -> None:
+    """Core never references a game package: adapters register packages into
+    core's `GameRegistry` through agora-game-api, never the other way round.
+    Check renamed dependencies as well as direct/import/include references."""
+    hits = []
+    if CORE_CARGO.exists():
+        try:
+            manifest = tomllib.loads(CORE_CARGO.read_text(encoding="utf-8"))
+            workspace = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            err(f"Cannot inspect core game package dependencies: {exc}")
+            return
+        for alias, specification in dependency_tables(manifest):
+            package, details = resolved_dependency(alias, specification, workspace)
+            path_str = details.get("path", "")
+            if is_game_package(package, path_str):
+                hits.append(f"  {CORE_CARGO.relative_to(REPO_ROOT)}: dependency {alias}")
+    pattern = re.compile(r"\bagora_game_(?!api\b)\w+\b|agora-game-(?!api\b)[\w-]+")
+    # Tests and build scripts are part of core's dependency boundary too.
+    for path in sorted(CORE_CARGO.parent.rglob("*.rs")):
+        # Ignore comments (including multi-line block comments), but retain
+        # newlines so reported source locations remain useful.
+        source = path.read_text(encoding="utf-8")
+        source = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group().count("\n"), source, flags=re.S)
+        for lineno, line in enumerate(source.splitlines(), 1):
+            if pattern.search(line.split("//", 1)[0]):
+                hits.append(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
+    if hits:
+        err("agora-core references game package modules — packages register through agora-game-api")
+        for hit in hits:
+            print(hit, file=sys.stderr)
+    else:
+        print("OK: agora-core does not reference any game package modules")
+
+
+check_core_no_minecraft_package = check_core_no_game_packages
+
+
+# ---------------------------------------------------------------------------
+# 13. Game packages' remaining dependence on agora-core only shrinks
+# ---------------------------------------------------------------------------
+# MASTER_SPEC §26.12: a game package depends on agora-game-api, never on
+# agora-core. Slice 2 moved Minecraft out of core but left
+# agora-game-minecraft using core's types and services; each use moves onto a
+# host service when another game needs that service, and the budget is zero by
+# Phase 5. Until a package's
+# budget reaches zero it may depend on agora-core, and its count of
+# `agora_core` references may only fall. A lower count must be written back
+# into the budget file, so a gain cannot be quietly given back.
+GAME_PACKAGE_CORE_BUDGET = REPO_ROOT / "scripts" / "game_package_core_budget.json"
+CRATES_DIR = REPO_ROOT / "crates"
+
+
+def count_core_references(package_dir: Path) -> int:
+    """`agora_core` identifiers in a package's Rust code, comments excluded."""
+    total = 0
+    for sub in ("src", "tests", "benches", "examples"):
+        root = package_dir / sub
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            source = path.read_text(encoding="utf-8", errors="replace")
+            source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+            for line in source.splitlines():
+                total += len(re.findall(r"\bagora_core\b", line.split("//", 1)[0]))
+    build = package_dir / "build.rs"
+    if build.exists():
+        total += len(re.findall(r"\bagora_core\b", build.read_text(encoding="utf-8")))
+    return total
+
+
+def depends_on_core(cargo_toml: Path) -> bool:
+    try:
+        manifest = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
+        workspace = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return True  # unreadable: assume the worst
+    for alias, specification in dependency_tables(manifest):
+        package, details = resolved_dependency(alias, specification, workspace)
+        if package == "agora-core" or details.get("path", "").rstrip("/").endswith("agora-core"):
+            return True
+    return False
+
+
+def check_game_package_core_budget() -> None:
+    try:
+        budget = json.loads(GAME_PACKAGE_CORE_BUDGET.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        budget = {}
+    except (OSError, ValueError) as exc:
+        err(f"Cannot read {GAME_PACKAGE_CORE_BUDGET.name}: {exc}")
+        return
+    problems = []
+    report = []
+    packages = sorted(
+        p for p in CRATES_DIR.glob("agora-game-*")
+        if p.name != "agora-game-api" and (p / "Cargo.toml").exists()
+    )
+    for package in packages:
+        name = package.name
+        count = count_core_references(package)
+        allowed = budget.get(name)
+        if allowed is None:
+            if depends_on_core(package / "Cargo.toml") or count:
+                problems.append(
+                    f"  {name}: depends on agora-core ({count} references) but has no "
+                    f"entry in {GAME_PACKAGE_CORE_BUDGET.name}; packages reach core "
+                    "through agora-game-api only"
+                )
+            continue
+        if count > allowed:
+            problems.append(
+                f"  {name}: {count} agora_core references, budget {allowed}; "
+                "this budget only shrinks"
+            )
+        elif count < allowed:
+            problems.append(
+                f"  {name}: {count} agora_core references, below the budget of "
+                f"{allowed}; lower it to {count} in {GAME_PACKAGE_CORE_BUDGET.name}"
+            )
+        elif count == 0 and depends_on_core(package / "Cargo.toml"):
+            problems.append(
+                f"  {name}: no agora_core references left; remove the agora-core "
+                "dependency and the budget entry"
+            )
+        else:
+            report.append(f"{name} {count}")
+    for name in sorted(set(budget) - {p.name for p in packages}):
+        problems.append(f"  {name}: budget entry for a package that does not exist")
+    if problems:
+        err("Game package dependence on agora-core (MASTER_SPEC §26.12)")
+        for problem in problems:
+            print(problem, file=sys.stderr)
+    elif report:
+        print("OK: game packages within their agora-core budget: " + ", ".join(report))
+    else:
+        print("OK: no game package depends on agora-core")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main() -> int:
     print("=== Architecture Boundary Checks ===\n")
 
@@ -487,6 +700,17 @@ def main() -> int:
 
     print("--- 10. Single InstanceManifest loader (lazy backfill) ---")
     check_instance_manifest_raw()
+    print()
+
+    print("--- 11. Game API contract dependencies ---")
+    check_game_api_dependencies()
+    print()
+
+    print("--- 12. Core has no game package references ---")
+    check_core_no_game_packages()
+
+    print("\n--- 13. Game packages' agora-core budget ---")
+    check_game_package_core_budget()
     print()
 
     if EXIT_CODE == 0:
