@@ -10,6 +10,7 @@
 
 #![cfg(windows)]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -17,8 +18,8 @@ use agora_core::ctx::CoreContext;
 use agora_core::event_sink::CancellationToken;
 use agora_core::game_base::BaseMode;
 use agora_core::game_deploy::{
-    add_content, deploy, move_content, plan, set_content_enabled, DeployError, DeployMode,
-    DeploymentPlan, FileSource, PlannedFile,
+    add_content, deploy, move_content, plan, set_content_enabled, set_deployment, DeployError,
+    DeployMode, DeploymentPlan, FileSource, PlannedFile,
 };
 use agora_core::game_discovery::{DiscoveredInstall, DiscoveryReport, InstallCapabilities};
 use agora_core::game_ini;
@@ -32,7 +33,7 @@ use agora_core::game_registry::{
     GameRegistry, IdentifiedInstall, PackageSource, RuntimeResolution,
 };
 use agora_core::game_tools::{
-    self, CaptureMethod, CaptureMode, OutputStatus, RunOutcome, ToolError,
+    self, CaptureMethod, CaptureMode, OutputStatus, RunOutcome, ToolError, ToolOffer,
 };
 use agora_core::game_user_files::{record_process, swap_in};
 use agora_core::process_identity;
@@ -1112,14 +1113,19 @@ fn a_run_is_refused_before_anything_is_deployed_when_the_vfs_cannot_start() {
         )
         .unwrap_err();
     match err {
-        ToolError::VfsUnavailable { reason, next } => {
+        ToolError::VfsUnavailable { reason, next, .. } => {
             assert!(reason.contains("agora_vfs.dll was not found"), "{reason}");
-            assert!(next.is_none());
+            // The tool uses its own folder, so the next tier is link capture.
+            assert_eq!(next, Some(CaptureMode::Links));
         }
         other => panic!("expected VfsUnavailable, got {other:?}"),
     }
     assert!(f.generated("nemesis").is_none());
-    assert!(!f.tool_dir("nemesis").exists());
+    // The refusal counts as a failure, so the tool folder holds the count and nothing else.
+    assert_eq!(
+        names(&f.tool_dir("nemesis")),
+        vec!["failures.json".to_string()]
+    );
 }
 
 #[test]
@@ -1463,24 +1469,106 @@ fn auto_captures_under_the_vfs_when_the_vfs_starts_and_says_so() {
 }
 
 #[test]
-fn auto_captures_from_links_when_the_vfs_cannot_start_and_says_why() {
+fn auto_on_a_virtual_instance_refuses_with_links_as_the_next_tier_and_runs_nothing() {
     let _dll = EnvVar::set("AGORA_VFS_DLL", r"C:\agora-missing\agora_vfs.dll");
     let f = fixture(vec![writes_or_fails("nemesis")]);
 
-    let out = f
+    let err = f
         .run_as(
             "nemesis",
             &agora_core::game_launch::SystemLauncher,
             CaptureMode::Auto,
         )
-        .expect("auto falls back to links");
+        .unwrap_err();
+
+    match &err {
+        ToolError::VfsUnavailable { reason, next, .. } => {
+            assert!(reason.contains("AGORA_VFS_DLL points at"), "{reason}");
+            assert_eq!(*next, Some(CaptureMode::Links));
+        }
+        other => panic!("expected VfsUnavailable, got {other:?}"),
+    }
+    let text = err.to_string();
+    assert!(
+        text.contains("Nothing was run") && text.contains("linked files"),
+        "{text}"
+    );
+    // Nothing was deployed, and no output was written: the user is asked before link capture runs.
+    assert!(!f.deployed_game_dir().exists());
+    assert!(f.generated("nemesis").is_none());
+    assert_eq!(
+        names(&f.tool_dir("nemesis")),
+        vec!["failures.json".to_string()]
+    );
+}
+
+#[test]
+fn auto_on_a_virtual_instance_refuses_a_real_install_tool_with_swap_as_the_next_tier() {
+    let f = fixture(vec![writes_real_data("nemesis")]);
+    let before = snapshot(&real_data(&f));
+
+    let err = f
+        .run_as(
+            "nemesis",
+            &StagingLauncher::without_vfs("agora_vfs.dll was not found"),
+            CaptureMode::Auto,
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            ToolError::VfsUnavailable {
+                next: Some(CaptureMode::Swap),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(
+        err.to_string().contains("copy of the instance's Data"),
+        "{err}"
+    );
+    assert!(!f.deployed_game_dir().exists());
+    assert!(!journal_file(&f).exists());
+    assert_eq!(
+        names(&f.tool_dir("nemesis")),
+        vec!["failures.json".to_string()]
+    );
+    assert_eq!(snapshot(&real_data(&f)), before);
+}
+
+#[test]
+fn auto_on_a_virtual_instance_runs_a_tool_that_uses_the_real_install_under_the_vfs() {
+    let mut tool = writes_or_fails("nemesis");
+    tool.uses_install_path = true;
+    let f = fixture(vec![tool]);
+
+    let out = f.run("nemesis", &StagingLauncher::new()).unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.capture, CaptureMethod::Vfs);
+    assert_eq!(out.capture_reason, None);
+}
+
+#[test]
+fn auto_on_a_linked_instance_captures_a_plain_tool_from_links_without_trying_the_vfs() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+    set_deployment(&f.ctx, f.id(), Some(DeployMode::Links)).unwrap();
+
+    // A VFS that cannot start would refuse a virtual run. A linked instance must not even try one.
+    let out = f
+        .run(
+            "nemesis",
+            &StagingLauncher::without_vfs("agora_vfs.dll was not found"),
+        )
+        .expect("a linked instance runs by links");
 
     assert!(out.promoted, "{out:?}");
     assert_eq!(out.capture, CaptureMethod::Links);
-    let reason = out.capture_reason.expect("the fallback says why");
+    let reason = out.capture_reason.expect("the reason is given");
     assert!(
-        reason.contains("the virtual file system could not start")
-            && reason.contains("AGORA_VFS_DLL points at"),
+        reason.contains("set to linked files") && !reason.contains("could not start"),
         "{reason}"
     );
     assert_eq!(out.written, vec!["Data/nemesis.txt".to_string()]);
@@ -1489,6 +1577,337 @@ fn auto_captures_from_links_when_the_vfs_cannot_start_and_says_why() {
             .unwrap()
             .trim(),
         "made"
+    );
+}
+
+/// A launcher whose VFS ends a program the tool started: it writes the line the DLL writes to its log
+/// during the run, then the tool fails. That is an injection failure.
+struct EndsAProgram;
+
+impl Launcher for EndsAProgram {
+    fn locate_vfs_dll(&self) -> Result<PathBuf, String> {
+        Ok(PathBuf::from(r"C:\agora\agora_vfs.dll"))
+    }
+
+    fn launch(&self, prepared: &PreparedLaunch) -> Result<LaunchedGame, LaunchError> {
+        if let Some(vfs) = &prepared.vfs {
+            std::fs::create_dir_all(vfs.log.parent().unwrap()).unwrap();
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&vfs.log)
+                .unwrap();
+            writeln!(
+                log,
+                "[4242] ending the process C:\\Games\\Tool\\helper.exe: anti-tamper refused the hook"
+            )
+            .unwrap();
+        }
+        StagingLauncher::new()
+            .with_env("AGORA_TEST_FAIL", "1")
+            .launch(prepared)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// A tool that keeps failing (MASTER_SPEC §26.9, decision 3): the offers after two discarded runs.
+// ---------------------------------------------------------------------------------------------
+
+fn failing() -> StagingLauncher {
+    StagingLauncher::new().with_env("AGORA_TEST_FAIL", "1")
+}
+
+#[test]
+fn a_tool_discarded_twice_in_a_row_offers_the_full_copy_swap_and_applies_nothing() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+
+    let first = f.run("nemesis", &failing()).unwrap();
+    assert!(!first.promoted);
+    assert!(first.offers.is_empty(), "{:?}", first.offers);
+
+    let second = f.run("nemesis", &failing()).unwrap();
+    assert!(!second.promoted);
+    match second.offers.as_slice() {
+        [ToolOffer::CopySwap { costs }] => assert!(costs.data_files >= 1, "{costs:?}"),
+        other => panic!("expected the copy swap offer, got {other:?}"),
+    }
+    // The offer changed nothing: no output, and the instance still has no deployment choice.
+    assert!(f.generated("nemesis").is_none());
+    assert_eq!(
+        get_manifest(&f.ctx, f.id()).unwrap().deployment,
+        None,
+        "an offer switched the instance"
+    );
+}
+
+#[test]
+fn a_promoted_run_resets_the_count_of_discarded_runs() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+
+    f.run("nemesis", &failing()).unwrap();
+    f.run_ok("nemesis", &StagingLauncher::new());
+    let after_promotion = f.run("nemesis", &failing()).unwrap();
+    assert!(
+        after_promotion.offers.is_empty(),
+        "{:?}",
+        after_promotion.offers
+    );
+
+    let again = f.run("nemesis", &failing()).unwrap();
+    assert!(
+        matches!(again.offers.as_slice(), [ToolOffer::CopySwap { .. }]),
+        "{:?}",
+        again.offers
+    );
+}
+
+#[test]
+fn a_missing_or_corrupt_count_file_counts_as_none_and_never_blocks_a_run() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+
+    // Missing: the first discarded run is only the first, and the run goes through.
+    let first = f
+        .run("nemesis", &failing())
+        .expect("a run with no count file");
+    assert!(!first.promoted && first.offers.is_empty(), "{first:?}");
+
+    // Corrupt: it reads as none, so the run is not blocked, and this discard is the first again.
+    std::fs::write(f.tool_dir("nemesis").join("failures.json"), b"{ not json").unwrap();
+    let corrupt = f
+        .run("nemesis", &failing())
+        .expect("a corrupt count file does not block a run");
+    assert!(
+        !corrupt.promoted && corrupt.offers.is_empty(),
+        "{corrupt:?}"
+    );
+
+    let next = f.run("nemesis", &failing()).unwrap();
+    assert!(
+        matches!(next.offers.as_slice(), [ToolOffer::CopySwap { .. }]),
+        "{:?}",
+        next.offers
+    );
+}
+
+#[test]
+fn a_failure_the_vfs_injected_into_offers_switching_to_links_for_a_tool_with_its_own_folder() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+
+    let first = f.run("nemesis", &EndsAProgram).unwrap();
+    assert!(first.offers.is_empty(), "{:?}", first.offers);
+    let second = f.run("nemesis", &EndsAProgram).unwrap();
+
+    assert!(
+        second.offers.contains(&ToolOffer::SwitchToLinks),
+        "{:?}",
+        second.offers
+    );
+    assert!(
+        second
+            .offers
+            .iter()
+            .any(|offer| matches!(offer, ToolOffer::CopySwap { .. })),
+        "{:?}",
+        second.offers
+    );
+    // Asked about, never done.
+    assert_eq!(get_manifest(&f.ctx, f.id()).unwrap().deployment, None);
+}
+
+#[test]
+fn a_tool_that_works_on_the_real_install_never_offers_switching_to_links() {
+    let mut tool = writes_or_fails("nemesis");
+    tool.uses_install_path = true;
+    let f = fixture(vec![tool]);
+
+    f.run("nemesis", &EndsAProgram).unwrap();
+    let second = f.run("nemesis", &EndsAProgram).unwrap();
+
+    assert!(
+        !second.offers.contains(&ToolOffer::SwitchToLinks),
+        "{:?}",
+        second.offers
+    );
+    assert!(
+        second
+            .offers
+            .iter()
+            .any(|offer| matches!(offer, ToolOffer::CopySwap { .. })),
+        "{:?}",
+        second.offers
+    );
+}
+
+#[test]
+fn a_failure_without_injection_never_offers_switching_to_links() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+
+    f.run("nemesis", &failing()).unwrap();
+    let second = f.run("nemesis", &failing()).unwrap();
+
+    assert!(
+        !second.offers.contains(&ToolOffer::SwitchToLinks),
+        "{:?}",
+        second.offers
+    );
+}
+
+#[test]
+fn two_failed_swaps_do_not_offer_the_swap_again() {
+    let _swap = SwapTest::same_volume();
+    let f = swap_fixture(vec![writes_or_fails("nemesis")]);
+
+    f.run_as("nemesis", &failing(), CaptureMode::Swap).unwrap();
+    let second = f.run_as("nemesis", &failing(), CaptureMode::Swap).unwrap();
+
+    assert!(!second.promoted, "{second:?}");
+    assert!(second.offers.is_empty(), "{:?}", second.offers);
+}
+
+/// The offers of a refused virtual file system run.
+fn refusal_offers(err: &ToolError) -> Vec<ToolOffer> {
+    match err {
+        ToolError::VfsUnavailable { offers, .. } => offers.clone(),
+        other => panic!("expected VfsUnavailable, got {other:?}"),
+    }
+}
+
+#[test]
+fn two_refused_vfs_starts_offer_switching_to_links_on_the_second() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+    let refuses = StagingLauncher::without_vfs("agora_vfs.dll was not found");
+
+    let first = f.run_as("nemesis", &refuses, CaptureMode::Vfs).unwrap_err();
+    assert!(refusal_offers(&first).is_empty(), "{first:?}");
+
+    let second = f.run_as("nemesis", &refuses, CaptureMode::Vfs).unwrap_err();
+    let offers = refusal_offers(&second);
+    assert!(offers.contains(&ToolOffer::SwitchToLinks), "{offers:?}");
+    assert!(
+        offers
+            .iter()
+            .any(|offer| matches!(offer, ToolOffer::CopySwap { .. })),
+        "{offers:?}"
+    );
+    // Asked about, never done: the instance keeps its deployment, and nothing ran.
+    assert_eq!(get_manifest(&f.ctx, f.id()).unwrap().deployment, None);
+    assert!(f.generated("nemesis").is_none());
+}
+
+#[test]
+fn two_refused_vfs_starts_never_offer_switching_to_links_for_a_real_install_tool() {
+    let mut tool = writes_or_fails("nemesis");
+    tool.uses_install_path = true;
+    let f = fixture(vec![tool]);
+    let refuses = StagingLauncher::without_vfs("agora_vfs.dll was not found");
+
+    f.run_as("nemesis", &refuses, CaptureMode::Auto)
+        .unwrap_err();
+    let second = f
+        .run_as("nemesis", &refuses, CaptureMode::Auto)
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            &second,
+            ToolError::VfsUnavailable {
+                next: Some(CaptureMode::Swap),
+                ..
+            }
+        ),
+        "{second:?}"
+    );
+    let offers = refusal_offers(&second);
+    assert!(!offers.contains(&ToolOffer::SwitchToLinks), "{offers:?}");
+}
+
+#[test]
+fn a_promoted_run_after_a_refusal_resets_the_count() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+    let refuses = StagingLauncher::without_vfs("agora_vfs.dll was not found");
+
+    f.run_as("nemesis", &refuses, CaptureMode::Vfs).unwrap_err();
+    let launcher = StagingLauncher::new();
+    let promoted = game_tools::run_after_vfs_refusal(
+        &f.ctx,
+        f.id(),
+        &f.def,
+        &ToolId::new("nemesis").unwrap(),
+        CaptureMode::Links,
+        "agora_vfs.dll was not found",
+        &launcher,
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert!(promoted.promoted, "{promoted:?}");
+
+    // The count started again, so this refusal is the first of a new series, with no offer.
+    let again = f.run_as("nemesis", &refuses, CaptureMode::Vfs).unwrap_err();
+    assert!(refusal_offers(&again).is_empty(), "{again:?}");
+}
+
+#[test]
+fn a_run_by_a_tier_chosen_after_a_refusal_names_the_vfs_failure_in_its_reason() {
+    let f = fixture(vec![writes_or_fails("nemesis")]);
+    let refusal = "agora_vfs.dll was not found";
+    let err = f
+        .run_as(
+            "nemesis",
+            &StagingLauncher::without_vfs(refusal),
+            CaptureMode::Auto,
+        )
+        .unwrap_err();
+    let ToolError::VfsUnavailable { reason, .. } = &err else {
+        panic!("expected VfsUnavailable, got {err:?}");
+    };
+
+    let out = game_tools::run_after_vfs_refusal(
+        &f.ctx,
+        f.id(),
+        &f.def,
+        &ToolId::new("nemesis").unwrap(),
+        CaptureMode::Links,
+        reason,
+        &StagingLauncher::new(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.capture, CaptureMethod::Links);
+    let why = out.capture_reason.expect("the fallback says why");
+    assert!(
+        why.contains("the virtual file system could not start (agora_vfs.dll was not found)")
+            && why.contains("link capture was chosen"),
+        "{why}"
+    );
+}
+
+#[test]
+fn a_swap_chosen_after_a_refusal_names_the_vfs_failure_in_its_reason() {
+    let _swap = SwapTest::same_volume();
+    let mut tool = writes_or_fails("nemesis");
+    tool.uses_install_path = true;
+    let f = swap_fixture(vec![tool]);
+
+    let out = game_tools::run_after_vfs_refusal(
+        &f.ctx,
+        f.id(),
+        &f.def,
+        &ToolId::new("nemesis").unwrap(),
+        CaptureMode::Swap,
+        "agora_vfs.dll was not found",
+        &StagingLauncher::new(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+
+    assert_eq!(out.capture, CaptureMethod::Swap);
+    let why = out.capture_reason.expect("the fallback says why");
+    assert!(
+        why.contains("the virtual file system could not start")
+            && why.contains("the full-copy swap was chosen"),
+        "{why}"
     );
 }
 
@@ -1694,9 +2113,30 @@ fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto_when_the_x86_d
     );
     let launcher = RealLauncher::new(&[]);
 
-    let out = f
+    // A virtual instance does not fall back by itself: the refusal names link capture as the next tier.
+    let err = f
         .run_as("wow", &launcher, CaptureMode::Auto)
-        .expect("a 32-bit tool runs by link capture");
+        .expect_err("a 32-bit tool is refused under the VFS, and nothing runs");
+    let refusal = match &err {
+        ToolError::VfsUnavailable { reason, next, .. } => {
+            assert!(reason.contains("32-bit"), "{reason}");
+            assert_eq!(*next, Some(CaptureMode::Links));
+            reason.clone()
+        }
+        other => panic!("expected VfsUnavailable, got {other:?}"),
+    };
+    // The user's answer is link capture, which runs the tool, and its reason names what failed first.
+    let out = game_tools::run_after_vfs_refusal(
+        &f.ctx,
+        f.id(),
+        &f.def,
+        &ToolId::new("wow").unwrap(),
+        CaptureMode::Links,
+        &refusal,
+        &launcher,
+        &CancellationToken::new(),
+    )
+    .expect("a 32-bit tool runs by link capture once asked for");
     println!("run outcome: {out:?}");
     assert_eq!(out.capture, CaptureMethod::Links, "{out:?}");
     let reason = out.capture_reason.clone().unwrap_or_default();
@@ -2386,8 +2826,9 @@ fn a_taken_aside_name_is_refused_before_anything_moves() {
 }
 
 #[test]
-fn auto_refuses_a_tool_that_works_on_the_real_install_before_anything_is_deployed() {
+fn auto_refuses_a_real_install_tool_on_a_linked_instance_before_anything_is_deployed() {
     let f = fixture(vec![writes_real_data("nemesis")]);
+    set_deployment(&f.ctx, f.id(), Some(DeployMode::Links)).unwrap();
 
     let result = f.run_as("nemesis", &StagingLauncher::new(), CaptureMode::Auto);
 

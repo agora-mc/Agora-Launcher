@@ -3896,6 +3896,18 @@ small and well defined enough to support it.
      the game must not run.
   4. **Switching the instance to link deployment** is offered alongside, for failures where
      injection is the problem (anti-virus, anti-tamper), not for real-path tools.
+  - **Built differently from item 2 (slice 4f):** nothing falls back by itself. A virtual instance
+    runs every tool under the VFS, real-path tools included. When the VFS cannot start, nothing runs:
+    the run names the next tier (link capture for a tool with its own folder, the swap for a
+    real-path tool) and the user is asked. A linked or copied instance captures a tool with its own
+    folder from links directly, and a real-path tool gets the swap offer.
+  - **Offers after two failures in a row** (the count is kept in the tool's folder, in
+    `failures.json`, reset by a promoted run): a discarded run counts, and so does a run the virtual
+    file system refused to start, which counts as an injection failure. The copy swap is offered
+    when a failing run was not a swap; switching to links, per item 4, when a failure involved
+    injection and the tool does not work on the real install. The offers are shown and asked
+    about, never applied. An accepted fallback's outcome names the virtual file system's failure in
+    its `capture_reason`.
 - **Pandora Behaviour Engine** is the recommended behaviour engine. It is 64-bit and takes the game
   data folder on its command line (`-o`), plus `-autorun -autoclose`, so Agora can rebuild stale
   output without the user clicking.

@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use agora_game_api::{
-    glob_match, BaseReference, GameDefinition, GamePath, InputFingerprint, Layer, LayerId,
-    LayerSource, LayerStack, RelPath, StoreId, ToolDefinition, ToolId,
+    glob_match, BaseReference, DeploymentStrategy, GameDefinition, GamePath, InputFingerprint,
+    Layer, LayerId, LayerSource, LayerStack, RelPath, StoreId, ToolDefinition, ToolId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,7 +38,7 @@ use crate::game_launch::{
     self, LaunchError, LaunchRoots, LaunchedGame, Launcher, PreparedLaunch, VfsLaunch,
 };
 use crate::game_load_order;
-use crate::game_tool_copy::{self, CopyKind};
+use crate::game_tool_copy::{self, CopyKind, SwapCosts};
 use crate::game_tool_swap::{self, SwapError, SwapJournal};
 use crate::game_user_files::{self, UserFilesError};
 use crate::install_watch::{InstallChanges, InstallWatch};
@@ -60,6 +60,10 @@ const VFS_CONFIG: &str = "tool-config.json";
 const POLL: Duration = Duration::from_millis(250);
 /// How long no process may run from a tool's folder before its run counts as over.
 const QUIET: Duration = Duration::from_secs(1);
+/// The consecutive discarded runs after which a tool's failure offers something (MASTER_SPEC §26.9).
+const OFFER_AFTER_DISCARDS: u32 = 2;
+/// The consecutive discarded runs of a tool, in its folder. A missing or unreadable file counts as none.
+const FAILURES_FILE: &str = "failures.json";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -75,14 +79,16 @@ pub enum ToolError {
     NoPrevious(String),
     #[error("the game is running from instance '{0}'; close it before running a tool")]
     SessionRunning(String),
-    /// The run was asked to capture under the virtual file system (`CaptureMode::Vfs`), and the
-    /// virtual file system could not start. Under `Auto` the run captures from links instead.
-    #[error(
-        "the virtual file system could not start, and this run was asked to use only it: {reason}"
-    )]
+    /// The virtual file system could not start, so nothing ran (MASTER_SPEC §26.9). `next` is the tier
+    /// the run can be captured by instead: `Links` for a tool that uses its own folder, `Swap` for one
+    /// that works on the real install. Nothing switches to it without the user's answer. The refusal is
+    /// a failure of the tool too: it counts toward the offers (MASTER_SPEC §26.9, decision 3), and `offers`
+    /// carries the ones the count has reached.
+    #[error("{}", vfs_unavailable_message(.reason, .next))]
     VfsUnavailable {
         reason: String,
-        next: Option<DeployMode>,
+        next: Option<CaptureMode>,
+        offers: Vec<ToolOffer>,
     },
     /// A run captured from links found a linked file changed. A link is the game's copy of a mod's
     /// own file and is never written in place, so the run is discarded and the paths are named.
@@ -92,11 +98,11 @@ pub enum ToolError {
         paths: Vec<String>,
         failed_folder: Option<PathBuf>,
     },
-    /// The tool works on the real install's `Data` folder, so under `auto` it cannot run under the
-    /// virtual file system or link capture: its writes would miss them. Nothing was deployed. The CLI
-    /// asks, and runs it with `--capture swap` (MASTER_SPEC §26.9).
+    /// The tool works on the real install's `Data` folder, and this instance is deployed as linked or
+    /// copied files, so `auto` does not use the virtual file system for it, and link capture would miss
+    /// its writes. Nothing was deployed. The CLI asks, and runs it with `--capture swap` (MASTER_SPEC §26.9).
     #[error(
-        "{tool} works on the real install's Data folder, so the virtual file system and link capture would miss its writes. It runs by swap: run it with --capture swap"
+        "{tool} works on the real install's Data folder, which link capture would miss, and this instance is not deployed under the virtual file system. It runs by swap: run it with --capture swap"
     )]
     InstallPathNeedsSwap { tool: String, instance_id: String },
     #[error("{0}")]
@@ -178,8 +184,10 @@ pub enum CaptureMode {
     /// From a linked deployment: the tool runs in the game's folder, and what it changed is
     /// compared with the deployment's record.
     Links,
-    /// The virtual file system first, and link capture when it cannot start. A tool that works on the
-    /// real install (`uses_install_path`) is refused here: it needs `Swap`.
+    /// The instance's own deployment decides. A virtual instance runs every tool under the virtual file
+    /// system, and a run whose virtual file system cannot start is refused with the next tier, which
+    /// the user is asked about. A linked or copied instance captures a tool without `uses_install_path`
+    /// from links directly, and refuses a tool that works on the real install (it needs `Swap`).
     Auto,
     /// The real install's `Data` folder is swapped for a link to the farm for the length of the run,
     /// and put back afterwards (MASTER_SPEC §26.9). Asked for by name; never chosen by `Auto`.
@@ -215,6 +223,19 @@ pub enum CaptureMethod {
     Vfs,
     Links,
     Swap,
+}
+
+/// Something a tool run offers once a tool keeps failing (MASTER_SPEC §26.9, decision 3). An offer is
+/// only ever shown and asked about: nothing switches without the user's answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "offer", rename_all = "snake_case")]
+pub enum ToolOffer {
+    /// The full-copy swap, with what it costs (`game_tool_copy::swap_costs`).
+    CopySwap { costs: SwapCosts },
+    /// Deploy the instance as linked files: the virtual file system is no longer used for launches or
+    /// tools. Offered only for a failure of the virtual file system's injection, and never for a tool
+    /// that works on the real install, which the switch cannot help.
+    SwitchToLinks,
 }
 
 /// What one run wrote, and what became of it.
@@ -259,6 +280,10 @@ pub struct RunOutcome {
     /// What a swap did with its copy of `Data`, for a run captured by swap (MASTER_SPEC §26.9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swap: Option<SwapRunReport>,
+    /// What the run lets the user try next. Set when the tool has been discarded twice in a row, and
+    /// empty otherwise (MASTER_SPEC §26.9, decision 3). Each offer is asked about, never applied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<ToolOffer>,
 }
 
 /// What a swap did with its copy of the instance's `Data` (MASTER_SPEC §26.9): how much was copied in
@@ -1035,12 +1060,140 @@ fn discard(dir: &Path, staging: &Path, run: &str) -> Result<PathBuf, ToolError> 
     Ok(failed)
 }
 
+/// The consecutive discarded runs of a tool in an instance, kept in the tool's folder (MASTER_SPEC §26.9,
+/// decision 3). `not_swap` is whether any of them was captured other than by swap, and `injected` whether
+/// one of them had the virtual file system end a program it started. The count is read leniently: a missing or corrupt
+/// file is a count of nothing, so it never blocks a run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct FailureCount {
+    #[serde(default)]
+    discarded: u32,
+    /// Whether any of the discarded runs was captured other than by swap.
+    #[serde(default)]
+    not_swap: bool,
+    /// Whether any of the discarded runs had the virtual file system end a program it started.
+    #[serde(default)]
+    injected: bool,
+}
+
+fn read_failures(dir: &Path) -> FailureCount {
+    std::fs::read(dir.join(FAILURES_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Save the count. Best effort: a count that cannot be saved only means an offer comes later.
+fn write_failures(dir: &Path, count: FailureCount) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    if let Ok(bytes) = serde_json::to_vec(&count) {
+        let _ = std::fs::write(dir.join(FAILURES_FILE), bytes);
+    }
+}
+
+/// Count one more discarded run of a tool, and return the count with it.
+fn note_discard(dir: &Path, swap: bool, injected: bool) -> FailureCount {
+    let mut count = read_failures(dir);
+    count.discarded = count.discarded.saturating_add(1);
+    count.not_swap |= !swap;
+    count.injected |= injected;
+    write_failures(dir, count);
+    count
+}
+
+/// Settle the offers of a run that came back (MASTER_SPEC §26.9, decision 3). A promoted run clears the
+/// count. A discarded run adds to it, and once the tool has been discarded [`OFFER_AFTER_DISCARDS`] times
+/// in a row it offers the full-copy swap, when a failing run was not a swap, and switching the instance to
+/// links, when a failure involved injection and the tool does not work on the real install. Nothing is
+/// switched here. If the swap's costs cannot be read, the swap is not offered, and the run still stands.
+fn with_offers(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    tool_id: &ToolId,
+    mut outcome: RunOutcome,
+    injected: bool,
+) -> RunOutcome {
+    let Ok(instance_dir) = ctx.paths.instance_dir(instance_id) else {
+        return outcome;
+    };
+    let dir = tool_dir(&instance_dir, tool_id.as_str());
+    if outcome.promoted {
+        let _ = std::fs::remove_file(dir.join(FAILURES_FILE));
+        return outcome;
+    }
+    let count = note_discard(&dir, outcome.capture == CaptureMethod::Swap, injected);
+    outcome
+        .offers
+        .extend(offers_after(ctx, instance_id, definition, tool, count));
+    outcome
+}
+
+/// What a tool discarded `count` times in a row is offered (MASTER_SPEC §26.9, decision 3): nothing before
+/// [`OFFER_AFTER_DISCARDS`]; then the full-copy swap when a failing run was not a swap; and switching the
+/// instance to links when a failure involved injection and the tool does not work on the real install.
+fn offers_after(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    count: FailureCount,
+) -> Vec<ToolOffer> {
+    let mut offers = Vec::new();
+    if count.discarded < OFFER_AFTER_DISCARDS {
+        return offers;
+    }
+    if count.not_swap {
+        if let Ok(costs) = game_tool_copy::swap_costs(ctx, instance_id, definition) {
+            offers.push(ToolOffer::CopySwap { costs });
+        }
+    }
+    if count.injected && !tool.uses_install_path {
+        offers.push(ToolOffer::SwitchToLinks);
+    }
+    offers
+}
+
+/// A run the virtual file system refused to start: nothing ran, but it is a failure of the tool all the
+/// same. It counts as a discarded run that involved injection, so a tool whose virtual file system keeps
+/// failing is offered switching to links on the second refusal (MASTER_SPEC §26.9, decision 3). The count
+/// is best effort: if the instance folder is unknown, the refusal carries no offers.
+fn refused_vfs(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    tool_id: &ToolId,
+    reason: String,
+    next: CaptureMode,
+) -> ToolError {
+    let offers = match ctx.paths.instance_dir(instance_id) {
+        Ok(instance_dir) => {
+            let dir = tool_dir(&instance_dir, tool_id.as_str());
+            let count = note_discard(&dir, false, true);
+            offers_after(ctx, instance_id, definition, tool, count)
+        }
+        Err(_) => Vec::new(),
+    };
+    ToolError::VfsUnavailable {
+        reason,
+        next: Some(next),
+        offers,
+    }
+}
+
 /// Run a tool in an instance and capture what it writes (MASTER_SPEC §26.9): under the virtual file
 /// system, or from a linked deployment, as `capture` asks. Then promote the output if the tool exited
 /// 0 and discard it otherwise.
 ///
-/// Under `Auto` a run whose virtual file system cannot start is captured from links instead, and the
-/// outcome says why. Under `Vfs` that start failure is returned as [`ToolError::VfsUnavailable`].
+/// Under `Auto` a virtual instance whose virtual file system cannot start is refused with
+/// [`ToolError::VfsUnavailable`] and its next tier, and nothing runs: the caller asks the user before it
+/// captures from that tier. A linked or copied instance is captured from links directly. Under `Vfs` the
+/// start failure is refused the same way. A run that comes back discarded twice in a row carries offers
+/// (MASTER_SPEC §26.9, decision 3).
 ///
 /// The instance lock is held for the whole run, and the game's user files are swapped in for it, as
 /// for a launch, so the tool and the game never run at once.
@@ -1052,6 +1205,69 @@ pub fn run(
     capture: CaptureMode,
     launcher: &dyn Launcher,
     cancel: &CancellationToken,
+) -> Result<RunOutcome, ToolError> {
+    run_inner(
+        ctx,
+        instance_id,
+        definition,
+        tool_id,
+        capture,
+        launcher,
+        cancel,
+        None,
+    )
+}
+
+/// Run a tool by the tier the user chose after the virtual file system refused it (MASTER_SPEC §26.9): link
+/// capture or the full-copy swap. `refusal` is the refusal's reason, and the outcome's `capture_reason` names
+/// it, so the record says what failed and which tier ran instead. Only `Links` and `Swap` are accepted.
+#[allow(clippy::too_many_arguments)]
+pub fn run_after_vfs_refusal(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool_id: &ToolId,
+    next: CaptureMode,
+    refusal: &str,
+    launcher: &dyn Launcher,
+    cancel: &CancellationToken,
+) -> Result<RunOutcome, ToolError> {
+    match next {
+        CaptureMode::Links | CaptureMode::Swap => run_inner(
+            ctx,
+            instance_id,
+            definition,
+            tool_id,
+            next,
+            launcher,
+            cancel,
+            Some(refusal),
+        ),
+        CaptureMode::Vfs | CaptureMode::Auto => Err(ToolError::Other(
+            "only link capture or the full-copy swap can follow a refused virtual file system run"
+                .into(),
+        )),
+    }
+}
+
+/// The reason a run captured by a tier the user chose after a refusal gives (MASTER_SPEC §26.9).
+fn fell_back_reason(refusal: &str, tier: &str) -> String {
+    format!(
+        "the virtual file system could not start ({}), and {tier} was chosen",
+        refusal.trim_end_matches('.')
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_inner(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool_id: &ToolId,
+    capture: CaptureMode,
+    launcher: &dyn Launcher,
+    cancel: &CancellationToken,
+    fallback: Option<&str>,
 ) -> Result<RunOutcome, ToolError> {
     let tool = declared_tool(ctx, definition, tool_id)?;
     let record = crate::game_instance::get(ctx, instance_id)?
@@ -1066,27 +1282,46 @@ pub fn run(
     let store = base.runtime.store.clone();
     refuse_during_session(ctx, definition, &store)?;
 
-    // A tool that works on the real install would miss its writes under either other capture, so
-    // `auto` refuses it before anything is deployed; the CLI asks, and then runs it by swap.
-    if capture == CaptureMode::Auto && tool.uses_install_path {
-        return Err(ToolError::InstallPathNeedsSwap {
-            tool: tool_id.to_string(),
-            instance_id: instance_id.to_string(),
-        });
-    }
-
-    // Decided before anything is deployed: a run that must use the VFS cannot start without it.
+    // Decided before anything is deployed (MASTER_SPEC §26.9, decision 1). Under `auto` a virtual instance
+    // runs every tool under the virtual file system; a linked or copied instance runs a tool that uses its
+    // own folder by link capture directly, and a tool that works on the real install needs the swap offer.
+    let preferred = preferred_mode(&load_manifest(ctx, instance_id)?, definition);
     let route = match capture {
-        CaptureMode::Links => Route::Links(Some("linked capture was asked for".to_string())),
-        CaptureMode::Swap => Route::Swap(Some(
-            "the tool works on the real install's Data folder, and swap was asked for".to_string(),
-        )),
+        CaptureMode::Links => Route::Links(Some(match fallback {
+            Some(refusal) => fell_back_reason(refusal, "link capture"),
+            None => "linked capture was asked for".to_string(),
+        })),
+        CaptureMode::Swap => Route::Swap(Some(match fallback {
+            Some(refusal) => fell_back_reason(refusal, "the full-copy swap"),
+            None => "the tool works on the real install's Data folder, and swap was asked for"
+                .to_string(),
+        })),
+        CaptureMode::Auto if preferred != DeployMode::Virtual => {
+            if tool.uses_install_path {
+                return Err(ToolError::InstallPathNeedsSwap {
+                    tool: tool_id.to_string(),
+                    instance_id: instance_id.to_string(),
+                });
+            }
+            Route::Links(Some(format!(
+                "the instance is set to {}, so the tool is captured from links without trying the virtual file system",
+                preferred.plain_name()
+            )))
+        }
         CaptureMode::Vfs | CaptureMode::Auto => match launcher.locate_vfs_dll() {
             Ok(dll) => Route::Vfs(dll),
-            Err(reason) if capture == CaptureMode::Vfs => {
-                return Err(ToolError::VfsUnavailable { reason, next: None });
+            Err(reason) => {
+                let next = next_capture(&tool);
+                return Err(refused_vfs(
+                    ctx,
+                    instance_id,
+                    definition,
+                    &tool,
+                    tool_id,
+                    reason,
+                    next,
+                ));
             }
-            Err(reason) => Route::Links(Some(vfs_fallback_reason(&reason))),
         },
     };
 
@@ -1098,55 +1333,89 @@ pub fn run(
     game_tool_swap::recover_game(ctx, definition)?;
 
     match route {
-        Route::Swap(reason) => run_by_swap(
-            ctx,
-            instance_id,
-            definition,
-            &tool,
-            tool_id,
-            &base,
-            launcher,
-            cancel,
-            reason,
-        ),
-        Route::Vfs(dll) => match run_under_vfs(
-            ctx,
-            instance_id,
-            definition,
-            &tool,
-            tool_id,
-            &base,
-            dll,
-            launcher,
-            cancel,
-        ) {
-            Ok(outcome) => Ok(outcome),
-            Err(ToolError::VfsUnavailable { reason, .. }) if capture == CaptureMode::Auto => {
-                run_from_links(
-                    ctx,
-                    instance_id,
-                    definition,
-                    &tool,
-                    tool_id,
-                    &base,
-                    launcher,
-                    cancel,
-                    Some(vfs_fallback_reason(&reason)),
-                )
-            }
-            Err(e) => Err(e),
-        },
-        Route::Links(reason) => run_from_links(
-            ctx,
-            instance_id,
-            definition,
-            &tool,
-            tool_id,
-            &base,
-            launcher,
-            cancel,
-            reason,
-        ),
+        Route::Swap(reason) => {
+            let outcome = run_by_swap(
+                ctx,
+                instance_id,
+                definition,
+                &tool,
+                tool_id,
+                &base,
+                launcher,
+                cancel,
+                reason,
+            )?;
+            Ok(with_offers(
+                ctx,
+                instance_id,
+                definition,
+                &tool,
+                tool_id,
+                outcome,
+                false,
+            ))
+        }
+        Route::Vfs(dll) => {
+            let (outcome, injected) = match run_under_vfs(
+                ctx,
+                instance_id,
+                definition,
+                &tool,
+                tool_id,
+                &base,
+                dll,
+                launcher,
+                cancel,
+            ) {
+                Ok(found) => found,
+                // The program would not start under the VFS, after the instance was deployed: nothing ran,
+                // and the refusal is counted like one from the locate step.
+                Err(ToolError::VfsUnavailable { reason, next, .. }) => {
+                    let next = next.unwrap_or_else(|| next_capture(&tool));
+                    return Err(refused_vfs(
+                        ctx,
+                        instance_id,
+                        definition,
+                        &tool,
+                        tool_id,
+                        reason,
+                        next,
+                    ));
+                }
+                Err(e) => return Err(e),
+            };
+            Ok(with_offers(
+                ctx,
+                instance_id,
+                definition,
+                &tool,
+                tool_id,
+                outcome,
+                injected,
+            ))
+        }
+        Route::Links(reason) => {
+            let outcome = run_from_links(
+                ctx,
+                instance_id,
+                definition,
+                &tool,
+                tool_id,
+                &base,
+                launcher,
+                cancel,
+                reason,
+            )?;
+            Ok(with_offers(
+                ctx,
+                instance_id,
+                definition,
+                &tool,
+                tool_id,
+                outcome,
+                false,
+            ))
+        }
     }
 }
 
@@ -1157,14 +1426,41 @@ enum Route {
     Swap(Option<String>),
 }
 
-/// Why a run was captured from links instead of the virtual file system, in the words an outcome
-/// shows: "because <this>".
-fn vfs_fallback_reason(reason: &str) -> String {
-    format!("the virtual file system could not start: {reason}")
+/// The deployment an instance is set to, or the game's default when the user has not chosen one.
+fn preferred_mode(manifest: &GameInstanceManifest, definition: &GameDefinition) -> DeployMode {
+    manifest.deployment.unwrap_or(match definition.deployment {
+        DeploymentStrategy::VirtualFileSystem | DeploymentStrategy::Redirect => DeployMode::Virtual,
+    })
+}
+
+/// The tier a run is captured by when the virtual file system cannot start: link capture for a tool that
+/// uses its own folder, the full-copy swap for one that works on the real install (MASTER_SPEC §26.9).
+fn next_capture(tool: &ToolDefinition) -> CaptureMode {
+    if tool.uses_install_path {
+        CaptureMode::Swap
+    } else {
+        CaptureMode::Links
+    }
+}
+
+/// What a refused virtual file system run says, and what the next tier means for it.
+fn vfs_unavailable_message(reason: &str, next: &Option<CaptureMode>) -> String {
+    let what = format!("the virtual file system could not start: {reason}. Nothing was run.");
+    match next {
+        Some(CaptureMode::Swap) => format!(
+            "{what} A swap would run the tool on a copy of the instance's Data, swapped in for the run: it is slower, and it needs free disk space."
+        ),
+        Some(CaptureMode::Links) => format!(
+            "{what} Link capture would run the tool in the deployment's folder, and capture what it writes from the linked files."
+        ),
+        _ => what,
+    }
 }
 
 /// A run under the virtual file system: the instance is deployed in the VFS, the tool runs with its
-/// staging folder as the writable layer, and its output is settled. The caller holds the lock.
+/// staging folder as the writable layer, and its output is settled. The caller holds the lock. Also
+/// returns whether the VFS ended a program the run started, which is an injection failure (MASTER_SPEC
+/// §26.9, decision 3).
 #[allow(clippy::too_many_arguments)]
 fn run_under_vfs(
     ctx: &Ctx,
@@ -1176,7 +1472,7 @@ fn run_under_vfs(
     dll: PathBuf,
     launcher: &dyn Launcher,
     cancel: &CancellationToken,
-) -> Result<RunOutcome, ToolError> {
+) -> Result<(RunOutcome, bool), ToolError> {
     let store = base.runtime.store.clone();
     let instance_dir = ctx
         .paths
@@ -1206,6 +1502,7 @@ fn run_under_vfs(
     // the tool sees what the game wrote but every write lands in this run's staging folder. The
     // real install folder is an alias, so a tool that reads or writes it there (Nemesis, BodySlide)
     // sees the same mod files at its own path, and its writes land in the same staging folder.
+    let log = instance_dir.join("logs").join("vfs.log");
     prepared.vfs = Some(VfsLaunch {
         dll_x86: Some(game_launch::locate_dll_x86(&dll)),
         dll,
@@ -1214,7 +1511,7 @@ fn run_under_vfs(
         lowers: vec![writable, game_dir.clone()],
         aliases: vec![base.source_location.clone()],
         config_path: instance_dir.join("vfs").join(VFS_CONFIG),
-        log: instance_dir.join("logs").join("vfs.log"),
+        log: log.clone(),
     });
 
     if let Err(e) = game_user_files::swap_in(ctx, instance_id, definition, &store, &game_dir) {
@@ -1222,6 +1519,8 @@ fn run_under_vfs(
         return Err(e.into());
     }
 
+    // What the VFS's log held before the launch, so what it says about this run is read after it.
+    let log_from = game_launch::log_len(&log);
     // The real install is watched from just before the tool starts until it exits (MASTER_SPEC §26.9).
     let watch = InstallWatch::start(&base.source_location);
     let mut launched = match launcher.launch(&prepared) {
@@ -1230,9 +1529,12 @@ fn run_under_vfs(
             release_session(ctx, definition, &store)?;
             let _ = std::fs::remove_dir_all(&staging);
             return Err(match e {
-                LaunchError::VfsUnavailable { reason } => {
-                    ToolError::VfsUnavailable { reason, next: None }
-                }
+                LaunchError::VfsUnavailable { reason } => ToolError::VfsUnavailable {
+                    reason,
+                    next: Some(next_capture(tool)),
+                    // Counted by the caller, which sees the refusal (see `run_inner`).
+                    offers: Vec::new(),
+                },
                 other => ToolError::Launch(other),
             });
         }
@@ -1241,6 +1543,7 @@ fn run_under_vfs(
 
     let exit = wait_for_tree(&game_dir, &mut launched, cancel);
     let installed = watch.finish();
+    let injected = !game_launch::processes_ended_since(&log, log_from).is_empty();
     let settled = settle_run(
         ctx,
         instance_id,
@@ -1260,7 +1563,7 @@ fn run_under_vfs(
 
     let mut out = outcome(tool_id, tool, run, &exit, settled, CaptureMethod::Vfs, None);
     out.install_changes = installed;
-    Ok(out)
+    Ok((out, injected))
 }
 
 /// The content layer that provides a tool's executable, when one does: the layer whose file wins the
@@ -1724,6 +2027,7 @@ fn outcome(
         copied_layer: None,
         install_changes: InstallChanges::default(),
         swap: None,
+        offers: Vec::new(),
     }
 }
 
@@ -1763,6 +2067,8 @@ fn capture_from_links(
         .collect();
     if !linked.is_empty() {
         let failed = discard(dir, staging, run)?;
+        // A refused run is a discarded run too, though it returns no outcome to carry an offer.
+        note_discard(dir, false, false);
         return Err(ToolError::LinkedFileChanged {
             tool: tool.id.to_string(),
             paths: linked,

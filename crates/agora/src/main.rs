@@ -8299,7 +8299,7 @@ fn instance_tools_command(
                     &cancel,
                 )
             };
-            let outcome = if capture == game_tools::CaptureMode::Swap {
+            let mut outcome = if capture == game_tools::CaptureMode::Swap {
                 // A swap is only run after it has said what it costs and been confirmed.
                 if !confirm_swap(ctx, &instance_id, game_def, tool.as_str(), json, yes)? {
                     std::process::exit(1);
@@ -8317,13 +8317,80 @@ fn instance_tools_command(
                             std::process::exit(1);
                         }
                     }
-                    Err(e) => fail(e.to_string()),
+                    // The virtual file system could not start and nothing ran: `auto` asks before it
+                    // captures from the next tier, and an explicit `vfs` refuses and names it.
+                    Err(e) => match vfs_next_tier(&e) {
+                        Some(next) => {
+                            if capture != game_tools::CaptureMode::Auto {
+                                refuse_vfs_tool(json, &instance_id, tool.as_str(), &e, next);
+                            }
+                            offer_vfs_tool_fallback(
+                                ctx,
+                                game_def,
+                                &instance_id,
+                                tool.as_str(),
+                                &e,
+                                next,
+                                json,
+                                yes,
+                            )?;
+                            // The next tier runs, and its outcome says that the virtual file system failed first.
+                            // Under `--json` the refusal's offers ride on that outcome; in text they were printed.
+                            let mut out = game_tools::run_after_vfs_refusal(
+                                ctx,
+                                &instance_id,
+                                game_def,
+                                &tool,
+                                next,
+                                &vfs_refusal_reason(&e),
+                                launcher,
+                                &cancel,
+                            )
+                            .unwrap_or_else(|e| fail(e.to_string()));
+                            if json {
+                                merge_offers(&mut out.offers, vfs_refusal_offers(&e));
+                            }
+                            out
+                        }
+                        None => fail(e.to_string()),
+                    },
                 }
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
                 print_tool_run(&outcome);
+                // What a tool that keeps failing can try next. Each one is asked about or printed, and
+                // none is applied on its own (MASTER_SPEC §26.9, decision 3).
+                for offer in outcome.offers.clone() {
+                    match offer {
+                        game_tools::ToolOffer::CopySwap { costs } => {
+                            for line in swap_cost_lines(tool.as_str(), &costs) {
+                                println!("{line}");
+                            }
+                            let command = tool_run_command(
+                                &instance_id,
+                                tool.as_str(),
+                                game_tools::CaptureMode::Swap,
+                            );
+                            if std::io::stdin().is_terminal()
+                                && ask_yes_no("Try the full-copy swap now? [y/N]: ")?
+                            {
+                                outcome = run_as(game_tools::CaptureMode::Swap)
+                                    .unwrap_or_else(|e| fail(e.to_string()));
+                                print_tool_run(&outcome);
+                            } else {
+                                println!("To try it, run:");
+                                println!("  {command}");
+                            }
+                        }
+                        game_tools::ToolOffer::SwitchToLinks => {
+                            for line in switch_to_links_lines(&instance_id) {
+                                println!("{line}");
+                            }
+                        }
+                    }
+                }
             }
             if !outcome.promoted {
                 std::process::exit(1);
@@ -8602,8 +8669,7 @@ fn confirm_swap(
     json: bool,
     yes: bool,
 ) -> anyhow::Result<bool> {
-    let command =
-        format!("agora games instance tools run {instance_id} {tool} --capture swap --yes");
+    let command = tool_run_command(instance_id, tool, agora_core::game_tools::CaptureMode::Swap);
     let costs = match agora_core::game_tool_copy::swap_costs(ctx, instance_id, game_def) {
         Ok(costs) => costs,
         Err(e) => ini_fail(json, e.to_string()),
@@ -8638,6 +8704,243 @@ fn confirm_swap(
     eprintln!("To run it by swap:");
     eprintln!("  {command}");
     Ok(false)
+}
+
+/// The command that runs a tool by a capture, as the CLI prints it. A swap is printed with `--yes`,
+/// because a person runs it after the costs have been shown (see `confirm_swap`).
+fn tool_run_command(
+    instance_id: &str,
+    tool: &str,
+    capture: agora_core::game_tools::CaptureMode,
+) -> String {
+    match capture {
+        agora_core::game_tools::CaptureMode::Swap => {
+            format!("agora games instance tools run {instance_id} {tool} --capture swap --yes")
+        }
+        other => format!(
+            "agora games instance tools run {instance_id} {tool} --capture {}",
+            other.as_str()
+        ),
+    }
+}
+
+/// The tier a refused virtual file system run names as its next, when the error is that refusal.
+fn vfs_next_tier(
+    error: &agora_core::game_tools::ToolError,
+) -> Option<agora_core::game_tools::CaptureMode> {
+    match error {
+        agora_core::game_tools::ToolError::VfsUnavailable { next, .. } => *next,
+        _ => None,
+    }
+}
+
+/// What a tier is called to a person in a question or a line of text.
+fn tool_tier_name(capture: agora_core::game_tools::CaptureMode) -> &'static str {
+    match capture {
+        agora_core::game_tools::CaptureMode::Swap => "the full-copy swap",
+        _ => "link capture",
+    }
+}
+
+/// The two lines that say what switching the instance to links changes, with the command that does it.
+/// Nothing is switched here: the user runs the command, or does not.
+fn switch_to_links_lines(instance_id: &str) -> Vec<String> {
+    vec![
+        "Switching this instance to links deploys it as linked files for launches and tools; the virtual file system is no longer used."
+            .to_string(),
+        format!("  agora games instance set-deployment {instance_id} links"),
+    ]
+}
+
+/// The step `auto` takes once its virtual file system refused a run (MASTER_SPEC §26.9, decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VfsFallbackStep {
+    /// Run the next tier now: `--yes` confirms it, with or without `--json`.
+    Run,
+    /// Ask on the terminal first.
+    Ask,
+    /// Print what happened and the retry command, and exit 1.
+    Stop,
+}
+
+/// The step for a refused run, given the flags. `--yes` runs; otherwise `--json` and a run with no
+/// terminal stop, and a terminal asks.
+fn vfs_fallback_step(json: bool, yes: bool, terminal: bool) -> VfsFallbackStep {
+    if yes {
+        VfsFallbackStep::Run
+    } else if json || !terminal {
+        VfsFallbackStep::Stop
+    } else {
+        VfsFallbackStep::Ask
+    }
+}
+
+/// The reason a refused virtual file system run gives, for the tier that runs instead.
+fn vfs_refusal_reason(error: &agora_core::game_tools::ToolError) -> String {
+    match error {
+        agora_core::game_tools::ToolError::VfsUnavailable { reason, .. } => reason.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The offers a refused virtual file system run carries (MASTER_SPEC §26.9, decision 3).
+fn vfs_refusal_offers(
+    error: &agora_core::game_tools::ToolError,
+) -> Vec<agora_core::game_tools::ToolOffer> {
+    match error {
+        agora_core::game_tools::ToolError::VfsUnavailable { offers, .. } => offers.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Add `earlier` to the front of `into`, without repeating an offer.
+fn merge_offers(
+    into: &mut Vec<agora_core::game_tools::ToolOffer>,
+    earlier: Vec<agora_core::game_tools::ToolOffer>,
+) {
+    let mut merged = Vec::new();
+    for offer in earlier.into_iter().chain(std::mem::take(into)) {
+        if !merged.contains(&offer) {
+            merged.push(offer);
+        }
+    }
+    *into = merged;
+}
+
+/// The lines a refused run prints for its offers, in the order the offers come. `costs_shown` is whether
+/// the swap's costs are already printed (for a refusal whose next tier is the swap), so they are not
+/// printed twice. Nothing is switched or run here.
+fn vfs_offer_lines(
+    tool: &str,
+    instance_id: &str,
+    offers: &[agora_core::game_tools::ToolOffer],
+    costs_shown: bool,
+) -> Vec<String> {
+    use agora_core::game_tools::{CaptureMode, ToolOffer};
+    let mut lines = Vec::new();
+    for offer in offers {
+        match offer {
+            ToolOffer::CopySwap { costs } => {
+                if !costs_shown {
+                    lines.extend(swap_cost_lines(tool, costs));
+                }
+                lines.push(format!(
+                    "To try the full-copy swap: {}",
+                    tool_run_command(instance_id, tool, CaptureMode::Swap)
+                ));
+            }
+            ToolOffer::SwitchToLinks => lines.extend(switch_to_links_lines(instance_id)),
+        }
+    }
+    lines
+}
+
+/// The `--json` envelope of a tool run refused because the virtual file system could not start: what
+/// happened, the tier that runs it instead, its costs (for a swap), the exact command that runs it, and
+/// the offers the refusal carries.
+fn vfs_tool_envelope(
+    error: &str,
+    next: agora_core::game_tools::CaptureMode,
+    command: &str,
+    costs: &[String],
+    offers: &[agora_core::game_tools::ToolOffer],
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": "error",
+        "error": error,
+        "exitCode": 1,
+        "nextCapture": next.as_str(),
+        "costs": costs,
+        "offers": offers,
+        "retry": [command],
+    })
+}
+
+/// An explicit `--capture vfs` whose virtual file system cannot start: refused, with the next tier and the
+/// command that runs the tool by it. Exits 1. Under `--json` the envelope carries the same.
+fn refuse_vfs_tool(
+    json: bool,
+    instance_id: &str,
+    tool: &str,
+    error: &agora_core::game_tools::ToolError,
+    next: agora_core::game_tools::CaptureMode,
+) -> ! {
+    let command = tool_run_command(instance_id, tool, next);
+    let offers = vfs_refusal_offers(error);
+    if json {
+        let out = vfs_tool_envelope(&error.to_string(), next, &command, &[], &offers);
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| error.to_string())
+        );
+    } else {
+        eprintln!("Error: {error}");
+        for line in vfs_offer_lines(tool, instance_id, &offers, false) {
+            eprintln!("{line}");
+        }
+        eprintln!("To run {tool} by {} instead:", tool_tier_name(next));
+        eprintln!("  {command}");
+    }
+    std::process::exit(1);
+}
+
+/// `auto` on a virtual instance whose virtual file system could not start, with nothing run: says what
+/// happened and what the next tier does (the error says it), and for a swap shows its costs. Under
+/// `--json` or without a terminal it prints the retry command and exits 1. In a terminal it asks, and
+/// `--yes` confirms it, as it does a swap. `Ok(())` means the run goes on from `next`.
+#[allow(clippy::too_many_arguments)]
+fn offer_vfs_tool_fallback(
+    ctx: &agora_core::ctx::Ctx,
+    game_def: &agora_game_api::GameDefinition,
+    instance_id: &str,
+    tool: &str,
+    error: &agora_core::game_tools::ToolError,
+    next: agora_core::game_tools::CaptureMode,
+    json: bool,
+    yes: bool,
+) -> anyhow::Result<()> {
+    let step = vfs_fallback_step(json, yes, std::io::stdin().is_terminal());
+    let command = tool_run_command(instance_id, tool, next);
+    let offers = vfs_refusal_offers(error);
+    // Under `--json` a run that goes on reports its own outcome, which carries the offers (see the caller).
+    if json && step == VfsFallbackStep::Run {
+        return Ok(());
+    }
+    let cost_lines = match next {
+        agora_core::game_tools::CaptureMode::Swap => {
+            let costs = match agora_core::game_tool_copy::swap_costs(ctx, instance_id, game_def) {
+                Ok(costs) => costs,
+                Err(e) => ini_fail(json, e.to_string()),
+            };
+            swap_cost_lines(tool, &costs)
+        }
+        _ => Vec::new(),
+    };
+    if json {
+        let out = vfs_tool_envelope(&error.to_string(), next, &command, &cost_lines, &offers);
+        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+        std::process::exit(1);
+    }
+    eprintln!("Error: {error}");
+    for line in &cost_lines {
+        eprintln!("{line}");
+    }
+    let costs_shown = next == agora_core::game_tools::CaptureMode::Swap;
+    for line in vfs_offer_lines(tool, instance_id, &offers, costs_shown) {
+        eprintln!("{line}");
+    }
+    match step {
+        VfsFallbackStep::Run => return Ok(()),
+        VfsFallbackStep::Ask => {
+            if ask_yes_no(&format!("Try {} now? [y/N]: ", tool_tier_name(next)))? {
+                return Ok(());
+            }
+        }
+        VfsFallbackStep::Stop => {}
+    }
+    eprintln!("To run {tool} by {} instead:", tool_tier_name(next));
+    eprintln!("  {command}");
+    std::process::exit(1);
 }
 
 /// A failure in the `ini` and `saves` commands: the message as JSON or as text, and exit 1.
@@ -12095,5 +12398,116 @@ mod swap_cost_text {
         println!("{lines}");
         assert!(lines.contains("every run copies all of Data in"), "{lines}");
         assert!(lines.contains("deleted after the run"), "{lines}");
+    }
+}
+
+#[cfg(test)]
+mod tool_fallback_text {
+    use super::{
+        merge_offers, switch_to_links_lines, tool_run_command, vfs_fallback_step, vfs_next_tier,
+        vfs_offer_lines, vfs_tool_envelope, VfsFallbackStep,
+    };
+    use agora_core::game_tools::{CaptureMode, ToolError, ToolOffer};
+
+    #[test]
+    fn a_link_retry_names_the_links_capture_and_a_swap_retry_confirms_it() {
+        assert_eq!(
+            tool_run_command("inst-1", "nemesis", CaptureMode::Links),
+            "agora games instance tools run inst-1 nemesis --capture links"
+        );
+        assert_eq!(
+            tool_run_command("inst-1", "nemesis", CaptureMode::Swap),
+            "agora games instance tools run inst-1 nemesis --capture swap --yes"
+        );
+    }
+
+    #[test]
+    fn a_vfs_refusal_under_json_carries_the_retry_for_its_tier() {
+        let links = vfs_tool_envelope(
+            "the VFS could not start.",
+            CaptureMode::Links,
+            "cmd-links",
+            &[],
+            &[],
+        );
+        assert_eq!(links["status"], "error");
+        assert_eq!(links["exitCode"], 1);
+        assert_eq!(links["nextCapture"], "links");
+        assert_eq!(links["retry"], serde_json::json!(["cmd-links"]));
+
+        let costs = vec!["Disk space: 1 GB".to_string()];
+        let swap = vfs_tool_envelope(
+            "the VFS could not start.",
+            CaptureMode::Swap,
+            "cmd-swap",
+            &costs,
+            &[],
+        );
+        assert_eq!(swap["nextCapture"], "swap");
+        assert_eq!(swap["costs"], serde_json::json!(["Disk space: 1 GB"]));
+        assert_eq!(swap["retry"], serde_json::json!(["cmd-swap"]));
+    }
+
+    #[test]
+    fn only_a_refused_vfs_run_names_a_next_tier() {
+        let refused = ToolError::VfsUnavailable {
+            reason: "agora_vfs.dll was not found".into(),
+            next: Some(CaptureMode::Links),
+            offers: Vec::new(),
+        };
+        assert_eq!(vfs_next_tier(&refused), Some(CaptureMode::Links));
+        assert_eq!(vfs_next_tier(&ToolError::Other("x".into())), None);
+    }
+
+    #[test]
+    fn the_step_runs_with_yes_in_json_too_and_stops_otherwise_without_a_terminal() {
+        // `--yes` runs the next tier, under `--json` as well.
+        assert_eq!(vfs_fallback_step(true, true, false), VfsFallbackStep::Run);
+        assert_eq!(vfs_fallback_step(false, true, true), VfsFallbackStep::Run);
+        // Without `--yes`, `--json` prints the envelope and stops, as does a run with no terminal.
+        assert_eq!(vfs_fallback_step(true, false, true), VfsFallbackStep::Stop);
+        assert_eq!(
+            vfs_fallback_step(false, false, false),
+            VfsFallbackStep::Stop
+        );
+        // A terminal asks.
+        assert_eq!(vfs_fallback_step(false, false, true), VfsFallbackStep::Ask);
+    }
+
+    #[test]
+    fn an_offer_in_a_refusal_is_printed_and_carried_in_its_json_envelope() {
+        let offers = vec![ToolOffer::SwitchToLinks];
+        let lines = vfs_offer_lines("nemesis", "inst-1", &offers, false).join("\n");
+        assert!(lines.contains("set-deployment inst-1 links"), "{lines}");
+
+        let envelope = vfs_tool_envelope("x", CaptureMode::Links, "cmd", &[], &offers);
+        assert_eq!(
+            envelope["offers"],
+            serde_json::json!([{ "offer": "switch_to_links" }])
+        );
+    }
+
+    #[test]
+    fn merged_offers_keep_the_refusals_first_and_never_repeat() {
+        let mut outcome_offers = vec![ToolOffer::SwitchToLinks];
+        merge_offers(&mut outcome_offers, vec![ToolOffer::SwitchToLinks]);
+        assert_eq!(outcome_offers, vec![ToolOffer::SwitchToLinks]);
+    }
+
+    #[test]
+    fn switching_to_links_prints_the_exact_command_and_what_it_changes() {
+        let lines = switch_to_links_lines("inst-1").join("\n");
+        assert!(
+            lines.contains("deploys it as linked files for launches and tools"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("the virtual file system is no longer used"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("agora games instance set-deployment inst-1 links"),
+            "{lines}"
+        );
     }
 }
