@@ -28,7 +28,7 @@ export default function GuidesIndexPage() {
           before installing or link someone straight to an answer.
         </p>
         <p className="mt-3 max-w-3xl leading-7 text-gray-600 dark:text-gray-300">
-          {total} guides covering what Agora does and how to do it. Each one is
+          The following guides cover what Agora does and how to do it. Each one is
           written twice: <strong>step by step</strong> for following along, and{' '}
           <strong>in depth</strong> for understanding the behavior behind the
           steps. Pick whichever suits you — they describe the same product.

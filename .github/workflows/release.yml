@@ -207,19 +207,11 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Agora ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: |
-            ## Desktop
-            Download the installer for your platform below.
-            - Windows: `.msi` or `.exe`
-            - Windows portable: `agora-desktop-v*-windows-x86_64-portable.zip` (extract and run; no installer)
-            - macOS: `.dmg`
-            - Linux: `.AppImage` or `.deb`
-
-            ## CLI
-            Standalone command-line binaries (no installer required). See `SHA256SUMS` for checksums.
-            - `agora-v*-windows-x86_64.zip`
-            - `agora-v*-linux-x86_64.tar.gz`
-            - `agora-v*-macos-x86_64.tar.gz`
-            - `agora-v*-macos-aarch64.tar.gz`
+            Desktop installers and standalone CLI archives for Windows, macOS, and Linux
+            are attached below. The Windows `-setup.exe` is the recommended installer, or
+            use the portable ZIP; macOS has `.dmg` builds for Apple Silicon and Intel;
+            Linux has `.AppImage`, `.deb`, and `.rpm`. The `agora-cli-*` archives are the
+            command-line builds. Verify downloads against `SHA256SUMS`.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} ${{ runner.os == 'Windows' && format('--config "{0}"', env.AGORA_WINDOWS_SIGNING_CONFIG) || '' }}
@@ -308,22 +300,22 @@ jobs:
             os: windows-latest
             ext: .exe
             archive: zip
-            platform_name: windows-x86_64
+            platform_name: windows-x64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             ext: ""
             archive: tar.gz
-            platform_name: linux-x86_64
+            platform_name: linux-x64
           - target: x86_64-apple-darwin
             os: macos-latest
             ext: ""
             archive: tar.gz
-            platform_name: macos-x86_64
+            platform_name: macos-x64
           - target: aarch64-apple-darwin
             os: macos-latest
             ext: ""
             archive: tar.gz
-            platform_name: macos-aarch64
+            platform_name: macos-arm64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -373,7 +365,7 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           BIN="target/${{ matrix.target }}/release/agora${{ matrix.ext }}"
-          ARCHIVE="agora-${TAG}-${{ matrix.platform_name }}.zip"
+          ARCHIVE="agora-cli-${TAG}-${{ matrix.platform_name }}.zip"
           7z a "$ARCHIVE" "$BIN"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
@@ -383,7 +375,7 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           BIN="target/${{ matrix.target }}/release/agora${{ matrix.ext }}"
-          ARCHIVE="agora-${TAG}-${{ matrix.platform_name }}.tar.gz"
+          ARCHIVE="agora-cli-${TAG}-${{ matrix.platform_name }}.tar.gz"
           tar -czf "$ARCHIVE" -C "$(dirname "$BIN")" "$(basename "$BIN")"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
@@ -410,12 +402,6 @@ jobs:
           path: cli-artifacts
           merge-multiple: true
 
-      - name: Generate SHA256SUMS
-        working-directory: cli-artifacts
-        run: |
-          sha256sum * > SHA256SUMS
-          cat SHA256SUMS
-
       - name: Upload CLI files to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -426,71 +412,144 @@ jobs:
             gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber
           done
 
-      - name: Verify macOS release assets and updater metadata
+      # Renames Tauri's Agora.Launcher_* bundles into the shared
+      # agora-<kind>-<tag>-<platform>-<arch> scheme, deletes the *.sig sidecars,
+      # rewrites latest.json to the new names, and writes a SHA256SUMS that
+      # covers every downloadable artifact. Idempotent, so a re-run is safe.
+      - name: Normalize assets and publish SHA256SUMS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          mkdir -p "$RUNNER_TEMP/agora-updater-check"
-          gh release download "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern latest.json \
-            --dir "$RUNNER_TEMP/agora-updater-check" \
-            --clobber
+          python3 scripts/finalize_release_assets.py --repo "$GITHUB_REPOSITORY" --tag "$TAG"
+
+      # GitHub sorts the asset list alphabetically and collapses long lists
+      # behind "Show all N assets", so the asset list alone buries the standard
+      # Windows installer. The draft body leads with direct links instead. This
+      # runs after finalize so the links name assets that exist, and it leaves
+      # latest.json's updater notes (tauri-action's short body) untouched.
+      - name: Add direct download links to the release body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          BASE="${{ github.server_url }}/${{ github.repository }}/releases/download/$TAG"
+          NOTES="$RUNNER_TEMP/agora-release-notes.md"
+          # Quoted heredoc plus sed: the markdown below uses backticks, which
+          # an unquoted heredoc would run as command substitution.
+          sed -e "s|@TAG@|$TAG|g" -e "s|@BASE@|$BASE|g" > "$NOTES" <<'EOF'
+          ## Download Agora
+
+          The asset list below is alphabetical; these direct links are the fastest path.
+
+          | Platform | Recommended download |
+          | --- | --- |
+          | **Windows** | [agora-desktop-@TAG@-windows-x64-setup.exe](@BASE@/agora-desktop-@TAG@-windows-x64-setup.exe) |
+          | Windows (portable, no installer) | [agora-desktop-@TAG@-windows-x64-portable.zip](@BASE@/agora-desktop-@TAG@-windows-x64-portable.zip) |
+          | macOS (Apple Silicon) | [agora-desktop-@TAG@-macos-arm64.dmg](@BASE@/agora-desktop-@TAG@-macos-arm64.dmg) |
+          | macOS (Intel) | [agora-desktop-@TAG@-macos-x64.dmg](@BASE@/agora-desktop-@TAG@-macos-x64.dmg) |
+          | Linux | [agora-desktop-@TAG@-linux-x64.AppImage](@BASE@/agora-desktop-@TAG@-linux-x64.AppImage) |
+
+          `.msi`, `.deb`, and `.rpm` installers plus the macOS updater archives are in the asset list.
+
+          ### Command line
+
+          Standalone `agora` builds; no installer required.
+
+          | Platform | Archive |
+          | --- | --- |
+          | Windows | [agora-cli-@TAG@-windows-x64.zip](@BASE@/agora-cli-@TAG@-windows-x64.zip) |
+          | macOS (Apple Silicon) | [agora-cli-@TAG@-macos-arm64.tar.gz](@BASE@/agora-cli-@TAG@-macos-arm64.tar.gz) |
+          | macOS (Intel) | [agora-cli-@TAG@-macos-x64.tar.gz](@BASE@/agora-cli-@TAG@-macos-x64.tar.gz) |
+          | Linux | [agora-cli-@TAG@-linux-x64.tar.gz](@BASE@/agora-cli-@TAG@-linux-x64.tar.gz) |
+
+          Verify downloads against `SHA256SUMS`.
+          EOF
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES"
+
+      - name: Verify release assets and updater metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          CHECK_DIR="$RUNNER_TEMP/agora-release-check"
+          mkdir -p "$CHECK_DIR"
           # The release is deliberately a draft; the REST tag endpoint only
           # resolves published releases. The CLI also finds accessible drafts.
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-            >"$RUNNER_TEMP/agora-updater-check/release.json"
+            >"$CHECK_DIR/release.json"
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json \
+            --dir "$CHECK_DIR" \
+            --clobber
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern SHA256SUMS \
+            --dir "$CHECK_DIR" \
+            --clobber
 
-          python - "$RUNNER_TEMP/agora-updater-check" <<'PY'
+          python - "$CHECK_DIR" "$TAG" <<'PY'
           import json
           import pathlib
           import sys
 
+          sys.path.insert(0, "scripts")
+          import finalize_release_assets as fra
+
           root = pathlib.Path(sys.argv[1])
+          tag = sys.argv[2]
           release = json.loads((root / "release.json").read_text())
           latest = json.loads((root / "latest.json").read_text())
           asset_names = [asset["name"] for asset in release["assets"]]
-          portable = [name for name in asset_names if name.startswith("agora-desktop-v") and name.endswith("-windows-x86_64-portable.zip")]
-          if len(portable) != 1 or portable[0] + ".sha256" not in asset_names:
-              raise SystemExit("Missing Windows portable desktop ZIP or checksum")
 
-          markers = {
-              "aarch64": ("aarch64", "arm64"),
-              "x86_64": ("x86_64", "x64"),
-          }
-          for architecture, names in markers.items():
-              bundles = [
-                  name
-                  for name in asset_names
-                  if name.endswith(".dmg")
-                  and any(marker in name for marker in names)
-              ]
-              updater_archives = [
-                  name
-                  for name in asset_names
-                  if name.endswith(".app.tar.gz")
-                  and any(marker in name for marker in names)
-              ]
-              if not bundles or not updater_archives:
-                  raise SystemExit(
-                      f"missing {architecture} macOS assets; "
-                      f"dmg={bundles!r}, updater={updater_archives!r}"
-                  )
+          # The release must carry exactly the expected artifacts: a missing one
+          # means a build job dropped something, and an unexpected one is usually
+          # a naming drift that would leave a duplicate installer in the list.
+          expected = set(fra.expected_asset_names(tag))
+          missing = sorted(expected - set(asset_names))
+          if missing:
+              raise SystemExit(f"release is missing expected assets: {missing}")
+          unexpected = fra.unexpected_asset_names(asset_names, tag)
+          if unexpected:
+              raise SystemExit(f"release carries unexpected assets: {unexpected}")
 
-              platform = latest.get("platforms", {}).get(f"darwin-{architecture}")
-              if not platform or not platform.get("signature"):
-                  raise SystemExit(
-                      f"latest.json is missing a signed darwin-{architecture} entry"
-                  )
-              if not platform.get("url", "").endswith(".app.tar.gz"):
-                  raise SystemExit(
-                      f"darwin-{architecture} updater URL is not an .app.tar.gz: "
-                      f"{platform.get('url')!r}"
-                  )
+          # SHA256SUMS must cover every downloadable artifact and nothing else.
+          covered = set()
+          for line in (root / "SHA256SUMS").read_text().splitlines():
+              digest, separator, name = line.partition("  ")
+              if separator != "  " or not fra.digest_hex(f"sha256:{digest}") or not name:
+                  raise SystemExit(f"malformed SHA256SUMS line: {line!r}")
+              covered.add(name)
+          if covered != expected:
+              raise SystemExit(
+                  "SHA256SUMS does not cover the release: "
+                  f"missing={sorted(expected - covered)}, extra={sorted(covered - expected)}"
+              )
 
-          print("Verified Intel and Apple Silicon macOS bundles and updater entries.")
+          # Every updater URL must resolve to a published asset, the darwin
+          # entries must stay signed archives, and the Windows entries the
+          # updater selects by install kind (MSI vs NSIS) must all be present.
+          platforms = latest.get("platforms", {})
+          for key in ("windows-x86_64", "windows-x86_64-msi", "windows-x86_64-nsis"):
+              entry = platforms.get(key)
+              if not entry or not entry.get("signature"):
+                  raise SystemExit(f"latest.json is missing a signed {key} entry")
+          for key, entry in platforms.items():
+              url = entry.get("url", "")
+              basename = url.rsplit("/", 1)[-1]
+              if basename not in asset_names:
+                  raise SystemExit(f"latest.json {key} URL does not name a release asset: {url!r}")
+              if key.startswith("darwin-"):
+                  if not entry.get("signature"):
+                      raise SystemExit(f"latest.json {key} entry is not signed")
+                  if not basename.endswith(".app.tar.gz"):
+                      raise SystemExit(f"latest.json {key} URL is not an .app.tar.gz: {url!r}")
+
+          print(f"Verified {len(expected)} artifacts, their checksums, and the updater metadata.")
           PY
 
       # The release stays a draft here on purpose: a human must smoke-test

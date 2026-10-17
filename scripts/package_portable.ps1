@@ -13,7 +13,7 @@ if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) {
     throw "The portable executable must have valid timestamped Authenticode signing. Status: $($signature.Status); timestamp present: $([bool]$signature.TimeStamperCertificate); file: $($binary.FullName)"
 }
 $tag = 'v' + $Version.TrimStart('v')
-$name = "agora-desktop-$tag-windows-x86_64-portable"
+$name = "agora-desktop-$tag-windows-x64-portable"
 $output = New-Item -ItemType Directory -Force -Path $OutputDirectory
 $stage = Join-Path $output.FullName ($name + '-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null

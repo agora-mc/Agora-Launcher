@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import fetch_loader_manifests
 import fetch_registry_db
 import deploy_release_assets
+import finalize_release_assets as fra
 import refresh_loader_manifests
 import validate_loader_catalog_delta
 import build_docs_web as bdw
@@ -1916,6 +1917,289 @@ class TestBuildDocsWebStripTitle(unittest.TestCase):
 
     def test_empty_is_unchanged(self):
         self.assertEqual(bdw.strip_title(""), "")
+
+
+class TestFinalizeReleaseAssetsNames(unittest.TestCase):
+    """Tests for finalize_release_assets tag, rename, and plan helpers."""
+
+    def test_version_from_tag(self):
+        self.assertEqual(fra.version_from_tag("v1.2.3"), "1.2.3")
+        for tag in ("1.2.3", "v1.2", "v1.2.3-rc.1", "release-1.2.3"):
+            with self.assertRaises(fra.ReleaseAssetError, msg=tag):
+                fra.version_from_tag(tag)
+
+    def test_desktop_asset_rename_covers_every_tauri_bundle(self):
+        cases = {
+            "Agora.Launcher_0.9.3_x64-setup.exe": "agora-desktop-v0.9.3-windows-x64-setup.exe",
+            "Agora.Launcher_0.9.3_x64_en-US.msi": "agora-desktop-v0.9.3-windows-x64.msi",
+            "Agora.Launcher_0.9.3_aarch64.dmg": "agora-desktop-v0.9.3-macos-arm64.dmg",
+            "Agora.Launcher_0.9.3_x64.dmg": "agora-desktop-v0.9.3-macos-x64.dmg",
+            "Agora.Launcher_0.9.3_amd64.AppImage": "agora-desktop-v0.9.3-linux-x64.AppImage",
+            "Agora.Launcher_0.9.3_amd64.deb": "agora-desktop-v0.9.3-linux-x64.deb",
+            "Agora.Launcher-0.9.3-1.x86_64.rpm": "agora-desktop-v0.9.3-linux-x64.rpm",
+            "Agora.Launcher_aarch64.app.tar.gz": "agora-desktop-v0.9.3-macos-arm64.app.tar.gz",
+            "Agora.Launcher_x64.app.tar.gz": "agora-desktop-v0.9.3-macos-x64.app.tar.gz",
+        }
+        for old_name, new_name in cases.items():
+            with self.subTest(old_name=old_name):
+                self.assertEqual(fra.desktop_asset_rename(old_name, "0.9.3"), new_name)
+
+    def test_desktop_asset_rename_accepts_any_msi_locale(self):
+        self.assertEqual(
+            fra.desktop_asset_rename("Agora.Launcher_0.9.3_x64_pt-BR.msi", "0.9.3"),
+            "agora-desktop-v0.9.3-windows-x64.msi",
+        )
+
+    def test_desktop_asset_rename_rejects_mismatched_version(self):
+        with self.assertRaisesRegex(fra.ReleaseAssetError, "0.1.0"):
+            fra.desktop_asset_rename("Agora.Launcher_0.1.0_x64-setup.exe", "0.9.3")
+
+    def test_desktop_asset_rename_rejects_unknown_bundle(self):
+        with self.assertRaisesRegex(fra.ReleaseAssetError, "Unrecognized"):
+            fra.desktop_asset_rename("Agora.Launcher_0.9.3_x64.snap", "0.9.3")
+
+    def test_desktop_asset_rename_rejects_drifted_updater_archive(self):
+        # Tauri does not version .app.tar.gz names; if that ever changes, the
+        # table must be updated rather than silently mis-renaming the archive.
+        with self.assertRaisesRegex(fra.ReleaseAssetError, "Unrecognized"):
+            fra.desktop_asset_rename("Agora.Launcher_0.9.3_x64.app.tar.gz", "0.9.3")
+
+    def test_plan_desktop_renames_skips_signature_sidecars(self):
+        names = [
+            "Agora.Launcher_0.9.3_x64.dmg",
+            "Agora.Launcher_0.9.3_x64.dmg.sig",
+            "agora-cli-v0.9.3-linux-x64.tar.gz",
+        ]
+        self.assertEqual(
+            fra.plan_desktop_renames(names, "0.9.3"),
+            {"Agora.Launcher_0.9.3_x64.dmg": "agora-desktop-v0.9.3-macos-x64.dmg"},
+        )
+
+    def test_plan_desktop_renames_rejects_colliding_targets(self):
+        names = [
+            "Agora.Launcher_0.9.3_x64_en-US.msi",
+            "Agora.Launcher_0.9.3_x64_pt-BR.msi",
+        ]
+        with self.assertRaises(fra.ReleaseAssetError):
+            fra.plan_desktop_renames(names, "0.9.3")
+
+
+class TestFinalizeReleaseAssetsChecksums(unittest.TestCase):
+    """Tests for finalize_release_assets expected sets and SHA256SUMS rendering."""
+
+    def test_expected_asset_names_covers_desktop_cli_and_portable(self):
+        names = fra.expected_asset_names("v1.2.3")
+        self.assertEqual(len(names), 15)
+        self.assertEqual(len(set(names)), 15)
+        self.assertIn("agora-desktop-v1.2.3-windows-x64-setup.exe", names)
+        self.assertIn("agora-desktop-v1.2.3-windows-x64-portable.zip.sha256", names)
+        self.assertIn("agora-cli-v1.2.3-macos-arm64.tar.gz", names)
+
+    def test_unexpected_asset_names_allows_metadata_and_expected_artifacts(self):
+        names = fra.expected_asset_names("v1.2.3") + ["latest.json", "SHA256SUMS"]
+        self.assertEqual(fra.unexpected_asset_names(names, "v1.2.3"), [])
+
+    def test_unexpected_asset_names_reports_junk_and_stale_sidecars(self):
+        names = [
+            *fra.expected_asset_names("v1.2.3"),
+            "latest.json",
+            "notes.txt",
+            "Agora.Launcher_1.2.3_x64.dmg.sig",
+        ]
+        self.assertEqual(
+            fra.unexpected_asset_names(names, "v1.2.3"),
+            ["Agora.Launcher_1.2.3_x64.dmg.sig", "notes.txt"],
+        )
+
+    def test_digest_hex_parses_sha256_digests_only(self):
+        value = "a" * 64
+        self.assertEqual(fra.digest_hex(f"sha256:{value}"), value)
+        self.assertEqual(fra.digest_hex(f"sha256:{value.upper()}"), value)
+        self.assertIsNone(fra.digest_hex(None))
+        self.assertIsNone(fra.digest_hex(f"sha256:{value[:63]}"))
+        self.assertIsNone(fra.digest_hex(f"sha512:{value}"))
+        self.assertIsNone(fra.digest_hex(value))
+
+    def test_render_sha256sums_is_sorted_and_checkable(self):
+        rendered = fra.render_sha256sums([("b.zip", "b" * 64), ("a.zip", "a" * 64)])
+        self.assertEqual(rendered, f"{'a' * 64}  a.zip\n{'b' * 64}  b.zip\n")
+
+    def test_render_sha256sums_rejects_non_digests(self):
+        with self.assertRaises(fra.ReleaseAssetError):
+            fra.render_sha256sums([("a.zip", "not-a-digest")])
+
+
+class TestFinalizeReleaseAssetsLatestJson(unittest.TestCase):
+    """Tests for finalize_release_assets.rewrite_latest_urls."""
+
+    def test_rewrites_renamed_urls_and_leaves_the_input_alone(self):
+        latest = {
+            "version": "0.9.3",
+            "platforms": {
+                "windows-x86_64-nsis": {
+                    "signature": "sig",
+                    "url": "https://github.com/o/r/releases/download/v0.9.3/Agora.Launcher_0.9.3_x64-setup.exe",
+                },
+                "darwin-aarch64": {
+                    "signature": "sig",
+                    "url": "https://github.com/o/r/releases/download/v0.9.3/Agora.Launcher_aarch64.app.tar.gz",
+                },
+            },
+        }
+        renames = {
+            "Agora.Launcher_0.9.3_x64-setup.exe": "agora-desktop-v0.9.3-windows-x64-setup.exe",
+            "Agora.Launcher_aarch64.app.tar.gz": "agora-desktop-v0.9.3-macos-arm64.app.tar.gz",
+        }
+        rewritten = fra.rewrite_latest_urls(latest, renames)
+        self.assertTrue(
+            rewritten["platforms"]["windows-x86_64-nsis"]["url"].endswith(
+                "/agora-desktop-v0.9.3-windows-x64-setup.exe"
+            )
+        )
+        self.assertTrue(
+            rewritten["platforms"]["darwin-aarch64"]["url"].endswith(
+                "/agora-desktop-v0.9.3-macos-arm64.app.tar.gz"
+            )
+        )
+        self.assertTrue(
+            latest["platforms"]["darwin-aarch64"]["url"].endswith(
+                "/Agora.Launcher_aarch64.app.tar.gz"
+            )
+        )
+
+    def test_already_renamed_urls_pass_through(self):
+        latest = {
+            "platforms": {
+                "darwin-x86_64": {
+                    "url": "https://example.test/agora-desktop-v0.9.3-macos-x64.app.tar.gz"
+                }
+            }
+        }
+        self.assertEqual(fra.rewrite_latest_urls(latest, {}), latest)
+
+    def test_uncovered_tauri_url_is_an_error(self):
+        latest = {
+            "platforms": {
+                "windows-x86_64": {"url": "https://example.test/Agora.Launcher_0.9.3_x64.msi"}
+            }
+        }
+        with self.assertRaises(fra.ReleaseAssetError):
+            fra.rewrite_latest_urls(latest, {})
+
+    def test_missing_platforms_is_an_error(self):
+        with self.assertRaises(fra.ReleaseAssetError):
+            fra.rewrite_latest_urls({"version": "0.9.3"}, {})
+
+
+class TestFinalizeReleaseAssetsApply(unittest.TestCase):
+    """Tests for the finalize plan: sidecars dropped, bundles renamed, URLs and sums rebuilt."""
+
+    TAG = "v0.9.3"
+    OLD_NAMES = (
+        "Agora.Launcher_0.9.3_x64-setup.exe",
+        "Agora.Launcher_0.9.3_x64_en-US.msi",
+        "Agora.Launcher_0.9.3_aarch64.dmg",
+        "Agora.Launcher_0.9.3_x64.dmg",
+        "Agora.Launcher_0.9.3_amd64.AppImage",
+        "Agora.Launcher_0.9.3_amd64.deb",
+        "Agora.Launcher-0.9.3-1.x86_64.rpm",
+        "Agora.Launcher_aarch64.app.tar.gz",
+        "Agora.Launcher_x64.app.tar.gz",
+    )
+
+    @staticmethod
+    def _asset(name: str, asset_id: int) -> dict:
+        return {"id": asset_id, "name": name, "digest": "sha256:" + "a" * 64}
+
+    def test_plan_and_apply_handles_a_release_and_its_rerun(self):
+        stale = "agora-desktop-v0.9.3-windows-x64.msi"
+        expected = fra.expected_asset_names(self.TAG)
+        before = [
+            *(self._asset(name, index + 1) for index, name in enumerate(self.OLD_NAMES)),
+            *(self._asset(name + ".sig", 100 + index) for index, name in enumerate(self.OLD_NAMES)),
+            # A stale unified name plus a fresh old name: the old upload must win.
+            self._asset(stale, 500),
+            *(self._asset(name, 200 + index) for index, name in enumerate(expected) if name != stale),
+            self._asset("latest.json", 600),
+        ]
+        after = [self._asset(name, 200 + index) for index, name in enumerate(expected)]
+        after.append(self._asset("latest.json", 600))
+
+        latest = {
+            "version": "0.9.3",
+            "platforms": {
+                "windows-x86_64-nsis": {
+                    "signature": "sig",
+                    "url": f"https://github.com/o/r/releases/download/{self.TAG}/Agora.Launcher_0.9.3_x64-setup.exe",
+                },
+                "darwin-x86_64": {
+                    "signature": "sig",
+                    "url": f"https://github.com/o/r/releases/download/{self.TAG}/Agora.Launcher_x64.app.tar.gz",
+                },
+            },
+        }
+        uploads: dict[str, str] = {}
+
+        def fake_download(repo, tag, name, directory):
+            path = Path(directory) / name
+            path.write_text(json.dumps(latest), encoding="utf-8")
+            return path
+
+        def fake_upload(repo, tag, path):
+            uploads[Path(path).name] = Path(path).read_text(encoding="utf-8")
+
+        manager = mock.Mock()
+        with (
+            mock.patch.object(fra, "fetch_assets", side_effect=[before, after]),
+            mock.patch.object(fra, "delete_asset", manager.delete),
+            mock.patch.object(fra, "rename_asset", manager.rename),
+            mock.patch.object(fra, "download_asset", side_effect=fake_download),
+            mock.patch.object(fra, "upload_asset", side_effect=fake_upload),
+            mock.patch.object(fra, "asset_digest", return_value="a" * 64),
+        ):
+            fra.plan_and_apply("o/r", self.TAG, "0.9.3")
+
+        deleted = sorted(call.args[1]["name"] for call in manager.delete.call_args_list)
+        renamed = {call.args[1]["name"]: call.args[2] for call in manager.rename.call_args_list}
+        self.assertEqual(set(renamed), set(self.OLD_NAMES))
+        # Every target that already exists is stale and must be replaced by the
+        # fresh upload under the old name; the sidecars are dropped outright.
+        self.assertEqual(
+            deleted,
+            sorted([*(name + ".sig" for name in self.OLD_NAMES), *renamed.values()]),
+        )
+        self.assertIn(stale, deleted)
+        self.assertEqual(
+            renamed["Agora.Launcher_0.9.3_x64-setup.exe"],
+            "agora-desktop-v0.9.3-windows-x64-setup.exe",
+        )
+
+        self.assertEqual(sorted(uploads), ["SHA256SUMS", "latest.json"])
+        rewritten = json.loads(uploads["latest.json"])
+        self.assertTrue(
+            rewritten["platforms"]["windows-x86_64-nsis"]["url"].endswith(
+                "/agora-desktop-v0.9.3-windows-x64-setup.exe"
+            )
+        )
+        self.assertTrue(
+            rewritten["platforms"]["darwin-x86_64"]["url"].endswith(
+                "/agora-desktop-v0.9.3-macos-x64.app.tar.gz"
+            )
+        )
+        covered = sorted(line.split("  ", 1)[1] for line in uploads["SHA256SUMS"].splitlines())
+        self.assertEqual(covered, sorted(expected))
+
+    def test_main_reports_asset_errors(self):
+        with (
+            mock.patch.object(fra, "plan_and_apply", side_effect=fra.ReleaseAssetError("boom")),
+            mock.patch("sys.stderr"),
+        ):
+            self.assertEqual(fra.main(["--repo", "o/r", "--tag", self.TAG]), 1)
+
+    def test_main_succeeds_with_a_finalize_plan(self):
+        with mock.patch.object(fra, "plan_and_apply") as plan:
+            self.assertEqual(fra.main(["--repo", "o/r", "--tag", self.TAG]), 0)
+        plan.assert_called_once_with("o/r", self.TAG, "0.9.3")
 
 
 if __name__ == "__main__":

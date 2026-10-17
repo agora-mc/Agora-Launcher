@@ -10,7 +10,7 @@ function Get-AuthenticodeSignature {
 }
 $output = Join-Path $testRoot 'out'
 & "$PSScriptRoot/package_portable.ps1" -Executable $exe -Version v1.2.3 -OutputDirectory $output
-$zip = Join-Path $output 'agora-desktop-v1.2.3-windows-x86_64-portable.zip'
+$zip = Join-Path $output 'agora-desktop-v1.2.3-windows-x64-portable.zip'
 $unpacked = Join-Path $testRoot 'unpacked'
 Expand-Archive -LiteralPath $zip -DestinationPath $unpacked
 foreach ($file in @('Agora Launcher.exe', 'portable.txt', 'README.txt')) {

@@ -13,8 +13,8 @@ const ROUTES = [
   {
     href: '/docs/install',
     heading: 'I am new to Agora',
-    body: 'Download a package, work through first-run setup, and reach a launch you can recover from.',
-    cta: 'Install and first run',
+    body: 'Download the build for your platform, pick between the desktop app, portable, and CLI, and read the release file names.',
+    cta: 'Install Agora',
   },
   {
     href: '/docs/guides',

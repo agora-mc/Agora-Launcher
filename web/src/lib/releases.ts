@@ -87,7 +87,14 @@ export function pickAsset(os: DetectedOS, assets: ReleaseAsset[]): ReleaseAsset 
     assets.find((a) => pred(a.name.toLowerCase()));
 
   if (os === 'windows') {
-    return findMatch((n) => n.endsWith('.msi')) || findMatch((n) => n.endsWith('.exe')) || null;
+    // Prefer the NSIS `-setup.exe` (the release-notes download row and the
+    // documented default); fall back to the MSI, then to any legacy `.exe`.
+    return (
+      findMatch((n) => n.endsWith('-setup.exe')) ||
+      findMatch((n) => n.endsWith('.msi')) ||
+      findMatch((n) => n.endsWith('.exe')) ||
+      null
+    );
   }
   if (os === 'macos') {
     return findMatch((n) => n.endsWith('.dmg')) || null;
