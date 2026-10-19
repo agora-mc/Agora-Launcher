@@ -70,6 +70,7 @@ const COMMON_QUESTIONS = [
   { href: '/docs/guides/modding-foundations', label: 'What are versions, loaders, and dependencies?' },
   { href: '/docs/guides/launching', label: 'Why is my launch blocked, and what is a health check?' },
   { href: '/docs/guides/crash-recovery', label: 'Minecraft crashed — how do I find the cause?' },
+  { href: '/docs/guides/ai-assistant', label: 'Can an AI assistant help me fix my game?' },
   { href: '/docs/guides/snapshots-loadouts', label: 'What does a snapshot actually protect?' },
   { href: '/docs/guides/privacy-offline', label: 'What does Agora send, and how do I play offline?' },
   { href: '/docs/guides/packs-sharing', label: 'How do I move an instance to another machine?' },

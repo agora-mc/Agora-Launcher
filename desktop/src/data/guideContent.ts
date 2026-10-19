@@ -1655,6 +1655,99 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     },
   },
   {
+    id: 'ai-assistant',
+    title: 'Get help from an AI assistant',
+    shortTitle: 'AI assistant',
+    category: 'Connect',
+    description: 'Let an AI assistant app on your computer read your crash logs and fix problems through Agora, with your approval.',
+    keywords: ['ai', 'assistant', 'agent', 'codex', 'chatgpt', 'claude', 'opencode', 'antigravity', 'cli', 'skill', 'help'],
+    basic: {
+      summary: 'An AI assistant app on your computer can use Agora\'s command-line tool to look at your instances, read crash reports, and suggest fixes. It asks before it changes anything, and you approve each step. Crash Doctor is still the first place to look: this is for when you want help working through a problem.',
+      outcomes: [
+        'Pick an assistant app that suits you.',
+        'Download Agora\'s command-line tool and point the assistant at it.',
+        'Keep control of what the assistant changes.',
+      ],
+      sections: [
+        {
+          title: 'Pick an assistant app',
+          body: 'You need an assistant app that can run commands on your computer. A chat window in a web browser cannot. Any of these will do; pick the one you already have an account with, or start with the first.',
+          bullets: [
+            'OpenCode desktop: open source, quick to set up, and has some free models. It can also use an account you already have with most AI companies.',
+            'Codex in the ChatGPT app: OpenAI\'s assistant, included with a ChatGPT account. How much you can use it depends on your plan.',
+            'Claude Code: Anthropic\'s assistant, in the Claude desktop app. It needs a paid Claude plan, so it suits you if you already have one.',
+            'Google Antigravity: Google\'s assistant app. Sign in with a Google account.',
+          ],
+          callout: {
+            tone: 'note',
+            title: 'Plans change',
+            text: 'Agora is not affiliated with any of these companies, and what each one offers for free changes often. Check the app\'s own website before you sign up.',
+          },
+        },
+        {
+          title: 'Get Agora\'s command-line tool',
+          body: 'The assistant works through a separate download called the Agora CLI. It uses the same instances and settings as the Agora app, so there is nothing to set up twice.',
+          steps: [
+            'Open the Install page of the Agora website and download the CLI for your system: the file name starts with agora-cli.',
+            'Unzip it into a folder you will remember, such as a folder called Agora CLI in your Documents.',
+          ],
+        },
+        {
+          title: 'Ask for help',
+          body: 'Open your assistant app and give it the folder you unzipped the CLI into. Each app calls this something slightly different: opening a folder, a project, or a workspace.',
+          steps: [
+            'Open the Agora CLI folder in your assistant app.',
+            'Paste this message, with your problem at the end: "The Agora command-line tool is in this folder. Run agora skill and follow the guide it prints. Then help me with: ..."',
+            'The assistant asks to run commands. Reading commands, such as listing instances or reading a crash report, are safe to allow.',
+            'Before it changes anything, it should explain what and why. Allow the change only if it makes sense to you.',
+            'When it asks you to test, launch the instance from the Agora app as usual and tell it what happened.',
+          ],
+          callout: {
+            tone: 'warning',
+            title: 'Keep the approval prompts on',
+            text: 'Most assistant apps have a setting that lets them run every command without asking. Leave it off. The assistant can reach any file you can, and the prompts are how you stay in charge.',
+          },
+        },
+        {
+          title: 'What the assistant sees',
+          body: 'Anything the assistant reads is sent to the company that runs it. Crash reports can contain your computer\'s username, folder names, server addresses, and chat messages. If that matters to you, use Crash Doctor\'s redacted report instead.',
+        },
+      ],
+    },
+    advanced: {
+      summary: 'The assistant is an agent driving the agora CLI with your user account\'s permissions. Agora gives it a version-matched guide and fail-closed defaults; the assistant app\'s approval prompts are the actual safety boundary.',
+      outcomes: [
+        'Understand what agora skill gives an agent.',
+        'Know where the trust boundary really is.',
+        'Know when MCP is the better choice.',
+      ],
+      sections: [
+        {
+          title: 'What agora skill provides',
+          body: 'agora skill prints a guide in the common SKILL.md format: Agora\'s vocabulary, house rules (ask before changing anything, snapshot and dry-run first, never pass --yes on the person\'s behalf), the crash workflow, and what each exit code range means. It is compiled into the binary, so it always matches the commands that binary has, and it is printed without opening any Agora data.',
+          bullets: [
+            'The agent reads results with --json and checks exit codes rather than parsing human tables.',
+            'The CLI resolves the same data root as the desktop app, including a portable copy\'s folder. Do not change one instance from the app and the agent at the same time.',
+            'The guide asks the agent to have you launch from the app, since agora launch uses direct launch and needs a Microsoft sign-in.',
+          ],
+        },
+        {
+          title: 'Where the trust boundary is',
+          body: 'An agent with a terminal can do anything your account can, including editing instance files without Agora. Agora\'s own confirmations stop by default in a non-interactive session and tell the agent to ask you before passing --yes, but that relies on the agent following instructions. Keep the app\'s per-command approval on, lock instances you care about, and point experiments at a disposable data root with --data-dir.',
+          callout: {
+            tone: 'tip',
+            title: 'Undo is cheap',
+            text: 'Ask the agent to take a snapshot before each change. agora snapshots restore puts the mods and configuration back, though not worlds: automatic snapshots exclude saves.',
+          },
+        },
+        {
+          title: 'When to use MCP instead',
+          body: 'MCP suits AI apps that cannot run commands but can connect to a local tool server. There, Agora\'s MCP approval queue is the only way in, so it does protect you. It takes more setup: a token, a config file, and the Agora app running. See the MCP and external AI tools guide.',
+        },
+      ],
+    },
+  },
+  {
     id: 'mcp-automation',
     title: 'MCP and external AI tools',
     shortTitle: 'MCP & automation',
@@ -1662,7 +1755,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     description: 'Connect an external local AI client and control what it may do to instances.',
     keywords: ['mcp', 'external ai', 'automation', 'localhost', 'bearer token', 'tools'],
     basic: {
-      summary: 'MCP is an advanced optional bridge that lets a compatible AI tool inspect Agora and request supported actions. Most users do not need it; copying a crash report from Crash Doctor is simpler for occasional help.',
+      summary: 'MCP is an advanced optional bridge that lets a compatible AI tool inspect Agora and request supported actions. Most users do not need it: copying a crash report from Crash Doctor is simpler for occasional help, and an assistant app that can run commands is easier to set up (see Get help from an AI assistant).',
       outcomes: [
         'Decide whether MCP is appropriate for your workflow.',
         'Start and stop the local server.',

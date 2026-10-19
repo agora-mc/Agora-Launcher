@@ -188,6 +188,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "runtime",
     "loader",
     "settings",
+    "skill",
     "mcp",
     "crash",
     "migrate-data",
@@ -304,6 +305,22 @@ fn top_level_help_lists_public_commands_and_global_flags() {
             "missing global flag {flag} in:\n{stdout}"
         );
     }
+}
+
+#[test]
+fn skill_prints_the_agent_guide_without_touching_the_data_root() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["skill"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("---\nname: agora\n"), "{stdout}");
+    // An agent reads the guide before it is pointed at a data root, so
+    // printing it must not create one.
+    assert!(!data_dir.join("local_state.db").exists());
 }
 
 #[test]

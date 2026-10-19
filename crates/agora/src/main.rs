@@ -15,6 +15,9 @@ use agora_core::registry::RegistryService;
 use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
 
+/// The guide `agora skill` prints for an AI agent driving this CLI.
+const AGENT_SKILL: &str = include_str!("../skills/agora/SKILL.md");
+
 /// A silent progress reporter for the CLI — no progress events are emitted.
 struct SilentReporter;
 
@@ -237,6 +240,8 @@ enum Commands {
         #[command(subcommand)]
         action: SettingsCmd,
     },
+    /// Print the guide an AI agent should read before using this CLI.
+    Skill,
     /// Run Agora's MCP server over standard input/output.
     Mcp {
         #[command(subcommand)]
@@ -986,6 +991,14 @@ async fn main() {
         }
     }
 
+    // The guide is text compiled into this binary, so it is printed before
+    // core opens anything: an agent reads it first, often before it knows
+    // which data root, if any, it should be pointed at.
+    if let Commands::Skill = &cli.command {
+        print!("{AGENT_SKILL}");
+        return;
+    }
+
     // `--data-dir` still wins outright. Without it, defer to the same resolver
     // the desktop uses so a portable install's bundled CLI lands on the pack of
     // instances sitting next to it, rather than in the platform app-data dir.
@@ -1294,7 +1307,9 @@ fn sign_update_document(
 /// where a silent yes would be the worst possible default.
 fn confirm_restore(id: &str) -> anyhow::Result<bool> {
     if !std::io::stdin().is_terminal() {
-        eprintln!("Restoring plugin data needs an interactive terminal; rerun with --yes.");
+        eprintln!(
+            "Restoring plugin data needs an interactive terminal. Rerun with --yes only once the person using this computer has agreed."
+        );
         return Ok(false);
     }
     print!("Restore the saved copy of {id} data? [y/N]: ");
@@ -1456,11 +1471,11 @@ fn accept_plugin_capabilities(
     if !std::io::stdin().is_terminal() {
         if json {
             eprintln!(
-                "Capability consent was not granted in a non-interactive session; rerun with --yes."
+                "Capability consent was not granted in a non-interactive session. Show the person using this computer what the plugin asks for, and rerun with --yes only once they have agreed."
             );
         } else {
             eprintln!(
-                "Capability consent requires an interactive terminal; rerun with --yes for scripting."
+                "Capability consent requires an interactive terminal. Show the person using this computer what the plugin asks for, and rerun with --yes only once they have agreed."
             );
         }
         // Passing false through to core preserves PluginService's consent
@@ -1738,7 +1753,7 @@ async fn run_plugin_command(
                             println!("  - may contact {host}");
                         }
                         println!();
-                        println!("Re-run with --yes to accept.");
+                        println!("Re-run with --yes to accept, once the person using this computer has agreed.");
                     }
                 }
             }
@@ -3422,6 +3437,7 @@ async fn run_command(
                 }
             }
         }
+        Commands::Skill => print!("{AGENT_SKILL}"),
         Commands::Mcp { action } => match action {
             McpCmd::Serve { stdio: true } => run_mcp_stdio(ctx).await?,
             McpCmd::Serve { stdio: false } => {
@@ -4373,9 +4389,23 @@ async fn run_launch_service(
     };
     let progress = ConsoleLaunchProgress { json, timings };
     let launch_started = std::time::Instant::now();
-    let result = agora_core::launch_service::LaunchService::new(ctx.clone())
+    let result = match agora_core::launch_service::LaunchService::new(ctx.clone())
         .launch(request, &progress)
-        .await?;
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            if matches!(
+                &error,
+                agora_core::error::LauncherError::Generic { code, .. } if code == "ERR_HEALTH_BLOCKED"
+            ) {
+                eprintln!(
+                    "Run `agora health {instance}` to see what is wrong. --yes launches anyway; use it only once the person using this computer has agreed."
+                );
+            }
+            return Err(error.into());
+        }
+    };
     eprintln!(
         "[timing] total-cli-session (incl. game runtime): {} ms",
         launch_started.elapsed().as_millis()
@@ -5281,6 +5311,15 @@ mod tests {
                 action: ModsCmd::Enable { .. }
             }
         ));
+    }
+
+    #[test]
+    fn skill_parses_and_prints_a_skill_document() {
+        let cli = Cli::try_parse_from(["agora", "skill"]).expect("should parse");
+        assert!(matches!(cli.command, Commands::Skill));
+        // Agents load it as a skill file, so the frontmatter has to come first.
+        assert!(crate::AGENT_SKILL.starts_with("---\nname: agora\n"));
+        assert!(crate::AGENT_SKILL.contains("Never pass `--yes` on your own."));
     }
 
     #[test]
