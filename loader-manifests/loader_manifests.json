@@ -48540,6 +48540,270 @@
       },
       {
         "mc_version": "1.21.11",
+        "loader_version": "61.1.8",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.8/forge-1.21.11-61.1.8-installer.jar",
+        "sha256": "a8116cbab59847b27d20a7403e3348f2196a1e5a28a4cde2b3b93cb6cf3c923e",
+        "file_name": "forge-1.21.11-61.1.8-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "2d9017f455c9c2ffb2b9dc5717a8eef7d5da75dd282b9edf6a17207327c56e95",
+        "content_sha256": "cdd4e81dad6230673081ca86011627111dc8165ada5f051aaf7b4b733d328207",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.8",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "6afb8ab977c666d619538780b8574610a38cf59dea30508eaf9d3a99e3548af1",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.9",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.9/forge-1.21.11-61.1.9-installer.jar",
+        "sha256": "639c4eedebef1ce25eb011ebab53975a73161cfdc8efaa36897d7bcd06dddf2d",
+        "file_name": "forge-1.21.11-61.1.9-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "6334099d0c48dd50f0c7f07b7c279b84c62eba369c35ae0d310018ec54e5964c",
+        "content_sha256": "2f6d108cf7de7362c6c2d9cf25d076ce5d48368e65170b361319f47d1772fff6",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.9",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "5e0de8b9e328ce8f0454be0752574975aaa0238a8f9dec3ee67895e6026a1700",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.10",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.10/forge-1.21.11-61.1.10-installer.jar",
+        "sha256": "fce85c000f81a6797ec09e6470ccc022c88abf2c09706a5a99bd5d5f7c037be9",
+        "file_name": "forge-1.21.11-61.1.10-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "cc44f0fef827d9973f1baf03e55869a26a69680fc7b36591529be73b9997a8ad",
+        "content_sha256": "1aea113c9e9837a1bbec9ba7b6dcbcfba9bd8e026ac8882f921fd259dc2b2c01",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.10",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "25b13577f6c8a84366bf9c3eb90727320de75b786d1b043fa0ebe5ac8228cb9f",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.11",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.11/forge-1.21.11-61.1.11-installer.jar",
+        "sha256": "38b38b1bf0ad2aa910720cbc56b47e3deb081648ac352fb9cc25276501e5ad97",
+        "file_name": "forge-1.21.11-61.1.11-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "7e7a22f4b6b6ce202fb29a4d5bc9f68e6081a8a74826660544b0798f79f1070f",
+        "content_sha256": "679192e3c6d13e625e1c8bec7272a32bb595ec8a35d0a51fe6b6e3a640be08d1",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.11",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "df4b5de7fa894eb416ad82c0ff2087a18de4198954dc8faefc5a3eefaa1d8c10",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.12",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.12/forge-1.21.11-61.1.12-installer.jar",
+        "sha256": "54c7f7f5b55c22eed90fd2a3b0078716c257311327f54e419e498794c3cd3df1",
+        "file_name": "forge-1.21.11-61.1.12-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "3ae0e916ed64212bd2ed6e8b0d0ccab878a9ff8de6d23d87fa3ad24355ce00d6",
+        "content_sha256": "b4b376b9fed2f51e4ac13bd0879db89fe75af1420237527d63954944b2e58bc6",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.12",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "a303f2319cef61e16978cff2607cb1acea0804cbc347b738d6dc4815c7e172f3",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.13",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.13/forge-1.21.11-61.1.13-installer.jar",
+        "sha256": "f6f7d51221de981504ffb2d180f43ead69371d2db99d785db2f1335b2b1e5b0b",
+        "file_name": "forge-1.21.11-61.1.13-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "9e974cd9cdff91f31cd8b57542e0f00b06eb5d279b2aca242d546affd8259f87",
+        "content_sha256": "b8af37d4a5933e3b28e11471521946b9b56d9045b80176f73b8ae2dbda6604c8",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.13",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "04c5b6d8b4a9e51a2b5be87e42762305e4dbd07008c6d51a664ce81d518926e0",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.14",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.14/forge-1.21.11-61.1.14-installer.jar",
+        "sha256": "5ca4e5116e53076b9c74c867b6b0cefe5326d2060f74b709c830d8faeb8c0210",
+        "file_name": "forge-1.21.11-61.1.14-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "995d16d9fe1e0728ebfef8e62b6c6f97e01d29835162cb95e8f8813934fd872f",
+        "content_sha256": "7991c540c03d95a7dd4281cbe9f7d3edac6eea950297574012b2e1007d46e7cd",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.14",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "bb4973380ea48ae35f41f68d222f4468aa52c95d8009980f5304e2e16dfb813f",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.15",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.15/forge-1.21.11-61.1.15-installer.jar",
+        "sha256": "28a879bd7a72ccd1a86ce89112e1a99377d9f81a4910c91897da89c3c605ab33",
+        "file_name": "forge-1.21.11-61.1.15-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "6956f2c57043680386b312518b97f10db6a9ea9f70ec215b9ef8ae21e6a139ab",
+        "content_sha256": "2f1e17a12b1a597b61d7b72790281596ac234194a7e9ca3873ef850f5e5af417",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.15",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "da717aa519c8234d0992398d99c9fc553f4375d86d5abf193f74d100b56513b7",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.16",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.16/forge-1.21.11-61.1.16-installer.jar",
+        "sha256": "4c2197ac4bab4420437fc150f78e43b9af3ef4b8fdd26b3e9d6bdc8ca418e6af",
+        "file_name": "forge-1.21.11-61.1.16-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "4dc1921fec08afe0abb4e8c635f5a64b5a1e3195181a746905e64e128b90d76a",
+        "content_sha256": "5e4b235d902fb0c5390bb3dc2944df460778c58c97d5124e74185b0cbf4693f2",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.16",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "afe0fd3c827f969f13ec499ac02c74c1a2ae94af828a81e522372af1fba0a4b4",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.2.0",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.2.0/forge-1.21.11-61.2.0-installer.jar",
+        "sha256": "86744ab72e70da23ed4aa213068ebf15841ff2575522b406dffa66a93cf7dcce",
+        "file_name": "forge-1.21.11-61.2.0-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "6b0cb293526035a941e4cabef6ed20e7da2069db03f6cbf7531ba7e6afa76bc2",
+        "content_sha256": "710980aa1316a5fe7deed8265d8c02cef871d2d40f65da7ea43777e0144a0a00",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.2.0",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "5f993a6fb5ae96e1bafc4db43346b8411757254503674403eafead9af1f3f90f",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.2.1",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.2.1/forge-1.21.11-61.2.1-installer.jar",
+        "sha256": "5561990509a45d3af6732175249514d08d795043e85b4c9f889f9318368cc54a",
+        "file_name": "forge-1.21.11-61.2.1-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "32830d493b96c8138752492735a064cb9b08a694aa501df92b54fae19c2cc5d5",
+        "content_sha256": "8110f90b1cb137793421b7f27b71d41176f68d521742575c3edf008b37d050f4",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.2.1",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "22c677457fba044a3dca8212d4789bc674a32dabaa54e42da189c0bee1404677",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "1.21.11",
         "loader_version": "61.2.3",
         "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.2.3/forge-1.21.11-61.2.3-installer.jar",
         "sha256": "423c771814d1589fa74f893b08608c85b829aef3222854420bb82db3e0d138c1",
@@ -48827,6 +49091,246 @@
       },
       {
         "mc_version": "26.1.2",
+        "loader_version": "64.0.11",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.0.11/forge-26.1.2-64.0.11-installer.jar",
+        "sha256": "f311e0699c45c1df3fb8374fdc8a1e96dee44a70c15a20c7c822162b20eafa74",
+        "file_name": "forge-26.1.2-64.0.11-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "487568edf8e498ad7bd403e9dd224ee61a9a452e8f95fc2bad0c16aa699e9632",
+        "content_sha256": "a15f3503ab717151c2a74460f4090912146ff035269d390a131a5dd170f75753",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.0.11",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "565fea13a76ae11ec484dc7ae41452cc7983b1dea0771958bd20eaebe4699aa5",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.0.12",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.0.12/forge-26.1.2-64.0.12-installer.jar",
+        "sha256": "4073215b614f63d84dfa1b69dd8f0e8e1e7eeb9d4475b72371bc978194f01127",
+        "file_name": "forge-26.1.2-64.0.12-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "2d46a6343d510c0fb11b69bfed781fd1ade858911673c77e47b620289ab63707",
+        "content_sha256": "24412a517f9b17e4d56a141e6bb3212e5fd3ec49e23afa5e4fe49dad7679616b",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.0.12",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "36c0b67d2bc9114f229a381050389e865a06846872f68976d4720e5aff00381e",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.0.13",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.0.13/forge-26.1.2-64.0.13-installer.jar",
+        "sha256": "b639d37ad9267a4ac2e097045a1f2420dcb1d03796b7c176cb9e6dbfd4c6c164",
+        "file_name": "forge-26.1.2-64.0.13-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "f97aa767328e4db7a406779bdd980fe35c427f1d3980e29ee38cbe4c3f7b47e1",
+        "content_sha256": "bc98a9b519e5c01145133c21d7318a0dcbc69894af5944655d4936db9e09b8c5",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.0.13",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "32211dabd5e602f6517147e9e8162e710ce98492577dfa9a10cff7092275485d",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.0.14",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.0.14/forge-26.1.2-64.0.14-installer.jar",
+        "sha256": "81b8def3d9cf7ba0cf3985ef05f1af793cdbe899a79037f16544797e36de22fb",
+        "file_name": "forge-26.1.2-64.0.14-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "586bc830dbb93f0fbea1a9bb1ae9f3d59afb2ad476da60aacf98678eec09d65b",
+        "content_sha256": "8c6b37fed45e360cf35e781f0f2517b6adbf8218dfdb2aead05dafac19d6d6e7",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.0.14",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "34e4ca2884625372332712edcd79beb8da4892a37db07abcd72b4915326eee15",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.0.15",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.0.15/forge-26.1.2-64.0.15-installer.jar",
+        "sha256": "72a6d40c34305b8cfeb395d1b89eb0f3cc48531af6a8db8ad1f2b9389481e691",
+        "file_name": "forge-26.1.2-64.0.15-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "5ea91c0172308f446550e2e9e03dc12ce4f890cba9e009acaeaf2226485948dd",
+        "content_sha256": "1047fc719615ee82d4abc6ffc997b2dc53de0749fc8a07e08cbd7cc432deb167",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.0.15",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "e55b562575a0e067ce7d29c0096cd428c1309f349eaa55b6ac460da084fac496",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.0.16",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.0.16/forge-26.1.2-64.0.16-installer.jar",
+        "sha256": "c30346de97191cbaee7cc514eba0d6e725abedfe4cd5cd616871b41a3213b807",
+        "file_name": "forge-26.1.2-64.0.16-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "725ee58716297d179205eeae8d4ddb65c88afc5f7cc19992b0dbb14e2264cccb",
+        "content_sha256": "3db53a52220c1ba01a8573c8f558a07ed367b81210763ea00d59e6973897379c",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.0.16",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "eef66a74138de06a658655b3ad0632d31f373f22e88d66d1131aafcfbd0d0232",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.1.0",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.1.0/forge-26.1.2-64.1.0-installer.jar",
+        "sha256": "94f029798e8b196a457ed45731107b8ad177204f3170e470964f0658555213df",
+        "file_name": "forge-26.1.2-64.1.0-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "9ee9f774bdacc0fb4aed8e85b597ac9122efd17ac13b5747f04f19f561a3819c",
+        "content_sha256": "be307d0e1ea1f26ea2287532ec58bb86f52fcb8684ba5d14a058aecd3af96240",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.1.0",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "40529038be85fcc5077decfc7c0f563d15c36f26c6480af76e38a14d3dd4ac2e",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.1.1",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.1.1/forge-26.1.2-64.1.1-installer.jar",
+        "sha256": "beecfd4e9eb76e99f0f256e0b65b3409fe97a9c3f4d23bd584ce505723f275b3",
+        "file_name": "forge-26.1.2-64.1.1-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "9ce1c121400c3a6fa9552c317463e0d0cd1752c3b24454088a1c242f5fcda476",
+        "content_sha256": "78387c16cac787d5d11c8022db31b8dda5e78e8b2c94243efed1abc8a681e3b8",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.1.1",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "b5e4fc1503c02e6dae82813f55d9f773052bffd1dac8418d98c94d7f69f270f0",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.1.2",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.1.2/forge-26.1.2-64.1.2-installer.jar",
+        "sha256": "dabdea2b2d2b411476ad391e81a9001b7c52f34b40ce536dfb82070febdf997a",
+        "file_name": "forge-26.1.2-64.1.2-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "2590e745599b22aa005dd18ffa739a92f5b32f138fe19d7db09703ab90b79e32",
+        "content_sha256": "566a8faca7bcbcb935e28ac528112eacdd87b0edd216a6e338b7471fd3c25c80",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.1.2",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "49b6a8a27d131599399bf10121f6269b2b69e0145a6810b17b734dd0aaa6d81b",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.1.3",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.1.3/forge-26.1.2-64.1.3-installer.jar",
+        "sha256": "47b75755475a63785e06e0709ae6fe2b42286419b138eb7d4d6c446e1d24024f",
+        "file_name": "forge-26.1.2-64.1.3-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "d3c291a634256cc038f0c5cc73730307899f6acc85a9cf87d4f6b0eff63d74b4",
+        "content_sha256": "563f0d32cedfb1b0d206bb1693dff587458932633f1c071d07e743edbd1a3912",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.1.3",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "ae8e4d771d41367d3d8bffe06d74089f4f6397d875744eee779300ab6cde57da",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.1.2",
         "loader_version": "64.1.4",
         "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.1.4/forge-26.1.2-64.1.4-installer.jar",
         "sha256": "65906d7cc8f175a92d9ce6e5041532e4b6a843a55ce67ff172f565d47d8a0649",
@@ -48893,6 +49397,294 @@
       },
       {
         "mc_version": "26.2",
+        "loader_version": "65.0.2",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.2/forge-26.2-65.0.2-installer.jar",
+        "sha256": "d471ab366cc083501cb9c0b28e8ad41f0ff18e80582f3a5f7863d5148263a69f",
+        "file_name": "forge-26.2-65.0.2-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "fa01f499b6e54153259367baaf38ddbf41c505e536bb586f622034fb2b6e67b9",
+        "content_sha256": "5289d225c145bda345c290b829003d1dfaf83716cd106637b8088956923ed17f",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.0.2",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "4abb61f9e11a9df7c275ef21eeb61e6e4714b8cd576b14f995f68ad737810cac",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.0.3",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.3/forge-26.2-65.0.3-installer.jar",
+        "sha256": "3a12b3dc07be890cb3de2dc6706c2ac7cb25d6ecf7117cae4725cb675ed31f3a",
+        "file_name": "forge-26.2-65.0.3-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "b2006df67ec2a83884e705e0a1a849cb0b7163c932e8801400ceecd5577606aa",
+        "content_sha256": "b626b682ac8f4d77312b4b78d031b0d56974a233013c26eba43033cb480251cb",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.0.3",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "f055305cfd53b159e8a1e8cb670199f2e1a649fe5edf31c2f50eb0a66590591e",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.0.4",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.4/forge-26.2-65.0.4-installer.jar",
+        "sha256": "aa0d412cf87ce7d796c22c427deca434b0eb5fbd5aee285dab868e7e27fba92d",
+        "file_name": "forge-26.2-65.0.4-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "98ebbc44a1be6c1243ffa1fbf49c66bee20dda3110409d49035362e5fcb7b592",
+        "content_sha256": "7e1980866ebabcb7556ea294284ce3be0cdc33a400673a3db6b1bec91efb055e",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.0.4",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "1b3a86c88295930f64d09fb9934a706bd52b6341079cb0ee5a3c890ab2c740b0",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.0.5",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.5/forge-26.2-65.0.5-installer.jar",
+        "sha256": "1bdab1aad083af1ed21f3740e9eb1148650c60327cf3add98c410631c8b3245a",
+        "file_name": "forge-26.2-65.0.5-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "2a4109b77277a08f7d49c0090bfdf135e2b022ef27c538c7c0408235563f7730",
+        "content_sha256": "8373a4abe05a9a402af4f260c1bd7ec6cd837b999c31529008f06f7af1151856",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.0.5",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "95ca4901f98b2e7aac023f1960586a8754d24a7199598c7e03fef356d9ff1d6e",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.0.6",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.6/forge-26.2-65.0.6-installer.jar",
+        "sha256": "a147531dc180b7cc251835eb3a1b079a403b179d83b189282cfbb4742d787ef8",
+        "file_name": "forge-26.2-65.0.6-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "536fd17797940bb9596d795bf6f02c863b5b49d9f6e5915ce057243d0329deac",
+        "content_sha256": "d0ac081d721b25aca8f7472c633d65ae94d6873dab1b6d1956a18cefcd00760c",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.0.6",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "e886172398751215f12fe96e499da06ec4b730465c487e3ac70a399ad15d42fb",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.0.7",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.7/forge-26.2-65.0.7-installer.jar",
+        "sha256": "2e826176157242f5a84bde6e6211fc9b58b7eafccd12d8fca4693b568801cfde",
+        "file_name": "forge-26.2-65.0.7-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "ed77c2af5abd64c4eed6533d01700696e6e261996a28ad50c2728ffffa0f18dc",
+        "content_sha256": "2841a71c4bb8a5d1e8f05679a6b752b4254cd5c20cf5faab7ecdbc09d3deb40b",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.0.7",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "114cb5e59e574abea175a452b8561f2ac8a892e02f13ef7503f2e650672d077b",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.0.8",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.8/forge-26.2-65.0.8-installer.jar",
+        "sha256": "b06d1a8f55a34996d64efebefe75f8f1f09f57e092a4857b72dd33bd9eaefc8f",
+        "file_name": "forge-26.2-65.0.8-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "ff8e2ec158cf7b95573a38d84da61c23af211953d8ef32a38bff7d3779e9705d",
+        "content_sha256": "3caa1e0d20716aac7a71a2810c61af9835466f11ab4a43618c7e9562eaeb830c",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.0.8",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "4fdff9bad435f9494a7d6f7bf7242079dab87cbb57613923871fc703cb160e3e",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.0.9",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.9/forge-26.2-65.0.9-installer.jar",
+        "sha256": "9dcce697d1f10f87d5dfadc7f181e3c5841d644437b6c4f5002d358593e147c3",
+        "file_name": "forge-26.2-65.0.9-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "3a0758652df45d076595cb5d18c2bdd6fe1aa2bab0d91e5502e2617ccaebcd23",
+        "content_sha256": "83ebef68357fbd59ea9b299cbe4c755f3a9c83ee8c9fb78e1bf7369c1b0299eb",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.0.9",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "7aaa9c1d31f3f3eedd1a455a4b6d4f44d9dc2f2aae010a2377bd88af4db1d112",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.1.0",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.1.0/forge-26.2-65.1.0-installer.jar",
+        "sha256": "813fbbfecc3086a492783b9f5023ae15007737b42e17aab75f48ba77403314df",
+        "file_name": "forge-26.2-65.1.0-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "72ca04dbd8b967597a64f7533c2848f5c74cce766539b9977cc64e3de05d3553",
+        "content_sha256": "2e5fdadc0e8466af87dd8e4d26bc5cd3a9dc9a720a019bc80b0ae2868d3e4484",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.1.0",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "d23291591ee03408e39549d5509772f6c46280fef51044e1a706dd3da455dd74",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.1.1",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.1.1/forge-26.2-65.1.1-installer.jar",
+        "sha256": "85bd9f1b406cd3530e7260d711178c68304aeace19efb984dcc4a52856dc50c1",
+        "file_name": "forge-26.2-65.1.1-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "f4cd1cd983c5645b10bb83f2ec648f2b93f6dc8a11f92ea15fdfd725d2b8499c",
+        "content_sha256": "c0e509b7fb180f6f444c8d8ac9fee26cae1d27d2009b4baf46fba923556f1c46",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.1.1",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "12def7525963a3769b59fbcbc969232d1ab17a5f69267029737103c5c5925a2e",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.1.2",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.1.2/forge-26.2-65.1.2-installer.jar",
+        "sha256": "34898ccc1b1a30c364a81bce322213953f96acc6d7f98224de4b5d84ee455597",
+        "file_name": "forge-26.2-65.1.2-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "d97d1e21540994699be443df871c4233205a1982d23ff90cc757103004827c86",
+        "content_sha256": "4a5d99de0bb58e5251efa2130ba578636861ae11b4e8b553ee6720c89a3e2c1b",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.1.2",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "cc5a711ce9ef65a988131fc01a17ca257f9a264c0b111460ef2727ca4a77b8c9",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.1.3",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.1.3/forge-26.2-65.1.3-installer.jar",
+        "sha256": "176762fbbf2aecb5eacbe4f0bebff3644851cb3676fa65a3345ead45b53c1cac",
+        "file_name": "forge-26.2-65.1.3-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "e42f1b8c8fe8103ffd2a91ac1f2285981fe588564ac5ae4dbdb378fee931cfdd",
+        "content_sha256": "8b1b0ab952887e5eb64e0951c5d2c3851869e08422d5007a98cef3bdb6238af6",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.1.3",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "57dc567dc125d963f352fcb38136ba171326cc0b9516e6f7f6b2ef05251ccc33",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.2",
         "loader_version": "65.1.4",
         "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.1.4/forge-26.2-65.1.4-installer.jar",
         "sha256": "fb40296ea6cb0fa54064c39edbff523ccf3ce98d3cb5270ab44606fc3c878c84",
@@ -48924,6 +49716,198 @@
           "lowcodefml": "65"
         },
         "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.0",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.0/forge-26.3-66.0.0-installer.jar",
+        "sha256": "c6173eea56aed0b947722f314542196e28a35285844961d517c7fb571492bbe3",
+        "file_name": "forge-26.3-66.0.0-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "392fe91f7c5e03d281b8e8849cb5e875feb596c9d71dcf7a0ca564fb60c941f0",
+        "content_sha256": "1a066ff97c39b2f1f9dfc7c1081a192b5e7f2fdbddce819d0fbd8eb06ce8a9de",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.0",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "3c06a28f76faf54982f745fa24c060f8205dd92bd6754e09231b52cf2cf4ea35",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.2",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.2/forge-26.3-66.0.2-installer.jar",
+        "sha256": "7ce840f220dc7897fb66541c6d856294c393fc86776ca50e903ad0461e06d984",
+        "file_name": "forge-26.3-66.0.2-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "fa9912b653547b66f49e0359a133840e86ba6e056937acf93f0fbb64d17e9c89",
+        "content_sha256": "42c4460193d1cac9b4f909a89da5197540e2592ac73db0e8ace712e35f0a2702",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.2",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "654a9924aa7c1a8e4b38df8f58babf1de090eb4ad7855fc0bbb6df5dfa0210fd",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.3",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.3/forge-26.3-66.0.3-installer.jar",
+        "sha256": "2599627c16f31306ead223de836e6394b47fab38851b585c51254c20dc02cb91",
+        "file_name": "forge-26.3-66.0.3-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "d0a8a38af7e316f89832b3835f455f8cc1515d8c2fdc09ebe7e3be24c8be99e6",
+        "content_sha256": "ee1d6ab9bf8e907e684ec0ae75e126e75e3f5a6e0d26e62182791c9256db8fd3",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.3",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "97a1dc3ee71c558b006e5c7ea9b4c60ab263988a4f8d67b492caafbeb2d0077b",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.4",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.4/forge-26.3-66.0.4-installer.jar",
+        "sha256": "2515cd9fc1d4b30763ad67a3d4e1d5fba6249fa2ef25649979b2f64c287e7885",
+        "file_name": "forge-26.3-66.0.4-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "d0702261f016b49fffd09f8a7c44b111947220efb4c744c1fd538345c72c8628",
+        "content_sha256": "abc656a0a8a40b6f4482884bc562e812a47e70ebe30b81c2f7a0d3190644c67d",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.4",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "df99efb91bf239b8e2fe0b6d6a54ee963ff5966f76142dc6845b508b85a40381",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.5",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.5/forge-26.3-66.0.5-installer.jar",
+        "sha256": "da852e38ae6223d5a8d6632620dc31dc24e8a5d5b89a458a965093404b968c4a",
+        "file_name": "forge-26.3-66.0.5-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "bde3be177cef6a62760bd4dc8ad64af0e74480ff5edae0438fb7559e13bffc82",
+        "content_sha256": "247e80c8839797f6a6ed9aa3d4f916bb332cd923060503e822c6963734270a92",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.5",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "0dac35b3d6bda5a3bf15cd3393639b01f1976a958fb4afc064061098063f0eb4",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.6",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.6/forge-26.3-66.0.6-installer.jar",
+        "sha256": "0d30b64596e3afe46f0e9b72c151de202cf610409e1f802bbd5dca08e6001baa",
+        "file_name": "forge-26.3-66.0.6-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "6843db2387f895c65e6ff570286ad531c09578b5e7e25ce9da9bb9664cda4460",
+        "content_sha256": "abdc763d1cfc750bf8388cc8c5c5f50d84a49286581dbc8230e5687989ace5dc",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.6",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "bc7c8892eb2c6d098dc313f99a76cbcd6f2951a0a249dec43f4e8439cd98604f",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.8",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.8/forge-26.3-66.0.8-installer.jar",
+        "sha256": "55b7b2e7b7f05637eb49f207722d9415656cb4f324971553210d1babdd060c4c",
+        "file_name": "forge-26.3-66.0.8-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "33bd1f8c31131b34ff88ecdfd30ef30ddc427c713c12c335eba15a36fee9b224",
+        "content_sha256": "62e2a4d36ad837b7b27ffb06543d0d5ca2470588defbc60b7c5e146ccf24400d",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.8",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "4d9b709c42f82220871672529afbda102c58289b3be5b02a19da7734039564df",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.9",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.9/forge-26.3-66.0.9-installer.jar",
+        "sha256": "416bf125e5d382684f50d2a014e3459552974a89fb9533844805abc8321ff247",
+        "file_name": "forge-26.3-66.0.9-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "d0c5319f39d3937568380f4a2e4e075607e23bebee761b488861e7d1d8883f29",
+        "content_sha256": "ce25bab0fa960b50661028d7ffdbff46a831e9bbce6905ae6beda9ac2521135b",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.9",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable",
+        "sha256_history": [
+          {
+            "sha256": "0ef95a8a9ceea98e6c789e130d9061ed35a6dae3ad7599b5d66e30b0f7ad18cf",
+            "replaced_on": "2026-10-19",
+            "reason": "approved: upstream file changed and its contents could not be shown unchanged"
+          }
+        ]
       },
       {
         "mc_version": "26.3",
