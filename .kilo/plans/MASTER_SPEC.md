@@ -3314,4 +3314,54 @@ not controller support.
 
 ---
 
+## 27. LOADER PIN MAINTENANCE
+
+*(Numbered 27 to leave §26 to the multi-game work.)*
+
+Every loader file a user installs (Fabric/Quilt profile JSON, Forge/NeoForge
+installer jars) is pinned by SHA-256 in `loader-manifests/loader_manifests.json`
+the first time a refresh sees it. The signed registry carries those pins, and the
+launcher refuses a download that does not match. Forge and NeoForge installers are
+run with `java -jar`, so for them the pin is the boundary between code Agora has
+seen and code it has not.
+
+**Threat model.** Pinning protects users from a file changing *after* Agora pinned
+it, and from tampering between upstream and the user. It cannot judge a
+malicious *new* version: a new version is pinned unreviewed, as every launcher
+does, because reviewing each upstream release is not sustainable.
+
+**Upstream changing a pinned file.** Until October 2026 any changed hash failed
+the whole refresh, which held back every loader, mod and governance update for
+13 days because Forge re-published 20 installers. Now a change only ever affects
+the entry it touches:
+
+- *Repack.* Installer jars also pin `content_sha256`: a hash over every member's
+  decompressed bytes, leaving out signature files, the manifest's per-entry
+  digests and its toolchain attributes (`Created-By`, `Built-By`, `Build-Jdk*`).
+  If upstream's new jar has the same content hash, the entry is re-pinned in
+  place and the old hash is kept in `sha256_history`. Same contents means the
+  same code, so this needs no review.
+- *Anything else* (changed contents, a profile JSON, or an entry pinned before
+  content hashes existed): the entry is moved to `loader-manifests/quarantine.json`,
+  leaves the catalog so users neither run the new file nor hit a hash mismatch,
+  and maintainers are told on Discord. The rest of the catalog publishes as
+  usual. Setting `"approved": true` on the record re-pins the entry to the
+  upstream file on the next refresh; if upstream reverts to the pinned file, the
+  entry is restored automatically.
+- A change to fields the refresh *derives* (file name, URL, capabilities) for an
+  unchanged file still fails the run: that is a bug in the refresh code, not an
+  upstream event.
+
+The refresh only re-reads the newest versions of each loader, so the daily
+loader-catalog workflow also re-checks a rotating slice of 200 pinned files
+(`--verify-sample`), reaching every entry in under three weeks (a manual run
+with `full_verify` checks all of them at once); files checked
+this way get their `content_sha256` filled in as they come round. The nightly
+compiler only verifies what changed. `validate_loader_catalog_delta.py` still
+rejects any hash change not recorded in `sha256_history` and any deletion not
+recorded in quarantine. Candidate-download strikes (`failed_candidates.json`)
+are now committed, so versions that never resolved stop being requested.
+
+---
+
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

@@ -10,7 +10,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fetch_loader_manifests import IMMUTABLE_ENTRY_FIELDS
+from fetch_loader_manifests import (
+    FILE_DERIVED_FIELDS,
+    IMMUTABLE_ENTRY_FIELDS,
+    QUARANTINE_PATH,
+)
+
 
 def _entry_key(loader: str, entry: dict[str, Any]) -> str:
     return f"{loader}/{entry.get('mc_version')}/{entry.get('loader_version')}"
@@ -63,6 +68,17 @@ def _domain_set(
     return set(domains)
 
 
+def _is_recorded_rotation(old_entry: dict[str, Any], new_entry: dict[str, Any]) -> bool:
+    """Whether the new entry records re-pinning away from the old file."""
+    history = new_entry.get("sha256_history")
+    return (
+        isinstance(history, list)
+        and bool(history)
+        and isinstance(history[-1], dict)
+        and history[-1].get("sha256") == old_entry.get("sha256")
+    )
+
+
 def validate_catalog_delta(
     before: dict[str, Any],
     after: dict[str, Any],
@@ -73,21 +89,32 @@ def validate_catalog_delta(
     max_changed_lines: int | None = None,
     changed_json_lines: int | None = None,
     refresh_report: dict[str, Any] | None = None,
+    quarantined: set[str] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     before_entries = _catalog_entries(before, "before", errors)
     after_entries = _catalog_entries(after, "after", errors)
 
-    deleted = sorted(set(before_entries) - set(after_entries))
+    # Entries held back in quarantine leave the catalog deliberately.
+    deleted = sorted(set(before_entries) - set(after_entries) - (quarantined or set()))
     new = sorted(set(after_entries) - set(before_entries))
     mutations: list[dict[str, Any]] = []
+    rotations: list[str] = []
     for key in sorted(set(before_entries) & set(after_entries)):
         old_entry = before_entries[key]
         new_entry = after_entries[key]
+        # A re-pinned file may change what was derived from the file, and only
+        # that; the rest of the entry still has to match.
+        rotated = old_entry.get("sha256") != new_entry.get("sha256") and _is_recorded_rotation(
+            old_entry, new_entry
+        )
+        if rotated:
+            rotations.append(key)
         changed_fields = {
             field: {"before": old_entry.get(field), "after": new_entry.get(field)}
             for field in IMMUTABLE_ENTRY_FIELDS
             if old_entry.get(field) != new_entry.get(field)
+            and not (rotated and field in FILE_DERIVED_FIELDS)
         }
         if changed_fields:
             mutations.append({"key": key, "fields": changed_fields})
@@ -105,6 +132,8 @@ def validate_catalog_delta(
             (refresh_report or {}).get("candidate_download_failures", [])
         ),
         "existing_entries_mutated": mutations,
+        "repinned_entries": rotations,
+        "quarantined_entries": sorted(quarantined or set()),
         "unexpected_deletions": deleted,
         "new_entries": len(new),
         "new_entry_keys": new,
@@ -159,6 +188,7 @@ def main() -> int:
     parser.add_argument("--max-new-entries", type=int)
     parser.add_argument("--max-changed-lines", type=int)
     parser.add_argument("--refresh-report", type=Path)
+    parser.add_argument("--quarantine", type=Path, default=QUARANTINE_PATH)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
 
@@ -167,6 +197,15 @@ def main() -> int:
         after = _load_json(args.after)
         upstream_report = (
             _load_json(args.refresh_report) if args.refresh_report else None
+        )
+        quarantined = (
+            {
+                record["key"]
+                for record in _load_json(args.quarantine).get("entries", [])
+                if not record.get("approved")
+            }
+            if args.quarantine.exists()
+            else set()
         )
         changed_lines = _changed_json_lines(args.before, args.after)
         report = validate_catalog_delta(
@@ -178,6 +217,7 @@ def main() -> int:
             max_changed_lines=args.max_changed_lines,
             changed_json_lines=changed_lines,
             refresh_report=upstream_report,
+            quarantined=quarantined,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Loader catalog validation failed: {exc}", file=sys.stderr)

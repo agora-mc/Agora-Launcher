@@ -56,12 +56,17 @@ class UpstreamMetadataError(RuntimeError):
 
 
 class ExistingEntryMutationError(ValueError):
-    """Raised when upstream changes an already-published loader tuple."""
+    """Raised when a refresh derives different metadata for a pinned file.
+
+    The file itself is unchanged (a changed file is re-pinned or quarantined
+    instead), so this means the refresh code now derives an entry differently.
+    """
 
     def __init__(self, mutations: list[dict[str, Any]]) -> None:
         self.mutations = mutations
         super().__init__(
-            "Existing loader entries changed; manual review is required: "
+            "Existing loader entries changed although their files did not; "
+            "check recent changes to the refresh scripts: "
             + json.dumps(mutations, sort_keys=True)
         )
 
@@ -83,6 +88,16 @@ ENRICHABLE_ENTRY_FIELDS = (
     "provided_versions",
     "release_channel",
     "recommendation_rank",
+    "content_sha256",
+)
+
+# Jar members a re-sign rewrites without changing what the jar runs.
+_SIGNATURE_MEMBER_RE = re.compile(
+    r"^META-INF/(?:[^/]+\.(?:SF|RSA|DSA|EC)|SIG-[^/]+)$", re.IGNORECASE
+)
+# Manifest main attributes that only record the packaging toolchain.
+_COSMETIC_MANIFEST_ATTRIBUTES = frozenset(
+    {"created-by", "built-by", "build-jdk", "build-jdk-spec"}
 )
 
 # The capability each loader family's distribution provides under its own id.
@@ -161,6 +176,56 @@ def _enrichment_absent(entry: dict[str, Any], field: str) -> bool:
 
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _manifest_main_attributes(data: bytes) -> bytes:
+    """Return a jar manifest's main section, normalized, without the per-entry
+    digests that change whenever the jar is re-signed."""
+    text = data.decode("utf-8", errors="replace")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines: list[str] = []
+    for raw in text.split("\n\n", 1)[0].split("\n"):
+        if raw.startswith(" ") and lines:
+            lines[-1] += raw[1:]
+        elif raw:
+            lines.append(raw)
+    kept = sorted(
+        line for line in lines
+        if line.split(":", 1)[0].strip().lower() not in _COSMETIC_MANIFEST_ATTRIBUTES
+    )
+    return "\n".join(kept).encode("utf-8")
+
+
+def installer_content_sha256(jar_path: Path) -> str | None:
+    """Hash what an installer jar contains, independent of how it was zipped
+    or signed.
+
+    Upstream occasionally re-signs or re-compresses an installer it already
+    published, which changes the jar's bytes but no file inside it. Two jars
+    with the same content hash run the same code from the same profiles, so a
+    new sha256 with an unchanged content hash is safe to re-pin unattended.
+    Returns None when the jar cannot be read unambiguously.
+    """
+    try:
+        with zipfile.ZipFile(jar_path, "r") as zf:
+            members = [info for info in zf.infolist() if not info.is_dir()]
+            names = [info.filename for info in members]
+            if len(names) != len(set(names)):
+                logger.warning("%s has duplicate members; no content hash", jar_path.name)
+                return None
+            digest = hashlib.sha256()
+            for info in sorted(members, key=lambda item: item.filename):
+                name = info.filename
+                if _SIGNATURE_MEMBER_RE.match(name):
+                    continue
+                data = zf.read(info)
+                if name.upper() == "META-INF/MANIFEST.MF":
+                    data = _manifest_main_attributes(data)
+                digest.update(name.encode("utf-8") + b"\0" + hashlib.sha256(data).digest())
+            return digest.hexdigest()
+    except (zipfile.BadZipFile, OSError) as exc:
+        logger.warning("Could not hash the contents of %s: %s", jar_path.name, exc)
+    return None
 
 
 def _extract_install_profile(jar_path: Path) -> dict[str, Any] | None:
@@ -377,6 +442,145 @@ def _failed_record_failure(key: str) -> None:
     )
     _FAILED_STATE[key] = entry
     logger.warning("Could not download candidate %s; it will be retried next run", key)
+
+
+# ---------------------------------------------------------------------------
+# Pinned files that change upstream
+#
+# Entries are pinned the first time a refresh sees them. When upstream later
+# serves different bytes for a pinned file, one of two things happened:
+#
+#   repack  -> the jar was re-signed or re-compressed but every file inside is
+#              unchanged (same content_sha256). The entry is re-pinned in place
+#              and the old hash is kept in its sha256_history. No review.
+#   change  -> anything else. The entry leaves the catalog and waits in
+#              quarantine.json, so users neither run the changed file nor hit a
+#              hash mismatch, and the rest of the catalog keeps publishing.
+#
+# A quarantined entry is released by setting "approved": true on its record,
+# which re-pins it to the upstream file on the next refresh. If upstream goes
+# back to serving the pinned file, the entry is restored on its own.
+# ---------------------------------------------------------------------------
+
+QUARANTINE_PATH = LOADER_MANIFESTS_DIR / "quarantine.json"
+
+# Fields computed from the downloaded file rather than from upstream metadata.
+FILE_DERIVED_FIELDS = (
+    "sha256",
+    "content_sha256",
+    "version_json_sha256",
+    "installer_spec",
+)
+
+#: source_url -> quarantine record
+_QUARANTINE: dict[str, dict[str, Any]] = {}
+#: Keys quarantined for the first time during this process.
+_NEW_QUARANTINES: list[str] = []
+
+
+def load_quarantine(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Load quarantine records. A missing file is empty; a malformed one is an
+    error, since silently dropping it would put quarantined files back."""
+    global _QUARANTINE, _NEW_QUARANTINES
+    target = path or QUARANTINE_PATH
+    _NEW_QUARANTINES = []
+    if not target.exists():
+        _QUARANTINE = {}
+        return _QUARANTINE
+    raw = json.loads(target.read_text(encoding="utf-8"))
+    _QUARANTINE = {record["entry"]["source_url"]: record for record in raw.get("entries", [])}
+    return _QUARANTINE
+
+
+def save_quarantine(path: Path | None = None) -> Path:
+    target = path or QUARANTINE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "_about": (
+            "Pinned loader files whose upstream bytes changed in a way Agora could "
+            "not verify as a repack. Set \"approved\": true on a record to re-pin "
+            "it to the upstream file on the next refresh."
+        ),
+        "entries": sorted(_QUARANTINE.values(), key=lambda record: record["key"]),
+    }
+    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def get_new_quarantines() -> list[str]:
+    return list(_NEW_QUARANTINES)
+
+
+def quarantined_keys() -> set[str]:
+    return {record["key"] for record in _QUARANTINE.values() if not record.get("approved")}
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _rotate_file_fields(entry: dict[str, Any], upstream: dict[str, Any], reason: str) -> None:
+    """Re-pin an entry to an upstream file, keeping the old hash in history."""
+    if upstream.get("sha256") != entry.get("sha256"):
+        history = list(entry.get("sha256_history") or [])
+        history.append({"sha256": entry["sha256"], "replaced_on": _today(), "reason": reason})
+        entry["sha256_history"] = history
+        logger.warning(
+            "Re-pinned %s: %s -> %s (%s)",
+            entry.get("file_name"), entry["sha256"][:16], upstream["sha256"][:16], reason,
+        )
+    for field in FILE_DERIVED_FIELDS:
+        if upstream.get(field) is None:
+            entry.pop(field, None)
+        else:
+            entry[field] = upstream[field]
+
+
+def quarantine_entry(
+    loader: str, pinned: dict[str, Any], upstream: dict[str, Any], reason: str
+) -> None:
+    """Hold a pinned entry back until a reviewer approves its upstream file."""
+    key = f"{loader}/{pinned['mc_version']}/{pinned['loader_version']}"
+    upstream_fields = {
+        field: upstream[field] for field in FILE_DERIVED_FIELDS if upstream.get(field) is not None
+    }
+    record = _QUARANTINE.get(pinned["source_url"])
+    if record is not None:
+        record["upstream"] = upstream_fields
+        return
+    _QUARANTINE[pinned["source_url"]] = {
+        "key": key,
+        "loader": loader,
+        "detected_on": _today(),
+        "reason": reason,
+        "approved": False,
+        "entry": json.loads(json.dumps(pinned)),
+        "upstream": upstream_fields,
+    }
+    _NEW_QUARANTINES.append(key)
+    logger.warning("Quarantined %s: %s", key, reason)
+    print(f"::warning title=Loader quarantined::{key}: {reason}", flush=True)
+
+
+def _reconcile_quarantine(loader: str, existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply approvals and keep unapproved quarantined entries out of the list."""
+    result = list(existing)
+    for url, record in list(_QUARANTINE.items()):
+        if record.get("loader") != loader:
+            continue
+        if not record.get("approved"):
+            result = [entry for entry in result if entry.get("source_url") != url]
+            continue
+        matches = [entry for entry in result if entry.get("source_url") == url]
+        if not matches:
+            matches = [json.loads(json.dumps(record["entry"]))]
+            result.extend(matches)
+        for entry in matches:
+            if entry.get("sha256") == record["entry"]["sha256"]:
+                _rotate_file_fields(entry, record["upstream"], f"approved: {record['reason']}")
+        del _QUARANTINE[url]
+    return result
 
 
 #: Attempts per request before a failure is taken at face value.
@@ -797,6 +1001,7 @@ def _fetch_neoforge(
 
         jar_sha = _sha256_hex(jar_path.read_bytes())
         version_json_sha = _extract_version_json_sha256(jar_path)
+        content_sha = installer_content_sha256(jar_path)
         version_json = _extract_version_json(jar_path)
 
         install = _extract_install_profile(jar_path)
@@ -823,6 +1028,8 @@ def _fetch_neoforge(
         }
         if version_json_sha:
             entry["version_json_sha256"] = version_json_sha
+        if content_sha:
+            entry["content_sha256"] = content_sha
         if installer_spec is not None:
             entry["installer_spec"] = installer_spec
 
@@ -894,6 +1101,7 @@ def _fetch_forge(
 
         jar_sha = _sha256_hex(jar_path.read_bytes())
         version_json_sha = _extract_version_json_sha256(jar_path)
+        content_sha = installer_content_sha256(jar_path)
 
         install = _extract_install_profile(jar_path)
         file_name = f"forge-{version}-installer.jar"
@@ -919,6 +1127,8 @@ def _fetch_forge(
         }
         if version_json_sha:
             entry["version_json_sha256"] = version_json_sha
+        if content_sha:
+            entry["content_sha256"] = content_sha
         if installer_spec is not None:
             entry["installer_spec"] = installer_spec
 
@@ -951,7 +1161,19 @@ def _load_existing_manifest() -> dict[str, Any]:
     }
 
 
-def _merge_entries(existing: list[dict[str, Any]], new_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _is_repack(pinned: dict[str, Any], upstream: dict[str, Any]) -> bool:
+    """A new sha256 for a jar whose pinned contents are unchanged."""
+    content = pinned.get("content_sha256")
+    return content is not None and content == upstream.get("content_sha256")
+
+
+def _merge_entries(
+    existing: list[dict[str, Any]],
+    new_entries: list[dict[str, Any]],
+    *,
+    loader: str,
+) -> list[dict[str, Any]]:
+    existing = _reconcile_quarantine(loader, existing)
     seen: dict[tuple[str, str], dict[str, Any]] = {
         (e["mc_version"], e["loader_version"]): e for e in existing
     }
@@ -959,9 +1181,31 @@ def _merge_entries(existing: list[dict[str, Any]], new_entries: list[dict[str, A
     for entry in new_entries:
         key = (entry["mc_version"], entry["loader_version"])
         previous = seen.get(key)
+
+        record = _QUARANTINE.get(entry["source_url"])
+        if record is not None:
+            if entry["sha256"] != record["entry"]["sha256"]:
+                quarantine_entry(loader, record["entry"], entry, record["reason"])
+                continue
+            # Upstream is serving the pinned file again.
+            logger.info("Restoring %s: upstream serves the pinned file again", record["key"])
+            del _QUARANTINE[entry["source_url"]]
+            previous = seen.setdefault(key, json.loads(json.dumps(record["entry"])))
+
         if previous is None:
             seen[key] = entry
             continue
+
+        if previous.get("sha256") != entry.get("sha256"):
+            if _is_repack(previous, entry):
+                _rotate_file_fields(previous, entry, "repacked upstream; contents unchanged")
+            else:
+                quarantine_entry(
+                    loader, previous, entry,
+                    "upstream file changed and its contents could not be shown unchanged",
+                )
+                del seen[key]
+                continue
 
         changed_fields = {
             field: {"before": previous.get(field), "after": entry.get(field)}
@@ -1008,10 +1252,12 @@ _CANONICAL_ENTRY_KEYS = (
     "file_name",
     "file_type",
     "version_json_sha256",
+    "content_sha256",
     "installer_spec",
     "provided_versions",
     "release_channel",
     "recommendation_rank",
+    "sha256_history",
 )
 
 
@@ -1103,34 +1349,40 @@ def main() -> int:
     loaders = manifest.setdefault("loaders", {})
     for loader in ("fabric", "quilt", "neoforge", "forge"):
         loaders.setdefault(loader, [])
+    load_quarantine()
 
     for mc_version in mc_versions:
         logger.info("Fetching Fabric versions for %s", mc_version)
         loaders["fabric"] = _merge_entries(
             loaders["fabric"],
             _fetch_fabric(mc_version, per_mc_limit),
+            loader="fabric",
         )
 
         logger.info("Fetching Quilt versions for %s", mc_version)
         loaders["quilt"] = _merge_entries(
             loaders["quilt"],
             _fetch_quilt(mc_version, per_mc_limit),
+            loader="quilt",
         )
 
     logger.info("Fetching NeoForge versions for %s", mc_versions)
     loaders["neoforge"] = _merge_entries(
         loaders["neoforge"],
         _fetch_neoforge(mc_versions, per_mc_limit),
+        loader="neoforge",
     )
 
     logger.info("Fetching Forge versions for %s", mc_versions)
     loaders["forge"] = _merge_entries(
         loaders["forge"],
         _fetch_forge(mc_versions, per_mc_limit),
+        loader="forge",
     )
 
     _write_loader_manifests(manifest)
     _write_known_good_hashes(manifest)
+    save_quarantine()
 
     total = sum(len(entries) for entries in loaders.values())
     logger.info("Done. %d loader entries in loader_manifests.json", total)
