@@ -492,7 +492,7 @@ async fn plan(
 }
 
 /// The instance's runtime identity: the one it records, or its pinned base's.
-fn instance_runtime(manifest: &GameInstanceManifest) -> Option<RuntimeIdentity> {
+pub(crate) fn instance_runtime(manifest: &GameInstanceManifest) -> Option<RuntimeIdentity> {
     manifest
         .runtime_identity
         .clone()
