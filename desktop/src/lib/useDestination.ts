@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export type Tab = 'home' | 'browse' | 'instances' | 'governance' | 'ai' | 'guide' | 'field-guide' | 'living-background' | 'lab' | 'about' | 'settings';
+export type Tab = 'home' | 'browse' | 'instances' | 'governance' | 'ai' | 'guide' | 'field-guide' | 'living-background' | 'lab' | 'about' | 'settings'
+  // The four tabs of a non-Minecraft game (MASTER_SPEC §26.14). Sidebar ids only: a game tab
+  // is opened as a `game-tab` destination, which carries the game it belongs to.
+  | 'game-instances' | 'game-library' | 'game-import' | 'game-setup';
+
+/** The four game tabs, by the name a `game-tab` destination uses. */
+export type GameTabId = 'instances' | 'library' | 'import' | 'setup';
+
+/** The pages of one instance of a non-Minecraft game. */
+export type GameInstancePage = 'overview' | 'content' | 'plugins' | 'ini-saves' | 'tools';
+
+export const GAME_TAB_IDS: readonly GameTabId[] = ['instances', 'library', 'import', 'setup'];
+export const GAME_INSTANCE_PAGE_IDS: readonly GameInstancePage[] = ['overview', 'content', 'plugins', 'ini-saves', 'tools'];
 
 /**
  * A single typed application destination. Replaces the previous pattern of
@@ -10,6 +22,8 @@ export type Tab = 'home' | 'browse' | 'instances' | 'governance' | 'ai' | 'guide
  * - `tab` — one of the sidebar tabs (home, browse, instances, governance, ai, guide, settings).
  * - `mod-detail` — browsing a specific curated item.
  * - `instance-detail` — editing a specific instance.
+ * - `game-tab` — one of a non-Minecraft game's four tabs (Instances, Library, Import, Setup).
+ * - `game-instance` — an instance page of a non-Minecraft game.
  * - `plugin-page` — a page contributed by a community plugin, identified by its
  *   namespaced contribution id (`publisher.plugin/local`). Namespaced rather
  *   than a bare id so a saved destination always says which plugin owned it,
@@ -20,7 +34,10 @@ export type Destination =
   | { type: 'tab'; tab: Tab; browseInstanceId?: string; browseContentType?: string }
   | { type: 'mod-detail'; itemId: string; browseInstanceId?: string; browseContentType?: string }
   | { type: 'instance-detail'; instanceId: string }
-  | { type: 'plugin-page'; contributionId: string };
+  | { type: 'plugin-page'; contributionId: string }
+  // A game's own tab (Instances, Library, Import, Setup) and an instance page of that game.
+  | { type: 'game-tab'; gameId: string; tab: GameTabId }
+  | { type: 'game-instance'; gameId: string; instanceId: string; page: GameInstancePage };
 
 export interface UseDestinationReturn {
   destination: Destination;
@@ -32,6 +49,8 @@ export interface UseDestinationReturn {
   navigateToModDetail: (itemId: string, browseInstanceId?: string, browseContentType?: string) => void;
   navigateToInstanceDetail: (instanceId: string) => void;
   navigateToPluginPage: (contributionId: string) => void;
+  navigateToGameTab: (gameId: string, tab: GameTabId) => void;
+  navigateToGameInstance: (gameId: string, instanceId: string, page?: GameInstancePage) => void;
 }
 
 function isValidDestination(d: unknown): d is Destination {
@@ -49,6 +68,15 @@ function isValidDestination(d: unknown): d is Destination {
   }
   if (dest.type === 'instance-detail') return typeof dest.instanceId === 'string';
   if (dest.type === 'plugin-page') return typeof dest.contributionId === 'string';
+  if (dest.type === 'game-tab') {
+    return typeof dest.gameId === 'string'
+      && GAME_TAB_IDS.includes(dest.tab as GameTabId);
+  }
+  if (dest.type === 'game-instance') {
+    return typeof dest.gameId === 'string'
+      && typeof dest.instanceId === 'string'
+      && GAME_INSTANCE_PAGE_IDS.includes(dest.page as GameInstancePage);
+  }
   return false;
 }
 
@@ -150,6 +178,15 @@ export function useDestination(): UseDestinationReturn {
     (contributionId: string) => push({ type: 'plugin-page', contributionId }),
     [push],
   );
+  const navigateToGameTab = useCallback(
+    (gameId: string, tab: GameTabId) => push({ type: 'game-tab', gameId, tab }),
+    [push],
+  );
+  const navigateToGameInstance = useCallback(
+    (gameId: string, instanceId: string, page: GameInstancePage = 'overview') =>
+      push({ type: 'game-instance', gameId, instanceId, page }),
+    [push],
+  );
 
   return {
     destination,
@@ -161,5 +198,7 @@ export function useDestination(): UseDestinationReturn {
     navigateToModDetail,
     navigateToInstanceDetail,
     navigateToPluginPage,
+    navigateToGameTab,
+    navigateToGameInstance,
   };
 }

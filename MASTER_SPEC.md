@@ -4432,6 +4432,45 @@ per-layer origin, its plugins list, and its tools with a stale badge when their 
 Launch checks read like Agora's Minecraft ones: a finding, why it matters, a repair. Controller
 support, themes and plugin views carry over, since they are app-wide already (§25).
 
+#### Desktop UI
+
+The desktop app shows the switcher, the game tabs and the instance page described above. Decisions
+that the slices build on:
+
+- **Where the switcher lives.** The app has no header bar, so the switcher sits at the top of the
+  sidebar, under the brand mark. It lists Minecraft, then each non-Minecraft game that discovery
+  found, grouped by game. It is not rendered until at least one such game is found, so a
+  Minecraft-only user sees the app exactly as before.
+- **What is remembered.** The chosen game is stored under the `active_game` setting. A launch
+  opens that game's Instances tab, not Minecraft's Home. If discovery no longer finds the game, or
+  fails, the app shows Minecraft and leaves the stored choice alone.
+- **The game's own navigation.** A non-Minecraft game shows Instances, Library, Import and Setup,
+  and the shared Settings. Minecraft-only entries are hidden. An instance page has Overview,
+  Content, Plugins, INI & saves and Tools.
+- **Command layer.** Commands live in `desktop/src-tauri/src/games/`, one file per slice, and are
+  registered in `lib.rs` now. A command its slice has not built returns `not_implemented` and names
+  itself, so nothing answers with a fake `null` or an empty list. `games_list` is the one real command.
+- **Frontend folders.** Each slice owns `desktop/src/features/games/<slice>/` (`api.ts` for its IPC
+  wrappers, `index.tsx` for the components the shell renders). The shell itself lives in
+  `features/games/shell/`, and the shared types and the active-game hook in `features/games/shared/`.
+
+| Slot on the page | Owning slice | Rendered from |
+|---|---|---|
+| Instances tab; instance Overview | instances | `GameInstancesPage`, `InstanceOverviewTab` |
+| Library: content store section | content | `LibraryStoreSection` |
+| Library: curated catalog section | catalog | `LibraryCatalogSection` |
+| Import tab | import | `GameImportPage` |
+| Setup: installs and custom folders | discovery | `SetupInstallsSection` |
+| Setup: pinned bases | bases | `SetupBasesSection` |
+| Setup: recovery | userFiles | `SetupRecoverySection` |
+| Instance Content; FOMOD wizard | content (mounts fomod) | `InstanceContentTab`, `FomodWizard` |
+| Instance Plugins | plugins | `InstancePluginsTab` |
+| Instance INI & saves | iniSaves | `InstanceIniSavesTab` |
+| Instance Tools | tools | `InstanceToolsTab` |
+
+Each slot currently renders a placeholder. A slice replaces its own component and never edits the
+shell.
+
 ### 26.15 Open Questions
 
 - **Tools that edit in place** (BodySlide, Nemesis: F4) under agvfs: how often copy-on-open copies

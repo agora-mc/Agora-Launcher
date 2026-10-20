@@ -209,6 +209,12 @@ def check_orphaned_modules() -> None:
         # `pub use agora_game_minecraft::loader_manifests;`
         for m in re.finditer(r'^\s*pub\s+use\s+(?:\w+::)+(\w+)\s*;', text, re.MULTILINE):
             declared.add(m.group(1))
+    # Files in a subdirectory module (desktop/src-tauri/src/games/) are declared by that
+    # directory's mod.rs rather than by lib.rs, so those declarations count too.
+    for mod_rs in DESKTOP_SRC.rglob("mod.rs"):
+        text = mod_rs.read_text(encoding="utf-8")
+        for m in re.finditer(r'^\s*pub\s+mod\s+(\w+)', text, re.MULTILINE):
+            declared.add(m.group(1))
 
     found_files: set[str] = set()
     for p in DESKTOP_SRC.rglob("*.rs"):
