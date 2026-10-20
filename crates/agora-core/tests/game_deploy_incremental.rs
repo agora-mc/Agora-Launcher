@@ -597,6 +597,32 @@ fn a_game_edit_and_a_game_deletion_in_the_farm_survive_an_update_in_place() {
 }
 
 #[test]
+fn copies_made_past_the_link_limit_are_kept_by_an_update_in_place() {
+    // NTFS allows 1,023 links to one file, and identical bytes share one content object, so a mod
+    // with more identical files than that gets copies past the limit. On the user's real instance
+    // 15,533 such copies were placed again on every deploy, ~65 s each time.
+    let f = fixture();
+    let files: Vec<(String, Vec<u8>)> = (0..1100)
+        .map(|i| (format!("Data/terrain/t{i}.btt"), b"same".to_vec()))
+        .collect();
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    let dupes = item(&f, "Dupes", &refs);
+    add_content(&f.ctx, &f.x, &dupes, None, None).unwrap();
+    deploy(&f.ctx, &f.x, &f.def, DeployMode::Links).unwrap();
+
+    let small = item(&f, "Small", &[("Data/small/one.txt", b"s1")]);
+    add_content(&f.ctx, &f.x, &small, None, None).unwrap();
+    let outcome = deploy(&f.ctx, &f.x, &f.def, DeployMode::Links).unwrap();
+    let (placed, kept, removed) = built_counts(&outcome);
+    assert_eq!(placed, 1, "only the new file is placed: {outcome:?}");
+    assert_eq!(removed, 0, "{outcome:?}");
+    assert!(kept >= 1100, "{outcome:?}");
+}
+
+#[test]
 fn a_deleted_game_folder_is_built_again_and_the_writable_layer_is_kept() {
     let f = fixture();
     let a = item(&f, "ModA", &[("Data/a/one.txt", b"a1")]);

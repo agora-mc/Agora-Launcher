@@ -1498,7 +1498,7 @@ fn build_deployment(
         if !harvested.report.is_empty() {
             current_plan = plan_with_copy(ctx, instance_id, definition, mode, copy_layer)?;
         }
-        match plan_in_place(&game_dir, &harvested, &current_plan, &base_id) {
+        match plan_in_place(ctx, &game_dir, &harvested, &current_plan, &base_id) {
             Some((kept, remove, place)) => {
                 let applied = apply_in_place(
                     ctx,
@@ -1578,7 +1578,7 @@ fn build_deployment(
         deployed_at_unix_ms: now_unix_ms(),
     };
     let tmp_record_path = deployment_dir.join(format!("deployment.json.tmp-{unique}"));
-    let record_bytes = serde_json::to_vec_pretty(&record)?;
+    let record_bytes = serde_json::to_vec(&record)?;
     std::fs::write(&tmp_record_path, record_bytes)?;
     std::fs::rename(&tmp_record_path, &record_path)?;
 
@@ -2420,6 +2420,7 @@ fn folders_on_path_are_plain(
 /// when the farm must be built again instead: another base, a record that does not name plain
 /// paths, a missing game folder, or a folder on the way to a changed file that is not a folder.
 fn plan_in_place(
+    ctx: &Ctx,
     game_dir: &Path,
     harvested: &HarvestedFarm,
     plan: &DeploymentPlan,
@@ -2447,11 +2448,15 @@ fn plan_in_place(
     // and the instance's own tools both write there, and the record cannot tell what changed.
     let mut kept = HashMap::new();
     let mut remove = Vec::new();
+    let mut link_limit = HashMap::new();
     for (key, &rec) in &recorded {
         let same_in_plan = planned.get(key).is_some_and(|file| {
             file.path == rec.path
                 && file.source == rec.source
-                && file.placement == rec.placement
+                && (file.placement == rec.placement
+                    || (file.placement == Placement::Link
+                        && rec.placement == Placement::Copy
+                        && at_link_limit(&mut link_limit, ctx, &file.source)))
                 && file.size == rec.size
                 && !matches!(file.source, FileSource::Writable { .. })
         });
@@ -2491,12 +2496,64 @@ fn plan_in_place(
     Some((kept, remove, place))
 }
 
+/// Whether the file a planned link points at already has as many links as the file system allows.
+/// Then a deployment holds a copy of the same bytes where it planned a link, and an update in place
+/// keeps that copy: NTFS allows 1,023 links to one file, and identical bytes share one content object,
+/// so a mod with thousands of identical files (terrain `.btt` stubs) gets copies past the limit. On
+/// the user's instance 15,533 such copies were placed again on every deploy. A copy kept for any other
+/// reason, such as an own-copy setting since turned off, is replaced by the link a rebuild would make.
+/// Answered once per source.
+fn at_link_limit(cache: &mut HashMap<String, bool>, ctx: &Ctx, source: &FileSource) -> bool {
+    const NTFS_LINK_LIMIT: u32 = 1023;
+    let path = source_path(ctx, source);
+    let key = path.to_string_lossy().into_owned();
+    *cache
+        .entry(key)
+        .or_insert_with(|| link_count(&path).is_some_and(|n| n >= NTFS_LINK_LIMIT))
+}
+
+#[cfg(windows)]
+fn link_count(path: &Path) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is valid, and the handle is open for the call.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+    (ok != 0).then_some(info.nNumberOfLinks)
+}
+
+#[cfg(unix)]
+fn link_count(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .ok()
+        .map(|m| u32::try_from(m.nlink()).unwrap_or(u32::MAX))
+}
+
 /// Remove one file of a farm. A file that is already gone is not an error: the record may name a
 /// file the game deleted, which the harvest has whited out.
+///
+/// A link to a protected content object can be deleted only through its folder's
+/// `FILE_DELETE_CHILD` grant, which a farm's root receives when it is built and its folders inherit.
+/// Granting it again on every update would cost a walk of the whole farm (Windows propagates the
+/// inheritable entry to every file: ~24 s for 198k files), so it is granted only when a removal is
+/// refused, and the removal is tried once more.
 fn remove_farm_file(game_dir: &Path, rel: &RelPath) -> Result<(), DeployError> {
-    match std::fs::remove_file(game_dir.join(rel.as_str())) {
+    let path = game_dir.join(rel.as_str());
+    match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            protect::grant_delete_child(game_dir)?;
+            match std::fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -2526,13 +2583,9 @@ fn apply_in_place(
     deployment_dir: &Path,
     update: InPlaceUpdate,
 ) -> Result<InPlaceApplied, DeployError> {
-    let game_dir = deployment_dir.join("game");
     let record_path = deployment_dir.join("deployment.json");
     let marker = updating_marker(deployment_dir);
 
-    // The farm's root holds the grant that lets its links be deleted (see
-    // `protect::grant_delete_child`); the folders below it inherit that grant.
-    protect::grant_delete_child(&game_dir)?;
     // The record is set aside before the first change. From here, a stop leaves the marker behind.
     std::fs::rename(&record_path, &marker)?;
 
@@ -2615,7 +2668,7 @@ fn apply_marked(
     };
     let unique = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
     let tmp_record_path = deployment_dir.join(format!("deployment.json.tmp-{unique}"));
-    std::fs::write(&tmp_record_path, serde_json::to_vec_pretty(&record)?)?;
+    std::fs::write(&tmp_record_path, serde_json::to_vec(&record)?)?;
     std::fs::rename(&tmp_record_path, &record_path)?;
     std::fs::remove_file(&marker)?;
 

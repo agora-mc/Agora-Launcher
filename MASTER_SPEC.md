@@ -3732,6 +3732,22 @@ provisions Java runtimes (`runtime_catalog`, `runtime_manager`), generalised fro
 "runtime component". agvfs is Agora's own code, built and signed with Agora, so it ships with it (a
 Minecraft-only install carries it unused).
 
+**A deployment is updated in place** (built 2026-10-19, `27210ea` and after). A change to the plan
+used to rebuild the whole farm, which cost 2.5 to 3.5 minutes on the user's 198,188-file instance
+before every tool run that followed another, and every launch after one. Now the farm is harvested as
+before and compared with the new plan by path, and only what differs is removed and placed. A
+record set aside as `deployment.json.updating` marks an update in progress, and a farm left with that
+marker is rebuilt from scratch, never trusted. A one-mod change on that instance now deploys in about
+6 s. Two measured traps:
+- **NTFS allows 1,023 links to one file.** Identical bytes share one content object, so files past
+  the limit become copies. Such a copy is kept where the plan wants a link only while the object really
+  is at the limit; otherwise it would have re-copied 15,533 files, 65 s, on every deploy.
+- **Re-granting the farm root's `FILE_DELETE_CHILD`** makes Windows walk every entry below it, which
+  took 24 s. It is granted only when a removal is refused.
+
+A farm whose `game` folder is missing is rebuilt. It used to be harvested as if every file had been
+deleted, which deleted the instance's writable files.
+
 ### 26.6 Content, Frameworks and Compatibility
 
 **The content store** is content-addressed and immutable: an archive is extracted once, each file
