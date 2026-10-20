@@ -527,7 +527,17 @@ pub(super) fn stage_rar(
 
     // 1. List, then apply every rule to the listing before anything is extracted.
     let listing = run_listing(&tar, archive_path)?;
-    let plan = plan_from_listing(parse_tar_listing(&listing)?)?;
+    let entries = parse_tar_listing(&listing)?;
+    // Since bsdtar 3.8.9 (Windows 11, October 2026) a RAR5 signature followed by garbage lists
+    // nothing and exits 0, where it used to fail. A file that starts like a RAR and holds no
+    // entries is reported as unreadable, not as an empty mod.
+    if entries.is_empty() {
+        return Err(ContentError::CorruptArchive(
+            "Windows' tar found no files in this RAR archive: it is damaged, or not a RAR archive"
+                .to_string(),
+        ));
+    }
+    let plan = plan_from_listing(entries)?;
 
     // 2. Untrusted sizes: check free disk space.
     let content_root = ctx.paths.content_root();
