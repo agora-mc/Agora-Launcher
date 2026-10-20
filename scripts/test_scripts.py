@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for pure functions in Agora utility scripts."""
 
+import contextlib
 import http.client
+import io
 import json
 import os
 import sys
@@ -22,6 +24,7 @@ import validate_loader_catalog_delta
 import build_docs_web as bdw
 import pin_hashes
 import stage_cli_sidecar
+import stage_vfs_files
 
 
 def _response(read_side_effect=None, read_value=b"data"):
@@ -2507,6 +2510,109 @@ class TestStageCliSidecar(unittest.TestCase):
             stage_cli_sidecar.built_cli_path(t, "x86_64-apple-darwin", explicit_target=True),
             t / "x86_64-apple-darwin" / "release" / "agora",
         )
+
+
+def fake_pe(machine: int) -> bytes:
+    """The smallest bytes pe_machine reads: MZ, the PE offset at 0x3C, the PE signature, the machine."""
+    data = bytearray(0x88)
+    data[0:2] = b"MZ"
+    data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    data[0x80:0x84] = b"PE\0\0"
+    data[0x84:0x86] = machine.to_bytes(2, "little")
+    return bytes(data)
+
+
+class TestStageVfsFiles(unittest.TestCase):
+    """stage_vfs_files builds the x86-folder layout and refuses a file of the wrong bitness."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.x64 = root / "release"
+        self.x86 = root / "i686" / "release"
+        self.stage_dir = root / "stage"
+        self.x64.mkdir(parents=True)
+        self.x86.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write(self, folder, name, machine):
+        (folder / name).write_bytes(fake_pe(machine))
+
+    def write_all(self, x64_machine=0x8664, x86_machine=0x014C):
+        self.write(self.x64, "agora_vfs.dll", x64_machine)
+        self.write(self.x64, "agora-vfs-helper.exe", x64_machine)
+        self.write(self.x86, "agora_vfs.dll", x86_machine)
+        self.write(self.x86, "agora-vfs-helper.exe", x86_machine)
+
+    def test_pe_machine_reads_the_machine_type(self):
+        path = self.x64 / "probe.dll"
+        path.write_bytes(fake_pe(0x014C))
+        self.assertEqual(stage_vfs_files.pe_machine(path), 0x014C)
+
+    def test_pe_machine_refuses_a_file_that_is_not_a_pe_image(self):
+        path = self.x64 / "text.dll"
+        path.write_bytes(b"not a dll at all, just some text padding out to be long enough")
+        with self.assertRaises(ValueError):
+            stage_vfs_files.pe_machine(path)
+
+    def test_stages_the_64_bit_pair_and_the_x86_folder(self):
+        self.write_all()
+        staged = stage_vfs_files.stage(self.x64, self.x86, self.stage_dir)
+        self.assertEqual(
+            sorted(p.relative_to(self.stage_dir).as_posix() for p in staged),
+            [
+                "agora-vfs-helper.exe",
+                "agora_vfs.dll",
+                "x86/agora-vfs-helper.exe",
+                "x86/agora_vfs.dll",
+            ],
+        )
+        self.assertEqual(
+            stage_vfs_files.pe_machine(self.stage_dir / "x86" / "agora_vfs.dll"), 0x014C
+        )
+        self.assertEqual(
+            stage_vfs_files.pe_machine(self.stage_dir / "agora_vfs.dll"), 0x8664
+        )
+
+    def test_a_64_bit_build_in_the_x86_folder_is_refused_and_nothing_is_staged(self):
+        self.write_all(x86_machine=0x8664)
+        with self.assertRaises(SystemExit) as caught:
+            stage_vfs_files.stage(self.x64, self.x86, self.stage_dir)
+        self.assertIn("expected 0x014c", str(caught.exception))
+        self.assertFalse(self.stage_dir.exists())
+
+    def test_a_missing_file_is_refused_and_named(self):
+        self.write_all()
+        (self.x86 / "agora-vfs-helper.exe").unlink()
+        with self.assertRaises(SystemExit) as caught:
+            stage_vfs_files.stage(self.x64, self.x86, self.stage_dir)
+        self.assertIn("agora-vfs-helper.exe", str(caught.exception))
+        self.assertFalse(self.stage_dir.exists())
+
+    def test_main_takes_the_build_folders_and_stage_folder_as_arguments(self):
+        self.write_all()
+        out = self.stage_dir.parent / "cli-vfs"
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = stage_vfs_files.main(
+                [
+                    "--x64-build", str(self.x64),
+                    "--x86-build", str(self.x86),
+                    "--stage-dir", str(out),
+                ]
+            )
+        self.assertEqual(status, 0)
+        self.assertTrue((out / "x86" / "agora-vfs-helper.exe").is_file())
+        self.assertFalse(self.stage_dir.exists())
+
+    def test_an_earlier_stage_is_replaced_not_merged(self):
+        self.write_all()
+        stale = self.stage_dir / "x86" / "old-helper.exe"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"stale")
+        stage_vfs_files.stage(self.x64, self.x86, self.stage_dir)
+        self.assertFalse(stale.exists())
 
 
 if __name__ == "__main__":

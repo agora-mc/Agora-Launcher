@@ -102,7 +102,8 @@ jobs:
             target: ""
             # Tauri only logs custom sign-command stdout/stderr at debug level.
             # Keep the real signing error visible instead of just "failed to run pwsh".
-            args: "--verbose"
+            # The VFS files are bundled on Windows only (tauri.bundle-vfs.conf.json).
+            args: "--verbose --config src-tauri/tauri.bundle-vfs.conf.json"
           - platform: macos-latest
             target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"
@@ -203,6 +204,41 @@ jobs:
           PY="$(command -v python3 || command -v python)"
           "$PY" scripts/stage_cli_sidecar.py ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
 
+      # The VFS DLLs and helpers (MASTER_SPEC §26.9), Windows only. The 64-bit pair goes beside the
+      # app; the 32-bit pair goes in x86\ for 32-bit tools such as Nemesis, which agora-core looks
+      # for there. Each file is signed like the CLI, then staged for the bundle and the portable ZIP.
+      - name: Add the 32-bit Windows target
+        if: runner.os == 'Windows'
+        shell: bash
+        run: rustup target add i686-pc-windows-msvc
+
+      - name: Build VFS DLLs and helpers
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --locked -p agora-vfs --lib --bin agora-vfs-helper
+          cargo build --release --locked -p agora-vfs --lib --bin agora-vfs-helper --target i686-pc-windows-msvc
+
+      - name: Sign and verify VFS DLLs and helpers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($file in @(
+              'target/release/agora_vfs.dll',
+              'target/release/agora-vfs-helper.exe',
+              'target/i686-pc-windows-msvc/release/agora_vfs.dll',
+              'target/i686-pc-windows-msvc/release/agora-vfs-helper.exe'
+          )) {
+              & ./scripts/sign-windows.ps1 -FilePath $file
+          }
+
+      - name: Stage VFS DLLs and helpers
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          PY="$(command -v python3 || command -v python)"
+          "$PY" scripts/stage_vfs_files.py
+
       - name: Build and release Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -250,7 +286,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           ./scripts/test_package_portable.ps1
-          ./scripts/package_portable.ps1 -Executable target/release/agora-desktop.exe -Cli target/release/agora.exe -Version $env:RELEASE_TAG -OutputDirectory "$env:RUNNER_TEMP/agora-portable"
+          ./scripts/package_portable.ps1 -Executable target/release/agora-desktop.exe -Cli target/release/agora.exe -VfsDirectory desktop/src-tauri/vfs -Version $env:RELEASE_TAG -OutputDirectory "$env:RUNNER_TEMP/agora-portable"
           if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw 'Portable packaging failed' }
           $assets = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/agora-portable" -File
           gh release upload $env:RELEASE_TAG @($assets.FullName) --repo $env:GITHUB_REPOSITORY --clobber
@@ -401,6 +437,45 @@ jobs:
         shell: pwsh
         run: '& ./scripts/sign-windows.ps1 -FilePath "target/${{ matrix.target }}/release/agora.exe"'
 
+      # The CLI launches games under the VFS too, so its archive carries the same VFS files
+      # the desktop app does, beside agora.exe (MASTER_SPEC §26.9). Built and signed here,
+      # since this job is separate from build-desktop.
+      - name: Add the 32-bit Windows target
+        if: runner.os == 'Windows'
+        shell: bash
+        run: rustup target add i686-pc-windows-msvc
+
+      - name: Build VFS DLLs and helpers for the CLI archive
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --locked -p agora-vfs --lib --bin agora-vfs-helper --target ${{ matrix.target }}
+          cargo build --release --locked -p agora-vfs --lib --bin agora-vfs-helper --target i686-pc-windows-msvc
+
+      - name: Sign and verify CLI VFS DLLs and helpers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($file in @(
+              'target/${{ matrix.target }}/release/agora_vfs.dll',
+              'target/${{ matrix.target }}/release/agora-vfs-helper.exe',
+              'target/i686-pc-windows-msvc/release/agora_vfs.dll',
+              'target/i686-pc-windows-msvc/release/agora-vfs-helper.exe'
+          )) {
+              & ./scripts/sign-windows.ps1 -FilePath $file
+          }
+
+      - name: Stage CLI VFS DLLs and helpers
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          PY="$(command -v python3 || command -v python)"
+          "$PY" scripts/stage_vfs_files.py \
+            --x64-build "target/${{ matrix.target }}/release" \
+            --x86-build "target/i686-pc-windows-msvc/release" \
+            --stage-dir "target/vfs-cli"
+
+      # The archive holds agora.exe and the VFS layout at its root, as the Unix archives do.
       - name: Package CLI (Windows)
         if: matrix.archive == 'zip'
         shell: bash
@@ -408,7 +483,14 @@ jobs:
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           BIN="target/${{ matrix.target }}/release/agora${{ matrix.ext }}"
           ARCHIVE="agora-cli-${TAG}-${{ matrix.platform_name }}.zip"
-          7z a "$ARCHIVE" "$BIN"
+          ARCHIVE_PATH="$PWD/$ARCHIVE"
+          STAGE="$RUNNER_TEMP/agora-cli-stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp "$BIN" "$STAGE/agora.exe"
+          cp target/vfs-cli/agora_vfs.dll target/vfs-cli/agora-vfs-helper.exe "$STAGE/"
+          cp -r target/vfs-cli/x86 "$STAGE/"
+          (cd "$STAGE" && 7z a "$ARCHIVE_PATH" agora.exe agora_vfs.dll agora-vfs-helper.exe x86)
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
       - name: Package CLI (Unix)

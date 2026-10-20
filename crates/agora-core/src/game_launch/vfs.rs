@@ -66,6 +66,20 @@ fn locate_dll_x86_from(env_override: Option<PathBuf>, dll: &Path) -> PathBuf {
     })
 }
 
+/// The files a 32-bit program needs, given the 32-bit DLL's path: that DLL and its helper beside
+/// it. Returns the ones that are not there, so none when both are. A file that cannot be checked
+/// counts as missing: a 32-bit program is refused rather than started without its DLL.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn missing_x86_files(dll_x86: &Path) -> Vec<PathBuf> {
+    [
+        dll_x86.to_path_buf(),
+        agora_vfs_inject::helper_beside(dll_x86),
+    ]
+    .into_iter()
+    .filter(|path| !path.is_file())
+    .collect()
+}
+
 fn locate_dll_from(
     env_override: Option<PathBuf>,
     current_exe: Option<&Path>,
@@ -462,6 +476,27 @@ mod windows {
         }
     }
 
+    /// Why a 32-bit program is refused: which of its VFS files are missing, and both paths they are
+    /// expected at, so the user can see where to put them.
+    fn x86_files_missing(
+        program: &std::path::Path,
+        dll: &std::path::Path,
+        missing: &[std::path::PathBuf],
+    ) -> String {
+        let listed: Vec<String> = missing
+            .iter()
+            .map(|path| format!("'{}'", path.display()))
+            .collect();
+        format!(
+            "{} is a 32-bit program and the 32-bit VFS files were not found: missing {}. \
+             A 32-bit program needs agora_vfs.dll and agora-vfs-helper.exe together, expected at '{}' and '{}'.",
+            program.display(),
+            listed.join(" and "),
+            dll.display(),
+            agora_vfs_inject::helper_beside(dll).display()
+        )
+    }
+
     /// Have the 32-bit helper beside the 32-bit DLL inject it into the suspended `process`. The helper
     /// is waited for, and ended after 15 seconds. Nothing is run unless the injection worked.
     unsafe fn inject_by_helper(
@@ -469,22 +504,17 @@ mod windows {
         vfs: &VfsLaunch,
         program: &std::path::Path,
     ) -> Result<(), String> {
-        let not_found = |path: &str| {
-            format!(
-                "{} is a 32-bit program and the 32-bit VFS files were not found at {path}",
-                program.display()
-            )
-        };
         let Some(dll) = vfs.dll_x86.as_deref() else {
-            return Err(not_found("(no path is configured for them)"));
+            return Err(format!(
+                "{} is a 32-bit program and the 32-bit VFS files were not found: no path is configured for them",
+                program.display()
+            ));
         };
-        if !dll.is_file() {
-            return Err(not_found(&dll.display().to_string()));
+        let missing = super::missing_x86_files(dll);
+        if !missing.is_empty() {
+            return Err(x86_files_missing(program, dll, &missing));
         }
         let helper = agora_vfs_inject::helper_beside(dll);
-        if !helper.is_file() {
-            return Err(not_found(&helper.display().to_string()));
-        }
         let pid = GetProcessId(process);
         let mut child = std::process::Command::new(&helper)
             .args(["--pid", &pid.to_string(), "--dll"])
@@ -590,6 +620,48 @@ mod tests {
             locate_dll_x86_from(Some(PathBuf::from("D:/elsewhere/x.dll")), dll),
             PathBuf::from("D:/elsewhere/x.dll")
         );
+    }
+
+    #[test]
+    fn the_32_bit_files_are_reported_missing_by_path_until_both_are_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let dll = dir.path().join("x86").join("agora_vfs.dll");
+        let helper = dir.path().join("x86").join("agora-vfs-helper.exe");
+
+        // Missing: both expected paths are named, the DLL first.
+        assert_eq!(missing_x86_files(&dll), vec![dll.clone(), helper.clone()]);
+
+        // The DLL without its helper: only the helper is missing.
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"x").unwrap();
+        assert_eq!(missing_x86_files(&dll), vec![helper.clone()]);
+
+        // Present: nothing is missing.
+        std::fs::write(&helper, b"x").unwrap();
+        assert!(missing_x86_files(&dll).is_empty());
+    }
+
+    #[test]
+    fn an_override_is_used_as_is_and_its_helper_is_checked_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let dll64 = dir.path().join("agora_vfs.dll");
+        let custom = dir.path().join("custom").join("vfs32.dll");
+
+        // The override wins over the x86 folder, even where the override's files do not exist.
+        let located = locate_dll_x86_from(Some(custom.clone()), &dll64);
+        assert_eq!(located, custom);
+        assert_eq!(
+            missing_x86_files(&located),
+            vec![
+                custom.clone(),
+                dir.path().join("custom").join("agora-vfs-helper.exe")
+            ]
+        );
+
+        // The default folder is not consulted once an override is set.
+        std::fs::create_dir_all(dir.path().join("x86")).unwrap();
+        std::fs::write(dir.path().join("x86").join("agora_vfs.dll"), b"x").unwrap();
+        assert_eq!(locate_dll_x86_from(Some(custom.clone()), &dll64), custom);
     }
 
     #[test]

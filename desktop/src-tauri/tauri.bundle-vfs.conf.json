@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": {
+      "vfs/agora_vfs.dll": "agora_vfs.dll",
+      "vfs/agora-vfs-helper.exe": "agora-vfs-helper.exe",
+      "vfs/x86/agora_vfs.dll": "x86/agora_vfs.dll",
+      "vfs/x86/agora-vfs-helper.exe": "x86/agora-vfs-helper.exe"
+    }
+  }
+}
