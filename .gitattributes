@@ -1,0 +1,2 @@
+# `agora skill` prints this file byte for byte; keep it identical on every OS.
+crates/agora/skills/** text eol=lf

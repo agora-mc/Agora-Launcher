@@ -1,12 +1,14 @@
 # Agora CLI reference
 
-The `agora` binary exposes the same core instance, catalog, health, launch, snapshot, runtime, install, and community-plugin services used by the desktop application. It is intended for advanced users, support diagnostics, scripting, and local AI/MCP integrations.
+The `agora` binary exposes the same core instance, catalog, health, launch, snapshot, runtime, install, and community-plugin services used by the desktop application. It is intended for advanced users, support diagnostics, scripting, and AI assistant apps.
 
 The CLI can modify the same data used by the desktop application. Read the safety section before experimenting.
 
 ## Build or install
 
-From the repository root:
+The desktop app includes the CLI: `agora.exe` in the install folder on Windows and beside `Agora Launcher.exe` in the portable ZIP, `Agora Launcher.app/Contents/MacOS/agora` on macOS, and `/usr/bin/agora` from the Linux packages. Settings → Services → AI assistant shows its exact path. It is not added to `PATH`, so call it by that path or add it yourself. The standalone `agora-cli-*` archives on the release page are for machines without the desktop app.
+
+To build it from source, from the repository root:
 
 ```bash
 cargo build -p agora-cli
@@ -48,7 +50,7 @@ agora --data-dir ./tmp/agora-cli-test paths
 Keep these rules in mind:
 
 - The default data root may be shared with the desktop application.
-- Do not run desktop and CLI mutations against the same instance at the same time.
+- The desktop app and the CLI can run at the same time. An instance one of them is changing is locked, and the other waits up to 30 seconds and then names who holds it; the desktop app reloads an instance the CLI changed. Avoid editing the same instance setting from both at once: the last save wins.
 - Use `--dry-run` on install, remove, and update operations before executing a complex plan.
 - Create a snapshot before manual or high-risk changes.
 - Use disposable instances when learning destructive commands.
@@ -536,6 +538,16 @@ agora crash investigate <INSTANCE> --file extra-log.txt
 ```
 
 `--file` may be repeated. Review logs for local paths, usernames, server addresses, tokens, or private chat before sharing output.
+
+### Guide for AI agents
+
+```bash
+agora skill
+```
+
+Prints, in the SKILL.md format agent tools read, how an AI agent should use this CLI: Agora's vocabulary, house rules (ask before changing anything, snapshot and dry-run first, never pass `--yes` on the person's behalf), the crash-diagnosis workflow, and what the exit codes mean. The text is compiled into the binary, so it matches that binary's commands, and printing it opens no Agora data. Save the output as `SKILL.md` in an agent's skills folder to keep it loaded, or ask the agent to run the command itself. The player-facing walkthrough is the [AI assistant task guide](https://agoramc.com/docs/guides/ai-assistant).
+
+Commands that stop for consent in a non-interactive session (`launch` on a red health check, plugin capability grants, plugin data restores) say that `--yes` should be passed only once the person using the computer has agreed.
 
 ### MCP over standard input/output
 

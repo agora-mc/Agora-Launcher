@@ -7117,6 +7117,32 @@ pub fn is_portable_mode() -> bool {
         .is_some()
 }
 
+/// The `agora` CLI shipped with this app, for handing to an AI assistant.
+#[derive(Debug, serde::Serialize)]
+pub struct BundledCli {
+    pub path: String,
+    /// True for an AppImage, which runs from a mount that disappears when the
+    /// app closes, so the path only works while Agora is open.
+    pub temporary: bool,
+}
+
+/// Where the bundled CLI is, or `None` for builds that do not bundle it.
+///
+/// Installers put it beside the desktop executable: `agora.exe` in the install
+/// folder on Windows, `Contents/MacOS/agora` on macOS, `/usr/bin/agora` from a
+/// Linux package, and next to `Agora Launcher.exe` in the portable ZIP.
+#[tauri::command]
+pub fn bundled_cli_path() -> Option<BundledCli> {
+    let exe = std::env::current_exe().ok()?;
+    let cli = exe
+        .parent()?
+        .join(format!("agora{}", std::env::consts::EXE_SUFFIX));
+    cli.is_file().then(|| BundledCli {
+        path: cli.display().to_string(),
+        temporary: std::env::var_os("APPIMAGE").is_some(),
+    })
+}
+
 #[tauri::command]
 pub async fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
     let path = crate::paths::app_data_dir(&app)

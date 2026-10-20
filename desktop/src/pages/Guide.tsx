@@ -67,6 +67,7 @@ const TOPIC_DESTINATIONS: Record<string, TopicDestination> = {
   'disk-and-desktop': { label: 'Open Settings', tab: 'settings' },
   governance: { label: 'Open Governance', tab: 'governance' },
   'crash-report-sharing': { label: 'Open My Instances', tab: 'instances' },
+  'ai-assistant': { label: 'Open My Instances', tab: 'instances' },
   'mcp-automation': { label: 'Configure MCP', tab: 'settings' },
 };
 

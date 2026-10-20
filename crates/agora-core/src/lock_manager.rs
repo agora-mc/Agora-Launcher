@@ -55,6 +55,38 @@ pub struct LockMetadata {
     pub operation: String,
     /// Random ownership nonce — prevents stale-guard deletion after replacement.
     pub nonce: u128,
+    /// Which Agora program holds the lock ("Agora app", "Agora CLI"), so a
+    /// waiting program can say who it is waiting for. Empty in locks written
+    /// before this field existed.
+    #[serde(default)]
+    pub program: String,
+}
+
+static PROGRAM_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Name this process in the locks it takes, e.g. "Agora CLI".
+///
+/// The desktop app and the CLI share one data root, so a lock is often held by
+/// the *other* program. Each adapter calls this once at startup; the first call
+/// wins.
+pub fn set_program_name(name: &str) {
+    let _ = PROGRAM_NAME.set(name.to_string());
+}
+
+pub(crate) fn program_name() -> String {
+    PROGRAM_NAME.get().cloned().unwrap_or_default()
+}
+
+/// Who holds a lock, in words a person can act on.
+fn describe_holder(meta: &LockMetadata) -> String {
+    if meta.pid == std::process::id() {
+        return "another task in this program".into();
+    }
+    if meta.program.is_empty() {
+        format!("another Agora program (PID {})", meta.pid)
+    } else {
+        format!("the {} (PID {})", meta.program, meta.pid)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -90,8 +122,11 @@ impl LockError {
             LockError::Contested(meta) => LauncherError::Generic {
                 code: "ERR_LOCK_CONTESTED".into(),
                 message: format!(
-                    "Resource '{resource}' is locked by PID {} on {} (since {}, operation: {})",
-                    meta.pid, meta.hostname, meta.acquired_at, meta.operation,
+                    "Resource '{resource}' is in use by {} on {} (since {}, operation: {})",
+                    describe_holder(&meta),
+                    meta.hostname,
+                    meta.acquired_at,
+                    meta.operation,
                 ),
             },
             LockError::Stale(meta) => LauncherError::Generic {
@@ -127,6 +162,16 @@ pub struct LockGuard {
     lock_path: PathBuf,
     nonce: u128,
     released: Arc<AtomicBool>,
+    /// For an instance lock: the change to record on release, so another
+    /// program showing this instance knows to reload it.
+    change: Option<PendingChange>,
+}
+
+#[derive(Debug)]
+struct PendingChange {
+    locks_root: PathBuf,
+    instance_id: String,
+    operation: String,
 }
 
 impl LockGuard {
@@ -140,6 +185,15 @@ impl Drop for LockGuard {
     fn drop(&mut self) {
         if self.released.load(Ordering::Relaxed) {
             return;
+        }
+        // Before the lock goes, so whoever takes it next can already see what
+        // this holder changed.
+        if let Some(change) = &self.change {
+            crate::change_feed::record_instance_change(
+                &change.locks_root,
+                &change.instance_id,
+                &change.operation,
+            );
         }
         // Read the current on-disk metadata. Only remove if our nonce still
         // matches (no replacement happened).
@@ -235,6 +289,12 @@ impl LockManager {
         &self.locks_root
     }
 
+    /// Record a change to an instance for other Agora programs, for an edit that takes no
+    /// instance lock (releasing one records it already). Best-effort, as the change feed is.
+    pub fn record_instance_change(&self, instance_id: &str, operation: &str) {
+        crate::change_feed::record_instance_change(&self.locks_root, instance_id, operation);
+    }
+
     // ------------------------------------------------------------------
     // Public acquire helpers
     // ------------------------------------------------------------------
@@ -269,17 +329,26 @@ impl LockManager {
             }
 
             match try_acquire(&lock_path, operation) {
-                Ok(guard) => return Ok(guard),
+                Ok(mut guard) => {
+                    if let LockResource::Instance(instance_id) = &resource {
+                        guard.change = Some(PendingChange {
+                            locks_root: self.locks_root.clone(),
+                            instance_id: instance_id.clone(),
+                            operation: operation.to_string(),
+                        });
+                    }
+                    return Ok(guard);
+                }
                 Err(LockError::Contested(meta)) => {
                     if Instant::now() >= deadline {
                         return Err(LauncherError::Generic {
                             code: "ERR_LOCK_TIMEOUT".into(),
                             message: format!(
-                                "Could not acquire lock '{lock_name}' within {}s. \
-                                 Held by PID {} on {} since {} for: {}",
+                                "Could not acquire lock '{lock_name}' within {}s: \
+                                 {} has held it since {} for: {}. Try again once \
+                                 it finishes.",
                                 timeout.as_secs(),
-                                meta.pid,
-                                meta.hostname,
+                                describe_holder(&meta),
                                 meta.acquired_at,
                                 meta.operation,
                             ),
@@ -373,6 +442,9 @@ impl LockManager {
 /// a crash during write), the contender returns `Corrupt`. The caller applies
 /// a grace period and only removes the file when a partial PID is confirmed
 /// dead; unknown ownership remains fail-closed.
+// The error carries the holder's metadata so a waiting caller can name it. It
+// is returned once per one-second retry, so its size does not matter.
+#[allow(clippy::result_large_err)]
 fn try_acquire(lock_path: &Path, operation: &str) -> Result<LockGuard, LockError> {
     let metadata = LockMetadata {
         pid: std::process::id(),
@@ -381,6 +453,7 @@ fn try_acquire(lock_path: &Path, operation: &str) -> Result<LockGuard, LockError
         acquired_at: chrono::Utc::now().to_rfc3339(),
         operation: operation.to_string(),
         nonce: uuid::Uuid::new_v4().as_u128(),
+        program: program_name(),
     };
 
     // Serialise metadata to JSON.
@@ -402,6 +475,7 @@ fn try_acquire(lock_path: &Path, operation: &str) -> Result<LockGuard, LockError
                 lock_path: lock_path.to_path_buf(),
                 nonce: metadata.nonce,
                 released: Arc::new(AtomicBool::new(false)),
+                change: None,
             })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -600,6 +674,7 @@ mod tests {
                 acquired_at: "2026-01-01T00:00:00Z".into(),
                 operation: "replaced".into(),
                 nonce: lock.nonce.wrapping_add(1u128), // different nonce
+                program: String::new(),
             };
             let json = serde_json::to_string(&fake).unwrap();
             std::fs::write(&lock_path, json).unwrap();
@@ -705,12 +780,34 @@ mod tests {
             nonce: uuid::Uuid::from_str("550e8400-e29b-41d4-a716-446655440000")
                 .unwrap()
                 .as_u128(),
+            program: "Agora CLI".into(),
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: LockMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(back.pid, 12345);
         assert_eq!(back.pid_start_time, 1000000);
         assert_eq!(back.hostname, "test-host");
+        assert_eq!(back.program, "Agora CLI");
+    }
+
+    #[test]
+    fn lock_files_from_older_versions_still_read() {
+        // A lock written before `program` existed, e.g. by an older CLI.
+        let json = r#"{"pid":7,"pid_start_time":0,"hostname":"h","acquired_at":"2026-01-01T00:00:00Z","operation":"install","nonce":1}"#;
+        let meta: LockMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.program, "");
+        assert_eq!(describe_holder(&meta), "another Agora program (PID 7)");
+    }
+
+    #[test]
+    fn a_waiting_program_names_the_holder() {
+        let mut meta: LockMetadata = serde_json::from_str(
+            r#"{"pid":7,"pid_start_time":0,"hostname":"h","acquired_at":"t","operation":"disable_mod","nonce":1,"program":"Agora CLI"}"#,
+        )
+        .unwrap();
+        assert_eq!(describe_holder(&meta), "the Agora CLI (PID 7)");
+        meta.pid = std::process::id();
+        assert_eq!(describe_holder(&meta), "another task in this program");
     }
 
     #[test]

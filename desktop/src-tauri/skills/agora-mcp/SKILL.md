@@ -1,6 +1,6 @@
 ---
 name: agora-mcp
-description: Guide for using the Agora launcher MCP server to diagnose Minecraft mod crashes and manage instances.
+description: 'Guide for using the Agora launcher MCP server to diagnose Minecraft mod crashes and manage instances. Use when: a user reports a Minecraft crash, asks about their installed mods/instances, wants a mod disabled/enabled, or asks "what do you know about my setup?".'
 ---
 
 # Agora MCP Server Guide

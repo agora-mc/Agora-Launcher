@@ -120,8 +120,9 @@ export default function TourPage() {
       <section className="panel-inset p-6">
         <h2 className="text-xl font-bold">Ready to try it?</h2>
         <p className="mt-2 leading-7 text-gray-600 dark:text-gray-300">
-          Installing takes a few minutes, and the first-run steps are written
-          out in order.
+          Installing takes a few minutes. The install page offers the right
+          download for your system and explains the release file names; the
+          getting-started guide covers the first session.
         </p>
         <Link
           href="/docs/install"

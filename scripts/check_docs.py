@@ -35,6 +35,8 @@ Checks:
   installer-size  fixed installer-size claims ("~10-15 MB" style)
   workflow-refs   references to .github/workflows files that do not exist
   governance-mode stale "production is read-only" claims vs compile.yml
+  skill-copies    .github/ and .kilo/ copies of the agora-mcp skill match the
+                  one the desktop app ships
 
 Usage:
     python scripts/check_docs.py
@@ -77,6 +79,13 @@ GUIDE_CONTENT = REPO_ROOT / "desktop" / "src" / "data" / "guideContent.ts"
 GUIDE_TSX = REPO_ROOT / "desktop" / "src" / "pages" / "Guide.tsx"
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 COMPILE_YML = WORKFLOW_DIR / "compile.yml"
+# The desktop app embeds and hands out this skill; the copies exist so agents
+# working in this repository find it where their tooling looks.
+MCP_SKILL = REPO_ROOT / "desktop" / "src-tauri" / "skills" / "agora-mcp" / "SKILL.md"
+MCP_SKILL_COPIES = [
+    REPO_ROOT / ".github" / "skills" / "agora-mcp" / "SKILL.md",
+    REPO_ROOT / ".kilo" / "skills" / "agora-mcp" / "SKILL.md",
+]
 
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
@@ -543,6 +552,23 @@ def check_governance_mode() -> list[Finding]:
     return findings
 
 
+def check_skill_copies() -> list[Finding]:
+    source = MCP_SKILL.read_text(encoding="utf-8")
+    findings = []
+    for copy in MCP_SKILL_COPIES:
+        if not copy.exists() or copy.read_text(encoding="utf-8") != source:
+            findings.append(
+                Finding(
+                    "skill-copies",
+                    copy,
+                    1,
+                    f"differs from {MCP_SKILL.relative_to(REPO_ROOT).as_posix()}; "
+                    "copy that file over it",
+                )
+            )
+    return findings
+
+
 CHECKS = [
     ("links", check_links),
     ("routes", check_routes),
@@ -555,6 +581,7 @@ CHECKS = [
     ("installer-size", check_installer_size),
     ("workflow-refs", check_workflow_refs),
     ("governance-mode", check_governance_mode),
+    ("skill-copies", check_skill_copies),
 ]
 
 

@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import logging
 import os
 import re
 import subprocess
 import sys
-import zipfile
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -138,97 +138,116 @@ def _write_report(path: Path | None, report: dict[str, Any]) -> None:
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def verify_manifest(
-    path: Path,
-    entries: Iterable[tuple[str, dict[str, Any]]] | None = None,
-) -> int:
-    """Re-download every pinned loader file and compare its SHA-256 to the manifest.
+def _verification_targets(
+    manifest: dict[str, Any], changed_keys: set[str], sample_size: int | None
+) -> list[tuple[str, dict[str, Any]]]:
+    """Changed entries plus a slice of the rest that rotates by date.
 
-    Uses the same download cache as fetch_loader_manifests.py, so re-running is
-    fast once jars have been downloaded.
+    The fetch step only re-reads the newest versions of each loader, so the
+    rotating slice is what notices upstream changing an older pinned file;
+    every entry is reached once per len(entries) / sample_size days.
     """
-    logger.info("Verifying pinned hashes in %s", path)
-    manifest: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-    entries_to_verify = entries if entries is not None else _manifest_entries(manifest)
-    total = 0
-    ok = 0
-    mismatch = 0
-    errors = 0
+    entries = sorted(_manifest_entries(manifest), key=lambda pair: _entry_key(*pair))
+    if sample_size is None or sample_size >= len(entries):
+        return entries
+    targets = [pair for pair in entries if _entry_key(*pair) in changed_keys]
+    if sample_size > 0 and entries:
+        day = datetime.now(timezone.utc).date().toordinal()
+        start = (day * sample_size) % len(entries)
+        rotated = entries[start:] + entries[:start]
+        targets += [
+            pair for pair in rotated[:sample_size]
+            if _entry_key(*pair) not in changed_keys
+        ]
+    return targets
 
-    for loader, entry in entries_to_verify:
-        total += 1
-        source_url = entry.get("source_url")
-        expected_sha = entry.get("sha256")
-        file_name = entry.get("file_name", source_url)
 
-        if not source_url or not expected_sha:
-            logger.warning("Skipping %s — missing URL or hash", file_name)
-            errors += 1
+def _cache_name(source_url: str) -> str:
+    cache_name = source_url.split("/")[-1]
+    # Profile JSON URLs all end in /profile/json; give them unique cache names
+    # so we don't reuse the same cached file for every entry.
+    if not cache_name.endswith(".jar"):
+        ext = os.path.splitext(cache_name)[1] or ".bin"
+        cache_name = hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:32] + ext
+    return cache_name
+
+
+def _file_fields(entry: dict[str, Any], path: Path) -> dict[str, Any]:
+    """The file-derived fields of an entry, recomputed from a downloaded file."""
+    data = path.read_bytes()
+    if entry.get("file_type") == "profile_json":
+        # Profile/version JSON is hashed with volatile keys stripped.
+        return {"sha256": fetch._stable_json_sha256(data)}
+    fields: dict[str, Any] = {"sha256": fetch._sha256_hex(data)}
+    if entry.get("file_type") == "installer_jar":
+        fields["content_sha256"] = fetch.installer_content_sha256(path)
+        fields["version_json_sha256"] = fetch._extract_version_json_sha256(path)
+        profile = fetch._extract_install_profile(path) or {}
+        if isinstance(profile.get("spec"), int):
+            fields["installer_spec"] = profile["spec"]
+    return fields
+
+
+def verify_manifest(
+    changed_keys: Iterable[str] = (),
+    sample_size: int | None = None,
+) -> dict[str, Any]:
+    """Re-download pinned loader files and reconcile them with their pins.
+
+    Checks the entries this run added or changed plus a rotating sample of the
+    rest (sample_size=None checks every entry). A file upstream now serves
+    differently is re-pinned when it is a repack and quarantined otherwise,
+    exactly as during a refresh, so one changed file never blocks the catalog.
+    A file that cannot be downloaded is reported and checked again later.
+    """
+    manifest = fetch._load_existing_manifest()
+    targets = _verification_targets(manifest, set(changed_keys), sample_size)
+    logger.info("Verifying %d pinned loader file(s)", len(targets))
+    summary: dict[str, Any] = {
+        "checked": len(targets), "ok": 0, "repinned": [], "quarantined": [], "errors": [],
+    }
+    modified = False
+
+    for loader, entry in targets:
+        key = _entry_key(loader, entry)
+        try:
+            cache_path = fetch._download_to_cache(entry["source_url"], _cache_name(entry["source_url"]))
+            upstream = _file_fields(entry, cache_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not verify %s: %s", key, exc)
+            summary["errors"].append(key)
             continue
 
-        try:
-            cache_name = source_url.split("/")[-1]
-            # Profile JSON URLs all end in /profile/json; give them unique cache names
-            # so we don't reuse the same cached file for every entry.
-            if not cache_name.endswith(".jar"):
-                ext = os.path.splitext(cache_name)[1] or ".bin"
-                cache_name = (
-                    hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:32] + ext
-                )
-            cache_path = fetch._download_to_cache(source_url, cache_name)
-            data = cache_path.read_bytes()
+        if upstream["sha256"] == entry["sha256"]:
+            summary["ok"] += 1
+            # Fingerprint older jars as they come round, so a later repack of
+            # them is recognised without review too.
+            if upstream.get("content_sha256") and entry.get("content_sha256") is None:
+                entry["content_sha256"] = upstream["content_sha256"]
+                modified = True
+            continue
 
-            # Profile/version JSON is hashed with volatile keys stripped.
-            if entry.get("file_type") == "profile_json":
-                actual_sha = fetch._stable_json_sha256(data)
-            else:
-                actual_sha = fetch._sha256_hex(data)
+        modified = True
+        if fetch._is_repack(entry, upstream):
+            fetch._rotate_file_fields(entry, upstream, "repacked upstream; contents unchanged")
+            summary["repinned"].append(key)
+        else:
+            fetch.quarantine_entry(
+                loader, entry, upstream,
+                "upstream file changed and its contents could not be shown unchanged",
+            )
+            manifest["loaders"][loader].remove(entry)
+            summary["quarantined"].append(key)
 
-            if actual_sha != expected_sha:
-                logger.error(
-                    "Hash mismatch for %s %s\n  expected: %s\n  actual:   %s",
-                    loader,
-                    file_name,
-                    expected_sha,
-                    actual_sha,
-                )
-                mismatch += 1
-                continue
-
-            if (
-                entry.get("file_type") == "installer_jar"
-                and entry.get("version_json_sha256")
-            ):
-                try:
-                    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                        if "version.json" in zf.namelist():
-                            actual_vj = fetch._stable_json_sha256(zf.read("version.json"))
-                            if actual_vj != entry["version_json_sha256"]:
-                                logger.error(
-                                    "version.json hash mismatch for %s %s",
-                                    loader,
-                                    file_name,
-                                )
-                                mismatch += 1
-                                continue
-                except (zipfile.BadZipFile, OSError) as exc:
-                    logger.error("Could not inspect %s: %s", file_name, exc)
-                    errors += 1
-                    continue
-
-            ok += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to verify %s %s: %s", loader, file_name, exc)
-            errors += 1
-
+    if modified:
+        fetch._write_loader_manifests(manifest)
+        fetch._write_known_good_hashes(manifest)
     logger.info(
-        "Verification complete: %d total, %d OK, %d mismatches, %d errors",
-        total,
-        ok,
-        mismatch,
-        errors,
+        "Verification complete: %d checked, %d OK, %d re-pinned, %d quarantined, %d unreachable",
+        summary["checked"], summary["ok"], len(summary["repinned"]),
+        len(summary["quarantined"]), len(summary["errors"]),
     )
-    return 0 if mismatch == 0 and errors == 0 else 1
+    return summary
 
 
 def fetch_loader_manifests(
@@ -263,6 +282,7 @@ def fetch_loader_manifests(
                 per_mc_limit,
                 refresh_profiles=True,
             ),
+            loader="fabric",
         )
 
         logger.info("Fetching Quilt versions for %s", mc_version)
@@ -273,18 +293,21 @@ def fetch_loader_manifests(
                 per_mc_limit,
                 refresh_profiles=True,
             ),
+            loader="quilt",
         )
 
     logger.info("Fetching NeoForge versions for %s", mc_versions)
     loaders["neoforge"] = fetch._merge_entries(
         loaders["neoforge"],
         fetch._fetch_neoforge(mc_versions, per_mc_limit),
+        loader="neoforge",
     )
 
     logger.info("Fetching Forge versions for %s", mc_versions)
     loaders["forge"] = fetch._merge_entries(
         loaders["forge"],
         fetch._fetch_forge(mc_versions, per_mc_limit),
+        loader="forge",
     )
 
     fetch._write_loader_manifests(manifest)
@@ -321,6 +344,36 @@ def compile_registry(
 
     logger.info("Running compiler: %s", " ".join(cmd))
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+
+
+def _notify_quarantine(keys: list[str]) -> None:
+    """Tell maintainers on Discord about newly quarantined loader files.
+
+    Best effort: the run has already done the safe thing by holding the files
+    back, so a failed notification is logged and nothing more.
+    """
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not keys or not webhook_url:
+        return
+    lines = "\n".join(f"- `{key}`" for key in keys[:20])
+    more = f"\n…and {len(keys) - 20} more" if len(keys) > 20 else ""
+    message = (
+        "**Loader files quarantined.** Upstream changed these pinned files and "
+        "Agora could not show the contents unchanged, so they are hidden from "
+        "users until reviewed. Approve them in `loader-manifests/quarantine.json`.\n"
+        f"{lines}{more}"
+    )
+    request = urllib.request.Request(
+        webhook_url,
+        data=json.dumps({"content": message[:1900]}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "AgoraLoaderManifestBot/1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15):
+            pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not post the quarantine notice to Discord: %s", type(exc).__name__)
 
 
 def main() -> int:
@@ -377,6 +430,13 @@ def main() -> int:
         "--verify-changed-only",
         action="store_true",
         help="Verify only newly added or changed entries instead of the full catalog",
+    )
+    parser.add_argument(
+        "--verify-sample",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Verify changed entries plus N others, rotating daily through the catalog",
     )
     parser.add_argument(
         "--no-governance-write",
@@ -442,6 +502,7 @@ def main() -> int:
                 ", ".join(retired_at_start[:5])
                 + (" …" if len(retired_at_start) > 5 else ""),
             )
+        fetch.load_quarantine()
 
         before = fetch._load_existing_manifest()
 
@@ -467,6 +528,11 @@ def main() -> int:
 
         after = json.loads(LOADER_MANIFESTS_PATH.read_text(encoding="utf-8"))
         changed_entries, new_entries, deleted_entries = _manifest_delta(before, after)
+        # Quarantined entries leave the catalog on purpose; anything else that
+        # disappeared is a bug in the refresh.
+        deleted_entries = [
+            key for key in deleted_entries if key not in fetch.quarantined_keys()
+        ]
         report["new_entries"] = len(new_entries)
         report["unexpected_deletions"] = deleted_entries
         report["candidate_download_failures"] = fetch.get_download_failures()
@@ -477,18 +543,16 @@ def main() -> int:
             return 1
 
         if not args.no_verify:
-            entries_to_verify = changed_entries if args.verify_changed_only else None
-            verification_result = verify_manifest(
-                LOADER_MANIFESTS_PATH, entries=entries_to_verify
+            sample_size = 0 if args.verify_changed_only else args.verify_sample
+            report["verification"] = verify_manifest(
+                (_entry_key(loader, entry) for loader, entry in changed_entries),
+                sample_size,
             )
-            report["verification"] = {
-                "scope": "changed" if args.verify_changed_only else "full",
-                "entries": len(changed_entries) if args.verify_changed_only else None,
-                "passed": verification_result == 0,
-            }
-            if verification_result != 0:
-                _write_report(args.report, report)
-                return verification_result
+
+        fetch.save_quarantine()
+        report["newly_quarantined"] = fetch.get_new_quarantines()
+        report["quarantined"] = sorted(fetch.quarantined_keys())
+        _notify_quarantine(report["newly_quarantined"])
 
         compile_registry(
             args.out,

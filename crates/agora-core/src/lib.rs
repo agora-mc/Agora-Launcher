@@ -13,6 +13,7 @@ pub mod auth;
 pub mod backup;
 pub mod bisect;
 pub mod catalog_install;
+pub mod change_feed;
 pub mod community_image;
 pub mod content_fomod;
 pub mod content_store;
