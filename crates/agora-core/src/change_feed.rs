@@ -28,8 +28,9 @@ struct ChangeRecord {
     program: String,
     operation: String,
     at: String,
-    /// Distinguishes two changes by the same process within one poll interval.
-    nonce: u128,
+    /// Random per-change identifier, so two changes by the same process
+    /// within one poll interval are both noticed. Not a cryptographic value.
+    change_id: u128,
 }
 
 /// A change another process made to an instance.
@@ -57,7 +58,7 @@ pub fn record_instance_change(locks_root: &Path, instance_id: &str, operation: &
         program: crate::lock_manager::program_name(),
         operation: operation.to_string(),
         at: chrono::Utc::now().to_rfc3339(),
-        nonce: uuid::Uuid::new_v4().as_u128(),
+        change_id: uuid::Uuid::new_v4().as_u128(),
     };
     let Ok(json) = serde_json::to_string(&record) else {
         return;
@@ -66,7 +67,7 @@ pub fn record_instance_change(locks_root: &Path, instance_id: &str, operation: &
     // half-written record. The temporary name is unique per write because two
     // threads of one process can finish with the same instance at once.
     let target = dir.join(format!("{instance_id}.json"));
-    let tmp = dir.join(format!(".{instance_id}.{:x}.tmp", record.nonce));
+    let tmp = dir.join(format!(".{instance_id}.{:x}.tmp", record.change_id));
     if std::fs::write(&tmp, json).is_err() {
         return;
     }
@@ -119,10 +120,10 @@ impl ChangeFeed {
             let Ok(record) = serde_json::from_str::<ChangeRecord>(&text) else {
                 continue;
             };
-            if self.seen.get(instance_id) == Some(&record.nonce) {
+            if self.seen.get(instance_id) == Some(&record.change_id) {
                 continue;
             }
-            self.seen.insert(instance_id.to_string(), record.nonce);
+            self.seen.insert(instance_id.to_string(), record.change_id);
             if record.pid != own_pid {
                 changes.push(InstanceChange {
                     instance_id: instance_id.to_string(),
@@ -140,7 +141,7 @@ impl ChangeFeed {
 mod tests {
     use super::*;
 
-    fn write_foreign(locks_root: &Path, instance_id: &str, nonce: u128) {
+    fn write_foreign(locks_root: &Path, instance_id: &str, change_id: u128) {
         let dir = changes_dir(locks_root);
         std::fs::create_dir_all(&dir).unwrap();
         let record = ChangeRecord {
@@ -148,7 +149,7 @@ mod tests {
             program: "Agora CLI".into(),
             operation: "disable_mod".into(),
             at: "2026-01-01T00:00:00Z".into(),
-            nonce,
+            change_id,
         };
         std::fs::write(
             dir.join(format!("{instance_id}.json")),
