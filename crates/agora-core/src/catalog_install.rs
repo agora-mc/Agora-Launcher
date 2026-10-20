@@ -9,22 +9,27 @@
 //! 3. The file is chosen. `github_release` takes the newest non-draft, non-prerelease release with
 //!    an asset matching the compatibility entry's `asset` glob. `direct_hash` is the entry's URL.
 //! 4. An entry this instance already has (any release) is reported and nothing changes.
-//! 5. Under `--dry-run` the plan is returned here. Otherwise the caller is told what is about to
-//!    be downloaded, and the bytes are fetched through the existing host policy.
+//! 5. Under `--dry-run` the plan is returned here. If the content store already holds this release
+//!    file under a hash known before the download, that copy is used ([`stored_copy`]). Otherwise
+//!    the caller is told what is about to be downloaded, and the bytes are fetched through the
+//!    existing host policy.
 //! 6. The bytes are checked through [`crate::artifact_hash::verify_download`], which is the hash
 //!    policy in code. They are imported with a `ContentSource::Catalog`, then placed through
 //!    [`crate::game_deploy::decide_placement`], the same rule `games instance content add` uses.
 //!
 //! Network access goes through [`CatalogTransport`], so the steps above can be tested with a fake.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use agora_game_api::{BaseReference, FrameworkId, GameDefinition, LayerSource, RuntimeIdentity};
 use async_trait::async_trait;
 use serde::Serialize;
 
-use crate::artifact_hash::{first_unmet, verify_download, ConfirmableHash, HashOrigin};
-use crate::content_store::{self, ContentSource};
+use crate::artifact_hash::{
+    first_unmet, is_sha256_hex, verify_download, ConfirmableHash, HashOrigin,
+};
+use crate::content_store::{self, ContentItem, ContentSource};
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
 use crate::game_deploy::{self, PlacementDecision};
@@ -254,7 +259,7 @@ pub async fn install(
         ));
     }
 
-    let plan = plan(
+    let mut plan = plan(
         ctx,
         &manifest,
         definition,
@@ -281,31 +286,41 @@ pub async fn install(
         });
     }
 
-    announce(&plan);
-    let bytes = fetch_bytes(transport, &plan.source).await?;
-    let hash = check_bytes(ctx, &plan, &bytes, request.install_anyway)?;
+    // The store's own copy is used when it holds this release file under a hash known before the
+    // download. Otherwise the file is fetched, checked and imported as before.
+    let mut damaged = HashSet::new();
+    let (content_item, size, hash) = match stored_copy(ctx, &mut plan, &mut damaged)? {
+        Some(copy) => copy,
+        None => {
+            announce(&plan);
+            let bytes = fetch_bytes(transport, &plan.source).await?;
+            let hash = check_bytes(ctx, &plan, &bytes, request.install_anyway)?;
 
-    let scratch = ScratchDir::new(ctx)?;
-    let file_path = scratch.path.join(safe_file_name(plan.source.file_name()));
-    std::fs::write(&file_path, &bytes).map_err(|e| generic("ERR_CATALOG_WRITE", e))?;
+            let scratch = ScratchDir::new(ctx)?;
+            let file_path = scratch.path.join(safe_file_name(plan.source.file_name()));
+            std::fs::write(&file_path, &bytes).map_err(|e| generic("ERR_CATALOG_WRITE", e))?;
 
-    let outcome = content_store::add_archive_with_source(
-        ctx,
-        &file_path,
-        Some(&request.item.name),
-        |sha256, _display_path| ContentSource::Catalog {
-            item_id: request.item.id.clone(),
-            game: request.item.game.clone(),
-            release: plan.source.release().map(str::to_string),
-            asset: plan.source.file_name().to_string(),
-            sha256: sha256.to_string(),
-            verified: hash.verified,
-            added_at_unix_ms: now_unix_ms(),
-        },
-    )
-    .map_err(|e| generic("ERR_CATALOG_IMPORT", e))?;
-    let content_item = outcome.item().clone();
-    let size = bytes.len() as u64;
+            // The objects a verify found damaged are replaced by this import, not trusted.
+            let outcome = content_store::add_archive_replacing(
+                ctx,
+                &file_path,
+                Some(&request.item.name),
+                &damaged,
+                |sha256, _display_path| ContentSource::Catalog {
+                    item_id: request.item.id.clone(),
+                    game: request.item.game.clone(),
+                    release: plan.source.release().map(str::to_string),
+                    asset: plan.source.file_name().to_string(),
+                    sha256: sha256.to_string(),
+                    verified: hash.verified,
+                    added_at_unix_ms: now_unix_ms(),
+                },
+            )
+            .map_err(|e| generic("ERR_CATALOG_IMPORT", e))?;
+            let size = bytes.len() as u64;
+            (outcome.item().clone(), size, hash)
+        }
+    };
 
     let layout = definition
         .content_layout
@@ -652,15 +667,21 @@ fn direct_source(item: &GameCatalogItem, source: &DownloadSource) -> LauncherRes
             )
         })?
         .to_string();
-    let sha256 = item.sha256.clone().ok_or_else(|| {
-        generic(
-            "ERR_CATALOG_NO_HASH",
-            format!(
-                "'{}' is a direct download with no sha256 in its manifest.",
-                item.id
-            ),
-        )
-    })?;
+    // An empty manifest hash is no hash at all: it must not pass as a checksum, nor as a file that
+    // "matches anything".
+    let sha256 = item
+        .sha256
+        .clone()
+        .filter(|hash| !hash.trim().is_empty())
+        .ok_or_else(|| {
+            generic(
+                "ERR_CATALOG_NO_HASH",
+                format!(
+                    "'{}' is a direct download with no sha256 in its manifest.",
+                    item.id
+                ),
+            )
+        })?;
     let pinned_host = parsed.host_str().unwrap_or_default().to_string();
     Ok(PlannedSource::DirectHash {
         url,
@@ -801,6 +822,146 @@ fn describe_origin(origin: HashOrigin) -> &'static str {
         HashOrigin::CuratorPin => "the curator's pin for this release file",
         HashOrigin::PreviousInstall => "the hash from an earlier install of this release file",
     }
+}
+
+/// The SHA-256 the source vouches for before any download: GitHub's published digest, the curator's
+/// pin for this release file, or the manifest hash of a `direct_hash` file. An empty digest is
+/// nothing published. `None` when there is no such hash, or when the ones there are malformed or
+/// disagree; the download path then decides, and refuses a malformed published hash.
+fn trusted_hash(source: &PlannedSource) -> Option<String> {
+    let (published, pin) = match source {
+        PlannedSource::GithubRelease {
+            published_sha256,
+            pin,
+            ..
+        } => (
+            published_sha256
+                .as_deref()
+                .map(str::trim)
+                .filter(|h| !h.is_empty()),
+            pin.as_ref().map(|pin| pin.sha256.as_str()),
+        ),
+        PlannedSource::DirectHash { sha256, .. } => (Some(sha256.as_str()), None),
+    };
+    let mut trusted = Vec::new();
+    for hash in published.into_iter().chain(pin) {
+        if !is_sha256_hex(hash) {
+            return None;
+        }
+        trusted.push(hash.to_ascii_lowercase());
+    }
+    let first = trusted.first()?.clone();
+    trusted.iter().all(|hash| *hash == first).then_some(first)
+}
+
+/// A copy of this release file that the content store already holds, used in place of a download.
+/// It is used only when all of these hold:
+///
+/// * a trusted hash is known before the download (see [`trusted_hash`]);
+/// * an item in the store was imported from this entry's release file under that hash;
+/// * every file of that item still matches the hash recorded for it (a full `verify_item`).
+///
+/// The store keeps an archive's extracted files, not the archive, so the archive's own bytes are not
+/// hashed again: the files are checked against their recorded hashes, and the archive hash is the
+/// one recorded when it was imported. A copy that fails the check is noted in `plan.warnings`, and
+/// the file is downloaded as usual.
+///
+/// The size reported is the archive's, when the source gives it; otherwise the total size of the
+/// stored files.
+fn stored_copy(
+    ctx: &Ctx,
+    plan: &mut CatalogPlan,
+    damaged: &mut HashSet<String>,
+) -> LauncherResult<Option<(ContentItem, u64, HashReport)>> {
+    let Some(expected) = trusted_hash(&plan.source) else {
+        return Ok(None);
+    };
+    let release = plan.source.release().map(str::to_string);
+    let file = plan.source.file_name().to_string();
+    let items = content_store::list_items(ctx).map_err(|e| generic("ERR_CONTENT_STORE", e))?;
+    for item in items {
+        let imported_from_this_file = item.sources.iter().any(|source| {
+            matches!(
+                source,
+                ContentSource::Catalog {
+                    item_id,
+                    release: r,
+                    asset,
+                    sha256,
+                    ..
+                } if *item_id == plan.item_id && *r == release && *asset == file && *sha256 == expected
+            )
+        });
+        if !imported_from_this_file {
+            continue;
+        }
+        let check =
+            content_store::verify_item(ctx, &item.item_id, content_store::VerifyDepth::Full)
+                .map_err(|e| generic("ERR_CONTENT_STORE", e))?;
+        if !check.problems.is_empty() {
+            // Name the objects the verify found bad, so the download's import replaces them.
+            for problem in &check.problems {
+                if let Some(file) = item
+                    .files
+                    .iter()
+                    .find(|stored| stored.path.as_str() == problem.path)
+                {
+                    damaged.insert(file.sha256.clone());
+                }
+            }
+            let paths: Vec<&str> = check
+                .problems
+                .iter()
+                .map(|problem| problem.path.as_str())
+                .take(3)
+                .collect();
+            plan.warnings.push(format!(
+                "The content store's copy of {file} ({}) does not match its recorded hashes ({} problem(s), including {}). It was downloaded again instead.",
+                item.item_id,
+                check.problems.len(),
+                paths.join(", ")
+            ));
+            continue;
+        }
+
+        let published = match &plan.source {
+            PlannedSource::GithubRelease {
+                published_sha256, ..
+            } => published_sha256
+                .as_deref()
+                .is_some_and(|hash| !hash.trim().is_empty()),
+            PlannedSource::DirectHash { .. } => true,
+        };
+        let verified_by = match &plan.source {
+            PlannedSource::GithubRelease { .. } => {
+                "verified by the SHA-256 GitHub published for this file"
+            }
+            PlannedSource::DirectHash { .. } => "verified by the SHA-256 in the curator's manifest",
+        };
+        let basis = if published {
+            verified_by.to_string()
+        } else {
+            format!(
+                "not verified: GitHub published no checksum for {file}, so Agora could not verify it; the bytes match the curator's pin for this release file"
+            )
+        };
+        let size = match &plan.source {
+            PlannedSource::GithubRelease {
+                size: Some(size), ..
+            } => *size,
+            _ => item.total_size,
+        };
+        let hash = HashReport {
+            sha256: expected.clone(),
+            verified: published,
+            basis: format!(
+                "{basis}; reused the copy the content store already holds, so nothing was downloaded"
+            ),
+            confirmed_past: None,
+        };
+        return Ok(Some((item, size, hash)));
+    }
+    Ok(None)
 }
 
 /// The SHA-256 recorded when this release file was installed before without a published hash.
