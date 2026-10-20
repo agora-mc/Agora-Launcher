@@ -284,6 +284,15 @@ pub struct RunOutcome {
     /// empty otherwise (MASTER_SPEC §26.9, decision 3). Each offer is asked about, never applied.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offers: Vec<ToolOffer>,
+    /// Files a virtual-file-system run opened for writing but did not change: the copies the VFS made
+    /// are identical to what the game would read without the tool's output, so they were left out of
+    /// the output and deleted from staging (MASTER_SPEC §26.9). Zero for any other capture.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unchanged_dropped: usize,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 /// What a swap did with its copy of the instance's `Data` (MASTER_SPEC §26.9): how much was copied in
@@ -1544,25 +1553,32 @@ fn run_under_vfs(
     let exit = wait_for_tree(&game_dir, &mut launched, cancel);
     let installed = watch.finish();
     let injected = !game_launch::processes_ended_since(&log, log_from).is_empty();
-    let settled = settle_run(
-        ctx,
-        instance_id,
-        definition,
-        tool,
-        &dir,
-        &staging,
-        &run,
-        &fingerprint,
-        &exit,
-    );
+    // The copies the VFS made of files the tool only opened for writing are not output, so they go before
+    // the output is settled and checked (MASTER_SPEC §26.9).
+    let settled = drop_unchanged_outputs(ctx, instance_id, definition, tool, &dir, &staging, &run)
+        .and_then(|dropped| {
+            settle_run(
+                ctx,
+                instance_id,
+                definition,
+                tool,
+                &dir,
+                &staging,
+                &run,
+                &fingerprint,
+                &exit,
+            )
+            .map(|settled| (settled, dropped))
+        });
     // The game's files go back whatever became of the output, and a failure to settle is reported
     // only after that.
     let released = release_session(ctx, definition, &store);
-    let settled = settled?;
+    let (settled, unchanged_dropped) = settled?;
     released?;
 
     let mut out = outcome(tool_id, tool, run, &exit, settled, CaptureMethod::Vfs, None);
     out.install_changes = installed;
+    out.unchanged_dropped = unchanged_dropped;
     Ok((out, injected))
 }
 
@@ -2028,6 +2044,7 @@ fn outcome(
         install_changes: InstallChanges::default(),
         swap: None,
         offers: Vec::new(),
+        unchanged_dropped: 0,
     }
 }
 
@@ -2189,23 +2206,16 @@ fn settle_run(
     })
 }
 
-/// The files the game would read once `tool`'s run is promoted, lower-cased and `/`-separated
-/// (MASTER_SPEC §26.9). The stack is the instance's, with the tool's generated layer holding the run's
-/// staging folder and the run's whiteouts. The layers above that layer are left out, the writable
-/// layer among them: the game's own writes are not the tool's output. The planner does the work, so
-/// what it hides or places is what the game would see.
-///
-/// The inner `Err` is a reason the output cannot be deployed at all (for example a file that is a
-/// folder in another layer). That fails the run's checks; an outer `Err` is a failure to read the
-/// instance.
-fn would_be_files(
+/// The instance's stack as the game would have it once `tool`'s output is promoted with `deletions` as its
+/// whiteouts (MASTER_SPEC §26.9). The tool's generated layer points at the would-be output, and the layers
+/// above it are left out, the writable layer among them: the game's own writes are not the tool's output.
+fn would_be_manifest(
     ctx: &Ctx,
     instance_id: &str,
     definition: &GameDefinition,
     tool: &ToolDefinition,
-    staging: &Path,
-) -> Result<Result<Vec<String>, String>, ToolError> {
-    let deletions = read_markers(staging)?;
+    deletions: Vec<RelPath>,
+) -> Result<GameInstanceManifest, ToolError> {
     let mut manifest = load_manifest(ctx, instance_id)?;
     let mut layers = manifest.layers.layers().to_vec();
     match generated_position(&layers, tool.id.as_str()) {
@@ -2227,6 +2237,27 @@ fn would_be_files(
     let layers = arrange(ctx, definition, layers);
     let end = generated_position(&layers, tool.id.as_str()).unwrap_or(layers.len());
     manifest.layers = LayerStack::new(layers.into_iter().take(end + 1).collect())?;
+    Ok(manifest)
+}
+
+/// The files the game would read once `tool`'s run is promoted, lower-cased and `/`-separated
+/// (MASTER_SPEC §26.9). The stack is the instance's, with the tool's generated layer holding the run's
+/// staging folder and the run's whiteouts. The layers above that layer are left out, the writable
+/// layer among them: the game's own writes are not the tool's output. The planner does the work, so
+/// what it hides or places is what the game would see.
+///
+/// The inner `Err` is a reason the output cannot be deployed at all (for example a file that is a
+/// folder in another layer). That fails the run's checks; an outer `Err` is a failure to read the
+/// instance.
+fn would_be_files(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    staging: &Path,
+) -> Result<Result<Vec<String>, String>, ToolError> {
+    let deletions = read_markers(staging)?;
+    let manifest = would_be_manifest(ctx, instance_id, definition, tool, deletions)?;
 
     let would_be = crate::game_deploy::WouldBe {
         manifest,
@@ -2242,6 +2273,107 @@ fn would_be_files(
         Err(e) => Ok(Err(format!(
             "the output the run would produce cannot be deployed: {e}"
         ))),
+    }
+}
+
+/// Drops the files of a virtual-file-system run that are not output: those the game would already read
+/// unchanged without the tool's output (MASTER_SPEC §26.9). A tool that opens a file for writing and
+/// never changes it makes the VFS copy the file up into staging, and such a copy would shadow the mod's
+/// own file from then on. Returns how many files were dropped. The run's whiteouts are left alone.
+///
+/// The baseline is the stack with this tool's output empty, planned as links with the writable layer
+/// left out. A staged file the baseline does not hold is always kept. The tool's previous generation is
+/// not in the baseline, so a file equal to it but not to the baseline is kept too. A file is equal when
+/// its size and SHA-256 match: the content store's hash when the plan carries one, otherwise both files
+/// are hashed. Dropped files are deleted, with the folders they leave empty.
+pub fn drop_unchanged_outputs(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    dir: &Path,
+    staging: &Path,
+    run: &str,
+) -> Result<usize, ToolError> {
+    // The baseline's tool layer reads this folder, which is empty: the tool's output is absent.
+    let empty = dir.join(format!("baseline-{run}"));
+    std::fs::create_dir_all(&empty)?;
+    let baseline = baseline_plan(ctx, instance_id, definition, tool, &empty);
+    let _ = std::fs::remove_dir_all(&empty);
+    let baseline = baseline?;
+
+    let below: BTreeMap<String, &crate::game_deploy::PlannedFile> = baseline
+        .files
+        .iter()
+        .map(|file| (file.path.as_str().to_ascii_lowercase(), file))
+        .collect();
+    let mut dropped = 0;
+    for rel in written_files(staging)? {
+        let Some(file) = below.get(&rel.to_ascii_lowercase()) else {
+            continue;
+        };
+        let path = rel
+            .split('/')
+            .fold(staging.to_path_buf(), |p, part| p.join(part));
+        if !same_bytes_as_baseline(ctx, &path, file)? {
+            continue;
+        }
+        std::fs::remove_file(&path)?;
+        remove_emptied_folders(staging, &path);
+        dropped += 1;
+    }
+    Ok(dropped)
+}
+
+/// The files the game would read with `tool`'s output empty, planned as links (MASTER_SPEC §26.9).
+fn baseline_plan(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    tool: &ToolDefinition,
+    empty: &Path,
+) -> Result<crate::game_deploy::DeploymentPlan, ToolError> {
+    let manifest = would_be_manifest(ctx, instance_id, definition, tool, Vec::new())?;
+    let would_be = crate::game_deploy::WouldBe {
+        manifest,
+        tool: tool.id.as_str(),
+        folder: empty.to_path_buf(),
+    };
+    Ok(crate::game_deploy::plan_would_be(
+        ctx,
+        instance_id,
+        definition,
+        would_be,
+    )?)
+}
+
+/// Whether a staged file has the bytes of the baseline file it shares a path with. The sizes are compared
+/// first, so a file of another size is never hashed. The staged file is always hashed here, never a hash
+/// read from the staging folder.
+fn same_bytes_as_baseline(
+    ctx: &Ctx,
+    staged: &Path,
+    baseline: &crate::game_deploy::PlannedFile,
+) -> Result<bool, ToolError> {
+    if std::fs::metadata(staged)?.len() != baseline.size {
+        return Ok(false);
+    }
+    let staged_hash = crate::helpers::hash_file_sha256(staged)?;
+    let baseline_hash = match &baseline.source {
+        crate::game_deploy::FileSource::Content { sha256, .. } => sha256.clone(),
+        other => crate::helpers::hash_file_sha256(&crate::game_deploy::source_path(ctx, other))?,
+    };
+    Ok(staged_hash.eq_ignore_ascii_case(&baseline_hash))
+}
+
+/// Removes the folders above a dropped file that are now empty, stopping at `root`, which stays.
+fn remove_emptied_folders(root: &Path, file: &Path) {
+    let mut folder = file.parent();
+    while let Some(current) = folder {
+        if current == root || !current.starts_with(root) || std::fs::remove_dir(current).is_err() {
+            break;
+        }
+        folder = current.parent();
     }
 }
 

@@ -8521,6 +8521,12 @@ fn print_tool_run(outcome: &agora_core::game_tools::RunOutcome) {
             outcome.name
         );
     }
+    if outcome.unchanged_dropped > 0 {
+        println!(
+            "{} file(s) the tool opened but did not change were left out",
+            outcome.unchanged_dropped
+        );
+    }
     if let Some(layer) = &outcome.copied_layer {
         println!(
             "{}'s own mod ({layer}) was copied for this run, so the tool could rewrite its own files. The mod itself is unchanged.",

@@ -1912,6 +1912,212 @@ fn a_swap_chosen_after_a_refusal_names_the_vfs_failure_in_its_reason() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Unchanged copies (MASTER_SPEC §26.9): a VFS run's staged files the game would already read
+// unchanged are dropped before the output is settled. These feed the staging folder directly.
+// ---------------------------------------------------------------------------------------------
+
+/// A staging folder for a tool, with `files` written into it.
+fn stage(f: &Fixture, tool: &str, files: &[(&str, &[u8])]) -> PathBuf {
+    let staging = f.tool_dir(tool).join("staging-test");
+    std::fs::create_dir_all(&staging).unwrap();
+    for (rel, bytes) in files {
+        let path = rel.split('/').fold(staging.clone(), |p, part| p.join(part));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    staging
+}
+
+/// Runs the drop on a staging folder, as a VFS run does, and returns how many files it dropped.
+fn drop_unchanged(f: &Fixture, tool: &str, staging: &Path) -> usize {
+    let tool_def = f
+        .ctx
+        .games
+        .tool(&f.def.id, &ToolId::new(tool).unwrap())
+        .unwrap()
+        .clone();
+    game_tools::drop_unchanged_outputs(
+        &f.ctx,
+        f.id(),
+        &f.def,
+        &tool_def,
+        &f.tool_dir(tool),
+        staging,
+        "test-run",
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_staged_file_identical_to_a_mods_file_is_dropped_and_counted() {
+    let f = fixture(vec![tool("sweep", "Sweep", &["/c", "echo", "x"])]);
+    f.add_mod("Mod", &[("Data/meshes/a.hkx", b"same bytes")]);
+    let staging = stage(
+        &f,
+        "sweep",
+        &[
+            ("Data/meshes/a.hkx", b"same bytes"),
+            ("Data/keep.txt", b"new"),
+        ],
+    );
+
+    assert_eq!(drop_unchanged(&f, "sweep", &staging), 1);
+    assert!(!staging.join("Data/meshes/a.hkx").exists());
+    assert_eq!(
+        std::fs::read(staging.join("Data/keep.txt")).unwrap(),
+        b"new"
+    );
+}
+
+#[test]
+fn a_staged_file_that_differs_by_one_byte_at_the_same_size_is_kept() {
+    let f = fixture(vec![tool("sweep", "Sweep", &["/c", "echo", "x"])]);
+    f.add_mod("Mod", &[("Data/meshes/a.hkx", b"same bytes")]);
+    let staging = stage(&f, "sweep", &[("Data/meshes/a.hkx", b"same bytez")]);
+
+    assert_eq!(drop_unchanged(&f, "sweep", &staging), 0);
+    assert_eq!(
+        std::fs::read(staging.join("Data/meshes/a.hkx")).unwrap(),
+        b"same bytez"
+    );
+}
+
+#[test]
+fn a_staged_file_equal_to_the_previous_generation_but_not_the_baseline_is_kept() {
+    let f = fixture(vec![tool(
+        "sweep",
+        "Sweep",
+        &[
+            "/c",
+            "mkdir",
+            "Data",
+            "&",
+            "echo",
+            "made>",
+            r"Data\prev.txt",
+        ],
+    )]);
+    f.run_ok("sweep", &StagingLauncher::new());
+    let previous = std::fs::read(f.generation_dir("sweep", "1").join("Data/prev.txt")).unwrap();
+    // Nothing below the tool holds Data/prev.txt, so the baseline does not hold it either.
+    let staging = stage(&f, "sweep", &[("Data/prev.txt", &previous)]);
+
+    assert_eq!(drop_unchanged(&f, "sweep", &staging), 0);
+    assert!(staging.join("Data/prev.txt").is_file());
+}
+
+#[test]
+fn a_staged_file_absent_below_is_kept() {
+    let f = fixture(vec![tool("sweep", "Sweep", &["/c", "echo", "x"])]);
+    f.add_mod("Mod", &[("Data/other.txt", b"mod")]);
+    let staging = stage(&f, "sweep", &[("Data/new.txt", b"fresh")]);
+
+    assert_eq!(drop_unchanged(&f, "sweep", &staging), 0);
+    assert!(staging.join("Data/new.txt").is_file());
+}
+
+#[test]
+fn a_whiteout_is_kept_and_stays_a_deletion() {
+    let f = fixture(vec![tool("sweep", "Sweep", &["/c", "echo", "x"])]);
+    f.add_mod("Mod", &[("Data/mod.txt", b"original")]);
+    let staging = stage(&f, "sweep", &[]);
+    let marker = staging.join(".agvfs-wh").join("Data").join("mod.txt.wh");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"").unwrap();
+
+    assert_eq!(drop_unchanged(&f, "sweep", &staging), 0);
+    assert!(marker.is_file(), "the whiteout was removed");
+}
+
+#[test]
+fn folders_emptied_by_dropped_files_are_removed_and_the_others_stay() {
+    let f = fixture(vec![tool("sweep", "Sweep", &["/c", "echo", "x"])]);
+    f.add_mod(
+        "Mod",
+        &[
+            ("Data/meshes/actors/a/b.hkx", b"anim"),
+            ("Data/meshes/c.hkx", b"mesh"),
+        ],
+    );
+    let staging = stage(
+        &f,
+        "sweep",
+        &[
+            ("Data/meshes/actors/a/b.hkx", b"anim"),
+            ("Data/meshes/keep.txt", b"kept"),
+        ],
+    );
+
+    assert_eq!(drop_unchanged(&f, "sweep", &staging), 1);
+    assert!(!staging.join("Data/meshes/actors").exists());
+    assert!(staging.join("Data/meshes/keep.txt").is_file());
+    assert!(staging.is_dir(), "the staging folder itself stays");
+
+    std::fs::remove_dir_all(&staging).unwrap();
+    let staging = stage(&f, "sweep", &[("Data/meshes/c.hkx", b"mesh")]);
+    assert_eq!(drop_unchanged(&f, "sweep", &staging), 1);
+    assert_eq!(names(&staging), Vec::<String>::new(), "nothing is left");
+    assert!(staging.is_dir());
+}
+
+#[test]
+fn a_required_output_equal_to_the_baseline_still_passes_and_is_not_output() {
+    let mut required = tagged("sweep");
+    required.required_outputs = vec!["Data/mod.txt".to_string()];
+    let f = fixture(vec![required]);
+    f.add_mod("Mod", &[("Data/mod.txt", b"tag 1 \r\n")]);
+
+    // The run writes the mod's own bytes, so the file is dropped, and the check still finds it: the
+    // game reads it from the mod.
+    let out = f
+        .run_as(
+            "sweep",
+            &StagingLauncher::new().with_env("AGORA_TEST_TAG", "1"),
+            CaptureMode::Vfs,
+        )
+        .unwrap();
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.unchanged_dropped, 1, "{out:?}");
+    assert!(out.written.is_empty(), "{:?}", out.written);
+    assert!(names(&f.generation_dir("sweep", "1")).is_empty());
+}
+
+#[test]
+fn a_failure_marker_is_searched_only_in_files_the_run_changed() {
+    let mut marked = tagged("sweep");
+    marked.failure_markers = vec![FailureMarker {
+        file: RelPath::new("Data/mod.txt").unwrap(),
+        contains: "tag".into(),
+    }];
+    let f = fixture(vec![marked]);
+    f.add_mod("Mod", &[("Data/mod.txt", b"tag 1 \r\n")]);
+
+    // The same bytes as the mod: the file is dropped before the marker is searched, so the run passes.
+    let same = f
+        .run_as(
+            "sweep",
+            &StagingLauncher::new().with_env("AGORA_TEST_TAG", "1"),
+            CaptureMode::Vfs,
+        )
+        .unwrap();
+    assert!(same.promoted, "{same:?}");
+    assert_eq!(same.unchanged_dropped, 1);
+
+    // Changed bytes: the file is written, and the marker in it fails the run.
+    let changed = f
+        .run_as(
+            "sweep",
+            &StagingLauncher::new().with_env("AGORA_TEST_TAG", "2"),
+            CaptureMode::Vfs,
+        )
+        .unwrap();
+    assert!(!changed.promoted, "{changed:?}");
+    assert_eq!(changed.unchanged_dropped, 0);
+    assert_eq!(changed.written, vec!["Data/mod.txt".to_string()]);
+    assert!(changed.failure.is_some(), "{changed:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
 // Real injection: the same tools under agora_vfs.dll. Run with
 //   cargo build -p agora-vfs
 //   AGORA_VFS_DLL=<worktree>\target\debug\agora_vfs.dll cargo test -p agora-core --test game_tools -- --ignored
@@ -2017,6 +2223,41 @@ fn real_injection_rollback_changes_the_bytes_the_game_reads() {
         "tag 1",
         "after rollback the game reads generation 1"
     );
+}
+
+/// A tool that opens a mod's file for writing and writes nothing to it, then writes one new file. The VFS
+/// copies the mod's file up on the open, so the copy is staged; it is identical to the mod's file, so it
+/// is not output (MASTER_SPEC §26.9).
+#[test]
+#[ignore = "injects agora_vfs.dll: cargo build -p agora-vfs, then set AGORA_VFS_DLL"]
+fn real_injection_a_file_opened_for_writing_and_not_changed_is_not_output() {
+    let opener = tool(
+        "opener",
+        "Opener",
+        &[
+            "/c",
+            "type",
+            "nul",
+            ">>",
+            r"Data\mod.txt",
+            "&",
+            "echo",
+            "new>",
+            r"Data\new.txt",
+        ],
+    );
+    let f = fixture(vec![opener]);
+    let item = f.add_mod("Mod", &[("Data/mod.txt", b"original")]);
+    let mod_bytes = f.content_bytes(&item, "Data/mod.txt");
+
+    let out = f.run_ok("opener", &RealLauncher::new(&[]));
+    println!("opener outcome: {out:?}");
+    assert_eq!(out.written, vec!["Data/new.txt".to_string()], "{out:?}");
+    assert_eq!(out.unchanged_dropped, 1, "{out:?}");
+    let generation = f.generation_dir("opener", "1");
+    assert_eq!(names(&generation), vec!["Data".to_string()]);
+    assert_eq!(names(&generation.join("Data")), vec!["new.txt".to_string()]);
+    assert_eq!(f.content_bytes(&item, "Data/mod.txt"), mod_bytes);
 }
 
 /// What a tool sees of a file the game deleted: the game's whiteout lives in its writable layer,

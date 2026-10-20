@@ -3908,6 +3908,13 @@ small and well defined enough to support it.
     injection and the tool does not work on the real install. The offers are shown and asked
     about, never applied. An accepted fallback's outcome names the virtual file system's failure in
     its `capture_reason`.
+- **A file a tool opened but did not change is not output** (measured 2026-10-10). The real Nemesis
+  opens ~18,600 animation files for writing and changes none, and copy-on-write copied each one up:
+  1.1 GB of copies that would shadow the mods' own files after a mod update. After a VFS run, a
+  staged file whose bytes equal what the layers below the tool provide is dropped, and the outcome
+  counts them. A file equal to the tool's previous generation but not to the layers below is kept,
+  because the new generation replaces the old one. Link capture and the swap already compare
+  against a record.
 - **Pandora Behaviour Engine** is the recommended behaviour engine. It is 64-bit and takes the game
   data folder on its command line (`-o`), plus `-autorun -autoclose`, so Agora can rebuild stale
   output without the user clicking.
