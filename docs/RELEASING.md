@@ -36,6 +36,24 @@ Authenticode signature and the ZIP checksum.
 Fresh appearance preferences and **Reset appearance** use **Civic Gold (default)**.
 Existing saved appearance choices are preserved; the previous blue preset is **Agora Blue**.
 
+### Windows VFS files
+
+Games start under `agora_vfs.dll` (MASTER_SPEC §26.5). The Windows desktop installers and the
+portable ZIP carry the 64-bit `agora_vfs.dll` and `agora-vfs-helper.exe` beside the application,
+and the 32-bit pair in an `x86\` folder beside them, which 32-bit tools such as Nemesis need.
+The Windows release job builds both pairs from `agora-vfs` (the second for
+`i686-pc-windows-msvc`), signs each file, and stages them with `scripts/stage_vfs_files.py`,
+which refuses a file of the wrong bitness. `desktop/src-tauri/tauri.bundle-vfs.conf.json` names
+them as bundle resources; it is merged only into the Windows matrix entry. The Windows CLI
+archive (`agora-cli-*-windows-x64.zip`) carries the same layout beside `agora.exe`, built and
+signed in its own job, so a CLI-only install can start games. That archive now has `agora.exe`
+at its root, as the Unix archives do; before, it held the `target\...\release` path. Placement:
+Tauri's `resource_dir` on Windows is the executable's directory, and NSIS installs resources
+under `$INSTDIR` at their target paths, so `x86\` sits beside the executable (see
+[Tauri resources](https://v2.tauri.app/develop/resources/)). A 32-bit game started without its
+x86 files is refused, and the reason names both expected paths. Check that on the packaged build
+before publishing.
+
 ### Windows code signing
 
 Windows releases use Azure Artifact Signing with GitHub OIDC. The shared setup is

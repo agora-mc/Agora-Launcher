@@ -33,3 +33,6 @@ tmp/
 
 # The CLI copied in for release bundling (scripts/stage_cli_sidecar.py)
 desktop/src-tauri/binaries/
+
+# The VFS DLLs and helpers copied in for release bundling (scripts/stage_vfs_files.py)
+desktop/src-tauri/vfs/

@@ -1945,7 +1945,7 @@ fn real_injection_a_32_bit_game_is_refused_cleanly() {
     );
     assert!(
         err.to_string().contains(&format!(
-            "32-bit program and the 32-bit VFS files were not found at {missing_x86}"
+            "32-bit program and the 32-bit VFS files were not found: missing '{missing_x86}'"
         )),
         "{err}"
     );
