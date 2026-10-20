@@ -76,7 +76,8 @@
       ],
       "tool_ids": [
         "nemesis",
-        "bodyslide"
+        "bodyslide",
+        "pandora"
       ],
       "launch": {
         "executable": {
@@ -363,6 +364,20 @@
           "file": "Data/Nemesis_Engine/PatchLog.txt",
           "contains": "Failed to generate behavior"
         }
+      ],
+      "required_magic": [
+        {
+          "file": "Data/meshes/actors/character/behaviors/0_master.hkx",
+          "magic": "57e0e05710c0c010"
+        },
+        {
+          "file": "Data/meshes/actors/character/characters/defaultmale.hkx",
+          "magic": "57e0e05710c0c010"
+        },
+        {
+          "file": "Data/meshes/actors/character/characters female/defaultfemale.hkx",
+          "magic": "57e0e05710c0c010"
+        }
       ]
     },
     {
@@ -387,6 +402,56 @@
       "output_patterns": [
         "Data/meshes/actors/character/**",
         "Data/meshes/clothes/**"
+      ]
+    },
+    {
+      "id": "pandora",
+      "game": "skyrim-se",
+      "name": "Pandora Behaviour Engine",
+      "launch": {
+        "executable": {
+          "root": "runtime",
+          "path": "Data/Pandora Behaviour Engine+/Pandora Behaviour Engine+.exe"
+        },
+        "arguments": [
+          { "kind": "literal", "value": "--output" },
+          {
+            "kind": "path",
+            "path": { "root": "runtime", "path": "Data" },
+            "prefix": "",
+            "suffix": ""
+          },
+          { "kind": "literal", "value": "--tesv" },
+          {
+            "kind": "path",
+            "path": { "root": "runtime", "path": "" },
+            "prefix": "",
+            "suffix": ""
+          },
+          { "kind": "literal", "value": "--auto_close" }
+        ],
+        "environment": {},
+        "working_directory": {
+          "root": "runtime",
+          "path": "Data"
+        }
+      },
+      "relevant_settings": [],
+      "after_tools": [],
+      "conflicts_with": ["nemesis"],
+      "uses_install_path": true,
+      "output_patterns": [
+        "Data/meshes/actors/character/**",
+        "Data/Pandora_Engine/**"
+      ],
+      "required_outputs": [
+        "Data/meshes/actors/character/behaviors/0_master.hkx"
+      ],
+      "required_magic": [
+        {
+          "file": "Data/meshes/actors/character/behaviors/0_master.hkx",
+          "magic": "57e0e05710c0c010"
+        }
       ]
     }
   ]

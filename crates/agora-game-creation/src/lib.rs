@@ -27,7 +27,9 @@ pub fn game_package() -> Arc<dyn GamePackage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agora_game_api::{DeploymentStrategy, GameId, GamePath, RelPath, StoreId, VersionSource};
+    use agora_game_api::{
+        DeploymentStrategy, GameId, GamePath, LaunchValue, RelPath, StoreId, VersionSource,
+    };
 
     #[test]
     fn parses_embedded_package_json() {
@@ -168,17 +170,18 @@ mod tests {
         );
         assert_eq!(def.frameworks[0].game, GameId::new("skyrim-se").unwrap());
         assert_eq!(def.frameworks[0].name, "Skyrim Script Extender");
-        // Nemesis and BodySlide are the tools Skyrim SE declares (MASTER_SPEC §26.9): Nemesis's engine
-        // sits in the deployed Nemesis mod folder and runs from there. Both read the install path,
-        // so both run by swap (MASTER_SPEC §26.9, slice 4c).
+        // Nemesis, BodySlide and Pandora are the tools Skyrim SE declares (MASTER_SPEC §26.9): Nemesis's
+        // engine sits in the deployed Nemesis mod folder and runs from there. All three read the install
+        // path, so all three run by the real-path view or, failing that, the swap (MASTER_SPEC §26.9, slice 4c).
         assert_eq!(
             game.tool_ids,
             vec![
                 agora_game_api::ToolId::new("nemesis").unwrap(),
                 agora_game_api::ToolId::new("bodyslide").unwrap(),
+                agora_game_api::ToolId::new("pandora").unwrap(),
             ]
         );
-        assert_eq!(def.tools.len(), 2);
+        assert_eq!(def.tools.len(), 3);
         let nemesis = &def.tools[0];
         assert!(nemesis.uses_install_path);
         let bodyslide = &def.tools[1];
@@ -230,8 +233,89 @@ mod tests {
             nemesis.failure_markers[0].contains,
             "Failed to generate behavior"
         );
+        // Every required output Nemesis declares is a packed Havok file (MASTER_SPEC §26.9): each must begin
+        // with the little-endian packfile magic, so an XML fallback in its place is discarded.
+        let havok_magic = "57e0e05710c0c010";
+        assert_eq!(nemesis.required_magic.len(), nemesis.required_outputs.len());
+        for (magic, output) in nemesis.required_magic.iter().zip(&nemesis.required_outputs) {
+            assert_eq!(magic.file.as_str(), output);
+            assert_eq!(magic.magic, havok_magic);
+        }
         assert!(bodyslide.required_outputs.is_empty());
         assert!(bodyslide.failure_markers.is_empty());
+        // Pandora Behaviour Engine (MASTER_SPEC §26.9), from its public source: the exe is named by its
+        // csproj AssemblyName, `--output` is the folder whose `meshes` and `Pandora_Engine` it writes, and
+        // `--tesv` is the game root. It runs with `--auto_close` only: `--auto_run` reuses a cached mod list.
+        let pandora = &def.tools[2];
+        assert_eq!(pandora.id, agora_game_api::ToolId::new("pandora").unwrap());
+        assert_eq!(pandora.game, GameId::new("skyrim-se").unwrap());
+        assert_eq!(pandora.name, "Pandora Behaviour Engine");
+        assert!(pandora.uses_install_path);
+        assert_eq!(
+            pandora.launch.executable,
+            GamePath::Runtime {
+                path: RelPath::new("Data/Pandora Behaviour Engine+/Pandora Behaviour Engine+.exe")
+                    .unwrap()
+            }
+        );
+        assert_eq!(
+            pandora.launch.working_directory,
+            GamePath::Runtime {
+                path: RelPath::new("Data").unwrap()
+            }
+        );
+        assert_eq!(
+            pandora.launch.arguments,
+            vec![
+                LaunchValue::Literal {
+                    value: "--output".into()
+                },
+                LaunchValue::Path {
+                    path: GamePath::Runtime {
+                        path: RelPath::new("Data").unwrap()
+                    },
+                    prefix: String::new(),
+                    suffix: String::new(),
+                },
+                LaunchValue::Literal {
+                    value: "--tesv".into()
+                },
+                LaunchValue::Path {
+                    path: GamePath::Runtime {
+                        path: RelPath::default()
+                    },
+                    prefix: String::new(),
+                    suffix: String::new(),
+                },
+                LaunchValue::Literal {
+                    value: "--auto_close".into()
+                },
+            ]
+        );
+        assert!(pandora.relevant_settings.is_empty());
+        assert!(pandora.after_tools.is_empty());
+        assert_eq!(
+            pandora.conflicts_with,
+            vec![agora_game_api::ToolId::new("nemesis").unwrap()]
+        );
+        assert_eq!(
+            pandora.output_patterns,
+            vec![
+                "Data/meshes/actors/character/**".to_string(),
+                "Data/Pandora_Engine/**".to_string(),
+            ]
+        );
+        assert_eq!(
+            pandora.required_outputs,
+            vec!["Data/meshes/actors/character/behaviors/0_master.hkx".to_string()]
+        );
+        assert!(pandora.failure_markers.is_empty());
+        assert_eq!(pandora.required_magic.len(), 1);
+        assert_eq!(
+            pandora.required_magic[0].file.as_str(),
+            "Data/meshes/actors/character/behaviors/0_master.hkx"
+        );
+        assert_eq!(pandora.required_magic[0].magic, "57e0e05710c0c010");
         assert!(game.log_paths.is_empty());
         assert!(game.crash_paths.is_empty());
         assert!(game.save_paths.is_empty());

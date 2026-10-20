@@ -3931,9 +3931,64 @@ small and well defined enough to support it.
   counts them. A file equal to the tool's previous generation but not to the layers below is kept,
   because the new generation replaces the old one. Link capture and the swap already compare
   against a record.
-- **Pandora Behaviour Engine** is the recommended behaviour engine. It is 64-bit and takes the game
-  data folder on its command line (`-o`), plus `-autorun -autoclose`, so Agora can rebuild stale
-  output without the user clicking.
+- **Pandora Behaviour Engine** is the recommended behaviour engine. It is 64-bit and takes an output
+  folder on its command line (`--output`, the Data-equivalent folder) and a game root (`--tesv`).
+  The earlier `-autorun -autoclose` flags were wrong; the real ones are `--auto_run` and `--auto_close`,
+  and `--auto_run` is not used (see below).
+  - **Declared (2026-10-20)** in the Skyrim SE package, next to Nemesis and BodySlide: id `pandora`.
+    The facts below come from the public source of `Monitor221hz/Pandora-Behaviour-Engine-Plus` on its
+    `main` branch, read on 2026-10-20 (read on GitHub, not cloned or run):
+    - **Exe:** `Pandora Behaviour Engine+.exe`, from `AssemblyName` in
+      [`Pandora.Engine.csproj` L11](https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/blob/main/Pandora.Engine/Pandora.Engine.csproj).
+      No `PlatformTarget` is set, so it is AnyCPU, which runs 64-bit on 64-bit Windows. Target is .NET 10 (L4).
+    - **Arguments** ([`CLI/CommandLineParser.cs` L24-30](https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/blob/main/Pandora.Skyrim/CLI/CommandLineParser.cs)):
+      `--output`/`-o` (output folder), `--tesv`/`-tesv` (game root), `--auto_run`/`-ar`, `--auto_close`/`-ac`,
+      `--skyrim_debug64`. There is no `-autorun` or `-autoclose`; the old declaration had wrong flags.
+    - **Output** ([`Pandora.Core/Paths/OutputPaths.cs` L12-20](https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/blob/main/Pandora.Core/Paths/OutputPaths.cs)):
+      the folder given to `--output` is the mod root: `meshes/` goes directly under it, and the
+      cache `Pandora_Engine/ActiveMods.json` too. So `--output` takes the Data-equivalent folder, and
+      the declaration passes the runtime `Data`. The default, when `--output` is missing, is the
+      executable's own folder ([`UserPaths.cs` L15](https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/blob/main/Pandora.Core/Paths/UserPaths.cs)),
+      so a missing argument would write the behaviour files in the wrong place.
+    - **`0_master.hkx`:** the vanilla list the project ships names
+      `actors\character\behaviors\0_master.hkx`
+      ([`Pandora_Engine/Skyrim/Template/vanilla_hkxpaths.txt`](https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/blob/main/Pandora.Skyrim/Pandora_Engine/Skyrim/Template/vanilla_hkxpaths.txt)),
+      so it is a file Pandora can write. Whether a given run writes it is not shown. It stays the required
+      output, so a run that writes nothing is discarded rather than replacing the game's behaviour files.
+    - **Log:** `Engine.log`, a relative name in
+      [`Pandora.Engine/NLog.config` L11](https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/blob/main/Pandora.Engine/NLog.config),
+      so it lands in the process's base folder, not in the output.
+    - **Working folder:** `Data`, as the README's Vortex setup says ("Start In" = the Data directory).
+    - **Install:** the README says not to install it directly in `Data`. The folder the declaration names
+      (`Data/Pandora Behaviour Engine+`) is a guess that fits that rule, and it is the user's to place.
+    - **`--auto_run` is not passed.** The README says it "runs using the active mods cached from the last
+      successful run". Agora's staleness check looks at the current mod list, and that cache may not match
+      it, so an unattended run could rebuild from an old list and pass its checks. The run is GUI-driven
+      (the user ticks patches and clicks Launch), and `--auto_close` closes it after. This is the choice
+      to revisit with the user.
+    - **`--tesv`** is passed as the runtime root, so the game root does not depend on the registry lookup
+      that the `SkyrimSE` descriptor declares
+      ([`Platform/SkyrimDescriptor.cs` L14](https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/blob/main/Pandora.Skyrim/Platform/SkyrimDescriptor.cs)).
+    - It is run with `uses_install_path: true`, so it gets the real-path view under the VFS and the swap
+      otherwise, as Nemesis does.
+  - **Pandora and Nemesis conflict.** They write the same behaviour files, so `conflicts_with` on Pandora
+    names Nemesis. Enabling both gives a warning on each (`OutputStatus::Conflict`); it is not a refusal.
+    A conflict is not an ordering rule, so there is no `after_tools` between them.
+  - **Magic check (2026-10-20).** Pandora's XML fallback writes XML into the `.hkx` path when HKX
+    serialization throws ([`PackFileExporter.cs` L44-52](https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/blob/main/Pandora.Skyrim/Patch/IO/PackFileExporter.cs)),
+    so existence alone does not prove a packed file. A tool's `required_magic` names a file and the hex
+    bytes it must start with. A file the run wrote that does not start with them discards the run, named
+    in the reason, as a missing required output does. A file the run did not write is not read: it is the
+    earlier output, checked when it was promoted. The bytes are `57 e0 e0 57 10 c0 c0 10`, the
+    little-endian packfile magic: Pandora's header asserts `0x57E0E057` then `0x10C0C010` as 32-bit reads
+    ([`HKX2/PackFileCommon.cs` L35-36, L156-157](https://github.com/Monitor221hz/HKX2-Enhanced-Library/blob/main/HKX2/PackFileCommon.cs)),
+    and the magic is the same for the Breath of the Wild header ([zeldamods Havok page](https://zeldamods.org/wiki/Havok)).
+    A real Skyrim SE `0_master.hkx` in the salvage mods starts with those bytes, read-only. Declared for
+    Pandora's `0_master.hkx` and for all three of Nemesis's required `.hkx` outputs.
+  - **Still to confirm on a real run:** the executable's folder name; that the GUI-driven launch
+    (no `--auto_run`) is acceptable; that `--output Data` with `--tesv` root works under the VFS, the
+    swap, and link capture; and that `0_master.hkx` appears in a real output. None of this was run:
+    Pandora is not on this machine, and downloading or running it needs the user's permission.
 
 ### 26.10 Importing Existing Setups
 

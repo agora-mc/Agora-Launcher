@@ -1274,6 +1274,10 @@ pub struct ToolDefinition {
     /// Generated output precedence is independent of plugin load order.
     #[serde(default)]
     pub after_tools: Vec<ToolId>,
+    /// Tools whose output would contend with this tool's: two behaviour engines writing the same
+    /// behaviour files. Not a refusal; the instance shows a warning when both have enabled output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts_with: Vec<ToolId>,
     /// The tool reads the install path from the game (its registry entry or its own config) and
     /// works on the real install's `Data` folder, so the virtual file system and link capture would
     /// both miss its writes. Such a tool runs by swap (MASTER_SPEC §26.9).
@@ -1293,6 +1297,10 @@ pub struct ToolDefinition {
     /// in it is discarded (MASTER_SPEC §26.9).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failure_markers: Vec<FailureMarker>,
+    /// Files the tool writes that must begin with given bytes, such as a packed Havok `.hkx`. A run that
+    /// writes one without them is discarded, as for a missing required output (MASTER_SPEC §26.9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_magic: Vec<RequiredMagic>,
 }
 
 /// A file a tool writes to report a failure, and the text that says so.
@@ -1302,6 +1310,15 @@ pub struct FailureMarker {
     pub file: RelPath,
     /// The text whose presence in that file means the run failed.
     pub contains: String,
+}
+
+/// The first bytes a file a tool writes must have (MASTER_SPEC §26.9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredMagic {
+    /// The file, relative to the runtime root (e.g. `Data/meshes/actors/character/behaviors/0_master.hkx`).
+    pub file: RelPath,
+    /// The bytes it must start with, as hex pairs with no separators (e.g. `57e0e05710c0c010`).
+    pub magic: String,
 }
 
 /// This is plugin/module order, distinct from the order of content layers.
