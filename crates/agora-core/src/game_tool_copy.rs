@@ -856,13 +856,14 @@ mod tests {
             base_id: "b".into(),
             store: "steam".into(),
         };
+        // Built with join, so the separator is the platform's own.
         assert_eq!(
             copy_dir_for(CopyKind::Kept, &loc, "r1"),
-            PathBuf::from(r"D:\Bases\deployments\inst\swap\Data")
+            loc.swap_dir.join("Data")
         );
         assert_eq!(
             copy_dir_for(CopyKind::PerRun, &loc, "r1"),
-            PathBuf::from(r"D:\Games\Skyrim\Data.agora-copy-r1")
+            loc.install.join("Data.agora-copy-r1")
         );
     }
 }

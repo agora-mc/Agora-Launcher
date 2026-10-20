@@ -469,6 +469,9 @@ fn the_up_to_date_check_keeps_its_verdicts_and_harvest_still_sees_the_changes() 
         let file = game_dir(&f, &id).join("Data/a/two.ini");
         let edited = b"[two]\nvalue=9\n";
         assert_eq!(std::fs::read(&file).unwrap().len(), edited.len());
+        // On Linux a copy takes the time it was made, not its source's, so an edit in the same
+        // millisecond would look unchanged by size and time; no person edits that fast.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&file, edited).unwrap();
 
         let outcome = deploy(&f.ctx, &id, &f.def, DeployMode::Links).unwrap();
