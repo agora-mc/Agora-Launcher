@@ -3390,6 +3390,105 @@ fn games_content_fomod_cli_show_and_install() {
 }
 
 #[test]
+fn games_instance_content_add_of_a_fomod_archive_exits_71_without_an_error() {
+    // A pinned Skyrim SE instance, and a small FOMOD folder in the content store (the folder form
+    // of `games content add`, as the fomod test above uses).
+    let f = skyrim_fixture("1.6.1170.0", &[]);
+    let mod_dir = tempfile::tempdir().unwrap();
+    let root = mod_dir.path();
+    std::fs::create_dir_all(root.join("fomod")).unwrap();
+    std::fs::create_dir_all(root.join("Core")).unwrap();
+    std::fs::write(
+        root.join("fomod").join("ModuleConfig.xml"),
+        r#"<config><moduleName>Tiny FOMOD</moduleName>
+  <requiredInstallFiles><folder source="Core" destination=""/></requiredInstallFiles>
+</config>"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("Core").join("tiny.esp"), b"plugin").unwrap();
+
+    let add = run_agora_json(
+        &f.data_dir,
+        &[
+            "games",
+            "content",
+            "add",
+            root.to_str().unwrap(),
+            "--name",
+            "tiny-fomod",
+        ],
+    );
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let added: serde_json::Value = serde_json::from_slice(&add.stdout).unwrap();
+    let item_id = added["item"]["item_id"].as_str().unwrap().to_string();
+
+    // Human output: the guidance on stdout, no "Error:" anywhere, exit 71.
+    let human = run_agora(
+        &f.data_dir,
+        &[
+            "games",
+            "instance",
+            "content",
+            "add",
+            f.instance_id.as_str(),
+            item_id.as_str(),
+        ],
+    );
+    let out = String::from_utf8_lossy(&human.stdout);
+    let err = String::from_utf8_lossy(&human.stderr);
+    assert_eq!(
+        human.status.code(),
+        Some(71),
+        "stdout: {out}\nstderr: {err}"
+    );
+    assert!(
+        !out.contains("Error:") && !err.contains("Error:"),
+        "stdout: {out}\nstderr: {err}"
+    );
+    assert!(
+        out.contains(&format!(
+            "agora games content fomod install {item_id} --instance {} --defaults",
+            f.instance_id
+        )),
+        "{out}"
+    );
+
+    // JSON: stdout stays empty, and stderr is one JSON envelope with the same exit code.
+    let json = run_agora_json(
+        &f.data_dir,
+        &[
+            "games",
+            "instance",
+            "content",
+            "add",
+            f.instance_id.as_str(),
+            item_id.as_str(),
+        ],
+    );
+    assert_eq!(json.status.code(), Some(71));
+    assert!(
+        json.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&json.stdout)
+    );
+    // stderr may carry a context warning before the envelope (the catalog loader line), so the
+    // envelope starts at its first brace, as the other envelope tests read it.
+    let stderr = String::from_utf8_lossy(&json.stderr);
+    let envelope: serde_json::Value = serde_json::from_str(&stderr[stderr.find('{').unwrap()..])
+        .expect("stderr ends in one JSON object");
+    assert_eq!(envelope["exitCode"], 71);
+    assert_eq!(envelope["status"], "needs_installer");
+    assert!(envelope["installer_command"]
+        .as_str()
+        .unwrap()
+        .starts_with("agora games content fomod install"));
+}
+
+#[test]
 fn games_instance_content_and_deploy_cli() {
     let (_tmp, data_dir) = temp_data_dir();
 
