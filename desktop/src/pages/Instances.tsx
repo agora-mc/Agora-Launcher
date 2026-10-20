@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { requestEditorTab } from '../lib/editorDeepLink';
+import { useExternalInstanceChanges } from '../lib/externalChanges';
 import {
   cancelJavaRuntime,
   cloneInstance,
@@ -106,8 +107,10 @@ export function Instances({
   // Load direct launch mode once
   const [directLaunch, setDirectLaunch] = useState(false);
 
-  const refresh = async () => {
-    setLoading(true);
+  // `silent` keeps the list on screen while it reloads, for refreshes the
+  // user did not ask for.
+  const refresh = async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const rows = await listInstances();
@@ -155,6 +158,10 @@ export function Instances({
   useEffect(() => {
     if (packInstallRevision > 0) void refresh();
   }, [packInstallRevision]);
+
+  // An agent working through the CLI can add, rename, lock or change any
+  // instance while this list is open.
+  useExternalInstanceChanges(() => { void refresh({ silent: true }); });
 
   useEffect(() => {
     if (!Object.values(snapshotReadiness).some((state) => state === 'pending')) return undefined;

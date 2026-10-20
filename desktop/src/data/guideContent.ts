@@ -1727,7 +1727,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'agora skill prints a guide in the common SKILL.md format: Agora\'s vocabulary, house rules (ask before changing anything, snapshot and dry-run first, never pass --yes on the person\'s behalf), the crash workflow, and what each exit code range means. It is compiled into the binary, so it always matches the commands that binary has, and it is printed without opening any Agora data.',
           bullets: [
             'The agent reads results with --json and checks exit codes rather than parsing human tables.',
-            'The CLI resolves the same data root as the desktop app, including a portable copy\'s folder. Do not change one instance from the app and the agent at the same time.',
+            'The CLI resolves the same data root as the desktop app, including a portable copy\'s folder. Both can run at once: whichever is changing an instance holds its lock, and the app reloads an instance the agent changed.',
             'The guide asks the agent to have you launch from the app, since agora launch uses direct launch and needs a Microsoft sign-in.',
           ],
         },

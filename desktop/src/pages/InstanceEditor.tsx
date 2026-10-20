@@ -130,6 +130,7 @@ import { formatInstalledDate } from '../components/installed-content/contentTabl
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { ImagePlus, Play } from 'lucide-react';
 import { showToast } from '../components/Toast';
+import { describeExternalChange, useExternalInstanceChanges } from '../lib/externalChanges';
 
 function installedModKey(mod: InstalledMod): string {
   return `${mod.filename}:${mod.sha256}`;
@@ -1146,6 +1147,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       listLoadoutProfiles(instanceId).then(setProfiles).catch(() => undefined),
     ]);
   };
+
+  // An agent driving the CLI can change this instance while it is open here.
+  // reloadInstance keeps unsaved Java-tab edits unless the saved values moved.
+  useExternalInstanceChanges((changes) => {
+    const change = changes.find((entry) => entry.instance_id === instanceId);
+    if (!change) return;
+    void reloadInstance().catch((cause) => setError(formatError(cause)));
+    showToast(describeExternalChange(change));
+  });
 
   const handleUnlock = async () => {
     setError(null);

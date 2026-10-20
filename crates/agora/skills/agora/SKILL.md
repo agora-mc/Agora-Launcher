@@ -45,8 +45,9 @@ Vocabulary:
 - Check the exit code. A nonzero exit is a failure even if something was printed. In JSON mode
   the error is a `{"error": ..., "exitCode": ...}` object on standard error.
 - `agora <command> --help` describes any command. Prefer it over guessing flags.
-- The CLI uses the same data as the Agora desktop app. Ask the person not to change the same
-  instance in the app while you are working on it.
+- The CLI uses the same data as the Agora desktop app, and both can run at once: the app
+  reloads an instance you change. If a command says the instance is in use by the Agora app,
+  the person is doing something there. Wait and retry, or ask them; never work around a lock.
 
 ## House rules
 

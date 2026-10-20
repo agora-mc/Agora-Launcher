@@ -956,6 +956,7 @@ fn exit_code_from_error(err: &anyhow::Error) -> i32 {
 
 #[tokio::main]
 async fn main() {
+    agora_core::lock_manager::set_program_name("Agora CLI");
     let cli = Cli::parse();
     let output_fmt = match cli.output {
         Some(f) => f,

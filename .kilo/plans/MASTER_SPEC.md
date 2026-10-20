@@ -3362,6 +3362,78 @@ rejects any hash change not recorded in `sha256_history` and any deletion not
 recorded in quarantine. Candidate-download strikes (`failed_candidates.json`)
 are now committed, so versions that never resolved stop being requested.
 
+## 28. DESKTOP APP AND CLI RUNNING TOGETHER
+
+Once AI assistants drive Agora through the CLI (`agora skill`), one person
+running the desktop app and the CLI against the same data root at the same time
+stops being rare and becomes the normal case. The CLI is also being bundled with
+the desktop app (§28.4), which makes it more common still.
+
+**Model.** The two are separate processes, each loading `agora-core` into its
+own memory. They share only the data root, so every guarantee below lives in
+core and works through the filesystem. Nothing relies on the other program
+being open.
+
+### 28.1 What is shared, and how it is protected
+
+| Shared state | Protection |
+|---|---|
+| Instance files, loaders, Java runtimes, catalog downloads | Cross-process lock files (`lock_manager.rs`): atomic create, owner PID verified alive before a lock is broken |
+| `local_state.db` writes | WAL journal; rusqlite's default 5 s busy timeout makes a write wait for the other process's write rather than fail. Pinned by `db::tests::a_write_waits_for_another_connections_write` |
+| First open of a new `local_state.db` | Switching to WAL fails with "database is locked" when another process does it at the same instant and does not wait out the busy timeout. `db::ensure_wal` checks the mode first and retries the switch |
+| Schema migrations and default settings | Run in one `BEGIN IMMEDIATE` transaction, so a second process starting at the same moment waits and then finds nothing to migrate. Without it, 8 concurrent first starts failed about 1 run in 3 |
+| `registry.db` | Read-only for readers; replaced by rename under the `RegistryUpdate` lock |
+
+### 28.2 Telling the user who is busy
+
+Lock files record which program holds them (`program`: "Agora app" or
+"Agora CLI", set once per process with `lock_manager::set_program_name`). A
+contested or timed-out lock names the holder: *"the Agora CLI (PID 4120) has
+held it since … for: disable_mod. Try again once it finishes."* Lock files
+written before the field existed still read, and show as "another Agora program".
+
+### 28.3 Noticing the other program's changes
+
+Each process caches what it has shown, so without help the desktop app keeps
+showing a mod an agent just disabled. `change_feed.rs` records one small file
+per instance under `<locks>/changes/`:
+
+- releasing an instance lock records a change automatically, which covers every
+  operation that changes instance files;
+- the database-only edits that take no lock (rename, lock/unlock, JVM and Java
+  settings) record one themselves in `InstanceService`;
+- `ChangeFeed::poll` returns records from *other* processes since the last
+  poll. The desktop polls once a second and emits
+  `instances-changed-externally`; the instance list reloads silently, and an
+  open instance reloads and shows a toast naming the program and operation.
+
+Recording is best-effort. A missed record costs a stale screen until the next
+reload, never data.
+
+**Not covered yet:** global settings changed from the other program, the Home
+page's recent-instance cards, and a form the user is editing while the other
+program saves the same field (the last save wins).
+
+### 28.4 Bundling
+
+The desktop installers and the portable copy ship the CLI from the same build,
+so the two are always the same version. Separately downloaded, an update to one
+leaves the other unable to open a database whose schema is newer than it
+supports. *(Implementation pending: release packaging, PATH setup, and a
+Settings panel for AI assistants.)*
+
+### 28.5 Alternatives considered
+
+- **A background service owning the only core instance**, with the desktop and
+  CLI as clients. It removes the cross-process problem entirely and would let
+  the desktop show approvals for an agent's actions, but turns every Tauri
+  command into IPC, needs authentication for a local endpoint, and still needs a
+  standalone path when the service is not running. Not worth it while file locks
+  suffice.
+- **The desktop as host while it is open** (the CLI forwards commands to a
+  running app, as VS Code's `code` command does) is the smaller version of the
+  same idea, and the natural next step if live approvals become a goal.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

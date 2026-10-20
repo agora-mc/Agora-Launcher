@@ -48,7 +48,7 @@ agora --data-dir ./tmp/agora-cli-test paths
 Keep these rules in mind:
 
 - The default data root may be shared with the desktop application.
-- Do not run desktop and CLI mutations against the same instance at the same time.
+- The desktop app and the CLI can run at the same time. An instance one of them is changing is locked, and the other waits up to 30 seconds and then names who holds it; the desktop app reloads an instance the CLI changed. Avoid editing the same instance setting from both at once: the last save wins.
 - Use `--dry-run` on install, remove, and update operations before executing a complex plan.
 - Create a snapshot before manual or high-risk changes.
 - Use disposable instances when learning destructive commands.

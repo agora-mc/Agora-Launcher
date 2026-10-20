@@ -206,7 +206,9 @@ impl InstanceService {
         .map_err(|error| LauncherError::Generic {
             code: "ERR_LOCAL_STATE_FAILED".into(),
             message: error.to_string(),
-        })
+        })?;
+        self.record_change(&instance_id, "update_java");
+        Ok(())
     }
 
     /// Apply a template's JVM settings to an existing instance.
@@ -413,7 +415,9 @@ impl InstanceService {
         .map_err(|error| LauncherError::Generic {
             code: "ERR_LOCAL_STATE_FAILED".into(),
             message: error.to_string(),
-        })
+        })?;
+        self.record_change(&instance_id, "update_jvm");
+        Ok(())
     }
 
     pub fn memory_recommendation(
@@ -445,7 +449,9 @@ impl InstanceService {
                 code: "ERR_LOCAL_STATE_FAILED".into(),
                 message: error.to_string(),
             }
-        })
+        })?;
+        self.record_change(&instance_id, "rename");
+        Ok(())
     }
 
     /// Record the trusted remote icon associated with a downloaded pack.
@@ -1362,7 +1368,17 @@ impl InstanceService {
                 return Err(error);
             }
         }
+        self.record_change(&instance_id, if locked { "lock" } else { "unlock" });
         Ok(())
+    }
+
+    /// For edits that take no instance lock, which records changes itself.
+    fn record_change(&self, instance_id: &str, operation: &str) {
+        crate::change_feed::record_instance_change(
+            self.ctx.lock_manager.locks_root(),
+            instance_id,
+            operation,
+        );
     }
 
     fn prepare_files(&self, dir: &Path, manifest: &InstanceManifest) -> LauncherResult<()> {

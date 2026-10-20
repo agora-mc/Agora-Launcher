@@ -988,6 +988,45 @@ fn instance_rename_json_output() {
 }
 
 // ---------------------------------------------------------------------------
+// Running beside the desktop app
+// ---------------------------------------------------------------------------
+
+#[test]
+fn another_process_sees_what_the_cli_changed() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let src = tempdir();
+    let instance_src = src.path().join("shared");
+    std::fs::create_dir_all(instance_src.join("mods")).unwrap();
+    std::fs::write(instance_src.join("mods").join("a.jar"), b"mod").unwrap();
+    run_agora(&data_dir, &["import", &instance_src.to_string_lossy()]);
+
+    // This test process stands in for the desktop app watching the same data.
+    let locks_root = agora_core::app_paths::AppPaths::from_root(data_dir.clone()).locks_root();
+    let mut feed = agora_core::change_feed::ChangeFeed::new(&locks_root);
+
+    let disable = run_agora(&data_dir, &["mod", "disable", "shared", "a.jar"]);
+    assert!(
+        disable.status.success(),
+        "{}",
+        String::from_utf8_lossy(&disable.stderr)
+    );
+    let changes = feed.poll();
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert_eq!(changes[0].instance_id, "shared");
+    assert_eq!(changes[0].program, "Agora CLI");
+    assert_eq!(changes[0].operation, "disable_mod");
+
+    // A database-only edit takes no instance lock but is still reported.
+    let rename = run_agora(&data_dir, &["instance", "rename", "shared", "Renamed"]);
+    assert!(rename.status.success());
+    let changes = feed.poll();
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert_eq!(changes[0].operation, "rename");
+
+    assert!(feed.poll().is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot (no instance — should fail gracefully)
 // ---------------------------------------------------------------------------
 
