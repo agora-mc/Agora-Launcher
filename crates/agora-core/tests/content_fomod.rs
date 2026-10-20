@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use agora_core::content_fomod::{
-    self as fomod, Choice, Condition, FileState, FomodContext, FomodError,
+    self as fomod, Choice, Condition, FileState, FomodContext, FomodError, FrameworkPresence,
 };
 use agora_core::content_store::{
     add_archive, derive_item, get_item, remove_item, verify_item, AddOutcome, ContentError,
@@ -816,24 +816,298 @@ fn file_dependencies_fail_without_context_and_follow_it_with_one() {
     assert_eq!(dests(&plan), ["x.nif"]);
 }
 
+// ---------------------------------------------------------------------------
+// Version conditions
+// ---------------------------------------------------------------------------
+
+/// A Base Object Swapper shaped group: one DLL per game version, typed by a minimum-version gate.
+/// `Next` (gated on 1.6.1179.0) is listed first, so a game that meets both gates shows the order.
+fn dll_config() -> String {
+    format!(
+        r#"{HEADER}<installSteps><installStep name="Main"><optionalFileGroups>
+        <group name="DLL" type="SelectExactlyOne"><plugins>
+          <plugin name="Next">
+            <files><folder source="Light" destination="next"/></files>
+            <typeDescriptor><dependencyType><defaultType name="Optional"/><patterns>
+              <pattern><dependencies><gameDependency version="1.6.1179.0"/></dependencies><type name="Recommended"/></pattern>
+            </patterns></dependencyType></typeDescriptor>
+          </plugin>
+          <plugin name="AE">
+            <files><folder source="Heavy" destination="ae"/></files>
+            <typeDescriptor><dependencyType><defaultType name="Optional"/><patterns>
+              <pattern><dependencies><gameDependency version="1.6.1170.0"/></dependencies><type name="Recommended"/></pattern>
+            </patterns></dependencyType></typeDescriptor>
+          </plugin>
+        </plugins></group></optionalFileGroups></installStep></installSteps></config>"#
+    )
+}
+
+fn game(version: &str) -> FomodContext {
+    FomodContext::new().with_game_version(version)
+}
+
 #[test]
-fn version_dependencies_count_as_satisfied_and_say_so() {
+fn a_minimum_version_gate_picks_the_build_the_game_runs() {
+    let fx = Fx::new();
+    let inst = fx.installer(&dll_config());
+    // 1.6.1170 meets the AE gate (a minimum) but not the 1.6.1179 one.
+    let ae = game("1.6.1170.0");
+    assert_eq!(
+        fomod::defaults(&inst, Some(&ae)).unwrap(),
+        [pick("Main", "DLL", &["AE"])]
+    );
+    let plan = fomod::evaluate(&inst, &[pick("Main", "DLL", &["AE"])], Some(&ae)).unwrap();
+    assert_eq!(dests(&plan), ["ae/meshes/armor.nif"]);
+    assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+    // 1.6.1179 meets both; the first recommended one wins, as a default always does.
+    assert_eq!(
+        fomod::defaults(&inst, Some(&game("1.6.1179.0"))).unwrap(),
+        [pick("Main", "DLL", &["Next"])]
+    );
+    // An older game meets neither, so nothing is recommended and the first usable plugin is taken.
+    assert_eq!(
+        fomod::defaults(&inst, Some(&game("1.5.97.0"))).unwrap(),
+        [pick("Main", "DLL", &["Next"])]
+    );
+}
+
+#[test]
+fn version_strings_compare_numerically_and_unknown_ones_are_unknown() {
+    // Each case: the game's version, the required one, and what the step does: shown (its
+    // choice is used), hidden (known false, the choice is ignored) or unknown (used, with a note).
+    let cases: &[(Option<&str>, &str, &str)] = &[
+        (Some("1.6.1170.0"), "1.6.1170", "shown"),
+        (Some("1.6.1170"), "1.6.1170.0", "shown"),
+        (Some("1.6"), "1.6.0.0", "shown"),
+        (Some("1.6.1170.0.0"), "1.6.1170", "shown"),
+        (Some("1.6.1170.1"), "1.6.1170", "shown"),
+        (Some("  1.6.1170 "), "1.6.1170", "shown"),
+        (Some("1.6.1170"), " 1.6.1170 ", "shown"),
+        (Some("1.6.1169"), "1.6.1170", "hidden"),
+        (Some("1.6"), "1.6.0.1", "hidden"),
+        (Some(""), "1.6", "unknown"),
+        (Some("1.x.3"), "1.6", "unknown"),
+        (Some("1.6..1"), "1.6", "unknown"),
+        (Some("1.6.1170"), "", "unknown"),
+        (None, "1.6", "unknown"),
+    ];
+    for (installed, required, want) in cases {
+        let context = match installed {
+            Some(v) => game(v),
+            None => FomodContext::new(),
+        };
+        assert_eq!(
+            gated_step("gameDependency", required, Some(&context)),
+            *want,
+            "game {installed:?} against {required:?}"
+        );
+    }
+}
+
+/// Whether a step gated on `<kind version=required/>` is shown, hidden or unknown when the
+/// explicit choice of its one plugin is evaluated against `context`.
+fn gated_step(kind: &str, required: &str, context: Option<&FomodContext>) -> &'static str {
     let fx = Fx::new();
     let xml = format!(
-        r#"{HEADER}<moduleDependencies><gameDependency version="9.9"/></moduleDependencies>
-        <installSteps><installStep name="S">
-          <visible><fommDependency version="1.0"/></visible>
+        r#"{HEADER}<installSteps><installStep name="Gate">
+          <visible><{kind} version="{required}"/></visible>
           <optionalFileGroups><group name="G" type="SelectAny"><plugins>
             <plugin name="P"><files><file source="Extras\glow.nif"/></files></plugin>
           </plugins></group></optionalFileGroups></installStep></installSteps></config>"#
     );
     let inst = fx.installer(&xml);
-    let plan = fomod::evaluate(&inst, &[pick("S", "G", &["P"])], None).unwrap();
-    assert_eq!(dests(&plan), ["Extras/glow.nif"]);
+    let plan = fomod::evaluate(&inst, &[pick("Gate", "G", &["P"])], context).unwrap();
+    if plan.notes.iter().any(|n| n.contains("cannot check")) {
+        "unknown"
+    } else if dests(&plan).contains(&"Extras/glow.nif".to_string()) {
+        "shown"
+    } else {
+        "hidden"
+    }
+}
+
+#[test]
+fn an_unknown_game_version_refuses_a_default_and_names_the_step() {
+    let fx = Fx::new();
+    let inst = fx.installer(&dll_config());
+    for context in [None, Some(FomodContext::new())] {
+        let err = fomod::defaults_over(&inst, &[], context.as_ref()).unwrap_err();
+        let FomodError::UnknownCondition { what, .. } = &err else {
+            panic!("expected a refusal, got {err}");
+        };
+        assert_eq!(what, "the type of 'Main/DLL/Next'");
+        let text = err.to_string();
+        assert!(text.contains("game version 1.6.1179.0"), "{text}");
+        assert!(text.contains("--choose"), "{text}");
+    }
+    // An unknown condition in a visible step refuses the same way.
+    let xml = format!(
+        r#"{HEADER}<installSteps><installStep name="Gate">
+          <visible><gameDependency version="1.6"/></visible>
+          <optionalFileGroups><group name="G" type="SelectAny"><plugins>
+            <plugin name="P"/>
+          </plugins></group></optionalFileGroups></installStep></installSteps></config>"#
+    );
+    let gated = fx.installer(&xml);
+    let err = fomod::defaults(&gated, None).unwrap_err();
+    assert!(
+        matches!(&err, FomodError::UnknownCondition { what, .. } if what == "step 'Gate'"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_unknown_game_version_with_an_explicit_choice_goes_ahead_with_a_warning() {
+    let fx = Fx::new();
+    let inst = fx.installer(&dll_config());
+    let plan = fomod::evaluate(&inst, &[pick("Main", "DLL", &["AE"])], None).unwrap();
+    assert_eq!(dests(&plan), ["ae/meshes/armor.nif"]);
+    assert!(
+        plan.notes.iter().any(|n| n.contains("'Main/DLL/AE'")
+            && n.contains("game version 1.6.1170.0")
+            && n.contains("cannot check")),
+        "{:?}",
+        plan.notes
+    );
+}
+
+#[test]
+fn an_unknown_version_on_a_conditional_install_refuses_defaults_only() {
+    let fx = Fx::new();
+    let xml = format!(
+        r#"{HEADER}<conditionalFileInstalls><patterns><pattern>
+          <dependencies><skseDependency version="2.2.6"/></dependencies>
+          <files><file source="Extras\glow.nif" destination="glow.nif"/></files>
+        </pattern></patterns></conditionalFileInstalls></config>"#
+    );
+    let inst = fx.installer(&xml);
+    let err = fomod::defaults(&inst, Some(&game("1.6.1170.0"))).unwrap_err();
+    assert!(
+        matches!(&err, FomodError::UnknownCondition { what, .. } if what == "a conditional install"),
+        "{err}"
+    );
+    // Explicitly chosen: the files are left out, and the plan says why.
+    let plan = fomod::evaluate(&inst, &[], Some(&game("1.6.1170.0"))).unwrap();
+    assert!(dests(&plan).is_empty());
     assert!(plan
         .notes
         .iter()
-        .any(|n| n.contains("game version 9.9") && n.contains("satisfied")));
+        .any(|n| n.contains("skse version 2.2.6") && n.contains("cannot check")));
+}
+
+#[test]
+fn script_extender_versions_come_from_the_installed_framework() {
+    let skse = |presence| {
+        FomodContext::new()
+            .with_game_version("1.6.1170.0")
+            .with_framework("SKSE", presence)
+    };
+    let present = |v: &str| FrameworkPresence::Present {
+        version: Some(v.to_string()),
+    };
+    // Installed at 2.2.6.0 (what its loader's file version reads as): met, and a newer minimum is not.
+    assert_eq!(
+        gated_step("skseDependency", "2.2.6", Some(&skse(present("2.2.6.0")))),
+        "shown"
+    );
+    assert_eq!(
+        gated_step("skseDependency", "2.2.7", Some(&skse(present("2.2.6.0")))),
+        "hidden"
+    );
+    // Not installed: a known false.
+    assert_eq!(
+        gated_step(
+            "skseDependency",
+            "2.2.6",
+            Some(&skse(FrameworkPresence::Absent))
+        ),
+        "hidden"
+    );
+    // Installed, but its version could not be read.
+    assert_eq!(
+        gated_step(
+            "skseDependency",
+            "2.2.6",
+            Some(&skse(FrameworkPresence::Present { version: None }))
+        ),
+        "unknown"
+    );
+    // A script extender Agora does not check here (no framework recorded): unknown.
+    assert_eq!(
+        gated_step("foseDependency", "0.1", Some(&skse(present("2.2.6")))),
+        "unknown"
+    );
+    // fommDependency is never checked: unknown.
+    assert_eq!(
+        gated_step("fommDependency", "1.0", Some(&game("1.6.1170.0"))),
+        "unknown"
+    );
+}
+
+#[test]
+fn a_known_false_condition_is_false_even_beside_an_unknown_one() {
+    // And(game 1.4 is false, fomm unknown) is false; Or(fomm unknown, game 1.5 met) is true.
+    let and_xml = |v| {
+        format!(
+            r#"<dependencies operator="And"><gameDependency version="{v}"/><fommDependency version="1"/></dependencies>"#
+        )
+    };
+    let or_xml = r#"<dependencies operator="Or"><fommDependency version="1"/><gameDependency version="1.5"/></dependencies>"#;
+    let shown = |visible: &str, context: &FomodContext| {
+        let fx = Fx::new();
+        let xml = format!(
+            r#"{HEADER}<installSteps><installStep name="Gate"><visible>{visible}</visible>
+              <optionalFileGroups><group name="G" type="SelectAny"><plugins>
+                <plugin name="P"><files><file source="Extras\glow.nif"/></files></plugin>
+              </plugins></group></optionalFileGroups></installStep></installSteps></config>"#
+        );
+        let inst = fx.installer(&xml);
+        let plan = fomod::evaluate(&inst, &[pick("Gate", "G", &["P"])], Some(context)).unwrap();
+        (
+            !dests(&plan).is_empty(),
+            plan.notes.iter().any(|n| n.contains("cannot check")),
+        )
+    };
+    let ctx = game("1.4.0.0");
+    assert_eq!(shown(&and_xml("1.5"), &ctx), (false, false));
+    assert_eq!(shown(or_xml, &game("1.6.1170.0")), (true, false));
+}
+
+#[test]
+#[ignore]
+fn real_base_object_swapper_picks_the_dll_for_the_game_it_runs() {
+    // Real data, not run by default (`cargo test -- --ignored`). The archive is read, never changed.
+    let path = std::env::var("AGORA_BOS_ARCHIVE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            Path::new(&std::env::var("APPDATA").unwrap())
+                .join("Vortex")
+                .join("downloads")
+                .join("skyrimse")
+                .join("Base Object Swapper-60805-3-4-1-1752606013.7z")
+        });
+    let fx = Fx::new();
+    let outcome = add_archive(&fx.ctx, &path, Some("Base Object Swapper")).unwrap();
+    let inst = fomod::parse(&fx.ctx, &outcome.item().item_id).unwrap();
+    let dll = "SSE v1.6.1130+ (\"Anniversary Edition\")";
+    let legacy = "SSE v1.5.97 (\"Special Edition\")";
+
+    let ae = game("1.6.1170.0");
+    let picks = fomod::defaults_over(&inst, &[], Some(&ae)).unwrap();
+    println!("1.6.1170.0 defaults: {picks:?}");
+    assert_eq!(picks, [pick("Main", "DLL", &[dll])]);
+    let plan = fomod::evaluate(&inst, &picks, Some(&ae)).unwrap();
+    println!("1.6.1170.0 files: {:?}", dests(&plan));
+    println!("1.6.1170.0 notes: {:?}", plan.notes);
+
+    let se = game("1.5.97.0");
+    let picks = fomod::defaults_over(&inst, &[], Some(&se)).unwrap();
+    println!("1.5.97.0 defaults: {picks:?}");
+    assert_eq!(picks, [pick("Main", "DLL", &[legacy])]);
+
+    let err = fomod::defaults_over(&inst, &[], None).unwrap_err();
+    println!("no version defaults: {err}");
+    assert!(matches!(err, FomodError::UnknownCondition { .. }));
 }
 
 #[test]
@@ -882,11 +1156,11 @@ fn a_dependent_plugin_type_follows_flags_and_files() {
     let no = FomodContext::new();
 
     assert_eq!(
-        fomod::defaults(&inst, Some(&yes)),
+        fomod::defaults(&inst, Some(&yes)).unwrap(),
         [pick("S", "G", &["Patch"])]
     );
     assert_eq!(
-        fomod::defaults(&inst, Some(&no)),
+        fomod::defaults(&inst, Some(&no)).unwrap(),
         [pick("S", "G", &["Plain"])]
     );
     assert!(fomod::evaluate(&inst, &[pick("S", "G", &["Patch"])], Some(&yes)).is_ok());
@@ -994,10 +1268,10 @@ fn defaults_choose_recommended_plugins_and_reveal_the_steps_they_unlock() {
     // Heavy is Recommended, so it is chosen; that shows "Heavy Extras", where nothing is
     // recommended and a SelectAny group takes nothing.
     assert_eq!(
-        fomod::defaults(&inst, None),
+        fomod::defaults(&inst, None).unwrap(),
         [pick("Options", "Armor", &["Heavy"])]
     );
-    let plan = fomod::evaluate(&inst, &fomod::defaults(&inst, None), None).unwrap();
+    let plan = fomod::evaluate(&inst, &fomod::defaults(&inst, None).unwrap(), None).unwrap();
     assert!(dests(&plan).contains(&"Heavy.esp".to_string()));
 }
 
@@ -1022,7 +1296,7 @@ fn a_select_exactly_one_group_with_no_recommendation_takes_its_first_usable_plug
         </optionalFileGroups></installStep></installSteps></config>"#
     );
     let inst = fx.installer(&xml);
-    let d = fomod::defaults(&inst, None);
+    let d = fomod::defaults(&inst, None).unwrap();
     assert_eq!(
         d,
         [

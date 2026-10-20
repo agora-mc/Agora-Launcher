@@ -4233,7 +4233,11 @@ there, and the Minecraft budget, which moved to Phase 5. Phase 2 is closed.
   decides between the data folder and the game root; a content layer can deploy a subfolder of its
   item (`Layer.source_path`).
 - **FOMOD** (`agora_core::content_fomod`): installers become content items derived from the
-  archive's objects, recording their choices so a reinstall replays them.
+  archive's objects, recording their choices so a reinstall replays them. Version conditions
+  (`gameDependency` against the instance's game version; `skseDependency` and other script
+  extenders against the installed framework) are minimum versions, evaluated when the instance
+  is known; an unknown one stops `--defaults` from choosing for that option, while an explicit
+  choice goes ahead with a warning.
 - **Deployment** (`agora_core::game_deploy`): the instance's `LayerStack` over its base, deployed
   beside the base (`<bases root>/deployments/<instance>/`) as links, copies, or links under the VFS
   (rungs 3, 2 and 1). Harvest returns a link or copy deployment's writes to the writable layer; under

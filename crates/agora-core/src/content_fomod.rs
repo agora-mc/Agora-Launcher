@@ -27,6 +27,7 @@ use crate::content_store::{
     self, AddOutcome, ContentError, ContentFile, ContentItem, ContentSource,
 };
 use crate::ctx::Ctx;
+use crate::game_frameworks::{self, version_at_least, FrameworkStatus};
 
 // ---------------------------------------------------------------------------
 // Limits
@@ -109,6 +110,15 @@ pub enum FomodError {
     },
     #[error("the chosen options install no files")]
     NothingToInstall,
+    #[error(
+        "{what} depends on {condition}, which Agora cannot check ({reason}), so --defaults will \
+         not choose for it; pick its options explicitly with --choose \"Step/Group/Plugin\""
+    )]
+    UnknownCondition {
+        what: String,
+        condition: String,
+        reason: String,
+    },
     #[error("{0}")]
     Other(String),
     #[error(transparent)]
@@ -208,8 +218,9 @@ pub enum Condition {
     Flag { flag: String, value: String },
     /// `fileDependency`: a file (relative to the game's data folder) is in this state.
     File { file: String, state: FileState },
-    /// `gameDependency`, `fommDependency` and the script extenders' versions. Agora cannot check
-    /// them yet, so they count as satisfied (and the plan says so).
+    /// `gameDependency` (`kind` "game"), the script extenders' versions (`foseDependency`,
+    /// `skseDependency`, ...: `kind` is the framework's id) and `fommDependency`. A minimum
+    /// version: met when the instance has that version or a newer one.
     Version { kind: String, version: String },
 }
 
@@ -245,9 +256,7 @@ impl Condition {
                 };
                 format!("'{file}' is {state}")
             }
-            Condition::Version { kind, version } => {
-                format!("{kind} version {version} (not checked)")
-            }
+            Condition::Version { kind, version } => format!("{kind} version {version}"),
         }
     }
 }
@@ -359,16 +368,45 @@ pub struct Choice {
     pub plugins: Vec<String>,
 }
 
-/// What the instance already has, to answer `fileDependency`. Paths are relative to the game's
-/// data folder and compared case-insensitively. A file the context does not know is `Missing`.
+/// What an instance has of a framework (a script extender, for `skseDependency` and the like).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameworkPresence {
+    Absent,
+    /// Installed; `version` is `None` when it could not be read.
+    Present {
+        version: Option<String>,
+    },
+}
+
+/// What the instance already has, to answer `fileDependency` and the version conditions. Paths
+/// are relative to the game's data folder and compared case-insensitively. A file the context
+/// does not know is `Missing`. A version the context does not know makes its condition unknown,
+/// which stops an automatic choice (see [`evaluate`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FomodContext {
     states: HashMap<String, FileState>,
+    /// The game version the instance runs, as its runtime records it.
+    game_version: Option<String>,
+    /// Frameworks Agora checked, by lowercase id. A framework not listed here is not checked.
+    frameworks: HashMap<String, FrameworkPresence>,
 }
 
 impl FomodContext {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The context of an instance that runs `version` of its game.
+    pub fn with_game_version(mut self, version: &str) -> Self {
+        self.game_version = Some(version.to_string());
+        self
+    }
+
+    /// Record what the instance has of framework `id` (matched case-insensitively, as a FOMOD
+    /// names it: `skse` for `skseDependency`).
+    pub fn with_framework(mut self, id: &str, presence: FrameworkPresence) -> Self {
+        self.frameworks.insert(lc(id.trim()), presence);
+        self
     }
 
     pub fn from_active<I, S>(files: I) -> Self
@@ -1194,43 +1232,147 @@ fn parse_item(ctx: &Ctx, item: &ContentItem) -> Result<FomodInstaller, FomodErro
 
 type Flags = HashMap<String, String>;
 
+/// Whether a condition holds. `Unknown` is a condition Agora cannot check: it is neither met nor
+/// unmet, so an automatic choice must not rest on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Truth {
+    Yes,
+    No,
+    /// The condition in plain words, and why it cannot be checked.
+    Unknown {
+        condition: String,
+        reason: String,
+    },
+}
+
+impl Truth {
+    fn of(holds: bool) -> Truth {
+        if holds {
+            Truth::Yes
+        } else {
+            Truth::No
+        }
+    }
+}
+
+/// Whether the instance meets a version condition. `gameDependency` is checked against the
+/// instance's game version; any other kind against the framework of that id (a script extender
+/// such as `skse` for `skseDependency`). Versions are minimums (`1.6.1130.0` is met by
+/// `1.6.1170.0`), compared by [`version_at_least`]. Anything Agora cannot answer is unknown.
+fn version_truth(kind: &str, required: &str, context: Option<&FomodContext>) -> Truth {
+    let unknown = |reason: String| Truth::Unknown {
+        condition: format!("{kind} version {required}"),
+        reason,
+    };
+    let Some(context) = context else {
+        return unknown("no instance was given, so what is installed is not known".into());
+    };
+    let installed = if kind == "game" {
+        match &context.game_version {
+            Some(v) => v.clone(),
+            None => return unknown("the instance's game version is not known".into()),
+        }
+    } else {
+        match context.frameworks.get(&lc(kind)) {
+            Some(FrameworkPresence::Absent) => return Truth::No,
+            Some(FrameworkPresence::Present { version: Some(v) }) => v.clone(),
+            Some(FrameworkPresence::Present { version: None }) => {
+                return unknown(format!("the installed {kind} version could not be read"))
+            }
+            None => return unknown(format!("Agora does not check {kind} versions")),
+        }
+    };
+    match version_at_least(&installed, required) {
+        Some(met) => Truth::of(met),
+        None => unknown(format!(
+            "'{installed}' or '{required}' is not a dotted version"
+        )),
+    }
+}
+
 fn eval_condition(
     cond: &Condition,
     flags: &Flags,
     context: Option<&FomodContext>,
     notes: &mut Notes,
-) -> bool {
+) -> Truth {
     match cond {
-        Condition::All { conditions } => conditions
-            .iter()
-            .all(|c| eval_condition(c, flags, context, notes)),
-        Condition::Any { conditions } => {
-            conditions.is_empty()
-                || conditions
-                    .iter()
-                    .any(|c| eval_condition(c, flags, context, notes))
+        Condition::All { conditions } => {
+            let mut unknown = None;
+            for c in conditions {
+                match eval_condition(c, flags, context, notes) {
+                    Truth::No => return Truth::No,
+                    t @ Truth::Unknown { .. } => {
+                        unknown.get_or_insert(t);
+                    }
+                    Truth::Yes => {}
+                }
+            }
+            unknown.unwrap_or(Truth::Yes)
         }
-        Condition::Flag { flag, value } => flags
-            .get(&lc(flag))
-            .map(String::as_str)
-            .unwrap_or("")
-            .eq_ignore_ascii_case(value),
+        Condition::Any { conditions } => {
+            if conditions.is_empty() {
+                return Truth::Yes;
+            }
+            let mut unknown = None;
+            for c in conditions {
+                match eval_condition(c, flags, context, notes) {
+                    Truth::Yes => return Truth::Yes,
+                    t @ Truth::Unknown { .. } => {
+                        unknown.get_or_insert(t);
+                    }
+                    Truth::No => {}
+                }
+            }
+            unknown.unwrap_or(Truth::No)
+        }
+        Condition::Flag { flag, value } => Truth::of(
+            flags
+                .get(&lc(flag))
+                .map(String::as_str)
+                .unwrap_or("")
+                .eq_ignore_ascii_case(value),
+        ),
         Condition::File { file, state } => match context {
-            Some(c) => c.state_of(file) == *state,
+            Some(c) => Truth::of(c.state_of(file) == *state),
             None => {
                 notes.add(format!(
                     "the installer checks whether '{file}' is {state:?}, which cannot be known \
                      without an instance (use --instance); treated as not satisfied"
                 ));
-                false
+                Truth::No
             }
         },
-        Condition::Version { kind, version } => {
+        Condition::Version { kind, version } => version_truth(kind, version, context),
+    }
+}
+
+/// The decision a condition gives. A met or unmet condition answers it. An unknown one refuses an
+/// automatic decision (`automatic`: the defaults), since Agora would be guessing. An explicit
+/// decision goes ahead as `if_unknown` and says so in a note: the user chose, and is told.
+fn settle(
+    truth: Truth,
+    automatic: bool,
+    what: &str,
+    if_unknown: bool,
+    notes: &mut Notes,
+) -> Result<bool, FomodError> {
+    match truth {
+        Truth::Yes => Ok(true),
+        Truth::No => Ok(false),
+        Truth::Unknown { condition, reason } => {
+            if automatic {
+                return Err(FomodError::UnknownCondition {
+                    what: what.to_string(),
+                    condition,
+                    reason,
+                });
+            }
             notes.add(format!(
-                "the installer requires {kind} version {version}; Agora does not check it, so it \
-                 is treated as satisfied"
+                "{what} depends on {condition}, which Agora cannot check ({reason}); treated as {}",
+                if if_unknown { "met" } else { "not met" }
             ));
-            true
+            Ok(if_unknown)
         }
     }
 }
@@ -1239,17 +1381,20 @@ fn resolve_type(
     td: &TypeDescriptor,
     flags: &Flags,
     context: Option<&FomodContext>,
+    automatic: bool,
+    what: &str,
     notes: &mut Notes,
-) -> PluginType {
+) -> Result<PluginType, FomodError> {
     match td {
-        TypeDescriptor::Simple { plugin_type } => *plugin_type,
+        TypeDescriptor::Simple { plugin_type } => Ok(*plugin_type),
         TypeDescriptor::Dependent { default, patterns } => {
             for (cond, t) in patterns {
-                if eval_condition(cond, flags, context, notes) {
-                    return *t;
+                let truth = eval_condition(cond, flags, context, notes);
+                if settle(truth, automatic, what, false, notes)? {
+                    return Ok(*t);
                 }
             }
-            *default
+            Ok(*default)
         }
     }
 }
@@ -1327,8 +1472,9 @@ fn default_picks(kind: GroupType, types: &[PluginType]) -> Vec<usize> {
 
 /// Walk the steps in order, deciding which are visible, what each group selects and which flags
 /// that sets. `preset` names the plugins the user chose per group; with `fill_defaults`, groups
-/// the preset does not mention take their defaults; with `validate`, every group must satisfy its
-/// type and no NotUsable plugin may be chosen.
+/// the preset does not mention take their defaults, and the walk is an automatic choice (an
+/// unknown condition it meets refuses, see [`settle`]); with `validate`, every group must satisfy
+/// its type and no NotUsable plugin may be chosen.
 fn walk(
     inst: &FomodInstaller,
     context: Option<&FomodContext>,
@@ -1342,7 +1488,17 @@ fn walk(
     for (si, step) in inst.steps.iter().enumerate() {
         let visible = match &step.visible {
             None => true,
-            Some(c) => eval_condition(c, &flags, context, notes),
+            Some(c) => {
+                let truth = eval_condition(c, &flags, context, notes);
+                // An explicit choice in a step whose visibility is unknown is used, with a note.
+                settle(
+                    truth,
+                    fill_defaults,
+                    &format!("step '{}'", step.name),
+                    true,
+                    notes,
+                )?
+            }
         };
         if !visible {
             for g in &step.groups {
@@ -1363,8 +1519,18 @@ fn walk(
             let types: Vec<PluginType> = group
                 .plugins
                 .iter()
-                .map(|p| resolve_type(&p.type_descriptor, &flags, context, notes))
-                .collect();
+                .map(|p| {
+                    let what = format!("the type of '{}/{}/{}'", step.name, group.name, p.name);
+                    resolve_type(
+                        &p.type_descriptor,
+                        &flags,
+                        context,
+                        fill_defaults,
+                        &what,
+                        notes,
+                    )
+                })
+                .collect::<Result<_, _>>()?;
             let mut selected: BTreeSet<usize> = BTreeSet::new();
             match preset.get(&(lc(&step.name), lc(&group.name))) {
                 Some(names) => {
@@ -1468,14 +1634,21 @@ fn choices_of(inst: &FomodInstaller, walk: &Walk) -> Vec<Choice> {
 
 /// Choices for every option the installer marks Required or Recommended, and for a group that
 /// needs a selection and has no recommendation, its first usable plugin. Steps are walked in
-/// order, so a step an earlier default hides gets none.
-pub fn defaults(inst: &FomodInstaller, context: Option<&FomodContext>) -> Vec<Choice> {
-    defaults_over(inst, &[], context).unwrap_or_default()
+/// order, so a step an earlier default hides gets none. Refuses (see [`defaults_over`]).
+pub fn defaults(
+    inst: &FomodInstaller,
+    context: Option<&FomodContext>,
+) -> Result<Vec<Choice>, FomodError> {
+    defaults_over(inst, &[], context)
 }
 
 /// Like [`defaults`], but the groups `explicit` mentions keep exactly what it chose, and the rest
 /// take their defaults (a step the explicit choices hide gets none, one they reveal gets its
 /// defaults). The result is not validated; [`evaluate`] does that.
+///
+/// This is an automatic choice, so it refuses ([`FomodError::UnknownCondition`]) when a step's
+/// visibility, a plugin's type or a conditional install depends on a condition Agora cannot
+/// check. The user can then choose that option explicitly.
 pub fn defaults_over(
     inst: &FomodInstaller,
     explicit: &[Choice],
@@ -1484,6 +1657,10 @@ pub fn defaults_over(
     let preset = build_preset(inst, explicit)?;
     let mut notes = Notes::default();
     let w = walk(inst, context, &preset, true, false, &mut notes)?;
+    for ci in &inst.conditional_installs {
+        let truth = eval_condition(&ci.condition, &w.flags, context, &mut notes);
+        settle(truth, true, "a conditional install", false, &mut notes)?;
+    }
     Ok(choices_of(inst, &w))
 }
 
@@ -1605,8 +1782,11 @@ fn expand_entry(
 ///
 /// Steps are walked in order; a step whose `visible` condition fails is skipped and its choices
 /// are ignored (with a note). Each group must satisfy its type, Required plugins are always
-/// included, and NotUsable ones cannot be chosen. `context` answers `fileDependency` (`None`
-/// means unknown, and every such dependency then fails, with a note).
+/// included, and NotUsable ones cannot be chosen. `context` answers `fileDependency` and the
+/// version conditions (`None` means unknown: a file dependency then fails, and a version
+/// dependency is unknown). An unknown condition here is an explicit choice, so it does not refuse:
+/// a step's choices are used, and a plugin type or conditional install counts as not met, each
+/// with a note.
 pub fn evaluate(
     inst: &FomodInstaller,
     choices: &[Choice],
@@ -1616,11 +1796,16 @@ pub fn evaluate(
     let preset = build_preset(inst, choices)?;
 
     if let Some(deps) = &inst.module_dependencies {
-        if !eval_condition(deps, &Flags::new(), context, &mut notes) {
-            notes.add(format!(
+        match eval_condition(deps, &Flags::new(), context, &mut notes) {
+            Truth::Yes => {}
+            Truth::No => notes.add(format!(
                 "the installer's own requirements are not met ({}); installing anyway",
                 deps.describe()
-            ));
+            )),
+            Truth::Unknown { condition, reason } => notes.add(format!(
+                "the installer's own requirements cannot be checked ({condition}: {reason}); \
+                 installing anyway"
+            )),
         }
     }
 
@@ -1647,7 +1832,8 @@ pub fn evaluate(
         }
     }
     for ci in &inst.conditional_installs {
-        if eval_condition(&ci.condition, &w.flags, context, &mut notes) {
+        let truth = eval_condition(&ci.condition, &w.flags, context, &mut notes);
+        if settle(truth, false, "a conditional install", false, &mut notes)? {
             for e in &ci.files {
                 entries.push((e, "a conditional install".to_string()));
             }
@@ -1906,6 +2092,36 @@ pub fn instance_context(ctx: &Ctx, instance_id: &str) -> Result<FomodContext, Fo
         .unwrap_or_default();
 
     let mut out = FomodContext::new();
+
+    // The game version the instance runs: the runtime it records, or its pinned base's.
+    if let Some(runtime) = crate::catalog_install::instance_runtime(&manifest) {
+        out.game_version = Some(runtime.version);
+    }
+    // What the instance has of each framework its game declares and Agora can detect. A failed
+    // check fails the install: it must not leave a version unknown without saying so.
+    if let (Some(definition), Some(package)) = (
+        ctx.games.game(&manifest.game),
+        ctx.games.package_for(&manifest.game),
+    ) {
+        for framework in package
+            .definition()
+            .frameworks
+            .iter()
+            .filter(|f| f.game == manifest.game)
+        {
+            let presence =
+                match game_frameworks::framework_status(ctx, instance_id, definition, framework)
+                    .map_err(|e| FomodError::Other(e.to_string()))?
+                {
+                    FrameworkStatus::Absent => FrameworkPresence::Absent,
+                    FrameworkStatus::Present { version, .. } => {
+                        FrameworkPresence::Present { version }
+                    }
+                    FrameworkStatus::NotDetectable => continue,
+                };
+            out.frameworks.insert(lc(framework.id.as_str()), presence);
+        }
+    }
 
     // The pinned base sits under every layer and is always on. (An unpinned base cannot be
     // listed from here, so it is not seen.)
