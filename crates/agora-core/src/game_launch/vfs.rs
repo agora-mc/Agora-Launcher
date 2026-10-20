@@ -69,7 +69,7 @@ fn locate_dll_x86_from(env_override: Option<PathBuf>, dll: &Path) -> PathBuf {
 /// The files a 32-bit program needs, given the 32-bit DLL's path: that DLL and its helper beside
 /// it. Returns the ones that are not there, so none when both are. A file that cannot be checked
 /// counts as missing: a 32-bit program is refused rather than started without its DLL.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(windows)]
 pub fn missing_x86_files(dll_x86: &Path) -> Vec<PathBuf> {
     [
         dll_x86.to_path_buf(),
@@ -622,6 +622,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_32_bit_files_are_reported_missing_by_path_until_both_are_present() {
         let dir = tempfile::tempdir().unwrap();
@@ -641,6 +642,7 @@ mod tests {
         assert!(missing_x86_files(&dll).is_empty());
     }
 
+    #[cfg(windows)]
     #[test]
     fn an_override_is_used_as_is_and_its_helper_is_checked_beside_it() {
         let dir = tempfile::tempdir().unwrap();
