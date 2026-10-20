@@ -154,7 +154,36 @@ pub fn verify(identity: &ProcessIdentity) -> LauncherResult<()> {
         // authoritative check.
     }
 
+    // On Windows an exited process stays openable while anyone (Agora's own
+    // `Child` included) holds a handle to it, and sysinfo reports it as present.
+    #[cfg(windows)]
+    if has_exited(identity.pid) {
+        return Err(LauncherError::ProcessStale {
+            pid: identity.pid,
+            detail: "Process has exited".into(),
+        });
+    }
+
     Ok(())
+}
+
+#[cfg(windows)]
+fn has_exited(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: the handle is checked for null and closed before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        ok && code != STILL_ACTIVE as u32
+    }
 }
 
 // ---------------------------------------------------------------------------

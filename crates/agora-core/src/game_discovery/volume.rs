@@ -5,6 +5,8 @@ use std::sync::Mutex;
 
 #[derive(Default)]
 pub struct VolumeDetector {
+    // Only the Windows lookup caches.
+    #[cfg_attr(not(windows), allow(dead_code))]
     cache: Mutex<HashMap<PathBuf, Option<VolumeInfo>>>,
 }
 
@@ -101,7 +103,9 @@ impl VolumeDetector {
     #[cfg(unix)]
     fn get_unix_volume_info(&self, path: &Path) -> Option<VolumeInfo> {
         use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::metadata(path).ok()?;
+        // A folder Agora has yet to create (the bases root before the first build) lives on the
+        // volume of its nearest existing ancestor, as GetVolumePathNameW answers on Windows.
+        let metadata = path.ancestors().find_map(|p| std::fs::metadata(p).ok())?;
         let dev = metadata.dev();
 
         Some(VolumeInfo {

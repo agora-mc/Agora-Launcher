@@ -308,26 +308,10 @@ impl LockManager {
                     let mut recovered = false;
                     while corrupt_start.elapsed() < CORRUPT_GRACE && !recovered {
                         std::thread::sleep(Duration::from_millis(500));
-                        if let Ok(meta) = read_lock_metadata(&lock_path) {
-                            if is_stale_lock(&meta) {
-                                eprintln!(
-                                    "[lock_manager] Breaking stale lock '{}' \
-                                     (PID {}). Metadata recovered after grace.",
-                                    lock_name, meta.pid
-                                );
-                                let _ = std::fs::remove_file(&lock_path);
-                                recovered = true;
-                            } else {
-                                // Metadata recovered and owner is alive.
-                                return Err(LauncherError::Generic {
-                                    code: "ERR_LOCK_CONTESTED".into(),
-                                    message: format!(
-                                        "Resource '{lock_name}' is locked by \
-                                         PID {} (recovered metadata)",
-                                        meta.pid,
-                                    ),
-                                });
-                            }
+                        // The owner finished writing, or already released the lock: the next
+                        // attempt sees which, and waits, breaks a stale lock or takes it.
+                        if !lock_path.exists() || read_lock_metadata(&lock_path).is_ok() {
+                            recovered = true;
                         }
                     }
                     if !recovered {

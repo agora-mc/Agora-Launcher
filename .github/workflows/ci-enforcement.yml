@@ -223,3 +223,10 @@ jobs:
       # and a mismatched Cargo.lock breaks every `cargo build --locked`.
       - name: Version metadata agrees across package files
         run: python scripts/set_release_version.py --check
+      # A workspace crate the script does not stamp leaves a stale Cargo.lock
+      # entry that only the tagged release build finds (v0.9.3). The test stamps
+      # a copy of the workspace and resolves it offline, so fetch first.
+      - name: Tag stamping keeps Cargo.lock resolvable
+        run: |
+          cargo fetch --locked
+          python -m unittest discover -s scripts -p test_set_release_version.py
