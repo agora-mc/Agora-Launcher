@@ -135,8 +135,9 @@ export default async function InstallPage() {
             </p>
             <ul className={BULLETS}>
               <li>
-                The <Code>agora</Code> command in a terminal, shipped as a standalone archive
-                with no installer. Unpack it and put the binary wherever you keep tools.
+                The <Code>agora</Code> command in a terminal. The desktop app and the portable
+                copy already include it; the standalone archive is for machines without the
+                app, such as servers. Unpack it and put the binary wherever you keep tools.
               </li>
               <li>
                 The same core as the desktop app — instances, installs, health checks, launches,

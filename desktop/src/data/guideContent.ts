@@ -1665,7 +1665,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       summary: 'An AI assistant app on your computer can use Agora\'s command-line tool to look at your instances, read crash reports, and suggest fixes. It asks before it changes anything, and you approve each step. Crash Doctor is still the first place to look: this is for when you want help working through a problem.',
       outcomes: [
         'Pick an assistant app that suits you.',
-        'Download Agora\'s command-line tool and point the assistant at it.',
+        'Hand the assistant Agora\'s command-line tool with one copied message.',
         'Keep control of what the assistant changes.',
       ],
       sections: [
@@ -1685,19 +1685,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           },
         },
         {
-          title: 'Get Agora\'s command-line tool',
-          body: 'The assistant works through a separate download called the Agora CLI. It uses the same instances and settings as the Agora app, so there is nothing to set up twice.',
-          steps: [
-            'Open the Install page of the Agora website and download the CLI for your system: the file name starts with agora-cli.',
-            'Unzip it into a folder you will remember, such as a folder called Agora CLI in your Documents.',
-          ],
-        },
-        {
           title: 'Ask for help',
-          body: 'Open your assistant app and give it the folder you unzipped the CLI into. Each app calls this something slightly different: opening a folder, a project, or a workspace.',
+          body: 'Agora comes with a command-line tool the assistant uses to work with your instances. Agora gives you a ready-made message that tells the assistant where that tool is and how to use it safely.',
           steps: [
-            'Open the Agora CLI folder in your assistant app.',
-            'Paste this message, with your problem at the end: "The Agora command-line tool is in this folder. Run agora skill and follow the guide it prints. Then help me with: ..."',
+            'In Agora, open Settings, then Services, then AI assistant, and choose Copy message.',
+            'Open your assistant app and paste the message, then finish it with your problem, such as "my Survival instance crashes on launch".',
             'The assistant asks to run commands. Reading commands, such as listing instances or reading a crash report, are safe to allow.',
             'Before it changes anything, it should explain what and why. Allow the change only if it makes sense to you.',
             'When it asks you to test, launch the instance from the Agora app as usual and tell it what happened.',

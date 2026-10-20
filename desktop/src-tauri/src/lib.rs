@@ -377,6 +377,7 @@ pub fn run() {
             commands::get_mcp_token,
             commands::regenerate_mcp_token,
             commands::get_mcp_skill_content,
+            commands::bundled_cli_path,
             commands::set_mcp_approval,
             commands::msa_begin_login,
             commands::msa_open_verification_url,

@@ -3419,8 +3419,28 @@ program saves the same field (the last save wins).
 The desktop installers and the portable copy ship the CLI from the same build,
 so the two are always the same version. Separately downloaded, an update to one
 leaves the other unable to open a database whose schema is newer than it
-supports. *(Implementation pending: release packaging, PATH setup, and a
-Settings panel for AI assistants.)*
+supports.
+
+- **Mechanism.** Tauri `externalBin`, declared only in
+  `desktop/src-tauri/tauri.bundle-cli.conf.json`, which the release workflow
+  merges with `--config`. Declaring it in `tauri.conf.json` would make every
+  `cargo build` of the desktop crate fail without a staged CLI binary.
+  `scripts/stage_cli_sidecar.py` copies the release build into place; on
+  Windows the CLI is Authenticode-signed first. The portable ZIP gets
+  `agora.exe` beside `portable.txt`, so it resolves the same data folder.
+- **Where it lands.** Beside the desktop executable on every platform:
+  `agora.exe` in the Windows install folder, `Contents/MacOS/agora`,
+  `/usr/bin/agora` from `.deb`/`.rpm`, and inside the AppImage mount (valid
+  only while the app runs).
+- **No PATH changes.** Settings → Services → AI assistant shows the CLI's full
+  path and copies a message naming it, so an assistant needs no PATH setup.
+  Editing PATH from the NSIS installer is easy to get wrong (length limits,
+  updates re-running hooks, uninstall cleanup), cannot be tested outside
+  Windows, and buys nothing for the assistant case. Revisit if people want
+  `agora` as a terminal command.
+- **Verified in CI** for the macOS `.app` and the Linux `.deb` (the bundled
+  binary runs and reports the release version). The Windows installer is
+  covered only by the manual smoke test in `docs/RELEASING.md`.
 
 ### 28.5 Alternatives considered
 

@@ -147,7 +147,7 @@ catalog and website streams on their own schedules.
 
 ### Build and inspect
 
-The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. Its first build step rewrites the version from that tag into every file that carries one — the workspace `Cargo.toml`, `desktop/src-tauri/Cargo.toml`, `tauri.conf.json`, `desktop/package.json`, and the `Cargo.lock` workspace entries — via `scripts/set_release_version.py`. The tag is therefore the single source of truth for installer filenames, the version the application shows, and `agora --version`. It rewrites the ephemeral CI checkout only; nothing is committed back. After the required checks above pass, it builds native desktop bundles on Windows, macOS, and Linux, packages standalone CLI archives, normalizes every desktop bundle name (`scripts/finalize_release_assets.py`), generates a `SHA256SUMS` covering every artifact, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
+The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. Its first build step rewrites the version from that tag into every file that carries one — the workspace `Cargo.toml`, `desktop/src-tauri/Cargo.toml`, `tauri.conf.json`, `desktop/package.json`, and the `Cargo.lock` workspace entries — via `scripts/set_release_version.py`. The tag is therefore the single source of truth for installer filenames, the version the application shows, and `agora --version`. It rewrites the ephemeral CI checkout only; nothing is committed back. After the required checks above pass, it builds native desktop bundles on Windows, macOS, and Linux with the CLI from the same build inside them (staged by `scripts/stage_cli_sidecar.py` and merged in through `desktop/src-tauri/tauri.bundle-cli.conf.json`, so ordinary builds do not need it), packages standalone CLI archives, normalizes every desktop bundle name (`scripts/finalize_release_assets.py`), generates a `SHA256SUMS` covering every artifact, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
 
 Public desktop build variables and secret boundaries are documented once in [DEVELOPMENT.md](./DEVELOPMENT.md). Confirm the workflow has every required public value and protected signing credential without copying their values into release notes or logs.
 
@@ -224,7 +224,11 @@ Minimum test:
 8. launch through the default delegated mode;
 9. launch directly with a test Microsoft account when that platform is supported;
 10. restart and verify settings and instances persist;
-11. exercise update detection from the previous release.
+11. exercise update detection from the previous release;
+12. open Settings → Services → AI assistant and confirm it shows the bundled CLI's path, then
+    run that path with `--version` and `skill`. On Windows check both the installed copy and
+    the portable ZIP's `agora.exe`; the workflow already checks the macOS app and the Linux
+    `.deb`, but not the Windows installer.
 
 The catalog public-key check is release-critical. A package that builds successfully but lacks the expected verification key can fail only after installation. Always test catalog synchronization in the packaged artifact.
 

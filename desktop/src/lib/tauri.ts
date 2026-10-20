@@ -1944,6 +1944,9 @@ export const startMcpServer = () => invoke<McpStatus>('start_mcp_server');
 export const stopMcpServer = () => invoke<void>('stop_mcp_server');
 export const getMcpStatus = () => invoke<McpStatus>('get_mcp_status');
 export const getMcpSkillContent = () => invoke<string>('get_mcp_skill_content');
+/** The CLI installed beside this app, or null when this build does not bundle one. */
+export interface BundledCli { path: string; temporary: boolean }
+export const bundledCliPath = () => invoke<BundledCli | null>('bundled_cli_path');
 export const setMcpApproval = (toolName: string, instanceId: string, state: string) =>
   invoke<void>('set_mcp_approval', { toolName, instanceId, state });
 
