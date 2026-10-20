@@ -40,8 +40,8 @@ use agora_core::process_identity;
 use agora_game_api::{
     BaseReference, DeploymentStrategy, FailureMarker, GameDefinition, GameId, GamePackage,
     GamePath, InputFingerprint, InstallId, InstallKind, LaunchRecipe, LaunchValue, LayerSource,
-    PackageDefinition, PluginListRule, RelPath, RuntimeIdentity, StoreId, StoreIdentifier,
-    ToolDefinition, ToolId, UserDataLocation, UserFileMapping, UserFileStrategy,
+    PackageDefinition, PluginListRule, RelPath, RequiredMagic, RuntimeIdentity, StoreId,
+    StoreIdentifier, ToolDefinition, ToolId, UserDataLocation, UserFileMapping, UserFileStrategy,
 };
 use tempfile::TempDir;
 
@@ -168,9 +168,11 @@ fn tool(id: &str, name: &str, args: &[&str]) -> ToolDefinition {
         },
         relevant_settings: Vec::new(),
         after_tools: Vec::new(),
+        conflicts_with: Vec::new(),
         uses_install_path: false,
         required_outputs: Vec::new(),
         failure_markers: Vec::new(),
+        required_magic: Vec::new(),
     }
 }
 
@@ -1150,7 +1152,8 @@ fn only_the_last_three_failed_runs_are_kept() {
 #[test]
 fn an_undeclared_tool_is_refused() {
     let f = fixture(vec![writes_or_fails("nemesis")]);
-    let err = f.run("pandora", &StagingLauncher::new()).unwrap_err();
+    // xEdit is not declared by this fixture (Pandora is declared by the real package, not here).
+    let err = f.run("xedit", &StagingLauncher::new()).unwrap_err();
     assert!(matches!(err, ToolError::UnknownTool { .. }), "{err:?}");
 }
 
@@ -3518,6 +3521,194 @@ fn a_run_that_keeps_its_required_outputs_and_writes_no_marker_is_promoted() {
     let gen = f.generation_dir("logger", "1");
     assert!(gen.join("Data/required.txt").is_file());
     assert!(gen.join("Data/PatchLog.txt").is_file());
+}
+
+/// A tool shaped like the declared Pandora Behaviour Engine (MASTER_SPEC §26.9): it works on the real
+/// install, and its one required output is the master behaviour file. The fake is `cmd`, as for the others.
+fn pandora_shaped(args: &[&str]) -> ToolDefinition {
+    let mut t = checked(
+        "pandora",
+        args,
+        &["Data/meshes/actors/character/behaviors/0_master.hkx"],
+        Vec::new(),
+    );
+    t.name = "Pandora Behaviour Engine".into();
+    t.uses_install_path = true;
+    t
+}
+
+#[test]
+fn a_pandora_shaped_run_that_writes_its_behaviour_file_under_the_vfs_is_promoted() {
+    let f = fixture(vec![pandora_shaped(&[
+        "/c",
+        "mkdir",
+        r"Data\meshes\actors\character\behaviors",
+        "&",
+        "echo",
+        "made>",
+        r"Data\meshes\actors\character\behaviors\0_master.hkx",
+    ])]);
+
+    let out = f
+        .run_as("pandora", &StagingLauncher::new(), CaptureMode::Vfs)
+        .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.capture, CaptureMethod::Vfs);
+    assert!(f
+        .generation_dir("pandora", "1")
+        .join("Data/meshes/actors/character/behaviors/0_master.hkx")
+        .is_file());
+}
+
+#[test]
+fn a_pandora_shaped_run_that_exits_zero_and_writes_nothing_is_discarded() {
+    // An empty run would replace the game's previous behaviour files with nothing, so it must not be promoted.
+    let f = fixture(vec![pandora_shaped(&["/c", "echo", "nothing to do"])]);
+
+    let out = f
+        .run_as("pandora", &StagingLauncher::new(), CaptureMode::Vfs)
+        .unwrap();
+
+    assert!(!out.promoted, "{out:?}");
+    assert_eq!(out.exit_code, Some(0));
+    let reason = out.failure.clone().expect("the outcome says why");
+    assert!(
+        reason.contains("required output 'Data/meshes/actors/character/behaviors/0_master.hkx'"),
+        "{reason}"
+    );
+    assert!(f.generated("pandora").is_none());
+}
+
+/// The declared magic of Pandora's master behaviour file: a packed Havok file, little-endian.
+fn pandora_magic() -> Vec<RequiredMagic> {
+    vec![RequiredMagic {
+        file: RelPath::new("Data/meshes/actors/character/behaviors/0_master.hkx").unwrap(),
+        magic: "57e0e05710c0c010".into(),
+    }]
+}
+
+#[test]
+fn a_required_file_that_does_not_start_with_its_magic_is_discarded_and_named() {
+    // The XML fallback of the real Pandora writes `<?xml` where a packed Havok file belongs. It exits 0 and
+    // the file exists, so only the magic check can refuse it.
+    let mut t = pandora_shaped(&[
+        "/c",
+        "mkdir",
+        r"Data\meshes\actors\character\behaviors",
+        "&",
+        "echo",
+        "^<?xml version=1.0",
+        ">",
+        r"Data\meshes\actors\character\behaviors\0_master.hkx",
+    ]);
+    t.required_magic = pandora_magic();
+    let f = fixture(vec![t]);
+
+    let out = f
+        .run_as("pandora", &StagingLauncher::new(), CaptureMode::Vfs)
+        .unwrap();
+
+    assert!(!out.promoted, "{out:?}");
+    assert_eq!(out.exit_code, Some(0));
+    let reason = out.failure.clone().expect("the outcome says why");
+    assert!(reason.contains("0_master.hkx"), "{reason}");
+    assert!(reason.contains("does not start with"), "{reason}");
+    assert!(f.generated("pandora").is_none());
+    assert!(out
+        .failed_folder
+        .expect("the discarded run is kept")
+        .is_dir());
+}
+
+#[test]
+fn a_required_file_that_starts_with_its_magic_is_promoted() {
+    let source_dir = TempDir::new().unwrap();
+    let source = source_dir.path().join("source.bin");
+    std::fs::write(
+        &source,
+        [0x57u8, 0xE0, 0xE0, 0x57, 0x10, 0xC0, 0xC0, 0x10, 0x00, 0x00],
+    )
+    .unwrap();
+    let mut t = pandora_shaped(&[
+        "/c",
+        "mkdir",
+        r"Data\meshes\actors\character\behaviors",
+        "&",
+        "copy",
+        "/b",
+        // No quotes: a quoted argument reaches cmd with backslash-quotes. The temp path has no spaces.
+        "%AGORA_TEST_SOURCE%",
+        r"Data\meshes\actors\character\behaviors\0_master.hkx",
+    ]);
+    t.required_magic = pandora_magic();
+    let f = fixture(vec![t]);
+
+    let out = f
+        .run_as(
+            "pandora",
+            &StagingLauncher::new().with_env("AGORA_TEST_SOURCE", &source.to_string_lossy()),
+            CaptureMode::Vfs,
+        )
+        .unwrap();
+
+    assert!(out.promoted, "{out:?}");
+    assert_eq!(out.failure, None);
+}
+
+#[test]
+fn a_magic_that_is_not_hex_discards_the_run_rather_than_matching_anything() {
+    let mut t = pandora_shaped(&[
+        "/c",
+        "mkdir",
+        r"Data\meshes\actors\character\behaviors",
+        "&",
+        "echo",
+        "made>",
+        r"Data\meshes\actors\character\behaviors\0_master.hkx",
+    ]);
+    t.required_magic = vec![RequiredMagic {
+        file: RelPath::new("Data/meshes/actors/character/behaviors/0_master.hkx").unwrap(),
+        magic: "5z".into(),
+    }];
+    let f = fixture(vec![t]);
+
+    let out = f
+        .run_as("pandora", &StagingLauncher::new(), CaptureMode::Vfs)
+        .unwrap();
+
+    assert!(!out.promoted, "{out:?}");
+    let reason = out.failure.expect("the outcome says why");
+    assert!(reason.contains("not valid hex"), "{reason}");
+}
+
+#[test]
+fn two_tools_that_declare_a_conflict_warn_only_when_both_have_enabled_output() {
+    // Two behaviour engines writing the same files: a warning, not a refusal (MASTER_SPEC §26.9).
+    let mut first = writes_or_fails("alpha");
+    first.conflicts_with = vec![ToolId::new("beta").unwrap()];
+    let f = fixture(vec![first, writes_or_fails("beta")]);
+    let conflicts = |f: &Fixture| -> Vec<(String, String)> {
+        game_tools::output_findings(&f.ctx, f.id(), &f.def)
+            .unwrap()
+            .into_iter()
+            .filter(|x| x.status == OutputStatus::Conflict)
+            .map(|x| (x.tool, x.message))
+            .collect()
+    };
+
+    f.run_ok("alpha", &StagingLauncher::new());
+    assert!(conflicts(&f).is_empty(), "{:?}", conflicts(&f));
+
+    f.run_ok("beta", &StagingLauncher::new());
+    let found = conflicts(&f);
+    let tools: Vec<&str> = found.iter().map(|(tool, _)| tool.as_str()).collect();
+    assert_eq!(tools.len(), 2, "{found:?}");
+    assert!(
+        tools.contains(&"alpha") && tools.contains(&"beta"),
+        "{found:?}"
+    );
+    assert!(found[0].1.contains("enable one of them"), "{found:?}");
 }
 
 #[test]

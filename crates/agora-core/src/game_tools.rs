@@ -141,6 +141,8 @@ pub enum OutputStatus {
     Stale,
     /// The output was imported, so nobody recorded what it was built from.
     Unknown,
+    /// Another tool the game declares as conflicting also has enabled output. Both are listed.
+    Conflict,
 }
 
 impl OutputStatus {
@@ -149,6 +151,7 @@ impl OutputStatus {
             OutputStatus::Current => "current",
             OutputStatus::Stale => "stale",
             OutputStatus::Unknown => "unknown",
+            OutputStatus::Conflict => "conflict",
         }
     }
 }
@@ -782,6 +785,7 @@ pub(crate) fn output_findings_with_view(
 ) -> Result<Vec<OutputFinding>, ToolError> {
     let manifest = load_manifest(ctx, instance_id)?;
     let mut findings = Vec::new();
+    let mut enabled: Vec<(ToolId, String)> = Vec::new();
     for layer in manifest.layers.layers() {
         let LayerSource::Generated {
             tool,
@@ -794,6 +798,7 @@ pub(crate) fn output_findings_with_view(
         if !layer.enabled {
             continue;
         }
+        enabled.push((tool.clone(), generation.clone()));
         let status = layer_status(ctx, instance_id, definition, tool, inputs, links);
         if status == OutputStatus::Current {
             continue;
@@ -818,6 +823,44 @@ pub(crate) fn output_findings_with_view(
             status,
             message,
         });
+    }
+
+    // Two enabled outputs from tools that declare each other's conflict (MASTER_SPEC §26.9): a warning on
+    // both. A declaration on either side is enough.
+    let declares = |a: &ToolId, b: &ToolId| {
+        ctx.games
+            .tool(&definition.id, a)
+            .is_some_and(|t| t.conflicts_with.contains(b))
+    };
+    for (i, (first, first_gen)) in enabled.iter().enumerate() {
+        for (second, second_gen) in enabled.iter().skip(i + 1) {
+            if !(declares(first, second) || declares(second, first)) {
+                continue;
+            }
+            let name_of = |id: &ToolId| {
+                ctx.games
+                    .tool(&definition.id, id)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| id.to_string())
+            };
+            let (a, b) = (name_of(first), name_of(second));
+            findings.push(OutputFinding {
+                tool: first.to_string(),
+                generation: first_gen.clone(),
+                status: OutputStatus::Conflict,
+                message: format!(
+                    "{a} and {b} both have enabled output, and both write the same behaviour files: enable one of them"
+                ),
+            });
+            findings.push(OutputFinding {
+                tool: second.to_string(),
+                generation: second_gen.clone(),
+                status: OutputStatus::Conflict,
+                message: format!(
+                    "{b} and {a} both have enabled output, and both write the same behaviour files: enable one of them"
+                ),
+            });
+        }
     }
     Ok(findings)
 }
@@ -2377,10 +2420,24 @@ fn remove_emptied_folders(root: &Path, file: &Path) {
     }
 }
 
+/// Hex pairs as bytes, or `None` when the text is empty, has an odd length, or has a non-hex digit. An
+/// empty magic is refused rather than matching everything.
+fn decode_hex(hex: &str) -> Option<Vec<u8>> {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    hex.as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .collect()
+}
+
 /// The checks a run that exited 0 must pass (MASTER_SPEC §26.9): every required output is a file the
-/// game would read once the run is promoted, and no failure marker is in a file the run wrote.
-/// Returns why the run failed, or `None` when it passed. Nothing is planned when the tool declares no
-/// required outputs, and nothing is read when it declares no markers.
+/// game would read once the run is promoted, a file the run wrote begins with its declared bytes, and no
+/// failure marker is in a file the run wrote. Returns why the run failed, or `None` when it passed.
+/// Nothing is planned when the tool declares no required outputs, and nothing is read when it declares
+/// no markers or magic.
 fn output_check(
     ctx: &Ctx,
     instance_id: &str,
@@ -2401,6 +2458,40 @@ fn output_check(
                     "required output '{pattern}' is missing from the output the run would produce"
                 )));
             }
+        }
+    }
+
+    // A file the run wrote must begin with its declared bytes. A file the run did not write is the
+    // output of an earlier run, which was checked when it was promoted, so it is not read here.
+    for required in &tool.required_magic {
+        let wanted = required.file.as_str().to_ascii_lowercase();
+        let Some(rel) = written
+            .iter()
+            .find(|rel| rel.to_ascii_lowercase() == wanted)
+        else {
+            continue;
+        };
+        let Some(expected) = decode_hex(&required.magic) else {
+            return Ok(Some(format!(
+                "the magic declared for {rel} is not valid hex, so the run cannot be checked and is discarded"
+            )));
+        };
+        let path = rel
+            .split('/')
+            .fold(staging.to_path_buf(), |p, part| p.join(part));
+        let mut head = vec![0u8; expected.len()];
+        let mut file = std::fs::File::open(&path)?;
+        let starts_right = match std::io::Read::read_exact(&mut file, &mut head) {
+            Ok(()) => head == expected,
+            // Shorter than its magic: it cannot start with it.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => false,
+            Err(e) => return Err(e.into()),
+        };
+        if !starts_right {
+            return Ok(Some(format!(
+                "{rel} does not start with the bytes its tool declares ({}), so it is not a valid file of its kind and the run is discarded",
+                required.magic
+            )));
         }
     }
 

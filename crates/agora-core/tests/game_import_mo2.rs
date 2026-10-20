@@ -134,9 +134,11 @@ fn nemesis() -> ToolDefinition {
         },
         relevant_settings: vec![],
         after_tools: vec![],
+        conflicts_with: vec![],
         uses_install_path: false,
         required_outputs: Vec::new(),
         failure_markers: Vec::new(),
+        required_magic: Vec::new(),
     }
 }
 
