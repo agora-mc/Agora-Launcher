@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 
 use agora_core::ctx::CoreContext;
 use agora_core::game_base::BaseMode;
-use agora_core::game_deploy::{add_content, deploy, plan, DeployMode, DeployOutcome, PLAN_CALLS};
+use agora_core::game_deploy::{
+    add_content, deploy, plan, undeploy, DeployMode, DeployOutcome, PLAN_CALLS,
+};
 use agora_core::game_discovery::{DiscoveredInstall, DiscoveryReport, InstallCapabilities};
 use agora_core::game_instance::{create, prepare_launch_with, GameInstanceRecord, LaunchOptions};
 use agora_core::game_launch::{LaunchError, LaunchedGame, Launcher, PreparedLaunch};
@@ -386,6 +388,35 @@ fn deploy_and_launch_timings() {
     });
     let (_prepared_first, t_prep_first) = prep_first;
 
+    // A plan change on the deployed instance A: ~150 files arrive in one new layer. The deploy
+    // updates the farm in place; the full rebuild of the same plan is an undeploy (harvest and
+    // delete) and a deploy (build), which is what every plan change cost before.
+    let extra_files = env_usize("AGORA_BENCH_CHANGE_FILES", 150);
+    let extra_id = add_item(&ctx, items, extra_files);
+    add_content(&ctx, &id_a, &extra_id, None, None).unwrap();
+    let ((outcome_inc, t_inc), plans_inc) =
+        plans_during(|| timed(|| deploy(&ctx, &id_a, &def, DeployMode::Links).unwrap()));
+    assert!(
+        matches!(outcome_inc, DeployOutcome::Built { .. }),
+        "{outcome_inc:?}"
+    );
+    let (_, t_undeploy) = timed(|| undeploy(&ctx, &id_a).unwrap());
+    let (outcome_full, t_full) = timed(|| deploy(&ctx, &id_a, &def, DeployMode::Links).unwrap());
+    assert!(
+        matches!(outcome_full, DeployOutcome::Built { kept: 0, .. }),
+        "{outcome_full:?}"
+    );
+    let (inc_placed, inc_kept, inc_removed) = match &outcome_inc {
+        DeployOutcome::Built {
+            linked,
+            copied,
+            kept,
+            removed,
+            ..
+        } => (linked + copied, *kept, *removed),
+        DeployOutcome::UpToDate { .. } => (0, 0, 0),
+    };
+
     let (linked, copied) = match outcome_build {
         DeployOutcome::Built { linked, copied, .. } => (linked, copied),
         DeployOutcome::UpToDate { .. } => (0, 0),
@@ -427,6 +458,36 @@ fn deploy_and_launch_timings() {
         "launch prep, first (builds)",
         secs(t_prep_first),
         plans_first
+    );
+    println!();
+    println!(
+        "== plan change: {extra_files} files added to a deployed instance of {planned_files} planned files"
+    );
+    println!("   in place: {inc_placed} placed, {inc_kept} kept, {inc_removed} removed");
+    println!("{:<34} {:>12} {:>8}", "step", "time", "plans");
+    println!(
+        "{:<34} {:>12} {:>8}",
+        "deploy, in place",
+        secs(t_inc),
+        plans_inc
+    );
+    println!(
+        "{:<34} {:>12} {:>8}",
+        "full rebuild: undeploy (harvest)",
+        secs(t_undeploy),
+        "-"
+    );
+    println!(
+        "{:<34} {:>12} {:>8}",
+        "full rebuild: deploy (build)",
+        secs(t_full),
+        "-"
+    );
+    println!(
+        "{:<34} {:>12} {:>8}",
+        "full rebuild, both",
+        secs(t_undeploy + t_full),
+        "-"
     );
     println!();
 }

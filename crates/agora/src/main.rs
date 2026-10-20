@@ -5803,12 +5803,15 @@ async fn run_command(
                                         copied,
                                         copied_bytes,
                                         config_copied,
+                                        kept,
+                                        removed,
                                         harvest,
                                         ..
                                     } => {
                                         println!(
-                                        "Deployed: {linked} linked, {copied} copied ({copied_bytes} bytes)."
-                                    );
+                                            "Deployed: {linked} linked, {copied} copied ({copied_bytes} bytes){}.",
+                                            kept_removed_note(*kept, *removed)
+                                        );
                                         if *config_copied > 0 {
                                             println!(
                                             "{config_copied} small config files copied so the game can write them."
@@ -6924,6 +6927,8 @@ async fn run_command(
                             copied,
                             copied_bytes,
                             config_copied,
+                            kept,
+                            removed,
                             harvest,
                             plugins,
                         }) => {
@@ -6935,13 +6940,16 @@ async fn run_command(
                                     "copied": copied,
                                     "copied_bytes": copied_bytes,
                                     "config_copied": config_copied,
+                                    "kept": kept,
+                                    "removed": removed,
                                     "harvest": harvest,
                                     "plugins": plugins,
                                 });
                                 println!("{}", serde_json::to_string_pretty(&out)?);
                             } else {
                                 println!(
-                                    "Deployed instance '{instance_id}': {linked} linked, {copied} copied ({copied_bytes} bytes)."
+                                    "Deployed instance '{instance_id}': {linked} linked, {copied} copied ({copied_bytes} bytes){}.",
+                                    kept_removed_note(kept, removed)
                                 );
                                 if config_copied > 0 {
                                     println!(
@@ -10743,6 +10751,19 @@ fn report_user_files_restore(
     }
 }
 
+/// The part of a "Deployed:" line that says what an in-place update kept and removed, starting with
+/// a comma. Empty when neither is non-zero (a full build), so the line is unchanged then.
+fn kept_removed_note(kept: usize, removed: usize) -> String {
+    let mut note = String::new();
+    if kept > 0 {
+        note.push_str(&format!(", {kept} kept"));
+    }
+    if removed > 0 {
+        note.push_str(&format!(", {removed} removed"));
+    }
+    note
+}
+
 /// What a launch's deployment did, as data: the counts the human "Deployed:" lines print.
 fn deploy_summary_json(
     outcome: Option<&agora_core::game_deploy::DeployOutcome>,
@@ -10756,6 +10777,8 @@ fn deploy_summary_json(
             copied,
             copied_bytes,
             config_copied,
+            kept,
+            removed,
             harvest,
             ..
         }) => serde_json::json!({
@@ -10764,6 +10787,8 @@ fn deploy_summary_json(
             "copied": copied,
             "copied_bytes": copied_bytes,
             "config_copied": config_copied,
+            "kept": kept,
+            "removed": removed,
             "harvest": harvest.as_ref().map(|h| serde_json::json!({
                 "copied_to_writable": h.copied_to_writable.len(),
                 "base_files_changed": h.base_files_changed.len(),

@@ -4,8 +4,8 @@
 //! using hardlinks or copies, harvests writes into the instance's writable layer,
 //! and tracks deployed file state.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use agora_game_api::{
@@ -157,6 +157,12 @@ pub enum DeployOutcome {
         copied_bytes: u64,
         #[serde(default)]
         config_copied: usize,
+        /// Recorded files an in-place update kept as they were (0 for a full build).
+        #[serde(default)]
+        kept: usize,
+        /// Files an in-place update took out of the farm, replaced ones included (0 for a full build).
+        #[serde(default)]
+        removed: usize,
         harvest: Option<HarvestReport>,
         /// What changed in the plugin list; `None` when the game keeps none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1439,8 +1445,9 @@ fn build_deployment(
     } = target;
     let mut current_plan = plan;
 
-    // Check if current deployment is up to date
-    if record_path.exists() && game_dir.exists() {
+    // Check if current deployment is up to date. A marker left by an update that stopped partway
+    // makes it not up to date (MASTER_SPEC §26.5).
+    if record_path.exists() && game_dir.exists() && !updating_marker(&deployment_dir).exists() {
         if let Ok(content) = std::fs::read_to_string(&record_path) {
             if let Ok(record) = serde_json::from_str::<DeploymentRecord>(&content) {
                 if record.fingerprint == current_plan.fingerprint
@@ -1479,14 +1486,61 @@ fn build_deployment(
         }
     }
 
-    // Existing deployment is not up to date: harvest it first
-    let harvest = if record_path.exists() {
-        let rep = harvest_internal(ctx, instance_id, &deployment_dir, &manifest)?;
+    // Existing deployment is not up to date. A farm whose update stopped partway (the marker is
+    // there) is not trusted: it is discarded without a harvest, and built again. Otherwise the farm
+    // is harvested first, then updated in place where it can be, and discarded where it cannot.
+    let harvest = if updating_marker(&deployment_dir).exists() {
+        discard_untrusted_farm(&deployment_dir)?;
+        None
+    } else if record_path.exists() {
+        let harvested = harvest_changes(ctx, instance_id, &deployment_dir, &manifest)?;
         // If anything was harvested into the writable layer, re-compute the plan
-        if !rep.is_empty() {
+        if !harvested.report.is_empty() {
             current_plan = plan_with_copy(ctx, instance_id, definition, mode, copy_layer)?;
         }
-        Some(rep)
+        match plan_in_place(&game_dir, &harvested, &current_plan, &base_id) {
+            Some((kept, remove, place)) => {
+                let applied = apply_in_place(
+                    ctx,
+                    &deployment_dir,
+                    InPlaceUpdate {
+                        instance_id: instance_id.to_string(),
+                        base_id: base_id.clone(),
+                        mode,
+                        plan: current_plan,
+                        harvest: harvested.report,
+                        kept,
+                        remove,
+                        place,
+                    },
+                )?;
+                let plugins = activate_plugins(
+                    ctx,
+                    instance_id,
+                    definition,
+                    &manifest,
+                    &base_manifest,
+                    &applied.plan,
+                    links_view(mode, &applied.plan),
+                )?;
+                let outcome = DeployOutcome::Built {
+                    linked: applied.linked,
+                    copied: applied.copied,
+                    copied_bytes: applied.copied_bytes,
+                    config_copied: applied.config_copied,
+                    kept: applied.kept,
+                    removed: applied.removed,
+                    harvest: Some(applied.harvest),
+                    plugins,
+                };
+                return Ok((outcome, applied.plan));
+            }
+            None => {
+                // The farm is taken away as the full rebuild takes it (harvest, then delete).
+                remove_farm_and_record(&deployment_dir)?;
+                Some(harvested.report)
+            }
+        }
     } else {
         None
     };
@@ -1545,6 +1599,8 @@ fn build_deployment(
             copied: copied_count,
             copied_bytes,
             config_copied: config_copied_count,
+            kept: 0,
+            removed: 0,
             harvest,
             plugins,
         },
@@ -2032,14 +2088,29 @@ fn copy_to_writable(
     Ok(())
 }
 
-fn harvest_internal(
+/// What harvesting a farm found (see [`harvest_changes`]).
+struct HarvestedFarm {
+    report: HarvestReport,
+    /// The record the farm was compared with.
+    record: DeploymentRecord,
+    /// Lower-cased paths of the recorded files that are changed or missing on disk, whether or not
+    /// the harvest copied or whited them out.
+    differing: HashSet<String>,
+    /// The files the farm has that the record does not name. The harvest copied each one to the
+    /// writable layer.
+    unrecorded: Vec<RelPath>,
+}
+
+/// The harvest of a deployed farm: its changes are copied into the writable layer and its
+/// deletions whited out, exactly as a full rebuild always did. The farm and its record are left
+/// where they are, for the caller to delete or update in place (MASTER_SPEC §26.5).
+fn harvest_changes(
     ctx: &Ctx,
     instance_id: &str,
     deployment_dir: &Path,
     manifest: &crate::game_instance::GameInstanceManifest,
-) -> Result<HarvestReport, DeployError> {
+) -> Result<HarvestedFarm, DeployError> {
     let game_dir = deployment_dir.join("game");
-    let record_path = deployment_dir.join("deployment.json");
 
     // Guard safety checks
     validate_deployment_safety(deployment_dir, instance_id)?;
@@ -2053,6 +2124,24 @@ fn harvest_internal(
 
     let mut report = HarvestReport::default();
     let mut new_whiteouts = Vec::new();
+    let mut differing = HashSet::new();
+    let mut unrecorded = Vec::new();
+
+    // A missing game folder is a deployment to build again, not a user who deleted every file:
+    // reading it as deletions would white out the whole instance and delete its writable files.
+    if !game_dir.is_dir() {
+        differing = record
+            .files
+            .iter()
+            .map(|f| f.path.as_str().to_ascii_lowercase())
+            .collect();
+        return Ok(HarvestedFarm {
+            report,
+            record,
+            differing,
+            unrecorded,
+        });
+    }
 
     // 1. Files the game folder changed or added: copied to the writable layer. A recorded file is
     // changed when its size or time differs; a changed base file is also named in the report.
@@ -2061,27 +2150,34 @@ fn harvest_internal(
     })?;
     for change in diff.changes {
         match change {
-            FarmChange::Changed { recorded, file } => match recorded.placement {
-                Placement::Copy => copy_to_writable(&writable_dir, &file, &mut report)?,
-                Placement::Link => {
-                    if let FileSource::Base {
-                        linked_to_store, ..
-                    } = recorded.source
-                    {
-                        copy_to_writable(&writable_dir, &file, &mut report)?;
-                        report.base_files_changed.push(BaseFileChanged {
-                            path: file.rel_path.clone(),
-                            linked_to_store,
-                        });
+            FarmChange::Changed { recorded, file } => {
+                differing.insert(path_key(recorded.path.as_str()));
+                match recorded.placement {
+                    Placement::Copy => copy_to_writable(&writable_dir, &file, &mut report)?,
+                    Placement::Link => {
+                        if let FileSource::Base {
+                            linked_to_store, ..
+                        } = recorded.source
+                        {
+                            copy_to_writable(&writable_dir, &file, &mut report)?;
+                            report.base_files_changed.push(BaseFileChanged {
+                                path: file.rel_path.clone(),
+                                linked_to_store,
+                            });
+                        }
                     }
                 }
-            },
-            FarmChange::Added(file) => copy_to_writable(&writable_dir, &file, &mut report)?,
+            }
+            FarmChange::Added(file) => {
+                unrecorded.push(file.rel_path.clone());
+                copy_to_writable(&writable_dir, &file, &mut report)?;
+            }
         }
     }
 
     // 2. Recorded files the game folder no longer has
     for rec_file in diff.missing {
+        differing.insert(path_key(rec_file.path.as_str()));
         match rec_file.source {
             FileSource::Writable { .. } => {
                 let dest = writable_dir.join(rec_file.path.as_str());
@@ -2152,15 +2248,405 @@ fn harvest_internal(
         write_instance_manifest_atomic(ctx, instance_id, &updated_manifest)?;
     }
 
-    // 4. Safe delete game_dir and record_path
+    Ok(HarvestedFarm {
+        report,
+        record,
+        differing,
+        unrecorded,
+    })
+}
+
+/// The whole harvest: [`harvest_changes`], then the farm and its record are deleted.
+fn harvest_internal(
+    ctx: &Ctx,
+    instance_id: &str,
+    deployment_dir: &Path,
+    manifest: &crate::game_instance::GameInstanceManifest,
+) -> Result<HarvestReport, DeployError> {
+    let harvested = harvest_changes(ctx, instance_id, deployment_dir, manifest)?;
+    remove_farm_and_record(deployment_dir)?;
+    Ok(harvested.report)
+}
+
+/// Delete a deployment's game folder and its record.
+fn remove_farm_and_record(deployment_dir: &Path) -> Result<(), DeployError> {
+    let game_dir = deployment_dir.join("game");
+    let record_path = deployment_dir.join("deployment.json");
     if game_dir.exists() {
         std::fs::remove_dir_all(&game_dir)?;
     }
     if record_path.exists() {
         std::fs::remove_file(&record_path)?;
     }
+    Ok(())
+}
 
-    Ok(report)
+// ---------------------------------------------------------------------------
+// In-place updates (MASTER_SPEC §26.5)
+// ---------------------------------------------------------------------------
+//
+// A deployment whose plan changed is updated in place where it can be: the recorded files the
+// new plan still has, unchanged, stay; the others are removed and placed again. Before the first
+// change to the farm the record is renamed to `deployment.json.updating`, and the new record is
+// written, and the marker removed, only after the last one. A marker left behind (a crash, or an
+// error part way) means the farm is not trusted: the next deploy discards it and builds it again.
+
+/// The record, set aside while its farm is updated in place.
+const UPDATING_FILE: &str = "deployment.json.updating";
+
+/// The updating marker of a deployment folder.
+fn updating_marker(deployment_dir: &Path) -> PathBuf {
+    deployment_dir.join(UPDATING_FILE)
+}
+
+/// A path as the record and the plan compare it: lower-cased, as the farm's own paths are keyed.
+fn path_key(path: &str) -> String {
+    path.to_ascii_lowercase()
+}
+
+thread_local! {
+    /// The test seam: how many more farm changes an in-place update on this thread may make before
+    /// it stops. `None` (the default) is no stop.
+    static UPDATE_FAULT_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// Set when the seam stopped an update, so the update leaves its marker as a crash would.
+    static SIMULATED_STOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test seam for crash safety: the next in-place update on this thread stops once it has made
+/// `changes` changes to the farm, and leaves its marker behind, as a process stop would. `None`
+/// turns the seam off.
+#[doc(hidden)]
+pub fn set_update_fault_after(changes: Option<usize>) {
+    UPDATE_FAULT_AFTER.with(|cell| cell.set(changes));
+}
+
+/// Stop the in-place update here if the seam asks for it.
+fn update_fault_point() -> Result<(), DeployError> {
+    UPDATE_FAULT_AFTER.with(|cell| match cell.get() {
+        Some(0) => {
+            cell.set(None);
+            SIMULATED_STOP.with(|stopped| stopped.set(true));
+            Err(DeployError::Other(
+                "injected stop during an in-place update".into(),
+            ))
+        }
+        Some(left) => {
+            cell.set(Some(left - 1));
+            Ok(())
+        }
+        None => Ok(()),
+    })
+}
+
+/// Whether the seam stopped the update that just failed. Clears the flag.
+fn take_simulated_stop() -> bool {
+    SIMULATED_STOP.with(|stopped| stopped.replace(false))
+}
+
+/// The changes an in-place update makes to a farm: the recorded files it keeps (by path key), the
+/// farm paths it removes, and the planned files it places.
+type InPlaceChanges = (
+    HashMap<String, DeployedFileRecord>,
+    Vec<RelPath>,
+    Vec<PlannedFile>,
+);
+
+/// What an in-place update is to do, worked out before the farm is changed.
+struct InPlaceUpdate {
+    instance_id: String,
+    base_id: String,
+    mode: DeployMode,
+    plan: DeploymentPlan,
+    harvest: HarvestReport,
+    kept: HashMap<String, DeployedFileRecord>,
+    remove: Vec<RelPath>,
+    place: Vec<PlannedFile>,
+}
+
+/// What an in-place update did.
+struct InPlaceApplied {
+    plan: DeploymentPlan,
+    harvest: HarvestReport,
+    linked: usize,
+    copied: usize,
+    copied_bytes: u64,
+    config_copied: usize,
+    kept: usize,
+    removed: usize,
+}
+
+/// Whether a record's path is a plain relative path: no empty, `.` or `..` parts, no root or drive.
+fn is_plain_path(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+}
+
+/// Whether a folder of a farm is a folder, and not a link to one: the folder itself, or nothing
+/// there yet. Removing or placing through a link would act outside the farm.
+fn folder_is_plain(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta.is_dir() && !is_reparse_point_or_symlink(&meta),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Whether every folder on the way to `rel` (the folders above the file itself) is plain. `cache`
+/// remembers each folder's answer, since a plan shares most of its folders.
+fn folders_on_path_are_plain(
+    game_dir: &Path,
+    rel: &str,
+    cache: &mut HashMap<String, bool>,
+) -> bool {
+    let parts: Vec<&str> = rel.split('/').collect();
+    let mut folder = String::new();
+    for part in parts.iter().take(parts.len().saturating_sub(1)) {
+        if !folder.is_empty() {
+            folder.push('/');
+        }
+        folder.push_str(part);
+        let plain = *cache
+            .entry(folder.clone())
+            .or_insert_with(|| folder_is_plain(&game_dir.join(&folder)));
+        if !plain {
+            return false;
+        }
+    }
+    true
+}
+
+/// Work out the in-place update of a farm from its harvest and the plan it must now match. `None`
+/// when the farm must be built again instead: another base, a record that does not name plain
+/// paths, a missing game folder, or a folder on the way to a changed file that is not a folder.
+fn plan_in_place(
+    game_dir: &Path,
+    harvested: &HarvestedFarm,
+    plan: &DeploymentPlan,
+    base_id: &str,
+) -> Option<InPlaceChanges> {
+    if harvested.record.base_id != base_id || !game_dir.is_dir() {
+        return None;
+    }
+    let mut recorded: HashMap<String, &DeployedFileRecord> = HashMap::new();
+    for rec in &harvested.record.files {
+        let path = rec.path.as_str();
+        if !is_plain_path(path) || recorded.insert(path_key(path), rec).is_some() {
+            return None;
+        }
+    }
+    let mut planned: HashMap<String, &PlannedFile> = HashMap::new();
+    for file in &plan.files {
+        if planned.insert(path_key(file.path.as_str()), file).is_some() {
+            return None;
+        }
+    }
+
+    // A recorded file is kept when the plan has it the same way (source, placement and size), and
+    // the harvest found it as the record has it. The writable layer is always placed again: the game
+    // and the instance's own tools both write there, and the record cannot tell what changed.
+    let mut kept = HashMap::new();
+    let mut remove = Vec::new();
+    for (key, &rec) in &recorded {
+        let same_in_plan = planned.get(key).is_some_and(|file| {
+            file.path == rec.path
+                && file.source == rec.source
+                && file.placement == rec.placement
+                && file.size == rec.size
+                && !matches!(file.source, FileSource::Writable { .. })
+        });
+        if same_in_plan && !harvested.differing.contains(key) {
+            kept.insert(key.clone(), rec.clone());
+        } else {
+            remove.push(rec.path.clone());
+        }
+    }
+    // A file the farm has that the record does not name was harvested just now; it leaves the farm.
+    remove.extend(harvested.unrecorded.iter().cloned());
+    remove.sort();
+
+    let place: Vec<PlannedFile> = plan
+        .files
+        .iter()
+        .filter(|file| !kept.contains_key(&path_key(file.path.as_str())))
+        .cloned()
+        .collect();
+
+    // Removing a folder, or writing into one, must not go through a link out of the farm.
+    for rel in &remove {
+        let path = game_dir.join(rel.as_str());
+        if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) {
+            return None;
+        }
+    }
+    let mut folders = HashMap::new();
+    let all_plain = remove
+        .iter()
+        .map(RelPath::as_str)
+        .chain(place.iter().map(|file| file.path.as_str()))
+        .all(|rel| folders_on_path_are_plain(game_dir, rel, &mut folders));
+    if !all_plain {
+        return None;
+    }
+    Some((kept, remove, place))
+}
+
+/// Remove one file of a farm. A file that is already gone is not an error: the record may name a
+/// file the game deleted, which the harvest has whited out.
+fn remove_farm_file(game_dir: &Path, rel: &RelPath) -> Result<(), DeployError> {
+    match std::fs::remove_file(game_dir.join(rel.as_str())) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Remove the folders that removing `removed` left empty, from the file's folder upward. A folder
+/// that still holds something stops the climb, and so does the farm's root.
+fn remove_emptied_folders(game_dir: &Path, removed: &[RelPath]) {
+    for rel in removed {
+        let mut folder = Path::new(rel.as_str()).parent();
+        while let Some(rel_folder) = folder {
+            if rel_folder.as_os_str().is_empty()
+                || std::fs::remove_dir(game_dir.join(rel_folder)).is_err()
+            {
+                break;
+            }
+            folder = rel_folder.parent();
+        }
+    }
+}
+
+/// Carry out an in-place update: remove, place, then write the new record and remove the marker.
+/// Runs under the instance lock, with the harvest already done. An error part way takes the
+/// half-updated farm away, as a failed full build always left no farm behind; a stop (a crash, or
+/// the test seam's) leaves the marker for the next deploy to discard.
+fn apply_in_place(
+    ctx: &Ctx,
+    deployment_dir: &Path,
+    update: InPlaceUpdate,
+) -> Result<InPlaceApplied, DeployError> {
+    let game_dir = deployment_dir.join("game");
+    let record_path = deployment_dir.join("deployment.json");
+    let marker = updating_marker(deployment_dir);
+
+    // The farm's root holds the grant that lets its links be deleted (see
+    // `protect::grant_delete_child`); the folders below it inherit that grant.
+    protect::grant_delete_child(&game_dir)?;
+    // The record is set aside before the first change. From here, a stop leaves the marker behind.
+    std::fs::rename(&record_path, &marker)?;
+
+    match apply_marked(ctx, deployment_dir, update) {
+        Ok(applied) => Ok(applied),
+        Err(err) => {
+            if !take_simulated_stop() {
+                // Best effort: if this fails the marker is still there, and the next deploy discards it.
+                let _ = discard_untrusted_farm(deployment_dir);
+            }
+            Err(err)
+        }
+    }
+}
+
+/// The changes of an in-place update, once the record is set aside: remove, place, and write the
+/// new record and remove the marker.
+fn apply_marked(
+    ctx: &Ctx,
+    deployment_dir: &Path,
+    update: InPlaceUpdate,
+) -> Result<InPlaceApplied, DeployError> {
+    let game_dir = deployment_dir.join("game");
+    let record_path = deployment_dir.join("deployment.json");
+    let marker = updating_marker(deployment_dir);
+    let InPlaceUpdate {
+        instance_id,
+        base_id,
+        mode,
+        plan,
+        harvest,
+        mut kept,
+        remove,
+        place,
+    } = update;
+
+    for rel in &remove {
+        update_fault_point()?;
+        remove_farm_file(&game_dir, rel)?;
+    }
+    update_fault_point()?;
+    let placed = place_files(ctx, &place, &game_dir)?;
+    remove_emptied_folders(&game_dir, &remove);
+
+    let kept_count = kept.len();
+    let PlacedFiles {
+        linked,
+        copied,
+        copied_bytes,
+        config_copied,
+        recorded,
+    } = placed;
+    let mut placed_by_key: HashMap<String, DeployedFileRecord> = recorded
+        .into_iter()
+        .map(|rec| (path_key(rec.path.as_str()), rec))
+        .collect();
+    // The new record lists the files in plan order, as a full build does.
+    let mut files = Vec::with_capacity(plan.files.len());
+    for file in &plan.files {
+        let key = path_key(file.path.as_str());
+        let rec = kept
+            .remove(&key)
+            .or_else(|| placed_by_key.remove(&key))
+            .ok_or_else(|| {
+                DeployError::Other(format!(
+                    "in-place update left '{}' without a record",
+                    file.path
+                ))
+            })?;
+        files.push(rec);
+    }
+
+    let record = DeploymentRecord {
+        instance_id,
+        base_id,
+        mode,
+        fingerprint: plan.fingerprint.clone(),
+        files,
+        deployed_at_unix_ms: now_unix_ms(),
+    };
+    let unique = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
+    let tmp_record_path = deployment_dir.join(format!("deployment.json.tmp-{unique}"));
+    std::fs::write(&tmp_record_path, serde_json::to_vec_pretty(&record)?)?;
+    std::fs::rename(&tmp_record_path, &record_path)?;
+    std::fs::remove_file(&marker)?;
+
+    Ok(InPlaceApplied {
+        plan,
+        harvest,
+        linked,
+        copied,
+        copied_bytes,
+        config_copied,
+        kept: kept_count,
+        removed: remove.len(),
+    })
+}
+
+/// Discard a farm whose update stopped partway. Nothing is harvested from it: its state is not
+/// known. The marker goes last, so a stop during the discard leaves the next deploy to discard again.
+fn discard_untrusted_farm(deployment_dir: &Path) -> Result<(), DeployError> {
+    let record_path = deployment_dir.join("deployment.json");
+    if record_path.exists() {
+        std::fs::remove_file(&record_path)?;
+    }
+    let game_dir = deployment_dir.join("game");
+    if game_dir.exists() {
+        std::fs::remove_dir_all(&game_dir)?;
+    }
+    let marker = updating_marker(deployment_dir);
+    if marker.exists() {
+        std::fs::remove_file(&marker)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
