@@ -1352,6 +1352,393 @@ async fn a_direct_hash_that_matches_verifies_and_one_that_differs_is_refused_eve
 }
 
 // ---------------------------------------------------------------------------
+// The content store's own copy
+// ---------------------------------------------------------------------------
+
+/// Serves releases like the fake, and fails the test if any file is downloaded.
+struct NoDownloads(FakeTransport);
+
+#[async_trait]
+impl CatalogTransport for NoDownloads {
+    async fn releases_page(
+        &self,
+        repo: &str,
+        page: u32,
+    ) -> LauncherResult<(Vec<GitHubRelease>, u32)> {
+        self.0.releases_page(repo, page).await
+    }
+
+    async fn fetch(&self, url: &str, _pinned_host: Option<&str>) -> LauncherResult<Vec<u8>> {
+        panic!("{url} was downloaded, but the content store already holds this release file");
+    }
+}
+
+fn direct_item(url: &str, sha256: &str) -> GameCatalogItem {
+    let mut item = entry(
+        "crash-logger",
+        "test-game",
+        vec![DownloadSource {
+            strategy: "direct_hash".into(),
+            identifier: url.to_string(),
+            pins: vec![],
+        }],
+        vec![compat(&["steam"], &["1.0.*"], None, vec![])],
+    );
+    item.sha256 = Some(sha256.to_string());
+    item
+}
+
+#[tokio::test]
+async fn a_stored_copy_under_a_published_digest_is_used_without_a_download() {
+    let f = fixture(Some(pe_with_version([0, 2, 2, 6])), true);
+    let first = f.instance("stored-first");
+    let second = f.instance("stored-second");
+    let bytes = plain_archive();
+    let assets = [Asset {
+        name: "CrashLogger-1.zip",
+        bytes: &bytes,
+        digest: Digest::Matching,
+    }];
+    let releases = vec![vec![release(
+        "v1",
+        "2026-01-01T00:00:00Z",
+        false,
+        false,
+        &assets,
+    )]];
+    let downloads = FakeTransport::new(releases.clone(), files_of(&[("v1", &assets)]));
+    run(
+        &f,
+        &downloads,
+        &github_fixture_item(),
+        &first.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(downloads.fetch_count(), 1);
+    let stored_id = f.content_items()[0].item_id.clone();
+
+    let report = run(
+        &f,
+        &NoDownloads(FakeTransport::new(releases, vec![])),
+        &github_fixture_item(),
+        &second.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    let InstallState::Placed {
+        content_item_id,
+        hash,
+        ..
+    } = &report.state
+    else {
+        panic!("expected a placed install, got {:?}", report.state);
+    };
+    assert_eq!(content_item_id, &stored_id);
+    assert!(hash.verified);
+    assert!(hash.basis.contains("reused the copy"), "{}", hash.basis);
+    assert_eq!(f.content_items().len(), 1, "no second copy is stored");
+    assert_eq!(f.layer_count(&second.instance_id), 1);
+}
+
+#[tokio::test]
+async fn a_stored_copy_whose_bytes_are_corrupt_is_downloaded_again() {
+    let f = fixture(Some(pe_with_version([0, 2, 2, 6])), true);
+    let first = f.instance("corrupt-first");
+    let second = f.instance("corrupt-second");
+    let bytes = plain_archive();
+    let assets = [Asset {
+        name: "CrashLogger-1.zip",
+        bytes: &bytes,
+        digest: Digest::Matching,
+    }];
+    let releases = vec![vec![release(
+        "v1",
+        "2026-01-01T00:00:00Z",
+        false,
+        false,
+        &assets,
+    )]];
+    let downloads = FakeTransport::new(releases.clone(), files_of(&[("v1", &assets)]));
+    run(
+        &f,
+        &downloads,
+        &github_fixture_item(),
+        &first.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    // Overwrite one stored file with bytes of the same size, as a tampered object would be.
+    let stored = f.content_items().remove(0);
+    let object = f.ctx.paths.content_object_path(&stored.files[0].sha256);
+    content_store::protect::unprotect(&object).unwrap();
+    std::fs::write(&object, vec![b'X'; stored.files[0].size as usize]).unwrap();
+
+    let again = FakeTransport::new(releases, files_of(&[("v1", &assets)]));
+    let report = run(
+        &f,
+        &again,
+        &github_fixture_item(),
+        &second.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.fetch_count(), 1, "the corrupt copy is not used");
+    assert!(
+        matches!(report.state, InstallState::Placed { .. }),
+        "{:?}",
+        report.state
+    );
+    assert!(
+        report
+            .plan
+            .warnings
+            .iter()
+            .any(|w| w.contains("does not match its recorded hashes")),
+        "{:?}",
+        report.plan.warnings
+    );
+    let check =
+        content_store::verify_item(&f.ctx, &stored.item_id, content_store::VerifyDepth::Full)
+            .unwrap();
+    assert!(check.problems.is_empty(), "{:?}", check.problems);
+}
+
+#[tokio::test]
+async fn a_damaged_protected_object_of_the_right_size_is_replaced_by_the_next_install() {
+    let f = fixture(Some(pe_with_version([0, 2, 2, 6])), true);
+    let first = f.instance("protected-first");
+    let second = f.instance("protected-second");
+    let bytes = plain_archive();
+    let assets = [Asset {
+        name: "CrashLogger-1.zip",
+        bytes: &bytes,
+        digest: Digest::Matching,
+    }];
+    let releases = vec![vec![release(
+        "v1",
+        "2026-01-01T00:00:00Z",
+        false,
+        false,
+        &assets,
+    )]];
+    let downloads = FakeTransport::new(releases.clone(), files_of(&[("v1", &assets)]));
+    run(
+        &f,
+        &downloads,
+        &github_fixture_item(),
+        &first.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    // Damage one stored object without changing its size, and protect it again: the quick check
+    // trusts a protected object of the right size, so only the full check can find this.
+    let stored = f.content_items().remove(0);
+    let object = f.ctx.paths.content_object_path(&stored.files[0].sha256);
+    let original = std::fs::read(&object).unwrap();
+    content_store::protect::unprotect(&object).unwrap();
+    std::fs::write(&object, vec![b'X'; original.len()]).unwrap();
+    content_store::protect::protect(&object).unwrap();
+    assert_eq!(
+        content_store::protect::protection(&object).unwrap(),
+        content_store::Protection::Protected
+    );
+    let quick =
+        content_store::verify_item(&f.ctx, &stored.item_id, content_store::VerifyDepth::Quick)
+            .unwrap();
+    assert!(quick.problems.is_empty(), "{:?}", quick.problems);
+
+    let again = FakeTransport::new(releases, files_of(&[("v1", &assets)]));
+    let report = run(
+        &f,
+        &again,
+        &github_fixture_item(),
+        &second.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.fetch_count(), 1, "the damaged copy is not used");
+    assert!(
+        matches!(report.state, InstallState::Placed { .. }),
+        "{:?}",
+        report.state
+    );
+
+    // The next install's import replaced the object with the archive's own bytes.
+    assert_eq!(std::fs::read(&object).unwrap(), original);
+    let full =
+        content_store::verify_item(&f.ctx, &stored.item_id, content_store::VerifyDepth::Full)
+            .unwrap();
+    assert!(full.problems.is_empty(), "{:?}", full.problems);
+}
+
+#[tokio::test]
+async fn a_stored_copy_is_not_used_when_the_source_publishes_no_hash() {
+    let f = fixture(Some(pe_with_version([0, 2, 2, 6])), true);
+    let first = f.instance("unpublished-first");
+    let second = f.instance("unpublished-second");
+    let bytes = plain_archive();
+    let assets = [Asset {
+        name: "CrashLogger-1.zip",
+        bytes: &bytes,
+        digest: Digest::Absent,
+    }];
+    let releases = vec![vec![release(
+        "v1",
+        "2026-01-01T00:00:00Z",
+        false,
+        false,
+        &assets,
+    )]];
+    let downloads = FakeTransport::new(releases.clone(), files_of(&[("v1", &assets)]));
+    run(
+        &f,
+        &downloads,
+        &github_fixture_item(),
+        &first.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let again = FakeTransport::new(releases, files_of(&[("v1", &assets)]));
+    let report = run(
+        &f,
+        &again,
+        &github_fixture_item(),
+        &second.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.fetch_count(), 1, "nothing published, so it downloads");
+    let InstallState::Placed { hash, .. } = &report.state else {
+        panic!("expected a placed install, got {:?}", report.state);
+    };
+    assert!(!hash.verified);
+    assert!(!hash.basis.contains("reused"), "{}", hash.basis);
+}
+
+#[tokio::test]
+async fn an_empty_published_digest_is_no_hash_and_never_matches_a_stored_copy() {
+    let f = fixture(Some(pe_with_version([0, 2, 2, 6])), true);
+    let first = f.instance("empty-digest-first");
+    let second = f.instance("empty-digest-second");
+    let bytes = plain_archive();
+    let assets = [Asset {
+        name: "CrashLogger-1.zip",
+        bytes: &bytes,
+        digest: Digest::Absent,
+    }];
+    let downloads = FakeTransport::new(
+        vec![vec![release(
+            "v1",
+            "2026-01-01T00:00:00Z",
+            false,
+            false,
+            &assets,
+        )]],
+        files_of(&[("v1", &assets)]),
+    );
+    run(
+        &f,
+        &downloads,
+        &github_fixture_item(),
+        &first.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let mut listed = release("v1", "2026-01-01T00:00:00Z", false, false, &assets);
+    listed.assets[0].digest = Some(String::new());
+    let again = FakeTransport::new(vec![vec![listed]], files_of(&[("v1", &assets)]));
+    run(
+        &f,
+        &again,
+        &github_fixture_item(),
+        &second.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.fetch_count(), 1, "an empty digest is not a hash");
+}
+
+#[tokio::test]
+async fn a_direct_download_is_reused_from_the_store_under_its_manifest_hash() {
+    let f = fixture(Some(pe_with_version([0, 2, 2, 6])), true);
+    let first = f.instance("direct-stored-first");
+    let second = f.instance("direct-stored-second");
+    let bytes = plain_archive();
+    let url = "https://files.example-author.example/crash-logger/CrashLogger-1.zip";
+    let item = direct_item(url, &sha256_hex(&bytes));
+    let downloads = FakeTransport::new(vec![], vec![(url.to_string(), bytes.clone())]);
+    run(&f, &downloads, &item, &first.instance_id, false, false)
+        .await
+        .unwrap();
+    assert_eq!(downloads.fetch_count(), 1);
+
+    let report = run(
+        &f,
+        &NoDownloads(FakeTransport::new(vec![], vec![])),
+        &item,
+        &second.instance_id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    let InstallState::Placed { hash, .. } = &report.state else {
+        panic!("expected a placed install, got {:?}", report.state);
+    };
+    assert!(hash.verified);
+    assert!(hash.basis.contains("reused the copy"), "{}", hash.basis);
+    assert_eq!(f.layer_count(&second.instance_id), 1);
+}
+
+#[tokio::test]
+async fn an_empty_direct_download_hash_is_refused_and_nothing_is_fetched() {
+    let f = fixture(Some(pe_with_version([0, 2, 2, 6])), true);
+    let instance = f.instance("direct-empty");
+    let bytes = plain_archive();
+    let url = "https://files.example-author.example/crash-logger/CrashLogger-1.zip";
+    let transport = FakeTransport::new(vec![], vec![(url.to_string(), bytes)]);
+    for hash in ["", "   "] {
+        let error = run(
+            &f,
+            &transport,
+            &direct_item(url, hash),
+            &instance.instance_id,
+            true,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), "ERR_CATALOG_NO_HASH");
+    }
+    assert_eq!(transport.fetch_count(), 0);
+}
+
+// ---------------------------------------------------------------------------
 // Placement and the instance
 // ---------------------------------------------------------------------------
 

@@ -575,6 +575,20 @@ pub fn add_archive_with_source(
     name: Option<&str>,
     source: impl FnOnce(&str, &str) -> ContentSource,
 ) -> Result<AddOutcome, ContentError> {
+    add_archive_replacing(ctx, archive_path, name, &HashSet::new(), source)
+}
+
+/// [`add_archive_with_source`] that replaces the stored objects whose SHA-256 is in `replace`,
+/// instead of trusting them. A caller passes the hashes a verify found damaged, so the re-import
+/// repairs exactly those objects, protected or not. The bytes that replace them are the archive's
+/// own, extracted and hashed as usual.
+pub fn add_archive_replacing(
+    ctx: &Ctx,
+    archive_path: &Path,
+    name: Option<&str>,
+    replace: &HashSet<String>,
+    source: impl FnOnce(&str, &str) -> ContentSource,
+) -> Result<AddOutcome, ContentError> {
     let _lock = ctx
         .lock_manager
         .acquire(LockResource::ContentStore, "content-add")?;
@@ -913,7 +927,7 @@ pub fn add_archive_with_source(
 
     let source = source(&archive_sha256, &archive_display_path);
 
-    let outcome = finish_adding(ctx, &item_name, staged_entries, source)?;
+    let outcome = finish_adding(ctx, &item_name, staged_entries, source, replace)?;
     guard.active = false;
     let _ = std::fs::remove_dir_all(&staging_dir);
     Ok(outcome)
@@ -1071,7 +1085,7 @@ pub(crate) fn add_collected(
         },
     )?;
 
-    let outcome = finish_adding(ctx, item_name, staged_entries, source)?;
+    let outcome = finish_adding(ctx, item_name, staged_entries, source, &HashSet::new())?;
     guard.active = false;
     let _ = std::fs::remove_dir_all(&staging_dir);
     Ok(outcome)
@@ -1087,14 +1101,21 @@ enum Placed {
 }
 
 /// Put one staged file's bytes into the objects folder, or find that a trustworthy object already
-/// holds them. The staged copy is consumed either way.
-fn place_object(paths: &AppPaths, entry: &StagedEntry) -> Result<Placed, ContentError> {
+/// holds them. The staged copy is consumed either way. With `replace`, an object already there is
+/// replaced without the check: a verify has named it damaged, and a protected object of the right
+/// size would otherwise be trusted unhashed.
+fn place_object(
+    paths: &AppPaths,
+    entry: &StagedEntry,
+    replace: bool,
+) -> Result<Placed, ContentError> {
     let obj_path = paths.content_object_path(&entry.sha256);
     if let Some(parent) = obj_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    if obj_path.exists() && object_is_trustworthy(&obj_path, entry.size, &entry.sha256)? {
+    if obj_path.exists() && !replace && object_is_trustworthy(&obj_path, entry.size, &entry.sha256)?
+    {
         let _ = std::fs::remove_file(&entry.staged_path);
         if protect::protection(&obj_path)? != Protection::Protected {
             protect::protect(&obj_path)?;
@@ -1181,6 +1202,7 @@ fn finish_adding(
     item_name: &str,
     staged_entries: Vec<StagedEntry>,
     source: ContentSource,
+    replace: &HashSet<String>,
 ) -> Result<AddOutcome, ContentError> {
     // Entries with the same bytes share one object. Each group runs on one thread, in order: its
     // first entry places the object and the others then find it present. So two threads never
@@ -1203,7 +1225,10 @@ fn finish_adding(
         |_, g| -> Result<Vec<Placed>, ContentError> {
             groups[g]
                 .iter()
-                .map(|&i| place_object(&ctx.paths, &staged_entries[i]))
+                .map(|&i| {
+                    let entry = &staged_entries[i];
+                    place_object(&ctx.paths, entry, replace.contains(&entry.sha256))
+                })
                 .collect()
         },
     )?;
