@@ -5127,7 +5127,11 @@ async fn run_command(
                         report.state,
                         agora_core::catalog_install::InstallState::NeedsInstaller { .. }
                     ) {
-                        std::process::exit(1);
+                        // Not installed, and not a failure of the install: a decision is needed
+                        // (exit 71, docs/CLI.md), so a script can tell it did not install.
+                        std::process::exit(exit_code_from_launcher_error(
+                            &agora_core::error::LauncherError::UserDecisionRequired,
+                        ));
                     }
                 }
                 CatalogCmd::List { game } => {
@@ -6438,28 +6442,31 @@ async fn run_command(
                                     let command = format!(
                                         "agora games content fomod install {item_id} --instance {instance_id}"
                                     );
+                                    // Not added, and not a failure: a decision is needed (exit 71,
+                                    // docs/CLI.md). The same outcome as `games catalog install`.
+                                    let code = exit_code_from_launcher_error(
+                                        &agora_core::error::LauncherError::UserDecisionRequired,
+                                    );
                                     if json {
                                         let out = serde_json::json!({
-                                            "status": "error",
+                                            "status": "needs_installer",
                                             "error": format!(
                                                 "This archive has a FOMOD installer: {reason}. Run `{command} --defaults`, or pick options with `--choose \"Step/Group/Plugin\"` (see `agora games content fomod show {item_id}`)."
                                             ),
                                             "reason": reason,
                                             "top_level": top_level,
                                             "installer_command": command,
-                                            "exitCode": 1,
+                                            "exitCode": code,
                                         });
                                         eprintln!("{}", serde_json::to_string_pretty(&out)?);
                                     } else {
-                                        eprintln!(
-                                            "Error: this archive has a FOMOD installer: {reason}."
-                                        );
-                                        eprintln!("Install it with: {command} --defaults");
-                                        eprintln!(
-                                            "or pick options with --choose \"Step/Group/Plugin\" (see `agora games content fomod show {item_id}`)."
-                                        );
+                                        for line in
+                                            installer_guidance_lines(&reason, &item_id, &command)
+                                        {
+                                            println!("{line}");
+                                        }
                                     }
-                                    std::process::exit(1);
+                                    std::process::exit(code);
                                 }
                                 agora_core::game_deploy::PlacementDecision::Unknown {
                                     top_level,
@@ -9864,13 +9871,27 @@ fn print_catalog_report(report: &agora_core::catalog_install::InstallReport) {
         } => {
             println!("Hash: {}.", hash.basis);
             println!("Content item: {content_item_id} ({size} bytes), not added to the instance.");
-            eprintln!("Error: this archive has a FOMOD installer: {reason}.");
-            eprintln!("Install it with: {installer_command} --defaults");
-            eprintln!(
-                "or pick options with --choose \"Step/Group/Plugin\" (see `agora games content fomod show {content_item_id}`)."
-            );
+            for line in installer_guidance_lines(reason, content_item_id, installer_command) {
+                println!("{line}");
+            }
         }
     }
+}
+
+/// What a catalog install says when the archive needs its FOMOD installer run: what to run next.
+/// An expected outcome, so it is not an error and carries no `Error:` prefix.
+fn installer_guidance_lines(
+    reason: &str,
+    content_item_id: &str,
+    installer_command: &str,
+) -> Vec<String> {
+    vec![
+        format!("This archive has a FOMOD installer: {reason}. It needs your choices before it is added to the instance."),
+        format!("Install it with: {installer_command} --defaults"),
+        format!(
+            "or pick options with --choose \"Step/Group/Plugin\" (see `agora games content fomod show {content_item_id}`)."
+        ),
+    ]
 }
 
 fn print_runtime_findings(findings: &[agora_game_api::RuntimeFileFinding]) {
@@ -12347,6 +12368,25 @@ mod tests {
             exit_code_from_launcher_error(&LauncherError::UserDecisionRequired),
             71
         );
+    }
+
+    #[test]
+    fn catalog_installer_guidance_is_not_an_error_and_names_the_next_command() {
+        let lines = super::installer_guidance_lines(
+            "the installer asks for choices",
+            "abc123",
+            "agora games content fomod install abc123 --instance my-inst",
+        );
+        assert!(
+            lines.iter().all(|line| !line.starts_with("Error:")),
+            "an archive that needs installer choices is an expected outcome, not an error: {lines:?}"
+        );
+        let text = lines.join("\n");
+        assert!(
+            text.contains("agora games content fomod install abc123 --instance my-inst --defaults")
+        );
+        assert!(text.contains("--choose \"Step/Group/Plugin\""));
+        assert!(text.contains("agora games content fomod show abc123"));
     }
 
     #[test]
