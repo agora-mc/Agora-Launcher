@@ -22,6 +22,7 @@ import finalize_release_assets as fra
 import refresh_loader_manifests
 import validate_loader_catalog_delta
 import build_docs_web as bdw
+import stage_cli_sidecar
 
 
 def _response(read_side_effect=None, read_value=b"data"):
@@ -2509,6 +2510,32 @@ class TestFinalizeReleaseAssetsApply(unittest.TestCase):
         with mock.patch.object(fra, "plan_and_apply") as plan:
             self.assertEqual(fra.main(["--repo", "o/r", "--tag", self.TAG]), 0)
         plan.assert_called_once_with("o/r", self.TAG, "0.9.3")
+
+
+class TestStageCliSidecar(unittest.TestCase):
+    """Tests for stage_cli_sidecar's path rules, which must match Tauri's."""
+
+    def test_sidecar_name_carries_the_triple_and_windows_suffix(self):
+        d = Path("bin")
+        self.assertEqual(
+            stage_cli_sidecar.sidecar_path(d, "x86_64-pc-windows-msvc"),
+            d / "agora-x86_64-pc-windows-msvc.exe",
+        )
+        self.assertEqual(
+            stage_cli_sidecar.sidecar_path(d, "aarch64-apple-darwin"),
+            d / "agora-aarch64-apple-darwin",
+        )
+
+    def test_built_path_follows_whether_cargo_was_given_a_target(self):
+        t = Path("target")
+        self.assertEqual(
+            stage_cli_sidecar.built_cli_path(t, "x86_64-unknown-linux-gnu", explicit_target=False),
+            t / "release" / "agora",
+        )
+        self.assertEqual(
+            stage_cli_sidecar.built_cli_path(t, "x86_64-apple-darwin", explicit_target=True),
+            t / "x86_64-apple-darwin" / "release" / "agora",
+        )
 
 
 if __name__ == "__main__":

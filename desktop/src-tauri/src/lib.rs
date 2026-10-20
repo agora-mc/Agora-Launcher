@@ -86,7 +86,33 @@ fn launch_arg(args: &[String]) -> Option<String> {
 pub struct PendingCliLaunch(pub std::sync::Mutex<Option<String>>);
 
 /// Run the Tauri application.
+/// Tell the UI when another Agora program (usually the CLI, driven by an AI
+/// agent) changes an instance, so it reloads instead of showing stale state.
+///
+/// Polling a handful of small files once a second costs next to nothing and
+/// works the same on every platform, which a filesystem watcher does not.
+fn watch_external_changes(app: tauri::AppHandle, locks_root: std::path::PathBuf) {
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+    let spawned = std::thread::Builder::new()
+        .name("external-changes".into())
+        .spawn(move || {
+            use tauri::Emitter;
+            let mut feed = agora_core::change_feed::ChangeFeed::new(&locks_root);
+            loop {
+                std::thread::sleep(POLL_INTERVAL);
+                let changes = feed.poll();
+                if !changes.is_empty() {
+                    let _ = app.emit("instances-changed-externally", changes);
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("[core] external change watcher unavailable: {error}");
+    }
+}
+
 pub fn run() {
+    agora_core::lock_manager::set_program_name("Agora app");
     // Log startup so the user can verify from the log file that they are
     // actually running the freshly-compiled binary (not a stale one). When
     // diagnosing OAuth issues, the absence of this line means the running
@@ -351,6 +377,7 @@ pub fn run() {
             commands::get_mcp_token,
             commands::regenerate_mcp_token,
             commands::get_mcp_skill_content,
+            commands::bundled_cli_path,
             commands::set_mcp_approval,
             commands::msa_begin_login,
             commands::msa_open_verification_url,
@@ -423,6 +450,10 @@ pub fn run() {
                             eprintln!("[core] {w}");
                         }
                         let maintenance_ctx = ctx.clone();
+                        watch_external_changes(
+                            app.handle().clone(),
+                            ctx.lock_manager.locks_root().to_path_buf(),
+                        );
                         app.manage(ManagedCoreContext::new(std::sync::Mutex::new(ctx)));
                         Some(maintenance_ctx)
                     }

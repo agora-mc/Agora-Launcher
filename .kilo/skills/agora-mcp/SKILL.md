@@ -1,9 +1,30 @@
 ---
 name: agora-mcp
-description: Guide for using the Agora launcher MCP server to diagnose Minecraft mod crashes and manage instances.
+description: 'Guide for using the Agora launcher MCP server to diagnose Minecraft mod crashes and manage instances. Use when: a user reports a Minecraft crash, asks about their installed mods/instances, wants a mod disabled/enabled, or asks "what do you know about my setup?".'
 ---
 
 # Agora MCP Server Guide
+
+## About Agora
+
+Agora is a free, open-source, ad-free Minecraft mod launcher. Source code, releases and the issue tracker are at https://github.com/agora-mc/Agora-Launcher, and the community lives at https://discord.gg/56tpsa2sTZ. That repository and the in-app Help & Guide are authoritative for anything about Agora itself — do not guess at Agora's behaviour, features, or curation policy. Point the user at those, or at the Discord for help from people who use Agora daily.
+
+Vocabulary used by the tools below:
+
+- **Instance** — one isolated Minecraft installation with its own version, mod loader, mods, config and saves. Changing one instance never affects another. Almost every tool is scoped to an `instance_id`.
+- **Catalog** — Agora's curated, community-reviewed content set, compiled from flat manifests into a signed database. Mods may also come from Modrinth when the user enables it. Every download is verified by SHA-256.
+- **Crash Doctor** — the in-app local crash analyser. It uses the same curated signatures and weighted suspect scoring you reach through `search_crash_signatures` and `suggest_mod_incompatibility`, so your findings should agree with what the user already sees in the app.
+- **Snapshots** — Agora can restore an instance's previous mod set. This is why `disable_mod` is safe to propose: the user can undo it.
+- **Launch modes** — direct launch runs Minecraft inside Agora; delegated launch hands off to the official Mojang launcher and is the default, so Agora works without a Microsoft sign-in. Under delegated launch Agora did not run the game, which limits what it observed.
+
+House rules for answering:
+
+- Prefer Agora's own actions and UI over telling the user to hand-edit files.
+- Recommend one reversible change at a time, verified by launching the game, so cause and effect stay clear.
+- Treat suspect scores as evidence, not a verdict. Cite the specific signal or log line behind your conclusion, and say when you are guessing.
+- A mod must match the instance's Minecraft version *and* loader. Check both with `list_instance_mods` before recommending an install.
+- Never advise disabling hash or signature verification, and never point the user at unofficial mod mirrors.
+- If nothing implicates a mod, consider Java version, GPU drivers, allocated memory, shaders, or world corruption.
 
 ## Overview
 
@@ -62,28 +83,27 @@ The server speaks JSON-RPC 2.0 over HTTP with SSE (Server-Sent Events) for respo
 
 ### 7. `read_latest_crash`
 
-- **Params:** `instance_id` (string) -- the instance ID.
-- **Returns:** The last 200 lines of the newest crash report file (e.g. `crash-2026-07-06_00.23.24-client.txt`), plus the filename and total line count.
-- **Use when:** A user reports a crash for a known instance and you need to quickly read the most recent crash log. Always call this before `suggest_mod_incompatibility`.
+- **Params:** `instance_id` (string).
+- **Returns:** The last 200 lines of the newest crash report, its filename, and total line count.
+- **Use when:** A known instance crashed and you need its newest local report before scoring suspects.
 
 ### 8. `read_mod_manifest`
 
-- **Params:** `mod_id` (string) -- the curated registry ID (e.g. `"sodium"`, `"fabric-api"`).
-- **Returns:** The full registry item record: name, content_type, download_strategy (preferred source) and download_sources (ordered list), license, description, body_markdown, page_url, icon_url, upvotes/downvotes/net_score/velocity, status, immunity fields, compatible_versions, and Modrinth ID.
-- **Use when:** You need curator-authored context about a mod -- its description, known behaviors, compatibility notes, or community vote status. This is local SQLite data; no network call required.
+- **Params:** `mod_id` (string).
+- **Returns:** The full curated local registry record for the mod.
+- **Use when:** You need curator-authored compatibility, description, license, or vote context without a network request.
 
 ### 9. `enable_mod`
 
-- **Params:** `instance_id` (string), `filename` (string) -- the mod filename to re-enable (must end in `.jar.disabled`).
-- **Returns:** On success: re-enabled notification. On failure: error message.
-- **Destructive -- requires user approval.** Mirrors the `disable_mod` approval flow. Reverses a previous `disable_mod` call by renaming `.jar.disabled` back to `.jar`.
-- **Use when:** The user confirms that disabling a mod didn't solve the crash, or they want to restore a previously disabled mod.
+- **Params:** `instance_id` (string), `filename` (string).
+- **Destructive -- requires user approval.** Reverses a prior disable by restoring `.jar.disabled` to `.jar`.
+- **Use when:** A disable test did not solve the crash or the user explicitly wants the mod restored.
 
 ### 10. `search_knowledge_base`
 
-- **Params:** `query` (string) -- a natural-language search string.
-- **Returns:** `{"results": [{"id", "name", "content_type", "description"}, ...], "query": "<query>"}` -- up to 5 matching registry items whose name or description contains the query text (parameterized SQLite LIKE binding).
-- **Use when:** A user asks a "vibe-based" question like "find me a mod that makes caves feel eerie" or "what performance mods are available?" The LIKE query searches the curated catalog locally with zero network calls.
+- **Params:** `query` (string).
+- **Returns:** Up to five matching local registry entries.
+- **Use when:** You need a natural-language search across the curated catalog without network access.
 
 ## Crash Diagnosis Workflow
 
@@ -96,18 +116,18 @@ Follow this decision tree when a user reports a crash:
 3. **Deep analysis.** If no curated match: call `suggest_mod_incompatibility` with the `instance_id` and crash text. This runs the weighted scoring algorithm across all installed mods.
 
 4. **Review suspects.** Examine the ranked suspects — the top suspect has the highest `total_score`. Check the `breakdown` to understand why:
-   - `"A: 2.0"` means the mod's Java packages appear in the crash stack trace (strongest signal).
-   - `"E: 1.5"` means this mod was previously confirmed as a crash cause.
-   - `"B: 1.0"` means the crash fingerprint has appeared with this mod before.
-   - Look at the total score to gauge confidence.
+    - `"A: 2.0"` means the mod's Java packages appear in the crash stack trace (strongest signal).
+    - `"E: 1.5"` means this mod was previously confirmed as a crash cause.
+    - `"B: 1.0"` means the crash fingerprint has appeared with this mod before.
+    - Look at the total score to gauge confidence.
 
 5. **Confirm and disable.** If the top suspect looks correct:
-   - Call `list_instance_mods` to confirm the mod is installed and verify its details.
-   - Call `disable_mod` to disable it (requires user approval). Explain to the user that they need to restart the game for the change to take effect.
+    - Call `list_instance_mods` to confirm the mod is installed and verify its details.
+    - Call `disable_mod` to disable it (requires user approval). Explain to the user that they need to restart the game for the change to take effect.
 
 6. **Follow up.** If the crash persists after disabling the suspect:
-   - Check `is_dependent_of` in the suspect list for mods that depend on the disabled one — they may be the indirect cause.
-   - Consider other suspects in the ranked list.
+    - Check `is_dependent_of` in the suspect list for mods that depend on the disabled one — they may be the indirect cause.
+    - Consider other suspects in the ranked list.
 
 7. **No suspects above zero.** If no suspects score above zero, the crash is likely not mod-related (game engine issue, world corruption, shaders, etc.). Advise the user accordingly.
 
@@ -115,7 +135,7 @@ Follow this decision tree when a user reports a crash:
 
 ## Important Notes
 
-- **`disable_mod` and `enable_mod` are the only destructive tools.** It requires explicit per-instance approval in Agora Settings → MCP → Approvals. If you receive `ERR_MCP_DENIED`, tell the user to grant permission for that instance.
+- **`disable_mod` and `enable_mod` are the only destructive tools.** They require explicit per-instance approval in Agora Settings -> MCP -> Approvals. If you receive `ERR_MCP_DENIED`, tell the user to grant permission for that instance.
 
 - **The scoring algorithm learns.** When you disable a mod and the crash stops, that attribution is recorded as a prior (signal E). This speeds up future diagnosis for similar crashes.
 
@@ -126,5 +146,5 @@ Follow this decision tree when a user reports a crash:
 - **Rate limiting.** The server enforces a rate limit of 100 requests per 60 seconds per session. If you hit `ERR_MCP_TOO_MANY_REQUESTS`, slow down your tool calls.
 
 - **Authentication.** Every request requires the Bearer token shown in Settings -> Integrations -> MCP Server. Send it as an `Authorization: Bearer <token>` header or as the `token` query parameter on the SSE URL. The user can regenerate the token in Settings.
-- **Connection.** The server only accepts `127.0.0.1` (loopback) connections with a valid token.
-- **Tool superset.** All 10 tools (the original 6 + the 4 from MASTER_SPEC section 10.1) are now implemented per E2 (2026-07-06). The combined set is: `list_instances`, `list_instance_mods`, `disable_mod`, `search_crash_signatures`, `suggest_mod_incompatibility`, `get_system_context`, `read_latest_crash`, `read_mod_manifest`, `enable_mod`, `search_knowledge_base`.
+- **Connection.** The server only accepts connections from `127.0.0.1` (loopback) with a valid token.
+- **Tool set.** The complete set is `list_instances`, `list_instance_mods`, `disable_mod`, `search_crash_signatures`, `suggest_mod_incompatibility`, `get_system_context`, `read_latest_crash`, `read_mod_manifest`, `enable_mod`, and `search_knowledge_base`.

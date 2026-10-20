@@ -30,3 +30,6 @@ docs-web.json
 
 # Scratch space for local diagnostics and working notes
 tmp/
+
+# The CLI copied in for release bundling (scripts/stage_cli_sidecar.py)
+desktop/src-tauri/binaries/

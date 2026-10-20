@@ -76,6 +76,7 @@ import { TemplateSettings } from './settings/TemplateSettings';
 import { RuntimeReclaim } from './settings/RuntimeReclaim';
 import { DegradedCredentialNotice } from './settings/DegradedCredentialNotice';
 import { SettingsSection } from './settings/SettingsSection';
+import { AiAssistantCard } from './settings/AiAssistantCard';
 import { PluginManager } from '../features/plugins/PluginManager';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
@@ -1862,7 +1863,7 @@ export function Settings({
     <SettingsSection
       icon={Bot}
       title="AI & automation"
-      description="The local MCP server for external agents."
+      description="The local MCP server, for AI apps that cannot run commands."
       contentClassName="space-y-4"
     >
       <div className="rounded-lg bg-muted p-3 space-y-2">
@@ -1874,14 +1875,10 @@ export function Settings({
           Agora Discord.
         </p>
         <p className="text-xs text-muted-foreground">
-          <strong>MCP Server</strong> — Lets your external AI tool (Claude
-          Code, Codex, Opencode, Kilo code, Github Copilot, etc.) control Agora directly. The agent
-          can list instances, disable mods, and analyze crashes on its own. Price is set by the tool/provider, not Agora.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          If you're looking for a place to start, try <a href="https://opencode.ai/" target="_blank" rel="noopener noreferrer" className="underline">
-            Opencode.ai
-          </a> — there are a few free models you can use, or the chatgpt app is also a decent option with a bit of free usage.
+          <strong>MCP Server</strong> — Lets an AI app that cannot run commands
+          control Agora through a local connection. Assistant apps that can run
+          commands (Claude Code, Codex, OpenCode and the like) are easier to set
+          up with the card above. Price is set by the tool/provider, not Agora.
         </p>
       </div>
 
@@ -2350,7 +2347,16 @@ export function Settings({
       blurb: 'Third-party content sources and the AI integrations.',
       pages: [
         { id: 'sources', label: 'Content sources', content: gate(contentSourcesCard) },
-        { id: 'ai', label: 'AI & MCP', content: gate(aiCard) },
+        {
+          id: 'ai',
+          label: 'AI assistant',
+          content: (
+            <>
+              <AiAssistantCard />
+              {gate(aiCard)}
+            </>
+          ),
+        },
         { id: 'plugins', label: 'Plugins', content: <PluginManager /> },
       ],
     },

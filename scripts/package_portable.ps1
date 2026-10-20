@@ -1,5 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Executable,
+    # The agora CLI from the same build. Mandatory so a release cannot quietly
+    # ship a portable copy without it.
+    [Parameter(Mandatory = $true)][string]$Cli,
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$OutputDirectory
 )
@@ -8,9 +11,12 @@ if ($Version -notmatch '^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') {
     throw "Invalid release version: $Version"
 }
 $binary = Get-Item -LiteralPath $Executable
-$signature = Get-AuthenticodeSignature -LiteralPath $binary.FullName
-if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) {
-    throw "The portable executable must have valid timestamped Authenticode signing. Status: $($signature.Status); timestamp present: $([bool]$signature.TimeStamperCertificate); file: $($binary.FullName)"
+$cliBinary = Get-Item -LiteralPath $Cli
+foreach ($file in @($binary, $cliBinary)) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+    if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) {
+        throw "The portable executable must have valid timestamped Authenticode signing. Status: $($signature.Status); timestamp present: $([bool]$signature.TimeStamperCertificate); file: $($file.FullName)"
+    }
 }
 $tag = 'v' + $Version.TrimStart('v')
 $name = "agora-desktop-$tag-windows-x64-portable"
@@ -18,6 +24,8 @@ $output = New-Item -ItemType Directory -Force -Path $OutputDirectory
 $stage = Join-Path $output.FullName ($name + '-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $stage 'Agora Launcher.exe')
+# Beside portable.txt, so the CLI resolves the same data folder as the app.
+Copy-Item -LiteralPath $cliBinary.FullName -Destination (Join-Path $stage 'agora.exe')
 # ASCII avoids a BOM being interpreted as part of the portable data path.
 Set-Content -LiteralPath (Join-Path $stage 'portable.txt') -Value 'data' -Encoding ascii
 @'
@@ -31,7 +39,11 @@ Existing installed data is not automatically imported. Sign-ins are encrypted in
 data folder rather than the Windows credential store, so they travel with this copy.
 Anyone who can read the data folder can read them; keep the drive safe.
 
-To update, close Agora and replace Agora Launcher.exe from the new portable ZIP.
+agora.exe is Agora's command-line tool, for scripts and AI assistant apps. It uses
+the same data folder. Settings > Services > AI assistant has a message to copy.
+
+To update, close Agora and replace Agora Launcher.exe and agora.exe from the new
+portable ZIP.
 Keep portable.txt and your data folder. Do not run the MSI/EXE installer to update
 this portable copy. Back up your data before moving or updating the folder.
 '@ | Set-Content -LiteralPath (Join-Path $stage 'README.txt') -Encoding ascii

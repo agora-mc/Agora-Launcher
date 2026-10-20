@@ -184,6 +184,25 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/windows-signing
 
+      # The desktop app ships the CLI from this same build so the two are
+      # always one version (MASTER_SPEC §28.4). Built, and on Windows signed,
+      # before Tauri bundles it beside the desktop executable through
+      # tauri.bundle-cli.conf.json.
+      - name: Build bundled CLI
+        shell: bash
+        run: cargo build --release --locked -p agora-cli ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      - name: Sign and verify bundled Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '& ./scripts/sign-windows.ps1 -FilePath "target/release/agora.exe"'
+
+      - name: Stage bundled CLI
+        shell: bash
+        run: |
+          PY="$(command -v python3 || command -v python)"
+          "$PY" scripts/stage_cli_sidecar.py ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
       - name: Build and release Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -214,7 +233,7 @@ jobs:
             command-line builds. Verify downloads against `SHA256SUMS`.
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }} ${{ runner.os == 'Windows' && format('--config "{0}"', env.AGORA_WINDOWS_SIGNING_CONFIG) || '' }}
+          args: ${{ matrix.args }} --config src-tauri/tauri.bundle-cli.conf.json ${{ runner.os == 'Windows' && format('--config "{0}"', env.AGORA_WINDOWS_SIGNING_CONFIG) || '' }}
 
       # Tauri restores the unsigned main binary after creating signed installers.
       # Sign the standalone executable separately before the portable ZIP is made.
@@ -231,7 +250,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           ./scripts/test_package_portable.ps1
-          ./scripts/package_portable.ps1 -Executable target/release/agora-desktop.exe -Version $env:RELEASE_TAG -OutputDirectory "$env:RUNNER_TEMP/agora-portable"
+          ./scripts/package_portable.ps1 -Executable target/release/agora-desktop.exe -Cli target/release/agora.exe -Version $env:RELEASE_TAG -OutputDirectory "$env:RUNNER_TEMP/agora-portable"
           if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw 'Portable packaging failed' }
           $assets = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/agora-portable" -File
           gh release upload $env:RELEASE_TAG @($assets.FullName) --repo $env:GITHUB_REPOSITORY --clobber
@@ -242,6 +261,7 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -282,6 +302,28 @@ jobs:
           done
           kill "$APP_PID" 2>/dev/null || true
           wait "$APP_PID" 2>/dev/null || true
+
+          # The bundled CLI must be in the app and be this release's build.
+          "$APP/Contents/MacOS/agora" --version | grep -Fx "agora ${TAG#v}" || {
+            echo "::error::$APP/Contents/MacOS/agora is missing or is not version ${TAG#v}."
+            exit 1
+          }
+
+      - name: Verify bundled Linux CLI
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          DEB="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$DEB" || { echo "::error::No .deb bundle found"; exit 1; }
+          EXTRACTED="$RUNNER_TEMP/agora-deb"
+          dpkg-deb -x "$DEB" "$EXTRACTED"
+          "$EXTRACTED/usr/bin/agora" --version | grep -Fx "agora ${TAG#v}" || {
+            echo "::error::The .deb does not install usr/bin/agora at version ${TAG#v}."
+            exit 1
+          }
 
   # ------------------------------------------------------------------
   # Build CLI

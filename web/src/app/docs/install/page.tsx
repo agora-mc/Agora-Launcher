@@ -135,15 +135,17 @@ export default async function InstallPage() {
             </p>
             <ul className={BULLETS}>
               <li>
-                The <Code>agora</Code> command in a terminal, shipped as a standalone archive
-                with no installer. Unpack it and put the binary wherever you keep tools.
+                The <Code>agora</Code> command in a terminal. The desktop app and the portable
+                copy already include it; the standalone archive is for machines without the
+                app, such as servers. Unpack it and put the binary wherever you keep tools.
               </li>
               <li>
                 The same core as the desktop app — instances, installs, health checks, launches,
                 snapshots — plus <Code>--json</Code> output for scripts.
               </li>
               <li>
-                Made for scripting, support diagnostics, and local AI agents through MCP.
+                Made for scripting, support diagnostics, and AI assistant apps: run{' '}
+                <Code>agora skill</Code> to print the guide an assistant should follow.
               </li>
               <li>
                 Everyone else should stay on the desktop app. The CLI can change the same data
@@ -156,8 +158,8 @@ export default async function InstallPage() {
                 CLI reference
               </Link>
               <span aria-hidden="true"> · </span>
-              <Link href="/docs/guides/mcp-automation" className="hover:underline">
-                MCP and external AI tools
+              <Link href="/docs/guides/ai-assistant" className="hover:underline">
+                Get help from an AI assistant
               </Link>
             </p>
           </article>
@@ -376,14 +378,14 @@ export default async function InstallPage() {
             </p>
           </Link>
           <Link
-            href="/docs/guides/mcp-automation"
+            href="/docs/guides/ai-assistant"
             className="panel-inset card-lift p-5"
           >
             <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">
-              MCP and external AI tools
+              Get help from an AI assistant
             </h3>
             <p className="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
-              Connect a local AI client, and decide exactly what it may touch.
+              Let an assistant app read your crash logs and fix problems, with your approval.
             </p>
           </Link>
           <Link href="/docs/troubleshooting" className="panel-inset card-lift p-5">
