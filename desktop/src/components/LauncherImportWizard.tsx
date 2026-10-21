@@ -481,7 +481,7 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
         {items.map(item => item.active && (
           <span
             key={item.label}
-            className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+            className="inline-flex items-center gap-0.5 rounded-sm bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
           >
             {item.icon}
             {item.label}
@@ -618,7 +618,7 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
                     <button
                       type="button"
                       onClick={() => handleSelectAll(selectableInGroup)}
-                      className="text-[11px] font-medium text-primary hover:underline px-1.5 py-0.5 rounded hover:bg-accent"
+                      className="text-[11px] font-medium text-primary hover:underline px-1.5 py-0.5 rounded-sm hover:bg-accent"
                     >
                       Select all
                     </button>
@@ -626,7 +626,7 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
                     <button
                       type="button"
                       onClick={() => handleClearGroup(selectableInGroup)}
-                      className="text-[11px] font-medium text-muted-foreground hover:text-foreground hover:underline px-1.5 py-0.5 rounded hover:bg-accent"
+                      className="text-[11px] font-medium text-muted-foreground hover:text-foreground hover:underline px-1.5 py-0.5 rounded-sm hover:bg-accent"
                     >
                       Clear
                     </button>
@@ -653,7 +653,7 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
                         checked={checked}
                         disabled={!selectable}
                         onChange={() => handleToggleCandidate(key)}
-                        className="mt-1 h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary disabled:opacity-40"
+                        className="mt-1 h-4 w-4 rounded-sm border-gray-300 text-primary focus:ring-primary disabled:opacity-40"
                         aria-label={`Select ${candidate.display_name}`}
                       />
                       <div className="flex-1 min-w-0 space-y-1.5">
@@ -800,7 +800,7 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
                 {/* Action badge + name */}
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className={cn(
-                    'inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+                    'inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
                     item.action === 'new'
                       ? 'bg-green-500/10 text-green-700 dark:text-green-400'
                       : 'bg-blue-500/10 text-blue-700 dark:text-blue-400',
@@ -1074,7 +1074,7 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
               <ArrowLeft className="h-4 w-4" />
             </button>
           )}
-          <DialogTitle ref={headingRef} tabIndex={-1} className="text-base font-semibold outline-none">
+          <DialogTitle ref={headingRef} tabIndex={-1} className="text-base font-semibold outline-hidden">
             {stage === 'detect' && 'Detecting Launchers'}
             {stage === 'select' && 'Import from Other Launchers'}
             {stage === 'review' && 'Review Import Plan'}

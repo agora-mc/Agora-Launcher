@@ -81,7 +81,7 @@ export function DependencyPrompt({
                     type="checkbox"
                     checked={isChecked}
                     onChange={() => toggle(cand.key)}
-                    className="mt-1 h-4 w-4 rounded border-input text-primary focus:ring-primary"
+                    className="mt-1 h-4 w-4 rounded-sm border-input text-primary focus:ring-primary"
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">

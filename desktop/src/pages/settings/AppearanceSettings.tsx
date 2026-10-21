@@ -15,7 +15,7 @@ import { pinnedMotion } from '../../components/presentation-capabilities';
 import { useAmbience } from '../../features/ambience/AmbienceProvider';
 import { SettingsSection } from './SettingsSection';
 
-const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
 
 /**
  * Theme sub-page — color mode, accent, and the custom surface colors.
@@ -99,7 +99,7 @@ export function AppearanceThemeSettings() {
             aria-label="Custom accent color"
             value={preferences.customAccent}
             onChange={(event) => setPreferences({ customAccent: event.target.value })}
-            className="h-9 w-14 cursor-pointer rounded border border-input bg-background p-1"
+            className="h-9 w-14 cursor-pointer rounded-sm border border-input bg-background p-1"
           />
         </label>
       )}
@@ -141,7 +141,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom block color" checked={preferences.surfaceMode === 'custom'} onChange={(event) => setPreferences({ surfaceMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.surfaceMode === 'custom' && (
-            <input type="color" aria-label="Block color" value={preferences.customSurface} onChange={(event) => setPreferences({ customSurface: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Block color" value={preferences.customSurface} onChange={(event) => setPreferences({ customSurface: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           <label className="block space-y-1 text-xs">
             <span className="flex justify-between"><span>Block opacity</span><span>{Math.round(preferences.surfaceOpacity * 100)}%</span></span>
@@ -157,7 +157,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom navigation color" checked={preferences.navMode === 'custom'} onChange={(event) => setPreferences({ navMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.navMode === 'custom' && (
-            <input type="color" aria-label="Navigation color" value={preferences.customNav} onChange={(event) => setPreferences({ customNav: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Navigation color" value={preferences.customNav} onChange={(event) => setPreferences({ customNav: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           <label className="block space-y-1 text-xs">
             <span className="flex justify-between"><span>Navigation opacity</span><span>{Math.round(preferences.navOpacity * 100)}%</span></span>
@@ -173,7 +173,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom background" checked={preferences.backgroundMode === 'custom'} onChange={(event) => setPreferences({ backgroundMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.backgroundMode === 'custom' && (
-            <input type="color" aria-label="Background color" value={preferences.customBackground} onChange={(event) => setPreferences({ customBackground: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Background color" value={preferences.customBackground} onChange={(event) => setPreferences({ customBackground: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           </div>
           <div className="space-y-2 rounded-lg border border-border bg-muted p-3">
@@ -185,7 +185,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom text color" checked={preferences.textMode === 'custom'} onChange={(event) => setPreferences({ textMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.textMode === 'custom' && (
-            <input type="color" aria-label="Block text color" value={preferences.customText} onChange={(event) => setPreferences({ customText: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Block text color" value={preferences.customText} onChange={(event) => setPreferences({ customText: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           </div>
           <div className="space-y-2 rounded-lg border border-border bg-muted p-3 lg:col-span-2">
@@ -197,7 +197,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom background text color" checked={preferences.backgroundTextMode === 'custom'} onChange={(event) => setPreferences({ backgroundTextMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.backgroundTextMode === 'custom' && (
-            <input type="color" aria-label="Background text color" value={preferences.customBackgroundText} onChange={(event) => setPreferences({ customBackgroundText: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Background text color" value={preferences.customBackgroundText} onChange={(event) => setPreferences({ customBackgroundText: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           </div>
           <div className="space-y-2 rounded-lg border border-border bg-muted p-3 lg:col-span-2">
@@ -209,7 +209,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom border color" checked={preferences.borderMode === 'custom'} onChange={(event) => setPreferences({ borderMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.borderMode === 'custom' && (
-            <input type="color" aria-label="Border color" value={preferences.customBorder} onChange={(event) => setPreferences({ customBorder: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Border color" value={preferences.customBorder} onChange={(event) => setPreferences({ customBorder: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           </div>
         </div>

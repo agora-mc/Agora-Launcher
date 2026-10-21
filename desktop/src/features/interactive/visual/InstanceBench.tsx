@@ -173,7 +173,7 @@ export function InstanceBench({
         </div>
         <div className="min-w-0 rounded-lg bg-muted/40 p-2">
           <div className="text-lg font-bold text-foreground">{instance.contentSummary.needsAttention}</div>
-          <div className="break-words text-[0.7rem] font-medium leading-tight text-muted-foreground">Need attention</div>
+          <div className="wrap-break-word text-[0.7rem] font-medium leading-tight text-muted-foreground">Need attention</div>
         </div>
       </div>
     </section>

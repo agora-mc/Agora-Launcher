@@ -102,7 +102,7 @@ function RequirementGroupCard({ group }: { group: RequirementGroup }) {
     ? '1 affected mod'
     : `${group.modIds.length} affected mods`;
   return (
-    <div className="rounded border border-border bg-background/60 p-2">
+    <div className="rounded-sm border border-border bg-background/60 p-2">
       <p className="text-xs font-medium">
         {group.targetId} {predicate}
         <span className="ml-1 text-muted-foreground">({verdictLabel(group.verdict)})</span>
@@ -117,7 +117,7 @@ function RequirementGroupCard({ group }: { group: RequirementGroup }) {
           <summary className="cursor-pointer select-none text-xs text-muted-foreground">
             {affectedLabel}
           </summary>
-          <p className="mt-1 break-words text-xs text-muted-foreground">
+          <p className="mt-1 wrap-break-word text-xs text-muted-foreground">
             {group.modIds.join(', ')}
           </p>
         </details>
@@ -183,7 +183,7 @@ function LoaderCompatibilityCard({
   const disabled = busy || inProgress;
 
   return (
-    <div className={`rounded border p-2 text-sm ${containerClass}`}>
+    <div className={`rounded-sm border p-2 text-sm ${containerClass}`}>
       <p className="font-semibold">
         Loader: {currentLabel}
       </p>
@@ -223,7 +223,7 @@ function LoaderCompatibilityCard({
             disabled={disabled}
           >
             <SelectTrigger
-              className="h-8 w-auto min-w-[12rem] text-xs"
+              className="h-8 w-auto min-w-48 text-xs"
               aria-label="Choose compatible version"
             >
               <span className="text-muted-foreground">Choose compatible version</span>
@@ -268,7 +268,7 @@ function LoaderCompatibilityCard({
               <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} />
             ))}
             {issue.conflicts.map((conflict, index) => (
-              <div key={`conflict-${index}`} className="rounded border border-destructive bg-background/60 p-2">
+              <div key={`conflict-${index}`} className="rounded-sm border border-destructive bg-background/60 p-2">
                 <p className="text-xs font-medium">Conflict</p>
                 <p className="text-xs text-muted-foreground">{conflict.message}</p>
                 <p className="text-xs text-muted-foreground">
@@ -465,7 +465,7 @@ export function HealthDialog({
                     );
                   }
                   return (
-                    <div key={key} className="rounded border border-destructive bg-destructive/10 p-2 text-sm">
+                    <div key={key} className="rounded-sm border border-destructive bg-destructive/10 p-2 text-sm">
                       <p className="text-destructive">{b.message}</p>
                       <div className="flex items-center gap-2 mt-1">
                         {b.suggested_action && (
@@ -502,7 +502,7 @@ export function HealthDialog({
                   const isSilenced = mutedWarnings.has(key);
                   if (w.loader_compatibility) {
                     return (
-                      <div key={i} className={`rounded border p-2 text-sm ${isSilenced ? 'border-border bg-muted/50 opacity-60' : ''}`}>
+                      <div key={i} className={`rounded-sm border p-2 text-sm ${isSilenced ? 'border-border bg-muted/50 opacity-60' : ''}`}>
                         <LoaderCompatibilityCard
                           issue={w.loader_compatibility}
                           onSwitchLoader={onSwitchLoader}
@@ -525,7 +525,7 @@ export function HealthDialog({
                     );
                   }
                   return (
-                    <div key={i} className={`rounded border p-2 text-sm ${isSilenced ? 'border-border bg-muted/50 opacity-60' : 'border-amber-500 bg-amber-500/10'}`}>
+                    <div key={i} className={`rounded-sm border p-2 text-sm ${isSilenced ? 'border-border bg-muted/50 opacity-60' : 'border-amber-500 bg-amber-500/10'}`}>
                       <p className={isSilenced ? 'text-muted-foreground line-through' : 'text-amber-600 dark:text-amber-400'}>{w.message}</p>
                       <div className="mt-2 space-y-2">
                         {w.suggested_action && !isSilenced && (
@@ -563,13 +563,13 @@ export function HealthDialog({
           )}
 
           {recommendations.length > 0 && (
-            <details className="mb-3 rounded border border-border bg-muted/30 p-2">
+            <details className="mb-3 rounded-sm border border-border bg-muted/30 p-2">
               <summary className="cursor-pointer select-none text-sm font-semibold">
                 Recommendations ({recommendations.length})
                 {preferences.muteAllRecommendations ? ' - muted' : ''}
               </summary>
               <div className="mt-3 space-y-3">
-                <div className="flex items-center justify-between rounded border border-border bg-background p-2">
+                <div className="flex items-center justify-between rounded-sm border border-border bg-background p-2">
                   <div>
                     <p className="text-sm font-medium">Show recommendations</p>
                     <p className="text-xs text-muted-foreground">Optional improvements never block launch.</p>
@@ -581,7 +581,7 @@ export function HealthDialog({
                   />
                 </div>
                 {!preferences.muteAllRecommendations && recommendations.map((recommendation, index) => (
-                  <div key={`${recommendation.kind}:${recommendation.mod_id ?? index}`} className="rounded border border-border bg-background p-2 text-sm">
+                  <div key={`${recommendation.kind}:${recommendation.mod_id ?? index}`} className="rounded-sm border border-border bg-background p-2 text-sm">
                     <p>{recommendation.message}</p>
                     {recommendation.suggested_action && (
                       <p className="mt-1 text-xs text-muted-foreground">{recommendation.suggested_action}</p>
@@ -618,7 +618,7 @@ export function HealthDialog({
       </Dialog>
 
       <Dialog open={confirmingBlockers} onOpenChange={setConfirmingBlockers}>
-        <DialogContent className="z-[60] max-w-md gap-4">
+        <DialogContent className="z-60 max-w-md gap-4">
           <DialogTitle>Launch despite blockers?</DialogTitle>
           <DialogDescription>
             Agora found {activeBlockers.length} blocker{activeBlockers.length === 1 ? '' : 's'}.
@@ -626,7 +626,7 @@ export function HealthDialog({
             Your instance could be functional, but Agora cannot guarantee it. If you are unsure, review the findings first.
             If this is a downloaded modpack, the pack may install additional content or make other changes at launch time, which Agora cannot predict.
           </DialogDescription>
-          <div role="alert" className="rounded border border-destructive bg-destructive/10 p-3 text-sm">
+          <div role="alert" className="rounded-sm border border-destructive bg-destructive/10 p-3 text-sm">
             <p className="font-medium text-destructive">The runtime loader will still validate this mod set.</p>
             <p className="mt-1 text-muted-foreground">
               Agora will not change mods or loader settings. Review the findings first if you want to repair them.

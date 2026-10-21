@@ -252,7 +252,7 @@ export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: 
               Start anywhere and move at your own pace.
             </p>
           </div>
-          <div className="rounded-xl border border-white/15 bg-black/15 p-4 backdrop-blur-sm">
+          <div className="rounded-xl border border-white/15 bg-black/15 p-4 backdrop-blur-xs">
             <div className="flex items-center justify-between text-xs font-semibold">
               <span>Guide progress</span>
               <span>{completedCount} of {totalPages} pages</span>
@@ -322,7 +322,7 @@ export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: 
 
       <div className="grid items-start gap-6 xl:grid-cols-[17rem_minmax(0,1fr)]">
         <aside className="space-y-4 xl:sticky xl:top-0" aria-label="Guide topics">
-          <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
+          <div className="rounded-xl border border-border bg-card p-3 shadow-xs">
             <label htmlFor="guide-search" className="sr-only">Search the guide</label>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
@@ -331,13 +331,13 @@ export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: 
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search every guide..."
-                className="h-10 w-full rounded-lg border border-input bg-background pl-9 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-lg border border-input bg-background pl-9 pr-9 text-sm outline-hidden focus:ring-2 focus:ring-ring"
               />
               {query && (
                 <button
                   onClick={() => setQuery('')}
                   aria-label="Clear guide search"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   <X className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -350,7 +350,7 @@ export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: 
             )}
           </div>
 
-          <nav className="max-h-[calc(100vh_-_9rem)] space-y-4 overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-sm">
+          <nav className="max-h-[calc(100vh-9rem)] space-y-4 overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-xs">
             {filteredTopics.length === 0 ? (
               <div className="px-2 py-6 text-center">
                 <Search className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden="true" />
@@ -403,7 +403,7 @@ export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: 
           </nav>
         </aside>
 
-        <article ref={articleRef} className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+        <article ref={articleRef} className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card shadow-xs">
           <div className="border-b border-border bg-muted/30 px-5 py-5 sm:px-7">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs font-bold uppercase tracking-[0.16em] text-primary">
@@ -571,7 +571,7 @@ function JourneyCard({
   return (
     <button
       onClick={onClick}
-      className="group rounded-xl border border-border bg-card p-4 text-left shadow-sm transition-colors hover:border-primary/40 hover:bg-accent"
+      className="group rounded-xl border border-border bg-card p-4 text-left shadow-xs transition-colors hover:border-primary/40 hover:bg-accent"
     >
       <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-primary">
         {Icon && <Icon className="h-3.5 w-3.5 shrink-0" />}

@@ -637,7 +637,7 @@ function InstanceCard({
             iconSrc={iconSrc}
           />
           <div className="min-w-0">
-            <h3 className="break-words font-semibold">{instance.name}</h3>
+            <h3 className="wrap-break-word font-semibold">{instance.name}</h3>
             {instance.import_source && (
               <span className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 Imported from {instance.import_source === 'curse_forge' || instance.import_source === 'curseforge'
@@ -706,7 +706,7 @@ function InstanceCard({
           <button
             type="button"
             onClick={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
-            className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
+            className="shrink-0 rounded-sm border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
           >
             Review & repair
           </button>
@@ -727,7 +727,7 @@ function InstanceCard({
             type="button"
             onClick={() => void handleRefreshHealth()}
             disabled={refreshingHealth}
-            className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40 disabled:opacity-50"
+            className="shrink-0 rounded-sm border border-current/30 px-2 py-1 font-medium hover:bg-background/40 disabled:opacity-50"
           >
             {refreshingHealth ? 'Checking…' : 'Check again'}
           </button>

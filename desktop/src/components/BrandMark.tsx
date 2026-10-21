@@ -10,11 +10,11 @@ export function BrandMark({ className = '', compact = false }: BrandMarkProps) {
         src="/brand/agora-launcher-icon.png"
         alt=""
         aria-hidden="true"
-        className="h-10 w-10 rounded-lg object-cover shadow-sm ring-1 ring-midnight/10"
+        className="h-10 w-10 rounded-lg object-cover shadow-xs ring-1 ring-midnight/10"
       />
       {!compact && (
         <div className="min-w-0">
-          <p className="break-words text-base font-semibold leading-tight tracking-[0.08em] text-foreground">Agora Launcher</p>
+          <p className="wrap-break-word text-base font-semibold leading-tight tracking-[0.08em] text-foreground">Agora Launcher</p>
           <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.2em] text-primary">Open to all</p>
         </div>
       )}

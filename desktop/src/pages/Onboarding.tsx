@@ -157,7 +157,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
   return (
     <OnboardingFlowContext.Provider value={{ directLaunch }}>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs">
         <div ref={scrollRef} className="w-[70vw] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-border bg-card shadow-xl">
           <div className="p-6 sm:p-8">
             {step === 'welcome' && <WelcomeStep onContinue={() => setStep('appearance')} />}
@@ -431,7 +431,7 @@ function AppearanceStep({
             aria-label="Interaction mode"
             value={interaction}
             onChange={(event) => applyInteraction(event.target.value as InteractionPreference)}
-            className="mt-1 block w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-1 block w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="standard">Standard</option>
             <option value="simple">Simple</option>
@@ -694,7 +694,7 @@ function ServiceToggle({
           }`}
         >
           <span
-            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
               checked ? 'translate-x-5' : 'translate-x-0.5'
             }`}
           />
@@ -815,7 +815,7 @@ function JavaStep({
             }`}
           >
             <span
-              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
                 checked ? 'translate-x-5' : 'translate-x-0.5'
               }`}
             />

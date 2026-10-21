@@ -20,14 +20,14 @@ export function LaunchFailedBanner({
   onDismiss?: () => void;
 }) {
   const actionClass =
-    'rounded border border-red-700/40 bg-background/60 px-2 py-1 text-xs font-medium text-foreground hover:bg-background dark:border-red-300/40';
+    'rounded-sm border border-red-700/40 bg-background/60 px-2 py-1 text-xs font-medium text-foreground hover:bg-background dark:border-red-300/40';
   return (
     <div
       className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-lg border border-red-700/50 bg-red-500/10 px-3 py-2 text-xs dark:border-red-300/40"
       role="alert"
       aria-label="Launch failed"
     >
-      <div className="min-w-[12rem] flex-1">
+      <div className="min-w-48 flex-1">
         <p className="font-semibold text-red-700 dark:text-red-300">Launch failed</p>
         <p className="text-foreground/80">
           The game exited with an error{exitCode != null ? ` (code ${exitCode})` : ''} before you could play.

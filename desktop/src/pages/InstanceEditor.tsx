@@ -1913,7 +1913,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <button
                     type="button"
                     onClick={() => onReviewHealth?.(instanceId, row?.name ?? 'Instance', healthReport)}
-                    className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
+                    className="shrink-0 rounded-sm border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
                   >
                     Review & repair
                   </button>
@@ -2006,7 +2006,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   type="button"
                   onClick={() => { void onKillProcess?.(); }}
                   disabled={!onKillProcess || processStopping}
-                  className="inline-flex items-center gap-2 rounded-lg bg-destructive px-5 py-3 text-base font-semibold text-destructive-foreground shadow-sm hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-lg bg-destructive px-5 py-3 text-base font-semibold text-destructive-foreground shadow-xs hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-50"
                   aria-label={`Kill ${row?.name ?? 'instance'}`}
                 >
                   Kill
@@ -2027,7 +2027,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     }
                   }}
                   disabled={!onLaunch || playDisabled}
-                  className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-xs hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                   aria-label={`Play ${row?.name ?? 'instance'}`}
                 >
                   <Play className="h-5 w-5 fill-current" aria-hidden="true" />
@@ -2502,7 +2502,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       key={keep}
                       onClick={() => void handleApplyRetention(keep)}
                       disabled={backupBusy || snapshotOperationPending}
-                      className="rounded border border-input px-2 py-1 hover:bg-accent disabled:opacity-50"
+                      className="rounded-sm border border-input px-2 py-1 hover:bg-accent disabled:opacity-50"
                     >
                       Keep {keep}
                     </button>
@@ -3173,7 +3173,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     <p className="mt-1 text-muted-foreground">
                       {gcPreview.profile === 'low_latency' ? 'Generational ZGC' : gcPreview.profile === 'high_efficiency' ? 'Tuned G1GC' : 'Manual JVM flags'} · {gcPreview.heap_mb >= 1024 ? `${(gcPreview.heap_mb / 1024).toFixed(1)} GB effective heap` : `${gcPreview.heap_mb} MB effective heap`}
                     </p>
-                    <code className="mt-2 block max-h-20 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">{gcPreview.jvm_args}</code>
+                    <code className="mt-2 block max-h-20 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[11px] text-foreground/80">{gcPreview.jvm_args}</code>
                     {gcPreview.heap_mb !== instanceJvmMemory && (
                       <p className="mt-1 text-amber-700 dark:text-amber-400">The launch-time safety limit adjusted the heap to leave room for the OS.</p>
                     )}

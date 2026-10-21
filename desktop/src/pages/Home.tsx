@@ -337,7 +337,7 @@ export function Home({
         </section>
 
         {/* Support Agora */}
-        <section className="flex h-full flex-col rounded-xl border border-pink-500/100 bg-pink-500/50 p-6">
+        <section className="flex h-full flex-col rounded-xl border border-pink-500 bg-pink-500/50 p-6">
           <div className="flex items-center gap-2 mb-3">
             <HeartHandshake className="h-5 w-5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
             <h3 className="text-lg font-semibold">Support Agora’s future</h3>
@@ -438,8 +438,8 @@ function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill
   if (loading) {
     return (
       <div className="rounded-xl border border-border bg-card p-6 space-y-2">
-        <div className="h-5 w-32 bg-muted animate-pulse rounded" />
-        <div className="h-4 w-48 bg-muted animate-pulse rounded" />
+        <div className="h-5 w-32 bg-muted animate-pulse rounded-sm" />
+        <div className="h-4 w-48 bg-muted animate-pulse rounded-sm" />
       </div>
     );
   }
