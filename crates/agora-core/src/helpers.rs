@@ -207,7 +207,7 @@ pub fn read_manifest(manifest_path: &Path) -> LauncherResult<InstanceManifest> {
 /// flow through. Peak memory is bounded by `CHUNK` rather than the full file.
 pub fn stream_jar_into_zip(
     zip: &mut zip::ZipWriter<std::fs::File>,
-    opts: zip::write::FileOptions,
+    opts: zip::write::SimpleFileOptions,
     entry_name: &str,
     path: &std::path::Path,
 ) -> LauncherResult<(String, u64)> {

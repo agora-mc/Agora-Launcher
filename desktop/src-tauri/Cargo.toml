@@ -40,7 +40,7 @@ regex = "1"
 rfd = "0.14"
 
 ed25519-dalek = { version = "2", features = ["alloc"] }
-zip = "0.6"
+zip = { version = "9", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2", "time", "zstd"] }
 keyring = "2"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"

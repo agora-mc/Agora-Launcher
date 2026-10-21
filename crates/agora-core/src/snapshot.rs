@@ -2580,7 +2580,7 @@ pub fn prune_unreferenced_objects(instance_dir: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
     use zip::CompressionMethod;
 
     fn make_instance(tmp: &TempDir) -> PathBuf {
@@ -3334,7 +3334,7 @@ mod tests {
     fn write_test_archive(path: &Path, entries: &[(&str, &[u8])]) {
         let file = fs::File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         for (name, contents) in entries {
             zip.start_file(*name, options).unwrap();
             zip.write_all(contents).unwrap();

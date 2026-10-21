@@ -2007,7 +2007,7 @@ mod tests {
         let path = mods_dir.join(filename);
         let file = std::fs::File::create(&path).expect("create jar file");
         let mut zip = zip::ZipWriter::new(file);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         for (name, content) in entries {
             zip.start_file(*name, opts).expect("start_file");
             zip.write_all(content.as_bytes()).expect("write_all");
@@ -2020,7 +2020,7 @@ mod tests {
         let mut cursor = Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut cursor);
-            let opts = zip::write::FileOptions::default();
+            let opts = zip::write::SimpleFileOptions::default();
             for (name, content) in entries {
                 zip.start_file(*name, opts).expect("start nested entry");
                 zip.write_all(content).expect("write nested entry");
@@ -2034,7 +2034,7 @@ mod tests {
         use std::io::Write;
         let file = std::fs::File::create(mods_dir.join(filename)).expect("create jar file");
         let mut zip = zip::ZipWriter::new(file);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         for (name, content) in entries {
             zip.start_file(*name, opts).expect("start jar entry");
             zip.write_all(content).expect("write jar entry");

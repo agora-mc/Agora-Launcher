@@ -5196,7 +5196,7 @@ mod tests {
         let file = std::fs::File::create(path).unwrap();
         let mut archive = zip::ZipWriter::new(file);
         archive
-            .start_file("fabric.mod.json", zip::write::FileOptions::default())
+            .start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
             .unwrap();
         archive
             .write_all(serde_json::to_string(&metadata).unwrap().as_bytes())

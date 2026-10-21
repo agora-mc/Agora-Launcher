@@ -521,8 +521,8 @@ pub fn export_snapshot(
         let file = fs::File::create(&temp_path)
             .map_err(|error| format!("failed to create backup artifact: {error}"))?;
         let mut zip = zip::ZipWriter::new(file);
-        let options =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
 
         // Write the manifest first so an importer can validate without
         // scanning the whole zip.  The writer is buffered automatically by
@@ -778,7 +778,10 @@ fn validate_zip_file_set<R: Read + std::io::Seek>(
         let entry = archive
             .by_index(index)
             .map_err(|error| format!("failed to read backup zip entry {index}: {error}"))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|error| format!("failed to read backup zip entry {index}: {error}"))?
+            .into_owned();
         if name == BACKUP_MANIFEST_NAME {
             if entry.is_dir() {
                 return Err("backup manifest entry must not be a directory".into());
@@ -1529,7 +1532,7 @@ mod tests {
             let tampered_path = tmp.path().join("tampered.zip");
             let out_file = std::fs::File::create(&tampered_path).unwrap();
             let mut writer = zip::ZipWriter::new(out_file);
-            let opts = zip::write::FileOptions::default()
+            let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
             writer.start_file(BACKUP_MANIFEST_NAME, opts).unwrap();
@@ -1590,12 +1593,12 @@ mod tests {
             let mut archive = zip::ZipArchive::new(file).unwrap();
             let out_file = std::fs::File::create(&tampered_path).unwrap();
             let mut writer = zip::ZipWriter::new(out_file);
-            let opts = zip::write::FileOptions::default()
+            let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             // Copy all original entries.
             for index in 0..archive.len() {
                 let mut entry = archive.by_index(index).unwrap();
-                let name = entry.name().to_string();
+                let name = entry.name().unwrap().into_owned();
                 let mut bytes = Vec::new();
                 entry.read_to_end(&mut bytes).unwrap();
                 writer.start_file(&name, opts).unwrap();
@@ -1642,11 +1645,11 @@ mod tests {
             };
             let out_file = std::fs::File::create(&tampered_path).unwrap();
             let mut writer = zip::ZipWriter::new(out_file);
-            let opts = zip::write::FileOptions::default()
+            let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             for index in 0..archive.len() {
                 let mut entry = archive.by_index(index).unwrap();
-                let name = entry.name().to_string();
+                let name = entry.name().unwrap().into_owned();
                 if name == BACKUP_MANIFEST_NAME {
                     let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
                     writer.start_file(&name, opts).unwrap();

@@ -784,7 +784,9 @@ pub fn import_mrpack_with_progress(
                 Ok(entry) => entry,
                 Err(_) => continue,
             };
-            let entry_name = entry.name().replace('\\', "/");
+            let Ok(entry_name) = entry.name().map(|name| name.replace('\\', "/")) else {
+                continue;
+            };
             let Some(relative_path) =
                 mrpack_override_path(&entry_name, &index.overrides, override_policy)
             else {
@@ -1046,7 +1048,13 @@ pub fn import_prism_zip_named(
             code: "ERR_IMPORT_READ_ZIP".into(),
             message: format!("Read error: {e}"),
         })?;
-        let name = entry.name().replace('\\', "/");
+        let name = entry
+            .name()
+            .map_err(|e| LauncherError::Generic {
+                code: "ERR_IMPORT_READ_ZIP".into(),
+                message: format!("Read error: {e}"),
+            })?
+            .replace('\\', "/");
         if name == "instance.cfg" {
             let mut buf = String::new();
             entry
@@ -1098,7 +1106,13 @@ pub fn import_prism_zip_named(
                 code: "ERR_IMPORT_READ_ZIP".into(),
                 message: format!("Read error: {e}"),
             })?;
-            let entry_name = entry.name().replace('\\', "/");
+            let entry_name = entry
+                .name()
+                .map_err(|e| LauncherError::Generic {
+                    code: "ERR_IMPORT_READ_ZIP".into(),
+                    message: format!("Read error: {e}"),
+                })?
+                .replace('\\', "/");
             if entry_name == "instance.cfg" || entry_name == "mmc-pack.json" {
                 continue;
             }
@@ -1944,7 +1958,10 @@ fn extract_technic_zip_entries<R: Read + Seek>(
         let mut entry = archive
             .by_index(index)
             .map_err(|e| import_error("ERR_IMPORT_READ_ZIP", format!("Read error: {e}")))?;
-        let entry_name = entry.name().replace('\\', "/");
+        let entry_name = entry
+            .name()
+            .map_err(|e| import_error("ERR_IMPORT_READ_ZIP", format!("Read error: {e}")))?
+            .replace('\\', "/");
         if entry.is_dir() {
             continue;
         }
@@ -2212,7 +2229,10 @@ mod tests {
         let file = fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(br#"{"name":"a-pack","dependencies":{},"files":[]}"#)
@@ -2245,7 +2265,7 @@ mod tests {
         let mrpack_path = tmp.path().join("configured-pack.mrpack");
         let file = fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
-        let options = zip::write::FileOptions::default();
+        let options = zip::write::SimpleFileOptions::default();
         writer.start_file("modrinth.index.json", options).unwrap();
         writer
             .write_all(br#"{"name":"configured-pack","dependencies":{},"files":[]}"#)
@@ -2284,7 +2304,7 @@ mod tests {
         let mrpack_path = tmp.path().join("unsafe-pack.mrpack");
         let file = fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
-        let options = zip::write::FileOptions::default();
+        let options = zip::write::SimpleFileOptions::default();
         writer.start_file("modrinth.index.json", options).unwrap();
         writer
             .write_all(br#"{"name":"unsafe-pack","dependencies":{},"files":[]}"#)
@@ -2308,7 +2328,7 @@ mod tests {
         let zip_path = tmp.path().join("prism.zip");
         let file = fs::File::create(&zip_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
-        let options = zip::write::FileOptions::default();
+        let options = zip::write::SimpleFileOptions::default();
         writer.start_file("instance.cfg", options).unwrap();
         writer.write_all(b"name=Prism Configured\n").unwrap();
         writer.start_file("mmc-pack.json", options).unwrap();
@@ -2612,7 +2632,10 @@ mod tests {
         let file = fs::File::create(path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(
@@ -2623,7 +2646,7 @@ mod tests {
             )
             .unwrap();
         writer
-            .start_file("mods/a.jar", zip::write::FileOptions::default())
+            .start_file("mods/a.jar", zip::write::SimpleFileOptions::default())
             .unwrap();
         writer.write_all(b"jar").unwrap();
         writer.finish().unwrap();
@@ -2724,7 +2747,10 @@ mod tests {
         let file = fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(
@@ -2770,7 +2796,10 @@ mod tests {
         let file = fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         // versionId present — treated as opaque version_id, not version_number.
         writer
@@ -2822,7 +2851,10 @@ mod tests {
         let file = fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(br#"{"name":"No Version","dependencies":{},"files":[]}"#)
@@ -2855,7 +2887,10 @@ mod tests {
         let file = fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(br#"{"name":"Origin Pack","dependencies":{},"files":[]}"#)
@@ -2903,7 +2938,7 @@ mod tests {
         let mrpack_path = tmp.path().join("hash.mrpack");
         let file = fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         writer.start_file("modrinth.index.json", opts).unwrap();
         writer
             .write_all(br#"{"name":"Hash Pack","dependencies":{},"files":[]}"#)
@@ -2952,7 +2987,7 @@ mod tests {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
             for (name, contents) in entries {
                 writer
-                    .start_file(*name, zip::write::FileOptions::default())
+                    .start_file(*name, zip::write::SimpleFileOptions::default())
                     .unwrap();
                 writer.write_all(contents).unwrap();
             }
@@ -3172,7 +3207,7 @@ mod tests {
         let zip_path = tmp.path().join("prism.zip");
         let file = fs::File::create(&zip_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         writer.start_file("instance.cfg", opts).unwrap();
         writer.write_all(b"name=Prism Local\n").unwrap();
         writer.start_file("mmc-pack.json", opts).unwrap();

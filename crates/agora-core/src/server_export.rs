@@ -143,7 +143,10 @@ fn is_client_only(jar_path: &Path) -> bool {
 
     for i in 0..archive.len() {
         let name = match archive.by_index(i) {
-            Ok(e) => e.name().to_string(),
+            Ok(e) => match e.name() {
+                Ok(name) => name.into_owned(),
+                Err(_) => continue,
+            },
             Err(_) => continue,
         };
         if name == "fabric.mod.json" {

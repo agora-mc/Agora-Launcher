@@ -463,7 +463,9 @@ pub fn theirs_from_mrpack(mrpack_path: &Path) -> Result<MrpackTheirs, String> {
         if entry.is_dir() {
             continue;
         }
-        let entry_name = entry.name().replace('\\', "/");
+        let Ok(entry_name) = entry.name().map(|name| name.replace('\\', "/")) else {
+            continue;
+        };
         let Some(rel) = mrpack_override_relative(&entry_name, &index.overrides) else {
             continue;
         };
@@ -1993,7 +1995,9 @@ pub fn stage_pack<F: PackFileFetcher>(
         if entry.is_dir() {
             continue;
         }
-        let entry_name = entry.name().replace('\\', "/");
+        let Ok(entry_name) = entry.name().map(|name| name.replace('\\', "/")) else {
+            continue;
+        };
         let Some(rel) = mrpack_override_relative(&entry_name, &index.overrides) else {
             continue;
         };
@@ -2181,11 +2185,11 @@ mod tests {
         dependencies: Option<serde_json::Value>,
         include_files_key: bool,
     ) -> PathBuf {
-        use zip::write::FileOptions;
+        use zip::write::SimpleFileOptions;
         let path = dir.join(format!("{name}.mrpack"));
         let f = fs::File::create(&path).unwrap();
         let mut zip = zip::ZipWriter::new(f);
-        let opts = FileOptions::default();
+        let opts = SimpleFileOptions::default();
 
         let mut index_files = Vec::new();
         for (p, sha1, sha512, downloads) in files {
@@ -2286,7 +2290,7 @@ mod tests {
         let out = tmp.path().join("p2.mrpack");
         let f2 = fs::File::create(&out).unwrap();
         let mut zw = zip::ZipWriter::new(f2);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         let index = serde_json::json!({
             "formatVersion": 1, "game": "minecraft", "name": "p",
             "dependencies": { "minecraft": "1.21", "fabric-loader": "0.15.0" },
