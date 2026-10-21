@@ -3064,6 +3064,20 @@ fn extract_natives_atomically(
                     code: "ERR_NATIVE_ARCHIVE".into(),
                     message: format!("Invalid native archive {}: {error}", archive_path.display()),
                 })?;
+            let central_records = std::fs::File::open(archive_path)
+                .and_then(|file| {
+                    central_directory_record_count(file, archive.central_directory_start())
+                })
+                .map_err(native_io_error)?;
+            if central_records != archive.len() {
+                return Err(LauncherError::Generic {
+                    code: "ERR_NATIVE_DUPLICATE_PATH".into(),
+                    message: format!(
+                        "Native archive {} contains duplicate entry names.",
+                        archive_path.display()
+                    ),
+                });
+            }
             total_entries = total_entries.saturating_add(archive.len());
             if total_entries > MAX_ENTRIES {
                 return Err(LauncherError::ZipBomb);
@@ -3076,7 +3090,13 @@ fn extract_natives_atomically(
                             code: "ERR_NATIVE_ARCHIVE_ENTRY".into(),
                             message: error.to_string(),
                         })?;
-                let raw_name = entry.name();
+                let raw_name = entry
+                    .name()
+                    .map_err(|error| LauncherError::Generic {
+                        code: "ERR_NATIVE_ARCHIVE_ENTRY".into(),
+                        message: error.to_string(),
+                    })?
+                    .into_owned();
 
                 // Check for NUL bytes in the entry name (must be done on the
                 // raw string before any normalization).
@@ -3507,6 +3527,33 @@ pub(crate) fn safe_relative_path(raw: &str) -> LauncherResult<PathBuf> {
         return Err(LauncherError::OverrideSecurityViolation);
     }
     Ok(path)
+}
+
+/// Count the raw records in a ZIP central directory.
+///
+/// `zip::ZipArchive` keeps only the last of several entries that share a name,
+/// so `len()` alone cannot reveal duplicates; comparing it with this count can.
+fn central_directory_record_count(file: std::fs::File, start: u64) -> std::io::Result<usize> {
+    use std::io::{Read, Seek, SeekFrom};
+    const SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+    let mut reader = std::io::BufReader::new(file);
+    reader.seek(SeekFrom::Start(start))?;
+    let mut header = [0u8; 46];
+    let mut count = 0usize;
+    loop {
+        match reader.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        if header[..4] != SIGNATURE {
+            break;
+        }
+        let field = |at: usize| i64::from(u16::from_le_bytes([header[at], header[at + 1]]));
+        reader.seek_relative(field(28) + field(30) + field(32))?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 fn native_io_error(error: std::io::Error) -> LauncherError {
@@ -4591,12 +4638,30 @@ mod tests {
     // Helper: build a test ZIP in memory from named byte slices
     // -----------------------------------------------------------------------
 
+    /// zip 9 refuses to write duplicate names, so write a same-length
+    /// placeholder and patch it into `name` in both the local and central headers.
+    fn make_zip_with_duplicate_names(name: &str) -> Vec<u8> {
+        let mut placeholder = name.to_string();
+        placeholder.pop();
+        placeholder.push('\u{1}');
+        let mut data = make_zip(&[(name, b"first"), (&placeholder, b"second")]);
+        let (from, to) = (placeholder.as_bytes(), name.as_bytes());
+        let mut i = 0;
+        while i + from.len() <= data.len() {
+            if &data[i..i + from.len()] == from {
+                data[i..i + from.len()].copy_from_slice(to);
+            }
+            i += 1;
+        }
+        data
+    }
+
     fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
             for &(name, data) in entries {
-                zip.start_file(name, zip::write::FileOptions::default())
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
                     .unwrap();
                 zip.write_all(data).unwrap();
             }
@@ -4616,7 +4681,7 @@ mod tests {
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
             for &(name, data, _mode) in entries {
-                zip.start_file(name, zip::write::FileOptions::default())
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
                     .unwrap();
                 zip.write_all(data).unwrap();
             }
@@ -4641,9 +4706,13 @@ mod tests {
         for entry in entries.iter().take(cd_entries) {
             let fn_len = u16::from_le_bytes(buf[pos + 28..pos + 30].try_into().unwrap()) as usize;
 
+            // The high byte of "version made by" is the creating system; the
+            // writer picks it from the host OS (DOS on Windows), and only a
+            // Unix (3) entry has its external attributes read as a Unix mode.
+            buf[pos + 5] = 3;
             let mode = entry.2;
-            // Upper 16 bits = Unix mode; bits 8-15 = system (3 = Unix).
-            let ext = (mode << 16) | (3u32 << 8);
+            // Upper 16 bits of the external attributes = Unix mode.
+            let ext = mode << 16;
             buf[pos + 38..pos + 42].copy_from_slice(&ext.to_le_bytes());
 
             pos += 46 + fn_len;
@@ -4765,10 +4834,13 @@ mod tests {
         let mut bytes = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-            zip.add_directory("natives/", zip::write::FileOptions::default())
+            zip.add_directory("natives/", zip::write::SimpleFileOptions::default())
                 .unwrap();
-            zip.start_file("natives/example.dll", zip::write::FileOptions::default())
-                .unwrap();
+            zip.start_file(
+                "natives/example.dll",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
             zip.write_all(b"native").unwrap();
             zip.finish().unwrap();
         }
@@ -4902,7 +4974,7 @@ mod tests {
 
     #[test]
     fn rejects_exact_duplicate_entry() {
-        let zip_data = make_zip(&[("org/lib.so", b"content"), ("org/lib.so", b"content")]);
+        let zip_data = make_zip_with_duplicate_names("org/lib.so");
         assert!(extract_test_zip(&zip_data, None).is_err());
     }
 

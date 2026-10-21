@@ -1728,7 +1728,7 @@ mod tests {
         let mut buffer = std::io::Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut buffer);
-            let options = zip::write::FileOptions::default();
+            let options = zip::write::SimpleFileOptions::default();
             zip.start_file("fabric.mod.json", options).unwrap();
             let depends = depends_json.unwrap_or("{}");
             write!(

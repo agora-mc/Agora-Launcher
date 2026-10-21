@@ -872,7 +872,10 @@ mod tests {
         let file = std::fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(br#"{"name":"a-pack","dependencies":{},"files":[]}"#)
@@ -983,7 +986,10 @@ mod tests {
         let file = std::fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(br#"{"name":"mrp-list-pack","dependencies":{},"files":[]}"#)
@@ -1049,7 +1055,10 @@ mod tests {
         let file = std::fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(br#"{"name":"polfail","dependencies":{"minecraft":"1.21"},"files":[]}"#)
@@ -1117,7 +1126,10 @@ mod tests {
         let file = std::fs::File::create(&mrpack_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer
             .write_all(br#"{"name":"rt-pack","dependencies":{"minecraft":"1.21"},"files":[]}"#)
@@ -1216,7 +1228,10 @@ mod tests {
             let file = std::fs::File::create(&mrpack_path).unwrap();
             let mut writer = zip::ZipWriter::new(file);
             writer
-                .start_file("modrinth.index.json", zip::write::FileOptions::default())
+                .start_file(
+                    "modrinth.index.json",
+                    zip::write::SimpleFileOptions::default(),
+                )
                 .unwrap();
             writer
                 .write_all(
@@ -1271,7 +1286,10 @@ mod tests {
             let file = std::fs::File::create(&mrpack_path).unwrap();
             let mut writer = zip::ZipWriter::new(file);
             writer
-                .start_file("modrinth.index.json", zip::write::FileOptions::default())
+                .start_file(
+                    "modrinth.index.json",
+                    zip::write::SimpleFileOptions::default(),
+                )
                 .unwrap();
             writer
                 .write_all(
@@ -1359,7 +1377,7 @@ mod tests {
         {
             let file = std::fs::File::create(&mrpack_path).unwrap();
             let mut writer = zip::ZipWriter::new(file);
-            let opts = zip::write::FileOptions::default();
+            let opts = zip::write::SimpleFileOptions::default();
             writer.start_file("modrinth.index.json", opts).unwrap();
             // versionId present; dependencies for pack loader/mc
             writer

@@ -94,7 +94,7 @@ pub async fn export_instance_pack(
                 let file = std::fs::File::create(&tmp_path)
                     .map_err(|_| LauncherError::InstanceCreateFailed)?;
                 let mut zip = zip::ZipWriter::new(file);
-                let opts: zip::write::FileOptions = zip::write::FileOptions::default()
+                let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
                     .compression_method(zip::CompressionMethod::Stored);
 
                 let mut files_meta: Vec<serde_json::Value> = Vec::new();

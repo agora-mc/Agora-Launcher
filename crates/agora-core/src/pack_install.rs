@@ -483,8 +483,8 @@ mod tests {
         let zip_path = tmp.path().join("overrides.zip");
         let file = std::fs::File::create(&zip_path).unwrap();
         let mut zip_writer = zip::ZipWriter::new(file);
-        let options =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
 
         zip_writer.start_file("config/test.cfg", options).unwrap();
         zip_writer.write_all(b"test config").unwrap();

@@ -570,13 +570,14 @@ fn parse_from_archive<R: Read + Seek>(
         archive
             .by_index(i)
             .ok()
-            .is_some_and(|entry| entry.name() == "quilt.mod.json")
+            .is_some_and(|entry| entry.name().is_ok_and(|name| name == "quilt.mod.json"))
     });
     let has_neoforge_metadata = (0..total_len).any(|i| {
-        archive
-            .by_index(i)
-            .ok()
-            .is_some_and(|entry| entry.name() == "META-INF/neoforge.mods.toml")
+        archive.by_index(i).ok().is_some_and(|entry| {
+            entry
+                .name()
+                .is_ok_and(|name| name == "META-INF/neoforge.mods.toml")
+        })
     });
     let include_fabric = scope.includes_fabric(has_quilt_metadata);
     let include_quilt = scope.includes_quilt();
@@ -611,7 +612,10 @@ fn parse_from_archive<R: Read + Seek>(
     // ---- First pass: collect metadata and record declared nested paths ----
     for i in 0..total_len {
         let name = match archive.by_index(i) {
-            Ok(e) => e.name().to_string(),
+            Ok(e) => match e.name() {
+                Ok(name) => name.into_owned(),
+                Err(_) => continue,
+            },
             Err(_) => continue,
         };
         if name.ends_with(".class") {
@@ -923,7 +927,10 @@ fn parse_from_archive<R: Read + Seek>(
     let mut processed_nested_paths: BTreeSet<String> = BTreeSet::new();
     for i in 0..total_len {
         let entry_name = match archive.by_index(i) {
-            Ok(e) => e.name().to_string(),
+            Ok(e) => match e.name() {
+                Ok(name) => name.into_owned(),
+                Err(_) => continue,
+            },
             Err(_) => continue,
         };
         let normalized = entry_name.replace('\\', "/");
@@ -1836,7 +1843,7 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().expect("create temp file");
         {
             let mut zip = zip::ZipWriter::new(&file);
-            let opts = zip::write::FileOptions::default();
+            let opts = zip::write::SimpleFileOptions::default();
             for (name, content) in entries {
                 zip.start_file(*name, opts).expect("start_file");
                 zip.write_all(content.as_bytes()).expect("write_all");
@@ -1855,7 +1862,7 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().expect("create temp file");
         {
             let mut zip = zip::ZipWriter::new(&file);
-            let opts = zip::write::FileOptions::default();
+            let opts = zip::write::SimpleFileOptions::default();
             for (name, content) in entries {
                 zip.start_file(*name, opts).expect("start_file");
                 zip.write_all(content).expect("write_all");
@@ -1873,7 +1880,7 @@ mod tests {
         let mut buf = Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut buf);
-            let opts = zip::write::FileOptions::default();
+            let opts = zip::write::SimpleFileOptions::default();
             for (name, content) in entries {
                 zip.start_file(*name, opts).expect("start_file");
                 zip.write_all(content).expect("write_all");

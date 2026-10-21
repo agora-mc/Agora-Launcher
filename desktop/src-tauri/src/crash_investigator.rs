@@ -116,7 +116,7 @@ mod tests {
         let file = std::fs::File::create(&jar_path).expect("create temp jar");
         {
             let mut zip = zip::ZipWriter::new(file);
-            let opts: zip::write::FileOptions = zip::write::FileOptions::default()
+            let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
             for entry in entries {
                 zip.start_file(*entry, opts).expect("start zip entry");

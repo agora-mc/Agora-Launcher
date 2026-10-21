@@ -928,8 +928,8 @@ fn a_development_folder_cannot_shadow_an_installed_package_of_the_same_id() {
         use std::io::Write;
         let file = std::fs::File::create(&archive).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let options =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         zip.start_file("agora-plugin.json", options).unwrap();
         zip.write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
             .unwrap();
@@ -963,8 +963,8 @@ fn a_package_install_lands_files_in_agoras_own_directory() {
         use std::io::Write;
         let file = std::fs::File::create(&archive).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let options =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         zip.start_file("agora-plugin.json", options).unwrap();
         zip.write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
             .unwrap();
@@ -1007,7 +1007,7 @@ fn package_at(archive: &Path, manifest: &serde_json::Value) {
     let file = std::fs::File::create(archive).unwrap();
     let mut zip = zip::ZipWriter::new(file);
     let options =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("agora-plugin.json", options).unwrap();
     zip.write_all(serde_json::to_string(manifest).unwrap().as_bytes())
         .unwrap();
@@ -1256,7 +1256,7 @@ fn package_with_source(
     let file = std::fs::File::create(archive).unwrap();
     let mut zip = zip::ZipWriter::new(file);
     let options =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("agora-plugin.json", options).unwrap();
     zip.write_all(serde_json::to_string(manifest).unwrap().as_bytes())
         .unwrap();

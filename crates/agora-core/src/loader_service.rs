@@ -1119,7 +1119,7 @@ mod tests {
         let path = mods_dir.join(filename);
         let file = std::fs::File::create(&path).expect("create jar file");
         let mut zip = zip::ZipWriter::new(file);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         for (name, content) in entries {
             zip.start_file(*name, opts).expect("start_file");
             zip.write_all(content.as_bytes()).expect("write_all");
@@ -1218,7 +1218,7 @@ mod tests {
         let mut bytes = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-            let opts = zip::write::FileOptions::default();
+            let opts = zip::write::SimpleFileOptions::default();
             zip.start_file("fabric.mod.json", opts).unwrap();
             zip.write_all(
                 br#"{"id":"moda","version":"1.0","depends":{"fabricloader":">=0.19.0"}}"#,
