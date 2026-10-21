@@ -1,0 +1,78 @@
+{
+  "id": "agora-tracer.cyberpunk-2077",
+  "version": "0.1.0",
+  "api_range": ">=0.1, <0.2",
+  "parents": [],
+  "games": [
+    {
+      "id": "cyberpunk-2077",
+      "name": "Cyberpunk 2077",
+      "stores": [
+        {
+          "store": "gog",
+          "product": "1423049311"
+        }
+      ],
+      "version_sources": [
+        {
+          "kind": "executable",
+          "path": "bin/x64/Cyberpunk2077.exe"
+        },
+        {
+          "kind": "store_record"
+        }
+      ],
+      "deployment": "virtual_file_system",
+      "content_rules": [],
+      "content_layout": {
+        "data_path": "",
+        "data_markers": [],
+        "root_markers": [
+          "archive",
+          "bin",
+          "r6",
+          "red4ext",
+          "engine",
+          "mods"
+        ]
+      },
+      "native_code_patterns": [],
+      "framework_ids": [],
+      "tool_ids": [],
+      "launch": {
+        "executable": {
+          "root": "runtime",
+          "path": "bin/x64/Cyberpunk2077.exe"
+        },
+        "arguments": [],
+        "environment": {},
+        "working_directory": {
+          "root": "runtime",
+          "path": ""
+        }
+      },
+      "log_paths": [],
+      "crash_paths": [],
+      "user_files": [],
+      "save_paths": [],
+      "linked_archive_patterns": [
+        "archive/pc/content/*.archive",
+        "archive/pc/ep1/*.archive"
+      ],
+      "declared_writes": [
+        "r6/cache/**",
+        "r6/logs/**"
+      ],
+      "excluded_paths": [
+        "archive/pc/mod/**",
+        "mods/**",
+        "r6/scripts/**",
+        "r6/tweaks/**",
+        "red4ext/**",
+        "bin/x64/plugins/**"
+      ]
+    }
+  ],
+  "frameworks": [],
+  "tools": []
+}

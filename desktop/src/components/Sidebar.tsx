@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, type ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { ChevronLeft, ChevronRight, Command, Puzzle } from 'lucide-react';
 import { BrandMark } from './BrandMark';
@@ -25,6 +25,8 @@ interface SidebarProps {
   pluginPages?: { id: string; label: string }[];
   activePluginPage?: string | null;
   onSelectPluginPage?: (id: string) => void;
+  /** Shown under the brand: the game switcher, when there is a second game to switch to. */
+  switcher?: ReactNode;
 }
 
 const MIN_WIDTH = 180;
@@ -65,6 +67,7 @@ export function Sidebar({
   pluginPages = [],
   activePluginPage = null,
   onSelectPluginPage,
+  switcher,
 }: SidebarProps) {
   const latestWidth = useRef(width);
 
@@ -116,6 +119,7 @@ export function Sidebar({
       >
       <div className={`border-b border-border ${collapsed ? 'p-3' : 'p-4'}`}>
         <BrandMark compact={collapsed} className={collapsed ? 'justify-center' : ''} />
+        {switcher && <div className="mt-3">{switcher}</div>}
       </div>
 
       <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3" aria-label="Main navigation">

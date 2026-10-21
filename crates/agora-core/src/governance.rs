@@ -942,6 +942,7 @@ pub fn is_development_registry() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_root::RemoveOnDrop;
 
     fn seed_schema7_registry(reg_path: &std::path::Path) {
         let conn = rusqlite::Connection::open(reg_path).unwrap();
@@ -1558,11 +1559,14 @@ mod tests {
     // GovernanceService tests
     // -----------------------------------------------------------------------
 
-    fn make_registry_svc(reg_path: &std::path::Path) -> RegistryService {
+    /// The guard that removes the data root, then the service. The guard comes first so that it
+    /// drops last, after the database handle the service holds.
+    fn make_registry_svc(reg_path: &std::path::Path) -> (RemoveOnDrop, RegistryService) {
         let root = std::env::temp_dir().join(format!("agora-gov-svc-{}", uuid::Uuid::new_v4()));
+        let guard = RemoveOnDrop::new(root.clone());
         let ctx = crate::ctx::Ctx::for_testing(root.clone());
         std::fs::copy(reg_path, ctx.paths.registry_db()).unwrap();
-        RegistryService::new(ctx)
+        (guard, RegistryService::new(ctx))
     }
 
     #[test]
@@ -1573,7 +1577,7 @@ mod tests {
         let reg_path = root.join("registry.db");
         seed_schema7_registry(&reg_path);
 
-        let reg_svc = make_registry_svc(&reg_path);
+        let (_root, reg_svc) = make_registry_svc(&reg_path);
         let svc = GovernanceService::new(reg_svc);
         let summary = svc.get_governance_summary("test-mod").unwrap();
         assert!(summary.is_some());
@@ -1590,7 +1594,7 @@ mod tests {
         let reg_path = root.join("registry.db");
         seed_schema7_registry(&reg_path);
 
-        let reg_svc = make_registry_svc(&reg_path);
+        let (_root, reg_svc) = make_registry_svc(&reg_path);
         let svc = GovernanceService::new(reg_svc);
         let events = svc.list_governance_events(Some("test-mod"), 10).unwrap();
         assert_eq!(events.len(), 2);
@@ -1605,7 +1609,7 @@ mod tests {
         let reg_path = root.join("registry.db");
         seed_schema6_registry(&reg_path);
 
-        let reg_svc = make_registry_svc(&reg_path);
+        let (_root, reg_svc) = make_registry_svc(&reg_path);
         let svc = GovernanceService::new(reg_svc);
 
         let summary = svc.get_governance_summary("test-mod").unwrap();

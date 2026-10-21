@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for pure functions in Agora utility scripts."""
 
-import hashlib
+import contextlib
 import http.client
+import io
 import json
 import os
 import sys
@@ -16,13 +17,14 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import fetch_loader_manifests
-import fetch_registry_db
 import deploy_release_assets
 import finalize_release_assets as fra
 import refresh_loader_manifests
 import validate_loader_catalog_delta
 import build_docs_web as bdw
+import pin_hashes
 import stage_cli_sidecar
+import stage_vfs_files
 
 
 def _response(read_side_effect=None, read_value=b"data"):
@@ -902,75 +904,6 @@ class TestStableJsonSha256(unittest.TestCase):
         hash1 = fetch_loader_manifests._stable_json_sha256(b'{"a":1}')
         hash2 = fetch_loader_manifests._stable_json_sha256(b'{"a":2}')
         self.assertNotEqual(hash1, hash2)
-
-
-class TestSha256File(unittest.TestCase):
-    """Tests for fetch_registry_db.sha256_file."""
-
-    def test_known_content(self):
-        """SHA-256 of a temp file with known content matches expected hash."""
-        expected = (
-            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-        )
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(b"hello")
-            tmp_path = tmp.name
-        try:
-            self.assertEqual(fetch_registry_db.sha256_file(Path(tmp_path)), expected)
-        finally:
-            os.unlink(tmp_path)
-
-    def test_empty_file(self):
-        """SHA-256 of an empty file matches the known empty-hash constant."""
-        expected = (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        )
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            self.assertEqual(fetch_registry_db.sha256_file(Path(tmp_path)), expected)
-        finally:
-            os.unlink(tmp_path)
-
-
-class TestVerifySha256AgainstDigest(unittest.TestCase):
-    """Tests for fetch_registry_db.verify_sha256_against_digest."""
-
-    def test_no_digest_skips(self):
-        """When digest_field is None, no verification is performed (no exit)."""
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(b"hello")
-            tmp_path = tmp.name
-        try:
-            # Should not raise or call sys.exit
-            fetch_registry_db.verify_sha256_against_digest(Path(tmp_path), None)
-        except SystemExit:
-            self.fail("verify_sha256_against_digest called sys.exit with no digest")
-        finally:
-            os.unlink(tmp_path)
-
-    def test_hex_digest_matches(self):
-        """When digest is a hex string matching the file's SHA-256, no exit occurs."""
-        expected = hashlib.sha256(b"hello").hexdigest()
-        digest_field = f"sha256:{expected}"
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(b"hello")
-            tmp_path = tmp.name
-        try:
-            fetch_registry_db.verify_sha256_against_digest(Path(tmp_path), digest_field)
-        except SystemExit:
-            self.fail("verify_sha256_against_digest called sys.exit on matching digest")
-        finally:
-            os.unlink(tmp_path)
-
-
-
-
-
-
-
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2229,6 +2162,47 @@ class TestBuildDocsWebStripTitle(unittest.TestCase):
         self.assertEqual(bdw.strip_title(""), "")
 
 
+class TestPinHashesOtherGames(unittest.TestCase):
+    """pin_hashes accepts a direct_hash entry for another game (MASTER_SPEC §26.8)."""
+
+    def _entry(self, **overrides):
+        entry = {
+            "id": "skyrim-archive-mod",
+            "game": "skyrim-se",
+            "content_type": "mod",
+            "download_strategy": "direct_hash",
+            "source_identifier": "https://example.com/files/Mod-1.0.7z",
+            "sha256": "0" * 64,
+            "game_compatibility": [{"stores": ["steam"], "game_versions": ["1.6.1170.0"]}],
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_other_game_entry_passes_without_compatible_versions(self):
+        self.assertEqual(
+            pin_hashes._validate_direct_hash_contract(self._entry()),
+            "https://example.com/files/Mod-1.0.7z",
+        )
+
+    def test_other_game_entry_needs_game_compatibility(self):
+        entry = self._entry()
+        del entry["game_compatibility"]
+        with self.assertRaises(SystemExit) as caught:
+            pin_hashes._validate_direct_hash_contract(entry)
+        self.assertIn("game_compatibility", str(caught.exception.code))
+
+    def test_other_game_entry_still_needs_an_https_filename(self):
+        with self.assertRaises(SystemExit):
+            pin_hashes._validate_direct_hash_contract(
+                self._entry(source_identifier="https://example.com/download?id=12")
+            )
+
+    def test_minecraft_entry_still_needs_compatible_versions(self):
+        entry = self._entry(game="minecraft", source_identifier="https://example.com/files/m-1.0.jar")
+        del entry["game_compatibility"]
+        with self.assertRaises(SystemExit) as caught:
+            pin_hashes._validate_direct_hash_contract(entry)
+        self.assertIn("compatible_versions", str(caught.exception.code))
 class TestFinalizeReleaseAssetsNames(unittest.TestCase):
     """Tests for finalize_release_assets tag, rename, and plan helpers."""
 
@@ -2536,6 +2510,109 @@ class TestStageCliSidecar(unittest.TestCase):
             stage_cli_sidecar.built_cli_path(t, "x86_64-apple-darwin", explicit_target=True),
             t / "x86_64-apple-darwin" / "release" / "agora",
         )
+
+
+def fake_pe(machine: int) -> bytes:
+    """The smallest bytes pe_machine reads: MZ, the PE offset at 0x3C, the PE signature, the machine."""
+    data = bytearray(0x88)
+    data[0:2] = b"MZ"
+    data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    data[0x80:0x84] = b"PE\0\0"
+    data[0x84:0x86] = machine.to_bytes(2, "little")
+    return bytes(data)
+
+
+class TestStageVfsFiles(unittest.TestCase):
+    """stage_vfs_files builds the x86-folder layout and refuses a file of the wrong bitness."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.x64 = root / "release"
+        self.x86 = root / "i686" / "release"
+        self.stage_dir = root / "stage"
+        self.x64.mkdir(parents=True)
+        self.x86.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write(self, folder, name, machine):
+        (folder / name).write_bytes(fake_pe(machine))
+
+    def write_all(self, x64_machine=0x8664, x86_machine=0x014C):
+        self.write(self.x64, "agora_vfs.dll", x64_machine)
+        self.write(self.x64, "agora-vfs-helper.exe", x64_machine)
+        self.write(self.x86, "agora_vfs.dll", x86_machine)
+        self.write(self.x86, "agora-vfs-helper.exe", x86_machine)
+
+    def test_pe_machine_reads_the_machine_type(self):
+        path = self.x64 / "probe.dll"
+        path.write_bytes(fake_pe(0x014C))
+        self.assertEqual(stage_vfs_files.pe_machine(path), 0x014C)
+
+    def test_pe_machine_refuses_a_file_that_is_not_a_pe_image(self):
+        path = self.x64 / "text.dll"
+        path.write_bytes(b"not a dll at all, just some text padding out to be long enough")
+        with self.assertRaises(ValueError):
+            stage_vfs_files.pe_machine(path)
+
+    def test_stages_the_64_bit_pair_and_the_x86_folder(self):
+        self.write_all()
+        staged = stage_vfs_files.stage(self.x64, self.x86, self.stage_dir)
+        self.assertEqual(
+            sorted(p.relative_to(self.stage_dir).as_posix() for p in staged),
+            [
+                "agora-vfs-helper.exe",
+                "agora_vfs.dll",
+                "x86/agora-vfs-helper.exe",
+                "x86/agora_vfs.dll",
+            ],
+        )
+        self.assertEqual(
+            stage_vfs_files.pe_machine(self.stage_dir / "x86" / "agora_vfs.dll"), 0x014C
+        )
+        self.assertEqual(
+            stage_vfs_files.pe_machine(self.stage_dir / "agora_vfs.dll"), 0x8664
+        )
+
+    def test_a_64_bit_build_in_the_x86_folder_is_refused_and_nothing_is_staged(self):
+        self.write_all(x86_machine=0x8664)
+        with self.assertRaises(SystemExit) as caught:
+            stage_vfs_files.stage(self.x64, self.x86, self.stage_dir)
+        self.assertIn("expected 0x014c", str(caught.exception))
+        self.assertFalse(self.stage_dir.exists())
+
+    def test_a_missing_file_is_refused_and_named(self):
+        self.write_all()
+        (self.x86 / "agora-vfs-helper.exe").unlink()
+        with self.assertRaises(SystemExit) as caught:
+            stage_vfs_files.stage(self.x64, self.x86, self.stage_dir)
+        self.assertIn("agora-vfs-helper.exe", str(caught.exception))
+        self.assertFalse(self.stage_dir.exists())
+
+    def test_main_takes_the_build_folders_and_stage_folder_as_arguments(self):
+        self.write_all()
+        out = self.stage_dir.parent / "cli-vfs"
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = stage_vfs_files.main(
+                [
+                    "--x64-build", str(self.x64),
+                    "--x86-build", str(self.x86),
+                    "--stage-dir", str(out),
+                ]
+            )
+        self.assertEqual(status, 0)
+        self.assertTrue((out / "x86" / "agora-vfs-helper.exe").is_file())
+        self.assertFalse(self.stage_dir.exists())
+
+    def test_an_earlier_stage_is_replaced_not_merged(self):
+        self.write_all()
+        stale = self.stage_dir / "x86" / "old-helper.exe"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"stale")
+        stage_vfs_files.stage(self.x64, self.x86, self.stage_dir)
+        self.assertFalse(stale.exists())
 
 
 if __name__ == "__main__":

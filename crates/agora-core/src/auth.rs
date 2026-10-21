@@ -1508,7 +1508,7 @@ fn keyring_backend_unavailable(error: &keyring::Error) -> bool {
     matches!(error, keyring::Error::PlatformFailure(_))
 }
 
-pub(crate) fn store_secret(
+pub fn store_secret(
     service: &str,
     account: &str,
     fallback_file: &str,
@@ -1548,7 +1548,7 @@ pub(crate) fn store_secret(
     )
 }
 
-pub(crate) fn load_secret(
+pub fn load_secret(
     service: &str,
     account: &str,
     fallback_file: &str,
@@ -1597,11 +1597,7 @@ pub(crate) fn load_secret(
     Ok(None)
 }
 
-pub(crate) fn clear_secret(
-    service: &str,
-    account: &str,
-    fallback_file: &str,
-) -> LauncherResult<()> {
+pub fn clear_secret(service: &str, account: &str, fallback_file: &str) -> LauncherResult<()> {
     if clear_test_secret(service, account) {
         return Ok(());
     }
@@ -1658,11 +1654,7 @@ pub enum CredentialBackend {
 /// returned an unconditional `true` and never told a caller whether the
 /// degraded path was actually in use. MASTER_SPEC 7.5.2 requires warning the
 /// user when their credential is stored this way, which needs this signal.
-pub(crate) fn credential_backend(
-    service: &str,
-    account: &str,
-    fallback_file: &str,
-) -> CredentialBackend {
+pub fn credential_backend(service: &str, account: &str, fallback_file: &str) -> CredentialBackend {
     if keyring_for_secret() {
         if let Ok(entry) = keyring::Entry::new(service, account) {
             if entry.get_password().is_ok() {

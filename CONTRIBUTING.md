@@ -8,9 +8,8 @@ the source of truth.
 
 - Read the [Code of Engagement](./CODE_OF_ENGAGEMENT.md). It governs review conduct on
   every issue, pull request, and catalog review.
-- Read [AGENTS.md](./AGENTS.md) for the project's mission, directory map, and security
-  defaults, and [CLAUDE.md](./CLAUDE.md) for the validation gates and architecture
-  boundaries a change has to satisfy.
+- Read [AGENTS.md](./AGENTS.md) for the project's mission, directory map, security
+  defaults, and the validation gates and architecture boundaries a change has to satisfy.
 
 ## Reporting something
 
@@ -23,8 +22,7 @@ with [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) and
 ## Changing code
 
 [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) has the prerequisites, per-component
-build commands, disposable-profile setup, and the full validation matrix.
-[CLAUDE.md](./CLAUDE.md) lists the same gates in the order CI runs them. Run the ones
+build commands, disposable-profile setup, and the full validation matrix. Run the gates
 covering what you touched before opening a pull request:
 
 ```bash

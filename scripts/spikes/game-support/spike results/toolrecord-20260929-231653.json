@@ -1,0 +1,315 @@
+{
+    "spikeVersion":  2,
+    "mode":  "ToolRecord",
+    "tool":  "Nemesis",
+    "roots":  [
+                  {
+                      "root":  "C:\\Users\\<user>\\AppData\\Local\\Skyrim Special Edition",
+                      "filesBefore":  6,
+                      "filesAfter":  6,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  0,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "C:\\Users\\<user>\\Documents\\My Games\\Skyrim Special Edition",
+                      "filesBefore":  254,
+                      "filesAfter":  254,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  0,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "D:\\Skyrim-MO2-Salvage\\MO2\\mods",
+                      "filesBefore":  214592,
+                      "filesAfter":  214592,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  1,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+                                              "090 - Nemesis Unlimited Behavior Engine 0.84\\Nemesis_Engine":  1
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+                                                    "090 - Nemesis Unlimited Behavior Engine 0.84\\Nemesis_Engine\\nemesis.ini"
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "D:\\Skyrim-MO2-Salvage\\MO2\\overwrite",
+                      "filesBefore":  4171,
+                      "filesAfter":  4171,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  46,
+                      "replaced":  79,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+                                              "meshes\\actors\\character":  33,
+                                              "Nemesis_Engine":  3,
+                                              "Nemesis_Engine\\cache":  8,
+                                              "meshes":  2,
+                                              "scripts":  3,
+                                              "Nemesis_Engine\\temp_behaviors\\_1stperson":  18,
+                                              "Nemesis_Engine\\temp_behaviors":  25,
+                                              "Nemesis_Engine\\temp_behaviors\\xml":  33
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\0_master.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\1hm_behavior.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\1hm_locomotion.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\bashbehavior.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\blockbehavior.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\horsebehavior.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\magicbehavior.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\mt_behavior.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\sprintbehavior.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\behaviors\\weapequip.hkx",
+                                                    "meshes\\actors\\character\\_1stperson\\characters\\firstperson.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\0_master.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\1hm_behavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\1hm_locomotion.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\attackbehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\bashbehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\blockbehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\bow_direction_behavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\crossbow_direction_behavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\horsebehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\idlebehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\magic_readied_direction_behavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\magicbehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\magicmountedbehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\mt_behavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\shout_behavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\shoutmounted_behavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\sprintbehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\staggerbehavior.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\weapequip.hkx",
+                                                    "meshes\\actors\\character\\behaviors\\weapunequip.hkx",
+                                                    "meshes\\actors\\character\\characters female\\defaultfemale.hkx",
+                                                    "meshes\\actors\\character\\characters\\defaultmale.hkx",
+                                                    "meshes\\animationdatasinglefile.txt",
+                                                    "meshes\\animationsetdatasinglefile.txt",
+                                                    "Nemesis_Engine\\cache\\animationdata_list",
+                                                    "Nemesis_Engine\\cache\\animationsetdata_list",
+                                                    "Nemesis_Engine\\cache\\behavior_joints",
+                                                    "Nemesis_Engine\\cache\\behavior_path",
+                                                    "Nemesis_Engine\\cache\\behavior_project",
+                                                    "Nemesis_Engine\\cache\\behavior_project_path",
+                                                    "Nemesis_Engine\\cache\\engine_update",
+                                                    "Nemesis_Engine\\cache\\mod settings",
+                                                    "Nemesis_Engine\\PatchLog.txt",
+                                                    "Nemesis_Engine\\UpdateLog.txt",
+                                                    "scripts\\FNIS.pex"
+                                                ],
+                      "sampleReplaced":  [
+                                             "Nemesis_Engine\\CriticalLog.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\0_master.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\1hm_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\1hm_locomotion.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\bashbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\blockbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\bow_direction_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\crossbow_direction_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\firstperson.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\horsebehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\idlebehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\magicbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\magicmountedbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\mt_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\shout_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\shoutmounted_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\sprintbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\staggerbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\_1stperson\\weapequip.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\0_master.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\1hm_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\1hm_locomotion.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\animationdatasinglefile.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\animationsetdatasinglefile.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\attackbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\bashbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\blockbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\bow_direction_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\crossbow_direction_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\defaultfemale.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\defaultmale.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\horsebehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\idlebehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\magic_readied_direction_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\magicbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\magicmountedbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\mt_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\shout_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\shoutmounted_behavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\sprintbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\staggerbehavior.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\weapequip.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\weapunequip.txt",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\0_master.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\1hm_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\1hm_locomotion.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\bashbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\blockbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\firstperson.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\horsebehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\magicbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\mt_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\sprintbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\_1stperson\\weapequip.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\0_master.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\1hm_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\1hm_locomotion.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\attackbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\bashbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\blockbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\bow_direction_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\crossbow_direction_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\defaultfemale.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\defaultmale.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\horsebehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\idlebehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\magic_readied_direction_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\magicbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\magicmountedbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\mt_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\shout_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\shoutmounted_behavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\sprintbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\staggerbehavior.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\weapequip.xml",
+                                             "Nemesis_Engine\\temp_behaviors\\xml\\weapunequip.xml",
+                                             "scripts\\FNIS_aa.pex",
+                                             "scripts\\Nemesis_AA_Core.pex"
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "D:\\Skyrim-MO2-Salvage\\MO2\\profiles",
+                      "filesBefore":  32,
+                      "filesAfter":  32,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  0,
+                      "replaced":  5,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+                                              "Grounded Apocalypse":  5
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+
+                                                ],
+                      "sampleReplaced":  [
+                                             "Grounded Apocalypse\\archives.txt",
+                                             "Grounded Apocalypse\\initweaks.ini",
+                                             "Grounded Apocalypse\\loadorder.txt",
+                                             "Grounded Apocalypse\\lockedorder.txt",
+                                             "Grounded Apocalypse\\plugins.txt"
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "D:\\SteamLibrary\\steamapps\\common\\Skyrim Special Edition",
+                      "filesBefore":  117,
+                      "filesAfter":  117,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  1,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  1,
+                      "changesByFolder":  {
+                                              "(root)":  1
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+                                                    "d3dx9_42.log"
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+                                                    "d3dx9_42.log"
+                                                ]
+                  }
+              ]
+}

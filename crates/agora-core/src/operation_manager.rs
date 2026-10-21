@@ -23,7 +23,6 @@
 //! dangling registration entries.
 
 use crate::event_sink::{CancellationToken, OperationId};
-use crate::install_pipeline::ResolvedInstallPlan;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,9 +83,10 @@ struct OpRecord {
 // StoredPlan — resolved InstallPlan plus its cancellation infrastructure
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+/// A resolved plan, stored as the package's own type: core only keeps it
+/// alive and hands it back, it never reads it.
 struct StoredPlan {
-    plan: ResolvedInstallPlan,
+    plan: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     token: CancellationToken,
     op_id: OperationId,
 }
@@ -379,18 +379,23 @@ impl OperationManager {
     ///
     /// The plan is keyed by its `fingerprint` — overwriting an existing key
     /// replaces the previous plan and its operation.
-    pub fn insert_plan(&self, fingerprint: String, plan: ResolvedInstallPlan) -> CancellationToken {
+    pub fn insert_plan<T: Clone + Send + Sync + 'static>(
+        &self,
+        fingerprint: String,
+        instance_id: &str,
+        plan: T,
+    ) -> CancellationToken {
         let id = OperationId::new(format!(
             "plan-{}",
             self.next_id.fetch_add(1, Ordering::Relaxed)
         ));
         let token = CancellationToken::new();
-        let instance_id = plan.intent.target_instance.clone();
+        let instance_id = instance_id.to_string();
 
         // Register an operation record so the plan appears in the standard
         // operation listings (list_active / list_all / info).
         let rec = OpRecord {
-            label: format!("install:{}", plan.intent.target_instance),
+            label: format!("install:{instance_id}"),
             status: OpStatus::Pending,
             started_at: SystemTime::now(),
             finished_at: None,
@@ -402,7 +407,7 @@ impl OperationManager {
             map.insert(id.clone(), rec);
         }
         let stored = StoredPlan {
-            plan,
+            plan: std::sync::Arc::new(plan),
             token: token.clone(),
             op_id: id,
         };
@@ -413,9 +418,10 @@ impl OperationManager {
     }
 
     /// Retrieve a stored plan by fingerprint.
-    pub fn get_plan(&self, fingerprint: &str) -> Option<ResolvedInstallPlan> {
+    pub fn get_plan<T: Clone + 'static>(&self, fingerprint: &str) -> Option<T> {
         let map = self.plans.lock().ok()?;
-        map.get(fingerprint).map(|s| s.plan.clone())
+        map.get(fingerprint)
+            .and_then(|s| s.plan.downcast_ref::<T>().cloned())
     }
 
     /// Remove a stored plan and its associated operation record.
@@ -782,72 +788,24 @@ mod tests {
 
     // -- Plan storage -------------------------------------------------------
 
-    fn sample_plan() -> ResolvedInstallPlan {
-        use crate::install_pipeline::*;
-        ResolvedInstallPlan {
+    #[derive(Debug, Clone)]
+    struct TestIntent {
+        target_instance: String,
+    }
+
+    /// Stands in for a package's plan type: core never looks inside it.
+    #[derive(Debug, Clone)]
+    struct TestPlan {
+        fingerprint: String,
+        intent: TestIntent,
+    }
+
+    fn sample_plan() -> TestPlan {
+        TestPlan {
             fingerprint: "test-fp-1".into(),
-            intent: InstallIntent {
-                action: InstallAction::Install {
-                    source_type: SourceType::Curated,
-                    item_id: "sodium".into(),
-                    candidate_version: Some("1.0".into()),
-                },
+            intent: TestIntent {
                 target_instance: "test-instance".into(),
-                optional_deps: OptionalDepsPolicy::ExcludeAll,
-                requested_by: RequestSource::Interactive,
-                overrides: PlanOverrides::default(),
             },
-            operation: ResolvedOperation::Install {
-                artifact: ResolvedArtifact::Download(ResolvedDownload {
-                    item_id: "sodium".into(),
-                    version_id: "1.0".into(),
-                    source: ArtifactSource::Download {
-                        url: "https://example.com/sodium.jar".into(),
-                    },
-                    hashes: HashSpec {
-                        values: vec![HashedValue {
-                            algorithm: HashAlgorithm::Sha256,
-                            value: "abc".into(),
-                        }],
-                    },
-                    size: 1024,
-                    filename: "sodium.jar".into(),
-                    metadata: ArtifactMetadata {
-                        provider: None,
-                        source_type: SourceType::Curated,
-                        registry_id: None,
-                        modrinth_id: None,
-                        content_type: "mod".into(),
-                        version: None,
-                        download_strategy: None,
-                        pinned_host: None,
-                    },
-                }),
-            },
-            dependencies: Vec::new(),
-            conflicts: Vec::new(),
-            files_to_add: Vec::new(),
-            files_to_remove: Vec::new(),
-            files_to_disable: Vec::new(),
-            files_to_promote: Vec::new(),
-            snapshot: SnapshotPlan {
-                label: "test-snapshot".into(),
-                estimated_bytes: 1024,
-            },
-            disk_estimate: DiskSpaceEstimate {
-                download_bytes: 1024,
-                snapshot_bytes: 0,
-                apply_overhead_bytes: 0,
-                peak_additional_bytes: 1024,
-                post_commit_delta_bytes: 1024,
-            },
-            warnings: Vec::new(),
-            blocking_errors: Vec::new(),
-            pending_choices: Vec::new(),
-            loader_change: None,
-            created_at: "2024-01-01T00:00:00Z".into(),
-            instance_state_hash: "hash".into(),
-            registry_revision: "rev".into(),
         }
     }
 
@@ -857,11 +815,15 @@ mod tests {
         let plan = sample_plan();
         let fp = plan.fingerprint.clone();
 
-        let token = mgr.insert_plan(fp.clone(), plan.clone());
+        let token = mgr.insert_plan(
+            fp.clone(),
+            &plan.intent.target_instance.clone(),
+            plan.clone(),
+        );
         assert!(!token.is_cancelled());
         assert_eq!(mgr.stored_plan_count(), 1);
 
-        let retrieved = mgr.get_plan(&fp).expect("plan should exist");
+        let retrieved = mgr.get_plan::<TestPlan>(&fp).expect("plan should exist");
         assert_eq!(retrieved.fingerprint, "test-fp-1");
     }
 
@@ -871,7 +833,7 @@ mod tests {
         let plan = sample_plan();
         let fp = plan.fingerprint.clone();
 
-        let _token = mgr.insert_plan(fp.clone(), plan);
+        let _token = mgr.insert_plan(fp.clone(), &plan.intent.target_instance.clone(), plan);
         // Should have 1 operation in active list.
         let active = mgr.list_active();
         assert_eq!(active.len(), 1);
@@ -882,7 +844,7 @@ mod tests {
     #[test]
     fn get_plan_returns_none_for_missing() {
         let mgr = OperationManager::new();
-        assert!(mgr.get_plan("nonexistent").is_none());
+        assert!(mgr.get_plan::<TestPlan>("nonexistent").is_none());
     }
 
     #[test]
@@ -891,14 +853,14 @@ mod tests {
         let plan = sample_plan();
         let fp = plan.fingerprint.clone();
 
-        let _token = mgr.insert_plan(fp.clone(), plan);
+        let _token = mgr.insert_plan(fp.clone(), &plan.intent.target_instance.clone(), plan);
         assert_eq!(mgr.stored_plan_count(), 1);
         assert_eq!(mgr.total_count(), 1);
 
         assert!(mgr.remove_plan(&fp));
         assert_eq!(mgr.stored_plan_count(), 0);
         assert_eq!(mgr.total_count(), 0);
-        assert!(mgr.get_plan(&fp).is_none());
+        assert!(mgr.get_plan::<TestPlan>(&fp).is_none());
     }
 
     #[test]
@@ -913,14 +875,14 @@ mod tests {
         let plan = sample_plan();
         let fp = plan.fingerprint.clone();
 
-        let token = mgr.insert_plan(fp.clone(), plan);
+        let token = mgr.insert_plan(fp.clone(), &plan.intent.target_instance.clone(), plan);
         assert!(!token.is_cancelled());
 
         assert!(mgr.cancel_plan(&fp));
         assert!(token.is_cancelled());
 
         // Plan data is still retrievable after cancel.
-        assert!(mgr.get_plan(&fp).is_some());
+        assert!(mgr.get_plan::<TestPlan>(&fp).is_some());
         assert_eq!(mgr.stored_plan_count(), 1);
     }
 
@@ -936,7 +898,7 @@ mod tests {
         let plan = sample_plan();
         let fp = plan.fingerprint.clone();
 
-        let token = mgr.insert_plan(fp.clone(), plan);
+        let token = mgr.insert_plan(fp.clone(), &plan.intent.target_instance.clone(), plan);
         let retrieved = mgr.token_for_plan(&fp).expect("token should exist");
         assert!(!retrieved.is_cancelled());
         // Same underlying flag.
@@ -961,13 +923,21 @@ mod tests {
         plan_b.fingerprint = "same-fp".into();
         plan_b.intent.target_instance = "instance-b".into();
 
-        let _token_a = mgr.insert_plan("same-fp".into(), plan_a);
+        let _token_a = mgr.insert_plan(
+            "same-fp".into(),
+            &plan_a.intent.target_instance.clone(),
+            plan_a,
+        );
         assert_eq!(mgr.stored_plan_count(), 1);
 
-        let _token_b = mgr.insert_plan("same-fp".into(), plan_b);
+        let _token_b = mgr.insert_plan(
+            "same-fp".into(),
+            &plan_b.intent.target_instance.clone(),
+            plan_b,
+        );
         assert_eq!(mgr.stored_plan_count(), 1);
 
-        let retrieved = mgr.get_plan("same-fp").expect("should exist");
+        let retrieved = mgr.get_plan::<TestPlan>("same-fp").expect("should exist");
         assert_eq!(retrieved.intent.target_instance, "instance-b");
     }
 
@@ -977,9 +947,9 @@ mod tests {
         let plan = sample_plan();
         let fp = plan.fingerprint.clone();
 
-        let _token = mgr.insert_plan(fp.clone(), plan);
+        let _token = mgr.insert_plan(fp.clone(), &plan.intent.target_instance.clone(), plan);
         let mgr2 = mgr.clone();
-        assert!(mgr2.get_plan(&fp).is_some());
+        assert!(mgr2.get_plan::<TestPlan>(&fp).is_some());
         assert_eq!(mgr2.stored_plan_count(), 1);
     }
 }

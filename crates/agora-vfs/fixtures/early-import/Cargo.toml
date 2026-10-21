@@ -1,0 +1,24 @@
+[package]
+name = "agora-vfs-early-import"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Test fixture for agora-vfs: an executable that statically imports a DLL whose DllMain writes a file"
+publish = false
+
+# `agora_early_import.dll` is the imported DLL; `agora-early-import-exe.exe` is the program that
+# statically imports it (no import library needed: the import is declared `raw-dylib`).
+[lib]
+name = "agora_early_import"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "agora-early-import-exe"
+path = "src/bin/exe.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_LibraryLoader",
+] }

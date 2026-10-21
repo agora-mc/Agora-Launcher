@@ -130,14 +130,18 @@ fn snapshot_error(message: String) -> LauncherError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_root::RemoveOnDrop;
     use std::fs;
 
-    fn service() -> (SnapshotService, Ctx, String) {
+    /// The guard that removes the data root, then the service, its context and the instance id. The
+    /// guard comes first so that it drops last, after the database handles the others hold.
+    fn service() -> (RemoveOnDrop, SnapshotService, Ctx, String) {
         let root = std::env::temp_dir().join(format!(
             "agora-snapshot-service-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
+        let guard = RemoveOnDrop::new(root.clone());
         let ctx = Ctx::for_testing(root);
         crate::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
         let instance_id = "demo".to_string();
@@ -146,12 +150,12 @@ mod tests {
         fs::write(dir.join("mods").join("a.jar"), b"original").unwrap();
         fs::create_dir_all(dir.join("saves").join("world")).unwrap();
         fs::write(dir.join("saves").join("world").join("level.dat"), b"world").unwrap();
-        (SnapshotService::new(ctx.clone()), ctx, instance_id)
+        (guard, SnapshotService::new(ctx.clone()), ctx, instance_id)
     }
 
     #[test]
     fn restore_takes_an_undo_snapshot_scoped_to_what_it_replaces() {
-        let (service, ctx, id) = service();
+        let (_root, service, ctx, id) = service();
         let dir = ctx.paths.instance_dir(&id).unwrap();
         let scoped = snapshot::create_snapshot_scoped(
             &dir,
@@ -188,7 +192,7 @@ mod tests {
     /// which the editor header and library card read — on 26.1.2.
     #[test]
     fn restore_resyncs_the_instance_row_from_the_restored_manifest() {
-        let (service, ctx, id) = service();
+        let (_root, service, ctx, id) = service();
         let dir = ctx.paths.instance_dir(&id).unwrap();
         let manifest_path = ctx.paths.instance_manifest(&id).unwrap();
         let write_manifest = |version: &str, loader_version: &str, locked: bool| {
@@ -208,6 +212,7 @@ mod tests {
                 datapacks: vec![],
                 worlds: vec![],
                 user_preferences: serde_json::json!({}),
+                game_data: Default::default(),
             };
             fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         };
@@ -254,7 +259,7 @@ mod tests {
     /// A restore must not proceed while a game may be writing to the instance.
     #[test]
     fn restore_refuses_while_a_launch_is_unaccounted_for() {
-        let (service, ctx, id) = service();
+        let (_root, service, ctx, id) = service();
         let dir = ctx.paths.instance_dir(&id).unwrap();
         let snap = snapshot::create_snapshot(&dir, None).unwrap();
         fs::write(dir.join("mods").join("a.jar"), b"changed").unwrap();
@@ -273,7 +278,7 @@ mod tests {
     /// An unknown snapshot must be rejected before an undo snapshot is taken.
     #[test]
     fn an_invalid_target_does_not_cost_a_snapshot() {
-        let (service, ctx, id) = service();
+        let (_root, service, ctx, id) = service();
         let dir = ctx.paths.instance_dir(&id).unwrap();
         assert!(service.restore(&id, "does-not-exist").is_err());
         assert!(snapshot::list_snapshots(&dir).unwrap().is_empty());
@@ -282,7 +287,7 @@ mod tests {
     /// Restore must not run while another process holds the instance lock.
     #[test]
     fn restore_is_serialized_against_other_instance_mutations() {
-        let (service, ctx, id) = service();
+        let (_root, service, ctx, id) = service();
         let dir = ctx.paths.instance_dir(&id).unwrap();
         let snap = snapshot::create_snapshot(&dir, None).unwrap();
 

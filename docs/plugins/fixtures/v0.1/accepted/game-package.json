@@ -1,0 +1,20 @@
+{
+  "manifest": 1,
+  "id": "fixture.game-package",
+  "name": "Game package",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "capabilities": {
+    "required": [
+      "game:define"
+    ]
+  },
+  "contributions": {
+    "gamePackages": [
+      {
+        "path": "games/package.json"
+      }
+    ]
+  }
+}

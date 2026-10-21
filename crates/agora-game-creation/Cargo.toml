@@ -1,0 +1,16 @@
+[package]
+name = "agora-game-creation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Creation Engine (Skyrim SE) game package for Agora"
+
+[lib]
+name = "agora_game_creation"
+path = "src/lib.rs"
+
+[dependencies]
+agora-game-api = { path = "../agora-game-api" }
+serde = { workspace = true }
+serde_json = { workspace = true }

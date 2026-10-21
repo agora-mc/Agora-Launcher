@@ -264,7 +264,7 @@ async fn handle_tool_call(
     tool_name: &str,
     params: &serde_json::Value,
 ) -> serde_json::Value {
-    // Portable tools — route through agora_core::mcp_dispatcher (handles
+    // Portable tools — route through agora_game_minecraft::mcp_dispatcher (handles
     // approval for destructive tools internally).
     let portable_tools: &[&str] = &[
         "list_instances",
@@ -291,7 +291,7 @@ async fn handle_tool_call(
                 });
             }
         };
-        let dispatcher = agora_core::mcp_dispatcher::McpDispatcher::new(ctx);
+        let dispatcher = agora_game_minecraft::mcp_dispatcher::McpDispatcher::new(ctx);
         return dispatcher.call_tool(tool_name, params);
     }
 
@@ -323,7 +323,7 @@ async fn handle_mcp_method(
                     });
                 }
             };
-            let dispatcher = agora_core::mcp_dispatcher::McpDispatcher::new(ctx);
+            let dispatcher = agora_game_minecraft::mcp_dispatcher::McpDispatcher::new(ctx);
             dispatcher.initialize()
         }
         "tools/list" => {
@@ -335,7 +335,7 @@ async fn handle_mcp_method(
                     });
                 }
             };
-            let dispatcher = agora_core::mcp_dispatcher::McpDispatcher::new(ctx);
+            let dispatcher = agora_game_minecraft::mcp_dispatcher::McpDispatcher::new(ctx);
             let mut result = dispatcher.list_tools();
             // Append desktop-only tools
             if let Some(tools) = result["tools"].as_array_mut() {
@@ -358,7 +358,7 @@ async fn handle_mcp_method(
                     });
                 }
             };
-            let dispatcher = agora_core::mcp_dispatcher::McpDispatcher::new(ctx);
+            let dispatcher = agora_game_minecraft::mcp_dispatcher::McpDispatcher::new(ctx);
             dispatcher.handle_method(method, params)
         }
         _ => serde_json::json!({

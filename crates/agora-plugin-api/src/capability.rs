@@ -60,6 +60,9 @@ pub enum Capability {
     /// installs is labelled with the provider it came from.
     #[serde(rename = "content:provide")]
     ContentProvide,
+    /// Define games: their stores, versions, folders and how to launch them.
+    #[serde(rename = "game:define")]
+    GameDefine,
 }
 
 impl Capability {
@@ -74,6 +77,7 @@ impl Capability {
         Capability::DiagnosticsPublish,
         Capability::Network,
         Capability::ContentProvide,
+        Capability::GameDefine,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -87,6 +91,7 @@ impl Capability {
             Capability::DiagnosticsPublish => "diagnostics:publish",
             Capability::Network => "network",
             Capability::ContentProvide => "content:provide",
+            Capability::GameDefine => "game:define",
         }
     }
 
@@ -116,6 +121,9 @@ impl Capability {
             Capability::Network => "Reach the internet, subject to your network settings",
             Capability::ContentProvide => {
                 "Offer content in Browse; Agora verifies and installs anything you choose"
+            }
+            Capability::GameDefine => {
+                "Define games: their stores, versions, folders and how to launch them"
             }
         }
     }

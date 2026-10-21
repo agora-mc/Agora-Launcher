@@ -1,0 +1,26 @@
+{
+    "spikeVersion":  1,
+    "mode":  "VerifyTest",
+    "appId":  "2379780",
+    "name":  "Balatro",
+    "buildIdAtArm":  "17459173",
+    "buildIdNow":  "17459173",
+    "buildChanged":  false,
+    "armedUtc":  "2026-09-30T01:57:59.8979063Z",
+    "checkedUtc":  "2026-09-30T01:59:03.8918739Z",
+    "counts":  {
+                   "unchanged":  13,
+                   "modified-in-place":  0,
+                   "replaced":  1,
+                   "deleted":  0,
+                   "link-missing":  0
+               },
+    "focusFile":  "readme.txt",
+    "focusOutcome":  "replaced",
+    "changed":  [
+                    {
+                        "rel":  "readme.txt",
+                        "outcome":  "replaced"
+                    }
+                ]
+}

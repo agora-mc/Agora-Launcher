@@ -37,6 +37,12 @@ export interface PlanOverrides {
   skipHealthScan: boolean;
   allowClosestVersion?: boolean;
   /**
+   * The user confirmed a download that differs from a curator pin or from the
+   * hash recorded on an earlier install (`hashConfirmation` on a failed
+   * outcome). Never overrides a mismatch with the hash the source published.
+   */
+  acceptHashConfirmation?: boolean;
+  /**
    * What a raw Modrinth install is (`resourcepack`, `shader`, `datapack`).
    * Absent means a mod. Decides which Modrinth loader tags are acceptable and
    * which folder the file installs into.
@@ -290,7 +296,19 @@ export type InstallOutcome =
   // snapshot for manual rollback if desired.
   | { type: 'health-rollback'; healthReport: HealthReportLike; snapshotId: string; warnings: PlanWarning[] }
   | { type: 'cancelled'; phase: string; rollbackPerformed: boolean }
-  | { type: 'failed'; error: string; rollbackPerformed: boolean; snapshotId: string | null };
+  | { type: 'failed'; error: string; rollbackPerformed: boolean; snapshotId: string | null; hashConfirmation?: HashConfirmation | null };
+
+/**
+ * A download that does not match a curator pin or the hash recorded on an
+ * earlier install. The user may install it anyway; see `acceptHashConfirmation`.
+ */
+export interface HashConfirmation {
+  file: string;
+  release: string | null;
+  expected: string;
+  actual: string;
+  expectedFrom: 'curator_pin' | 'previous_install';
+}
 
 export type HealthOutcome =
   | { type: 'completed'; report: HealthReportLike }

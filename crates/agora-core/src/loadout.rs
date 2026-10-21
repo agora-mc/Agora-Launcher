@@ -250,6 +250,7 @@ mod tests {
                 source_url: None,
                 version: None,
                 sha256: String::new(),
+                hash_verified: true,
                 installed_at: String::new(),
                 java_packages: Vec::new(),
                 mod_jar_id: None,
@@ -263,6 +264,7 @@ mod tests {
             .collect();
         InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".to_string(),
             name: "Test".to_string(),
@@ -497,6 +499,7 @@ mod tests {
             source_url: None,
             version: None,
             sha256: String::new(),
+            hash_verified: true,
             installed_at: String::new(),
             java_packages: Vec::new(),
             mod_jar_id: None,

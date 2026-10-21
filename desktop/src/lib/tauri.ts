@@ -380,6 +380,11 @@ export interface InstalledMod {
   source_url?: string | null;
   version: string | null;
   sha256: string;
+  /**
+   * False when the source published no checksum, so Agora could not verify
+   * this file. Absent on records from before the field existed (those are true).
+   */
+  hash_verified?: boolean;
   installed_at: string;
   mod_jar_id?: string | null;
   enabled: boolean;
@@ -488,6 +493,31 @@ export interface LoaderVersionSummary {
 export interface DownloadSource {
   strategy: string;
   identifier: string;
+  /** Curator pins for exact release files of a github_release source. */
+  pins?: SourcePin[];
+}
+
+/** A curator's expected SHA-256 for one release file (`github_release` only). */
+export interface SourcePin {
+  tag: string;
+  asset: string;
+  sha256: string;
+}
+
+/** What importing a pack did with the mods it names. Serialized `mod_install::PackImportResult`. */
+export interface PackImportResult {
+  instanceId: string;
+  /** Mods the pack names that were not installed, each with the reason. */
+  skipped: SkippedPackMod[];
+  /** Notices for installed mods whose source published no checksum. */
+  unverified: string[];
+}
+
+/** One pack mod the import could not install. Serialized `mod_install::SkippedPackMod`. */
+export interface SkippedPackMod {
+  name: string;
+  code: string;
+  message: string;
 }
 
 export interface RegistryItem {
@@ -498,7 +528,8 @@ export interface RegistryItem {
   /// prefer `downloadSourcesOf(item)` when the fallbacks matter.
   download_strategy: string;
   source_identifier: string;
-  sha256: string;
+  /** The manifest's sha256 when the entry states one; null otherwise. */
+  sha256: string | null;
   upvotes: number;
   downvotes: number;
   net_score: number;
@@ -1460,7 +1491,7 @@ export const executeLauncherImports = (plan: LauncherImportPlan) =>
   invoke<LauncherImportBatchResult>('execute_launcher_imports', { plan });
 
 export const importInstancePack = (sourcePath: string) =>
-  invoke<string>('import_instance_pack', { sourcePath });
+  invoke<PackImportResult>('import_instance_pack', { sourcePath });
 export const importModrinthPackByUrl = (downloadUrl: string, packIconUrl?: string | null) =>
   invoke<string>('import_modrinth_pack_by_url', {
     downloadUrl,
