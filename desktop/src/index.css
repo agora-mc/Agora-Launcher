@@ -1,4 +1,8 @@
 @import "tailwindcss";
+/* shadcn enter/exit animations (animate-in, fade-in-0, zoom-in-95, …) on
+   dialogs, menus, selects and tooltips. The reduced-motion rules below
+   neutralise them like every other animation. */
+@import "tw-animate-css";
 @config "../tailwind.config.js";
 
 /* Tailwind 4 preflight changed three things the app was styled against under
