@@ -4706,9 +4706,13 @@ mod tests {
         for entry in entries.iter().take(cd_entries) {
             let fn_len = u16::from_le_bytes(buf[pos + 28..pos + 30].try_into().unwrap()) as usize;
 
+            // The high byte of "version made by" is the creating system; the
+            // writer picks it from the host OS (DOS on Windows), and only a
+            // Unix (3) entry has its external attributes read as a Unix mode.
+            buf[pos + 5] = 3;
             let mode = entry.2;
-            // Upper 16 bits = Unix mode; bits 8-15 = system (3 = Unix).
-            let ext = (mode << 16) | (3u32 << 8);
+            // Upper 16 bits of the external attributes = Unix mode.
+            let ext = mode << 16;
             buf[pos + 38..pos + 42].copy_from_slice(&ext.to_le_bytes());
 
             pos += 46 + fn_len;
