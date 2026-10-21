@@ -162,6 +162,10 @@ A new or renamed Tauri command also needs `python scripts/check_tauri_bindings.p
   lint-sensitive work.
 - Lockfiles change through their package manager, never by hand. If `npm ci` complains the lock
   is out of sync, regenerate it with the npm version CI uses (npm 11 / Node 24).
+- A static export of `web/` built on Windows writes its segment-prefetch files into nested
+  folders (`docs/__next.docs/__PAGE__.txt` instead of `docs/__next.docs.__PAGE__.txt`), so a
+  local preview logs RSC prefetch 404s even though navigation still works. This is upstream
+  bug vercel/next.js#85374. The deployed site builds on Linux and is unaffected.
 
 ## Working-copy notes
 
