@@ -72,11 +72,11 @@ function ConsoleRow({
     >
       <div className="flex items-start gap-2">
         <span className="shrink-0 text-muted-foreground">{formatEntryTime(entry)}</span>
-        <span className={cn('w-12 shrink-0 rounded px-1 text-center text-[10px] font-semibold leading-4', LEVEL_BADGE[entry.level])}>
+        <span className={cn('w-12 shrink-0 rounded-sm px-1 text-center text-[10px] font-semibold leading-4', LEVEL_BADGE[entry.level])}>
           {entry.level}
         </span>
         <div className="min-w-0 flex-1">
-          <span className={cn('whitespace-pre-wrap break-words', severe && 'font-medium text-destructive')}>
+          <span className={cn('whitespace-pre-wrap wrap-break-word', severe && 'font-medium text-destructive')}>
             {entry.message}
           </span>
           {(entry.logger || entry.thread) && (
@@ -90,7 +90,7 @@ function ConsoleRow({
             </button>
           )}
           {expanded && entry.throwable && (
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words text-muted-foreground">{entry.throwable}</pre>
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap wrap-break-word text-muted-foreground">{entry.throwable}</pre>
           )}
         </div>
       </div>
@@ -196,7 +196,7 @@ export function ConsoleView({ instanceId, className, logBuffer }: Props) {
               onClick={() => setLevelFilter(f.id)}
               aria-pressed={levelFilter === f.id}
               className={cn(
-                'rounded px-1.5 py-0.5 text-xs font-medium',
+                'rounded-sm px-1.5 py-0.5 text-xs font-medium',
                 levelFilter === f.id ? 'bg-primary/20 text-primary' : 'text-muted-foreground',
               )}
             >
@@ -210,7 +210,7 @@ export function ConsoleView({ instanceId, className, logBuffer }: Props) {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search log"
           aria-label="Search log"
-          className="h-6 w-36 rounded border border-border bg-transparent px-2 text-xs"
+          className="h-6 w-36 rounded-sm border border-border bg-transparent px-2 text-xs"
         />
         <div className="flex-1" />
         <span className="text-xs text-muted-foreground">{visible.length} entries</span>
@@ -238,7 +238,7 @@ export function ConsoleView({ instanceId, className, logBuffer }: Props) {
           </button>
         )}
         {raw ? (
-          <pre data-testid="console-raw" className="whitespace-pre-wrap break-words">
+          <pre data-testid="console-raw" className="whitespace-pre-wrap wrap-break-word">
             {rawText}
           </pre>
         ) : (

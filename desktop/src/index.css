@@ -1,6 +1,70 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+/* Tailwind 4 preflight changed three things the app was styled against under
+   Tailwind 3. Restored here, in base, so utilities still win over them:
+   - buttons point (TW4 dropped `cursor: pointer` from preflight);
+   - placeholders are gray-400 at full opacity (TW4: currentColor at 50%);
+   - pseudo-element borders default to gray-200 (TW4: currentColor). Real
+     elements get `--border` from the `* { border-color }` rule below. */
+@layer base {
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    opacity: 1;
+    color: #9ca3af;
+  }
+  ::before,
+  ::after,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: #e5e7eb;
+  }
+}
+
+/* ── Type scale ──────────────────────────────────────────────────────
+   Tailwind 3 generated `text-*` utilities with fixed sizes, and this file
+   overrode them with unlayered `:root .text-*` rules so the user's text-size
+   setting scaled them. Tailwind 4 has no such hook, so the scale lives in the
+   theme: each step is `calc(<tw3 size> * var(--font-scale))`. Line heights
+   follow the TW3 values that were in effect: xs..base and lg were scaled by
+   the old overrides; xl..4xl were not (they kept Tailwind's fixed defaults).
+
+   Unlike the old overrides these reach the `sm:`/`md:` variants too, so
+   `text-sm sm:text-base` now grows at the breakpoint. Under TW3 the unlayered
+   rules beat every variant, which made those variants inert. */
+@theme {
+  --text-xs: calc(0.75rem * var(--font-scale));
+  --text-xs--line-height: calc(1rem * var(--font-scale));
+  --text-sm: calc(0.875rem * var(--font-scale));
+  --text-sm--line-height: calc(1.25rem * var(--font-scale));
+  --text-base: calc(1rem * var(--font-scale));
+  --text-base--line-height: calc(1.5rem * var(--font-scale));
+  --text-lg: calc(1.125rem * var(--font-scale));
+  --text-lg--line-height: calc(1.75rem * var(--font-scale));
+  --text-xl: calc(1.25rem * var(--font-scale));
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: calc(1.5rem * var(--font-scale));
+  --text-2xl--line-height: 2rem;
+  --text-3xl: calc(1.875rem * var(--font-scale));
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl: calc(2.25rem * var(--font-scale));
+  --text-4xl--line-height: 2.5rem;
+}
+
+/* Line heights for the four sizes the old overrides scaled. These stay unlayered,
+   as they were under Tailwind 3, so they still beat `leading-*` (for example
+   `text-sm leading-6`) and the sm:/md: variants' line heights. Moving them into
+   the theme would let the later utility win and change the About and Governance
+   paragraphs. Font sizes are the only text value that now follows the breakpoint
+   variants. */
+:root .text-xs { line-height: calc(1rem * var(--font-scale)); }
+:root .text-sm { line-height: calc(1.25rem * var(--font-scale)); }
+:root .text-base { line-height: calc(1.5rem * var(--font-scale)); }
+:root .text-lg { line-height: calc(1.75rem * var(--font-scale)); }
 
 /* ── shadcn/ui CSS-variable theme tokens ─────────────────────────── */
 
@@ -153,27 +217,8 @@
 }
 
 /* Tailwind's fixed utility values do not inherit body font-size, spacing, or
-   radius. These semantic overrides make the user preferences app-wide. */
-:root .text-xs {
-  font-size: calc(0.75rem * var(--font-scale));
-  line-height: calc(1rem * var(--font-scale));
-}
-:root .text-sm {
-  font-size: calc(0.875rem * var(--font-scale));
-  line-height: calc(1.25rem * var(--font-scale));
-}
-:root .text-base {
-  font-size: calc(1rem * var(--font-scale));
-  line-height: calc(1.5rem * var(--font-scale));
-}
-:root .text-lg {
-  font-size: calc(1.125rem * var(--font-scale));
-  line-height: calc(1.75rem * var(--font-scale));
-}
-:root .text-xl { font-size: calc(1.25rem * var(--font-scale)); }
-:root .text-2xl { font-size: calc(1.5rem * var(--font-scale)); }
-:root .text-3xl { font-size: calc(1.875rem * var(--font-scale)); }
-:root .text-4xl { font-size: calc(2.25rem * var(--font-scale)); }
+   radius. These semantic overrides make the user preferences app-wide. Text
+   sizes are in the @theme block at the top of this file instead. */
 
 /* Markdown prose (ModDetail About tab) — Tailwind Typography uses fixed rem values
    that bypass the body font-size, so the parsed HTML would not follow the user's
@@ -184,8 +229,54 @@
   font-size: inherit;
 }
 
-:root .rounded-sm { border-radius: calc(var(--radius) * 0.4); }
-:root .rounded,
+/* Tailwind Typography takes its greys from tailwindcss/colors, which Tailwind 4
+   made oklch. Pin its colour variables to the Tailwind 3 hex values this app was
+   styled against. The app switches to inverted prose with `dark:prose-invert`,
+   which sets the body colours from the invert variables, so the normal values
+   apply only outside dark mode. */
+:root .prose:not(.prose-invert):not(:is(.dark *)) {
+  --tw-prose-body: #374151;
+  --tw-prose-headings: #111827;
+  --tw-prose-lead: #4b5563;
+  --tw-prose-links: #111827;
+  --tw-prose-bold: #111827;
+  --tw-prose-counters: #6b7280;
+  --tw-prose-bullets: #d1d5db;
+  --tw-prose-hr: #e5e7eb;
+  --tw-prose-quotes: #111827;
+  --tw-prose-quote-borders: #e5e7eb;
+  --tw-prose-captions: #6b7280;
+  --tw-prose-kbd: #111827;
+  --tw-prose-kbd-shadows: rgb(17 24 39 / 10%);
+  --tw-prose-code: #111827;
+  --tw-prose-pre-code: #e5e7eb;
+  --tw-prose-pre-bg: #1f2937;
+  --tw-prose-th-borders: #d1d5db;
+  --tw-prose-td-borders: #e5e7eb;
+}
+:root .prose {
+  --tw-prose-invert-body: #d1d5db;
+  --tw-prose-invert-headings: #fff;
+  --tw-prose-invert-lead: #9ca3af;
+  --tw-prose-invert-links: #fff;
+  --tw-prose-invert-bold: #fff;
+  --tw-prose-invert-counters: #9ca3af;
+  --tw-prose-invert-bullets: #4b5563;
+  --tw-prose-invert-hr: #374151;
+  --tw-prose-invert-quotes: #f3f4f6;
+  --tw-prose-invert-quote-borders: #374151;
+  --tw-prose-invert-captions: #9ca3af;
+  --tw-prose-invert-kbd: #fff;
+  --tw-prose-invert-kbd-shadows: rgb(255 255 255 / 10%);
+  --tw-prose-invert-code: #fff;
+  --tw-prose-invert-pre-code: #d1d5db;
+  --tw-prose-invert-pre-bg: rgb(0 0 0 / 50%);
+  --tw-prose-invert-th-borders: #4b5563;
+  --tw-prose-invert-td-borders: #374151;
+}
+
+:root .rounded-xs { border-radius: calc(var(--radius) * 0.4); }
+:root .rounded-sm,
 :root .rounded-md { border-radius: calc(var(--radius) * 0.7); }
 :root .rounded-lg { border-radius: var(--radius); }
 :root .rounded-xl { border-radius: calc(var(--radius) * 1.25); }
@@ -193,57 +284,57 @@
 :root .rounded-3xl { border-radius: calc(var(--radius) * 1.6); }
 :root .rounded-none { border-radius: 0; }
 /* Directional rounded — border-radius scales with cornerStyle like the base utilities */
+:root .rounded-t-xs,
 :root .rounded-t-sm,
-:root .rounded-t,
 :root .rounded-t-md { border-top-left-radius: calc(var(--radius) * 0.7); border-top-right-radius: calc(var(--radius) * 0.7); }
 :root .rounded-t-lg { border-top-left-radius: var(--radius); border-top-right-radius: var(--radius); }
 :root .rounded-t-xl { border-top-left-radius: calc(var(--radius) * 1.25); border-top-right-radius: calc(var(--radius) * 1.25); }
 :root .rounded-t-2xl,
 :root .rounded-t-3xl { border-top-left-radius: calc(var(--radius) * 1.6); border-top-right-radius: calc(var(--radius) * 1.6); }
+:root .rounded-b-xs,
 :root .rounded-b-sm,
-:root .rounded-b,
 :root .rounded-b-md { border-bottom-left-radius: calc(var(--radius) * 0.7); border-bottom-right-radius: calc(var(--radius) * 0.7); }
 :root .rounded-b-lg { border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); }
 :root .rounded-b-xl { border-bottom-left-radius: calc(var(--radius) * 1.25); border-bottom-right-radius: calc(var(--radius) * 1.25); }
 :root .rounded-b-2xl,
 :root .rounded-b-3xl { border-bottom-left-radius: calc(var(--radius) * 1.6); border-bottom-right-radius: calc(var(--radius) * 1.6); }
+:root .rounded-l-xs,
 :root .rounded-l-sm,
-:root .rounded-l,
 :root .rounded-l-md { border-top-left-radius: calc(var(--radius) * 0.7); border-bottom-left-radius: calc(var(--radius) * 0.7); }
 :root .rounded-l-lg { border-top-left-radius: var(--radius); border-bottom-left-radius: var(--radius); }
 :root .rounded-l-xl { border-top-left-radius: calc(var(--radius) * 1.25); border-bottom-left-radius: calc(var(--radius) * 1.25); }
 :root .rounded-l-2xl,
 :root .rounded-l-3xl { border-top-left-radius: calc(var(--radius) * 1.6); border-bottom-left-radius: calc(var(--radius) * 1.6); }
+:root .rounded-r-xs,
 :root .rounded-r-sm,
-:root .rounded-r,
 :root .rounded-r-md { border-top-right-radius: calc(var(--radius) * 0.7); border-bottom-right-radius: calc(var(--radius) * 0.7); }
 :root .rounded-r-lg { border-top-right-radius: var(--radius); border-bottom-right-radius: var(--radius); }
 :root .rounded-r-xl { border-top-right-radius: calc(var(--radius) * 1.25); border-bottom-right-radius: calc(var(--radius) * 1.25); }
 :root .rounded-r-2xl,
 :root .rounded-r-3xl { border-top-right-radius: calc(var(--radius) * 1.6); border-bottom-right-radius: calc(var(--radius) * 1.6); }
-:root .rounded-tl-sm { border-top-left-radius: calc(var(--radius) * 0.4); }
-:root .rounded-tl,
+:root .rounded-tl-xs { border-top-left-radius: calc(var(--radius) * 0.4); }
+:root .rounded-tl-sm,
 :root .rounded-tl-md { border-top-left-radius: calc(var(--radius) * 0.7); }
 :root .rounded-tl-lg { border-top-left-radius: var(--radius); }
 :root .rounded-tl-xl { border-top-left-radius: calc(var(--radius) * 1.25); }
 :root .rounded-tl-2xl,
 :root .rounded-tl-3xl { border-top-left-radius: calc(var(--radius) * 1.6); }
-:root .rounded-tr-sm { border-top-right-radius: calc(var(--radius) * 0.4); }
-:root .rounded-tr,
+:root .rounded-tr-xs { border-top-right-radius: calc(var(--radius) * 0.4); }
+:root .rounded-tr-sm,
 :root .rounded-tr-md { border-top-right-radius: calc(var(--radius) * 0.7); }
 :root .rounded-tr-lg { border-top-right-radius: var(--radius); }
 :root .rounded-tr-xl { border-top-right-radius: calc(var(--radius) * 1.25); }
 :root .rounded-tr-2xl,
 :root .rounded-tr-3xl { border-top-right-radius: calc(var(--radius) * 1.6); }
-:root .rounded-bl-sm { border-bottom-left-radius: calc(var(--radius) * 0.4); }
-:root .rounded-bl,
+:root .rounded-bl-xs { border-bottom-left-radius: calc(var(--radius) * 0.4); }
+:root .rounded-bl-sm,
 :root .rounded-bl-md { border-bottom-left-radius: calc(var(--radius) * 0.7); }
 :root .rounded-bl-lg { border-bottom-left-radius: var(--radius); }
 :root .rounded-bl-xl { border-bottom-left-radius: calc(var(--radius) * 1.25); }
 :root .rounded-bl-2xl,
 :root .rounded-bl-3xl { border-bottom-left-radius: calc(var(--radius) * 1.6); }
-:root .rounded-br-sm { border-bottom-right-radius: calc(var(--radius) * 0.4); }
-:root .rounded-br,
+:root .rounded-br-xs { border-bottom-right-radius: calc(var(--radius) * 0.4); }
+:root .rounded-br-sm,
 :root .rounded-br-md { border-bottom-right-radius: calc(var(--radius) * 0.7); }
 :root .rounded-br-lg { border-bottom-right-radius: var(--radius); }
 :root .rounded-br-xl { border-bottom-right-radius: calc(var(--radius) * 1.25); }
@@ -442,9 +533,12 @@ html[data-input-modality="gamepad"] :is(
 :root[data-density="compact"] .gap-3 { gap: 0.5rem; }
 :root[data-density="compact"] .gap-4 { gap: 0.7rem; }
 :root[data-density="compact"] .gap-6 { gap: 1rem; }
-:root[data-density="compact"] .space-y-3 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.5rem; }
-:root[data-density="compact"] .space-y-4 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.7rem; }
-:root[data-density="compact"] .space-y-6 > :not([hidden]) ~ :not([hidden]) { margin-top: 1rem; }
+/* Tailwind 4 emits space-y as margin-block-end on every child but the last, so
+   these density rules set that property (Tailwind 3 used margin-top on each
+   sibling after the first). */
+:root[data-density="compact"] .space-y-3 > :not(:last-child) { margin-block-end: 0.5rem; }
+:root[data-density="compact"] .space-y-4 > :not(:last-child) { margin-block-end: 0.7rem; }
+:root[data-density="compact"] .space-y-6 > :not(:last-child) { margin-block-end: 1rem; }
 
 :root[data-density="spacious"] .p-3 { padding: 1rem; }
 :root[data-density="spacious"] .p-4 { padding: 1.4rem; }
@@ -463,9 +557,9 @@ html[data-input-modality="gamepad"] :is(
 :root[data-density="spacious"] .gap-3 { gap: 1rem; }
 :root[data-density="spacious"] .gap-4 { gap: 1.4rem; }
 :root[data-density="spacious"] .gap-6 { gap: 2rem; }
-:root[data-density="spacious"] .space-y-3 > :not([hidden]) ~ :not([hidden]) { margin-top: 1rem; }
-:root[data-density="spacious"] .space-y-4 > :not([hidden]) ~ :not([hidden]) { margin-top: 1.4rem; }
-:root[data-density="spacious"] .space-y-6 > :not([hidden]) ~ :not([hidden]) { margin-top: 2rem; }
+:root[data-density="spacious"] .space-y-3 > :not(:last-child) { margin-block-end: 1rem; }
+:root[data-density="spacious"] .space-y-4 > :not(:last-child) { margin-block-end: 1.4rem; }
+:root[data-density="spacious"] .space-y-6 > :not(:last-child) { margin-block-end: 2rem; }
 
 /* The sidebar is user-resizable, so Density must only change its vertical
    rhythm. These pins hold left/right padding and the icon gap at the

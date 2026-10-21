@@ -227,7 +227,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
             className="border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 h-12 text-base bg-transparent placeholder:text-[rgb(var(--muted))]"
           />
           <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-[rgb(var(--muted))]">
-            <kbd className="border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5">Esc</kbd>
+            <kbd className="border border-gray-300 dark:border-gray-600 rounded-sm px-1.5 py-0.5">Esc</kbd>
             {' '}to close
           </span>
         </div>

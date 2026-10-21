@@ -261,7 +261,7 @@ export function Privacy() {
             checked={lockdown}
             onCheckedChange={handleLockdown}
             className={cn(
-              lockdown && '[&_[data-state=checked]]:bg-red-600',
+              lockdown && '**:data-[state=checked]:bg-red-600',
             )}
           />
         </label>

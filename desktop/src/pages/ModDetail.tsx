@@ -1285,7 +1285,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           )}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-2xl font-bold break-words">
+              <h2 className="text-2xl font-bold wrap-break-word">
                 {modrinthProject?.title ?? item.name}
               </h2>
               {modrinthProject && (
@@ -2128,7 +2128,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
 
                 {/* Selected version detail panel */}
                 {selectedVersion && (
-                  <div className="space-y-3 rounded-lg border border-border bg-muted p-3 lg:w-80 lg:flex-shrink-0">
+                  <div className="space-y-3 rounded-lg border border-border bg-muted p-3 lg:w-80 lg:shrink-0">
                     <div>
                       <p className="text-xs text-muted-foreground">Selected version</p>
                       <p className="font-semibold text-sm break-all">{selectedVersion.name || selectedVersion.version}</p>
@@ -2312,7 +2312,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
 
                 {/* Selected version detail panel */}
                 {selectedCuratedTabVersion && (
-                  <div className="space-y-3 rounded-lg border border-border bg-muted p-3 lg:w-80 lg:flex-shrink-0">
+                  <div className="space-y-3 rounded-lg border border-border bg-muted p-3 lg:w-80 lg:shrink-0">
                     <div>
                       <p className="text-xs text-muted-foreground">Selected version</p>
                       <p className="font-semibold text-sm break-all">{selectedCuratedTabVersion.version}</p>
@@ -2506,14 +2506,14 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           <div>
             <h3 className="font-semibold text-sm mb-2">Catalog Item ID</h3>
             <div className="flex items-center gap-2">
-              <code className="text-xs bg-muted px-2 py-1 rounded border border-border break-all">
+              <code className="text-xs bg-muted px-2 py-1 rounded-sm border border-border break-all">
                 {item.id}
               </code>
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(item.id).catch(() => {});
                 }}
-                className="shrink-0 rounded border border-border px-2 py-1 text-xs font-medium hover:bg-accent"
+                className="shrink-0 rounded-sm border border-border px-2 py-1 text-xs font-medium hover:bg-accent"
               >
                 Copy ID
               </button>
@@ -2714,7 +2714,7 @@ function CuratedPackPlanSummary({ plan }: { plan: CuratedPackPlan }) {
         )}
       </p>
       {plan.blocking.length > 0 && (
-        <div className="rounded border-2 border-destructive/70 bg-destructive/15 p-2 text-xs text-foreground">
+        <div className="rounded-sm border-2 border-destructive/70 bg-destructive/15 p-2 text-xs text-foreground">
           <p className="font-semibold">
             Can&apos;t install: {plan.blocking.length === 1 ? 'a required mod is' : 'required mods are'} missing.
           </p>
@@ -2726,7 +2726,7 @@ function CuratedPackPlanSummary({ plan }: { plan: CuratedPackPlan }) {
         </div>
       )}
       {plan.dropped.length > 0 && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+        <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
           <p className="font-semibold">Left out ({plan.dropped.length}):</p>
           <ul className="mt-1 space-y-0.5">
             {plan.dropped.map((mod) => (

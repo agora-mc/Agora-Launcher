@@ -63,7 +63,7 @@ export function OfflineBanner() {
 
         <button
           onClick={handleDismiss}
-          className="ml-1 rounded p-0.5 text-amber-300 hover:text-amber-100 hover:bg-amber-800/50 transition-colors"
+          className="ml-1 rounded-sm p-0.5 text-amber-300 hover:text-amber-100 hover:bg-amber-800/50 transition-colors"
           aria-label="Dismiss offline banner"
         >
           <svg

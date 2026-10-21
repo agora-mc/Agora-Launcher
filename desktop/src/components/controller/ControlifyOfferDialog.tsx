@@ -50,7 +50,7 @@ export function ControlifyOfferDialog({ offer, onAccept, onDecline }: Controlify
   return (
     <div
       ref={dialogRef}
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-80 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-xs"
       role="presentation"
       onKeyDown={handleKeyDown}
     >

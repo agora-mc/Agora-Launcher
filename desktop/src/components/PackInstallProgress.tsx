@@ -404,13 +404,13 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
           <p className="min-w-0 truncate text-sm font-semibold text-amber-700 dark:text-amber-300">
             Health issues need attention
           </p>
-          <span className="shrink-0 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">
+          <span className="shrink-0 rounded-sm bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">
             {task.healthReport?.blockers.length ?? 0} blocker{task.healthReport?.blockers.length === 1 ? '' : 's'}
           </span>
         </div>
         <p className="text-xs text-muted-foreground" title={task.message}>{task.message}</p>
         {task.healthReport && task.healthReport.blockers.length > 0 && (
-          <div className="max-h-28 space-y-1 overflow-y-auto rounded border border-amber-500/30 bg-background p-2">
+          <div className="max-h-28 space-y-1 overflow-y-auto rounded-sm border border-amber-500/30 bg-background p-2">
             {task.healthReport.blockers.slice(0, 3).map((b, i) => (
               <p key={i} className="text-xs text-destructive">{b.message}</p>
             ))}
@@ -465,13 +465,13 @@ function PackInstallIndicator({ tasks }: { tasks: PackInstallTask[] }) {
 
   if (tasks.length === 0) return null;
   return (
-    <aside className="pointer-events-none fixed bottom-4 right-4 z-[60] w-[min(26rem,calc(100vw-2rem))] space-y-2">
+    <aside className="pointer-events-none fixed bottom-4 right-4 z-60 w-[min(26rem,calc(100vw-2rem))] space-y-2">
       {tasks.map((task) => {
         const isHealthBlocked = task.status === 'health-blocked';
         return (
           <div
             key={task.id}
-            className={`pointer-events-auto rounded-xl border bg-card/95 p-4 shadow-2xl backdrop-blur ${isHealthBlocked ? 'border-amber-500/50' : 'border-border'}`}
+            className={`pointer-events-auto rounded-xl border bg-card/95 p-4 shadow-2xl backdrop-blur-sm ${isHealthBlocked ? 'border-amber-500/50' : 'border-border'}`}
           >
             <div className="mb-2 flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -482,7 +482,7 @@ function PackInstallIndicator({ tasks }: { tasks: PackInstallTask[] }) {
               </div>
               {task.status === 'running' && <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
               {task.status === 'completed' && <span className="shrink-0 text-green-600">✓</span>}
-              {isHealthBlocked && <span className="shrink-0 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">!</span>}
+              {isHealthBlocked && <span className="shrink-0 rounded-sm bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">!</span>}
             </div>
             <PackInstallProgressBar task={task} />
             <div className="mt-3 flex flex-wrap justify-end gap-2">
