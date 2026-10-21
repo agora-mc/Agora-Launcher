@@ -208,7 +208,7 @@ function CuratedCategoryDropdown({
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search curated categories…"
             aria-label="Search curated categories"
-            className="w-full rounded-md border border-input bg-background py-2 pl-8 pr-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+            className="w-full rounded-md border border-input bg-background py-2 pl-8 pr-3 text-sm outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <div className="max-h-64 overflow-y-auto">
@@ -1184,7 +1184,7 @@ function BrowseContent({
           particular has no good way to reach. */}
       {pickerOpen && (
         <div
-          className="fixed inset-0 z-[62] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-62 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs"
           // controller-exempt: backdrop, not a control; the picker has Close and
           // Cancel, and a controller dismisses it with the layer's cancel intent.
           onClick={(event) => { if (event.target === event.currentTarget) setPickerOpen(false); }}
@@ -1207,7 +1207,7 @@ function BrowseContent({
             </div>
             <button
               onClick={() => setPickerOpen(false)}
-              className="shrink-0 rounded border border-input px-2 py-1 text-xs hover:bg-accent"
+              className="shrink-0 rounded-sm border border-input px-2 py-1 text-xs hover:bg-accent"
               aria-label="Close picker"
             >
               Close
@@ -1339,7 +1339,7 @@ function BrowseContent({
             <button
               type="button"
               onClick={() => setBazaarMode(true)}
-              className="ml-auto rounded-lg border border-primary bg-primary px-4 py-2 text-sm font-bold text-primary-foreground shadow-sm hover:bg-primary/90"
+              className="ml-auto rounded-lg border border-primary bg-primary px-4 py-2 text-sm font-bold text-primary-foreground shadow-xs hover:bg-primary/90"
               data-testid="open-bazaar"
             >
               The Bazaar 🎡
@@ -1427,7 +1427,7 @@ function BrowseContent({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search mods, packs, and more…"
-          className="flex-1 rounded-lg border border-input bg-background px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="flex-1 rounded-lg border border-input bg-background px-4 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <div className="flex items-center gap-1 rounded-lg border border-input bg-background p-0.5">
           <button

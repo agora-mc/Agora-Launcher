@@ -1224,7 +1224,7 @@ export function Settings({
       </label>
       <p className="text-xs text-muted-foreground">
         <strong>Off (default):</strong> Delegates to the official Mojang launcher — handles authentication and Minecraft execution.
-        The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded">--profile</code>.
+        The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded-sm">--profile</code>.
       </p>
       <p className="text-xs text-muted-foreground">
         <strong>On:</strong> Agora launches Minecraft directly — shows game console output in-app and gives you more control. Requires a Microsoft Account sign-in above for full online play.
@@ -1910,7 +1910,7 @@ export function Settings({
                   {mcpStatus?.running ? (
                     <>
                       Server running on{' '}
-                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded-sm">
                         http://127.0.0.1:39741/sse
                       </code>
                     </>
@@ -1985,7 +1985,7 @@ export function Settings({
           <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
             <h4 className="text-sm font-semibold">Bearer Token</h4>
             <p className="text-xs text-muted-foreground">
-              All MCP connections require this token in the <code className="bg-muted px-1 py-0.5 rounded">Authorization: Bearer &lt;token&gt;</code> header. Query-string tokens are not accepted.
+              All MCP connections require this token in the <code className="bg-muted px-1 py-0.5 rounded-sm">Authorization: Bearer &lt;token&gt;</code> header. Query-string tokens are not accepted.
             </p>
             {mcpToken?.token ? (
               <>
@@ -2025,7 +2025,7 @@ export function Settings({
             )}
             {advancedMode && (
               <p className="text-xs text-muted-foreground">
-                Token path: <code className="bg-muted px-1 py-0.5 rounded">{'<app_data>/mcp_token'}</code>
+                Token path: <code className="bg-muted px-1 py-0.5 rounded-sm">{'<app_data>/mcp_token'}</code>
               </p>
             )}
           </div>
@@ -2042,16 +2042,16 @@ export function Settings({
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
                 <li>
                   Add the config below to{' '}
-                  <code className="bg-muted px-1 py-0.5 rounded">
+                  <code className="bg-muted px-1 py-0.5 rounded-sm">
                     .opencode/opencode.json
                   </code>
                   {' '}or{' '}
-                  <code className="bg-muted px-1 py-0.5 rounded">
+                  <code className="bg-muted px-1 py-0.5 rounded-sm">
                     ~/.config/opencode/opencode.json (C:Users\[User]\.config\opencode)
                   </code>
                   .
                 </li>
-                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.opencode/skills/agora-mcp/SKILL.md</code>.</li>
+                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded-sm">.opencode/skills/agora-mcp/SKILL.md</code>.</li>
                 <li>Restart Opencode.</li>
               </ol>
               <div className="relative">
@@ -2071,7 +2071,7 @@ export function Settings({
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
                 <li>
                   Add the config below to{' '}
-                  <code className="bg-muted px-1 py-0.5 rounded">
+                  <code className="bg-muted px-1 py-0.5 rounded-sm">
                     {isWindows
                       ? '%APPDATA%\\Claude\\claude_desktop_config.json'
                       : '~/Library/Application Support/Claude/claude_desktop_config.json'}
@@ -2096,10 +2096,10 @@ export function Settings({
               <h5 className="text-xs font-semibold">Codex</h5>
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
                 <li>
-                  Set <code className="bg-muted px-1 py-0.5 rounded">AGORA_MCP_TOKEN</code> to the Bearer token shown above.
+                  Set <code className="bg-muted px-1 py-0.5 rounded-sm">AGORA_MCP_TOKEN</code> to the Bearer token shown above.
                 </li>
                 <li>
-                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded">~/.codex/config.toml</code>, then restart Codex.
+                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded-sm">~/.codex/config.toml</code>, then restart Codex.
                 </li>
               </ol>
               <div className="relative">
@@ -2118,7 +2118,7 @@ export function Settings({
               <h5 className="text-xs font-semibold">GitHub Copilot (VS Code)</h5>
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
                 <li>
-                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.vscode/mcp.json</code>.
+                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded-sm">.vscode/mcp.json</code>.
                 </li>
                 <li>
                   When Copilot prompts for the token, enter the Bearer token shown above, then start the server from the MCP controls.
@@ -2157,8 +2157,8 @@ export function Settings({
             <div className="space-y-1.5 pt-2 border-t border-border">
               <h5 className="text-xs font-semibold">Kilo Code (VS Code extension)</h5>
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
-                <li>Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.kilo/kilo.json</code> (project root or <code className="bg-muted px-1 py-0.5 rounded">~/.config/kilo/kilo.json</code>).</li>
-                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.kilo/skills/agora-mcp/SKILL.md</code>.</li>
+                <li>Add the config below to <code className="bg-muted px-1 py-0.5 rounded-sm">.kilo/kilo.json</code> (project root or <code className="bg-muted px-1 py-0.5 rounded-sm">~/.config/kilo/kilo.json</code>).</li>
+                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded-sm">.kilo/skills/agora-mcp/SKILL.md</code>.</li>
                 <li>Restart VS Code.</li>
               </ol>
               <div className="relative">
@@ -2176,8 +2176,8 @@ export function Settings({
             <div className="space-y-1 pt-2 border-t border-border">
               <h5 className="text-xs font-semibold">Other MCP clients</h5>
               <div className="text-xs text-muted-foreground space-y-0.5">
-                <p>Server URL: <code className="bg-muted px-1 py-0.5 rounded">http://127.0.0.1:39741/sse</code></p>
-                <p>Transport: <code className="bg-muted px-1 py-0.5 rounded">SSE (Server-Sent Events)</code></p>
+                <p>Server URL: <code className="bg-muted px-1 py-0.5 rounded-sm">http://127.0.0.1:39741/sse</code></p>
+                <p>Transport: <code className="bg-muted px-1 py-0.5 rounded-sm">SSE (Server-Sent Events)</code></p>
                 <p>Authentication: Bearer token (see above)</p>
                 <p>If you get stuck, your AI agent might be able to help you troubleshoot/customize the MCP integration.</p>
               </div>
@@ -2407,7 +2407,7 @@ export function Settings({
           <p className="text-xs font-semibold text-destructive">Some settings failed to load</p>
           {Object.entries(ts.errors).map(([key, err]) => (
             <p key={key} className="text-xs text-destructive/80">
-              <code className="bg-destructive/10 px-1 rounded">{key}</code>: {err}
+              <code className="bg-destructive/10 px-1 rounded-sm">{key}</code>: {err}
             </p>
           ))}
         </div>

@@ -979,14 +979,14 @@ export function CrashInvestigator({
             {evidence && evidence.evidence.sources.length > 0 && (
               <div className="mt-3 space-y-2">
                 {evidence.evidence.sources.map((source, index) => (
-                  <details key={`${source.meta.kind}:${source.meta.basename}:${index}`} className="rounded border border-border bg-background px-2 py-1.5">
+                  <details key={`${source.meta.kind}:${source.meta.basename}:${index}`} className="rounded-sm border border-border bg-background px-2 py-1.5">
                     <summary className="cursor-pointer text-xs font-medium">
                       {source.meta.basename}
                       {index === evidence.evidence.primary_index ? ' — most useful' : ''}
                       {source.meta.truncated ? ' — trimmed to fit' : ''}
                       {source.meta.stale ? ' — older file' : ''}
                     </summary>
-                    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-[11px] leading-relaxed">
+                    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap wrap-break-word rounded-sm bg-muted p-2 text-[11px] leading-relaxed">
                       {source.text}
                     </pre>
                   </details>

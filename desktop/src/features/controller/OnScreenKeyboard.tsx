@@ -50,7 +50,7 @@ const KeyButton = forwardRef<HTMLButtonElement, KeyButtonProps>(function KeyButt
       type="button"
       aria-label={ariaLabel}
       onClick={onClick}
-      className={`flex min-h-14 min-w-0 flex-1 items-center justify-center rounded-xl border border-border bg-background px-2 text-lg font-semibold text-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring active:bg-primary active:text-primary-foreground ${className}`}
+      className={`flex min-h-14 min-w-0 flex-1 items-center justify-center rounded-xl border border-border bg-background px-2 text-lg font-semibold text-foreground shadow-xs transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring active:bg-primary active:text-primary-foreground ${className}`}
     >
       {children}
     </button>
@@ -139,7 +139,7 @@ export function OnScreenKeyboard({ field, onClose }: OnScreenKeyboardProps) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[90] flex items-end justify-center bg-background/45 p-3 backdrop-blur-sm sm:p-6"
+      className="fixed inset-0 z-90 flex items-end justify-center bg-background/45 p-3 backdrop-blur-xs sm:p-6"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -196,7 +196,7 @@ export function OnScreenKeyboard({ field, onClose }: OnScreenKeyboardProps) {
           </KeyButton>
           <KeyButton
             ariaLabel="Space"
-            className="min-w-28 flex-[3] px-3 text-sm sm:text-base"
+            className="min-w-28 flex-3 px-3 text-sm sm:text-base"
             onClick={() => editField((target) => insertText(target, ' '))}
           >
             Space

@@ -659,7 +659,7 @@ export function InstallFlow({
   // beneath it happened to be scrolled.
   if (awaitingUser) {
     return createPortal(
-      <div className="fixed inset-0 z-[61] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+      <div className="fixed inset-0 z-61 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs">
         <section
           ref={panelRef}
           className="flex max-h-[85vh] w-[min(44rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
@@ -678,12 +678,12 @@ export function InstallFlow({
     );
   }
 
-  // z-[61] keeps it above the pack-indicator stacking context when both are
+  // z-61 keeps it above the pack-indicator stacking context when both are
   // visible; pack progress remains readable alongside via vertical stacking.
   // `aria-modal="false"` states that the rest of the app stays live behind it.
   return createPortal(
     <aside
-      className="fixed bottom-4 right-4 z-[61] flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+      className="fixed bottom-4 right-4 z-61 flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
       data-tour="install-review-dialog"
       role="dialog"
       aria-modal="false"
@@ -1166,7 +1166,7 @@ function DepRow({ dep, checked, onToggle, highlighted }: { dep: ResolvedDep; che
             type="checkbox"
             checked={checked}
             onChange={(e) => onToggle(dep.modJarId, e.target.checked)}
-            className="mt-0.5 rounded"
+            className="mt-0.5 rounded-sm"
             aria-label={`Include optional dependency ${displayName}`}
           />
           {details}
@@ -1389,7 +1389,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
               <h4 className="text-sm font-semibold">Blockers ({outcome.healthReport.blockers.length})</h4>
               <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
                 {outcome.healthReport.blockers.map((b, i) => (
-                  <div key={i} className="rounded border border-destructive bg-destructive/10 p-2 text-sm">
+                  <div key={i} className="rounded-sm border border-destructive bg-destructive/10 p-2 text-sm">
                     <p className="text-red-700 dark:text-red-300">{b.message}</p>
                     {b.suggested_action && <p className="mt-1 text-xs text-muted-foreground">{b.suggested_action}</p>}
                     {b.filename && <p className="mt-1 text-xs text-muted-foreground font-mono">{b.filename}</p>}
@@ -1403,7 +1403,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
               <h4 className="text-sm font-semibold">Warnings ({outcome.healthReport.warnings.length})</h4>
               <div className="max-h-32 space-y-1 overflow-y-auto pr-1">
                 {outcome.healthReport.warnings.map((w, i) => (
-                  <p key={i} className="rounded bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">{w.message}</p>
+                  <p key={i} className="rounded-sm bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">{w.message}</p>
                 ))}
               </div>
             </div>

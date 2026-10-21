@@ -161,7 +161,7 @@ export function RuntimeReclaim() {
           </summary>
           <ul className="mt-2 space-y-1">
             {report.warnings.map((warning) => (
-              <li key={warning} className="break-words">{warning}</li>
+              <li key={warning} className="wrap-break-word">{warning}</li>
             ))}
           </ul>
         </details>

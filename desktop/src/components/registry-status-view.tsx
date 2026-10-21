@@ -73,7 +73,7 @@ function BannerView({ state, status, error, actions }: BannerProps) {
         </span>
         <button
           onClick={actions.sync}
-          className="shrink-0 rounded px-2 py-0.5 font-medium text-primary hover:bg-accent disabled:opacity-50"
+          className="shrink-0 rounded-sm px-2 py-0.5 font-medium text-primary hover:bg-accent disabled:opacity-50"
         >
           Check for Updates
         </button>
@@ -97,7 +97,7 @@ function BannerView({ state, status, error, actions }: BannerProps) {
       <button
         onClick={actions.sync}
         disabled={isSyncing}
-        className="shrink-0 rounded px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/40 disabled:opacity-50"
+        className="shrink-0 rounded-sm px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/40 disabled:opacity-50"
       >
         {isSyncing ? 'Refreshing…' : state === 'missing' ? 'Download Catalog' : 'Retry'}
       </button>

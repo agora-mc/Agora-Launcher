@@ -1,9 +1,20 @@
-﻿/** @type {import('next').NextConfig} */
+﻿import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const webDir = path.dirname(fileURLToPath(import.meta.url));
+
+/** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'export',
   distDir: 'dist',
   images: {
     unoptimized: true,
+  },
+  // Turbopack (Next 16's default bundler) resolves imports only inside its
+  // root, which defaults to web/. The `@guide/*` path alias in tsconfig.json
+  // points into desktop/, so the root must be the repository, one level up.
+  turbopack: {
+    root: path.join(webDir, '..'),
   },
   // The website mirrors the desktop app's Help & Guide from
   // desktop/src/data/guideContent.ts, which docs/README.md designates as the
