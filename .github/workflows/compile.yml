@@ -83,6 +83,7 @@ jobs:
             --auto-versions \
             --latest-per-mc 5 \
             --keep-others \
+            --verify-changed-only \
             --no-governance-write \
             --governance-mode "$GOVERNANCE_MODE" \
             --governance-policy "$GOVERNANCE_POLICY" \
@@ -120,7 +121,7 @@ jobs:
       - name: Check for unexpected generated files
         shell: bash
         run: |
-          allowed='^(registry/governance/governance-state\.json|loader-manifests/loader_manifests\.json|loader-manifests/known_good_hashes\.json|loader-manifests/minecraft_versions\.json|loader-manifests/failed_candidates\.json)$'
+          allowed='^(registry/governance/governance-state\.json|loader-manifests/loader_manifests\.json|loader-manifests/known_good_hashes\.json|loader-manifests/minecraft_versions\.json|loader-manifests/failed_candidates\.json|loader-manifests/quarantine\.json)$'
 
           unexpected="$(
             {

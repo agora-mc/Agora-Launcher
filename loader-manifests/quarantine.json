@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "_about": "Pinned loader files whose upstream bytes changed in a way Agora could not verify as a repack. Set \"approved\": true on a record to re-pin it to the upstream file on the next refresh.",
+  "entries": [
+    {
+      "key": "forge/1.21.11/61.1.7",
+      "loader": "forge",
+      "detected_on": "2026-10-19",
+      "reason": "upstream file changed and its contents could not be shown unchanged",
+      "approved": false,
+      "entry": {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.7",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.7/forge-1.21.11-61.1.7-installer.jar",
+        "sha256": "0666f25bc077d1df212ed21bf1ff0c8b23146079cbf80d2ef84dff04ecafa0bf",
+        "file_name": "forge-1.21.11-61.1.7-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "45a057220610c867aab7839d4b08094b47217401bd6ee3164418a12fa882897f",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "61.1.7",
+          "javafml": "61",
+          "lowcodefml": "61"
+        },
+        "release_channel": "stable"
+      },
+      "upstream": {
+        "sha256": "704fac6f40ca683fc2e1d7ca219f3bf3216902348040161ec0fc234bc035ead0",
+        "content_sha256": "76d9aff023540702b83e62f097736ecf2fb2165c2e6217f4984f476906859fcc",
+        "version_json_sha256": "45a057220610c867aab7839d4b08094b47217401bd6ee3164418a12fa882897f",
+        "installer_spec": 1
+      }
+    }
+  ]
+}

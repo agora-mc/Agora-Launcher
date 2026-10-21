@@ -14,7 +14,7 @@ Do not treat a successful catalog release as proof that a desktop package was bu
 ### Windows portable desktop
 
 The Windows desktop job also publishes
-`agora-desktop-vX.Y.Z-windows-x86_64-portable.zip` and its `.zip.sha256` checksum.
+`agora-desktop-vX.Y.Z-windows-x64-portable.zip` and its `.zip.sha256` checksum.
 This is distinct from the standalone CLI ZIP. The archive contains the signed desktop
 executable, `portable.txt`, and instructions; extract it into a writable folder and run
 `Agora Launcher.exe`. WebView2 Runtime must already be installed. The normal MSI/NSIS
@@ -147,7 +147,7 @@ catalog and website streams on their own schedules.
 
 ### Build and inspect
 
-The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. Its first build step rewrites the version from that tag into every file that carries one — the workspace `Cargo.toml`, `desktop/src-tauri/Cargo.toml`, `tauri.conf.json`, `desktop/package.json`, and the `Cargo.lock` workspace entries — via `scripts/set_release_version.py`. The tag is therefore the single source of truth for installer filenames, the version the application shows, and `agora --version`. It rewrites the ephemeral CI checkout only; nothing is committed back. After the required checks above pass, it builds native desktop bundles on Windows, macOS, and Linux, packages standalone CLI archives, generates `SHA256SUMS`, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
+The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. Its first build step rewrites the version from that tag into every file that carries one — the workspace `Cargo.toml`, `desktop/src-tauri/Cargo.toml`, `tauri.conf.json`, `desktop/package.json`, and the `Cargo.lock` workspace entries — via `scripts/set_release_version.py`. The tag is therefore the single source of truth for installer filenames, the version the application shows, and `agora --version`. It rewrites the ephemeral CI checkout only; nothing is committed back. After the required checks above pass, it builds native desktop bundles on Windows, macOS, and Linux with the CLI from the same build inside them (staged by `scripts/stage_cli_sidecar.py` and merged in through `desktop/src-tauri/tauri.bundle-cli.conf.json`, so ordinary builds do not need it), packages standalone CLI archives, normalizes every desktop bundle name (`scripts/finalize_release_assets.py`), generates a `SHA256SUMS` covering every artifact, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
 
 Public desktop build variables and secret boundaries are documented once in [DEVELOPMENT.md](./DEVELOPMENT.md). Confirm the workflow has every required public value and protected signing credential without copying their values into release notes or logs.
 
@@ -157,12 +157,48 @@ The workflow leaves the release as a draft with all artifacts uploaded and `SHA2
 
 - platform and architecture coverage;
 - both Apple Silicon and Intel macOS installers, with architecture-bearing bundle names;
+- asset names match the scheme in [Release asset names](#release-asset-names);
 - version shown by the application;
 - installer identity;
-- checksums or signatures where provided;
+- `SHA256SUMS` covers every downloadable artifact and nothing else;
 - updater metadata contains signed `darwin-aarch64` and `darwin-x86_64` entries;
 - release notes;
 - accidental debug artifacts.
+
+### Release asset names
+
+Every release publishes the same asset scheme:
+
+`agora-<kind>-<tag>-<platform>-<arch>[-<variant>].<ext>`
+
+| Kind | Assets (full names start with `agora-<kind>-<tag>-`) |
+| --- | --- |
+| `desktop` | `windows-x64-setup.exe` (NSIS), `windows-x64.msi`, `windows-x64-portable.zip` (+ `.sha256`), `macos-arm64.dmg`, `macos-x64.dmg`, `macos-arm64.app.tar.gz` and `macos-x64.app.tar.gz` (updater archives), `linux-x64.AppImage`, `linux-x64.deb`, `linux-x64.rpm` |
+| `cli` | `windows-x64.zip`, `linux-x64.tar.gz`, `macos-arm64.tar.gz`, `macos-x64.tar.gz` |
+
+Tauri names its bundles `Agora.Launcher_<version>_<arch>.<ext>`, which says nothing
+about desktop vs CLI and mixes `x64`, `x86_64`, and `amd64`. The
+`assemble-release` job post-processes the draft with
+`scripts/finalize_release_assets.py` before verification:
+
+- it renames each `Agora.Launcher*` bundle in place and fails on a name or an
+  embedded version it does not recognize;
+- it deletes the updater `*.sig` sidecar assets — the signatures also live
+  inline in `latest.json`, which is what the updater consumes;
+- it rewrites every `latest.json` platform URL to the renamed asset and
+  re-uploads `latest.json`;
+- it writes and uploads `SHA256SUMS`, covering every downloadable artifact
+  except `latest.json` and `SHA256SUMS` itself.
+
+GitHub lists assets alphabetically (case-insensitively, so `agora-cli-*` sorts
+above `agora-desktop-*`) and collapses long lists behind "Show all N assets".
+After finalizing, `assemble-release` therefore rewrites the draft's release
+body with a direct-download table — Windows `-setup.exe` first — instead of
+relying on the asset list for discoverability. The updater notes in
+`latest.json` keep tauri-action's short summary, because the in-app update
+dialog shows them as plain text. Re-running the job is safe: the script leaves
+an already-normalized release alone, and re-running it after fresh bundles were
+uploaded replaces the stale renamed copies.
 
 ### Packaged smoke test
 
@@ -188,7 +224,11 @@ Minimum test:
 8. launch through the default delegated mode;
 9. launch directly with a test Microsoft account when that platform is supported;
 10. restart and verify settings and instances persist;
-11. exercise update detection from the previous release.
+11. exercise update detection from the previous release;
+12. open Settings → Services → AI assistant and confirm it shows the bundled CLI's path, then
+    run that path with `--version` and `skill`. On Windows check both the installed copy and
+    the portable ZIP's `agora.exe`; the workflow already checks the macOS app and the Linux
+    `.deb`, but not the Windows installer.
 
 The catalog public-key check is release-critical. A package that builds successfully but lacks the expected verification key can fail only after installation. Always test catalog synchronization in the packaged artifact.
 

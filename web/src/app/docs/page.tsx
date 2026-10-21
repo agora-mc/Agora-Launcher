@@ -13,8 +13,8 @@ const ROUTES = [
   {
     href: '/docs/install',
     heading: 'I am new to Agora',
-    body: 'Download a package, work through first-run setup, and reach a launch you can recover from.',
-    cta: 'Install and first run',
+    body: 'Download the build for your platform, pick between the desktop app, portable, and CLI, and read the release file names.',
+    cta: 'Install Agora',
   },
   {
     href: '/docs/guides',
@@ -70,6 +70,7 @@ const COMMON_QUESTIONS = [
   { href: '/docs/guides/modding-foundations', label: 'What are versions, loaders, and dependencies?' },
   { href: '/docs/guides/launching', label: 'Why is my launch blocked, and what is a health check?' },
   { href: '/docs/guides/crash-recovery', label: 'Minecraft crashed — how do I find the cause?' },
+  { href: '/docs/guides/ai-assistant', label: 'Can an AI assistant help me fix my game?' },
   { href: '/docs/guides/snapshots-loadouts', label: 'What does a snapshot actually protect?' },
   { href: '/docs/guides/privacy-offline', label: 'What does Agora send, and how do I play offline?' },
   { href: '/docs/guides/packs-sharing', label: 'How do I move an instance to another machine?' },

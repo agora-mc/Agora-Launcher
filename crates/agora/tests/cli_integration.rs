@@ -188,6 +188,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "runtime",
     "loader",
     "settings",
+    "skill",
     "mcp",
     "crash",
     "migrate-data",
@@ -304,6 +305,22 @@ fn top_level_help_lists_public_commands_and_global_flags() {
             "missing global flag {flag} in:\n{stdout}"
         );
     }
+}
+
+#[test]
+fn skill_prints_the_agent_guide_without_touching_the_data_root() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["skill"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("---\nname: agora\n"), "{stdout}");
+    // An agent reads the guide before it is pointed at a data root, so
+    // printing it must not create one.
+    assert!(!data_dir.join("local_state.db").exists());
 }
 
 #[test]
@@ -968,6 +985,45 @@ fn instance_rename_json_output() {
     assert_eq!(parsed["status"], "renamed");
     assert_eq!(parsed["instanceId"], "json-rename");
     assert_eq!(parsed["name"], "Json Renamed");
+}
+
+// ---------------------------------------------------------------------------
+// Running beside the desktop app
+// ---------------------------------------------------------------------------
+
+#[test]
+fn another_process_sees_what_the_cli_changed() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let src = tempdir();
+    let instance_src = src.path().join("shared");
+    std::fs::create_dir_all(instance_src.join("mods")).unwrap();
+    std::fs::write(instance_src.join("mods").join("a.jar"), b"mod").unwrap();
+    run_agora(&data_dir, &["import", &instance_src.to_string_lossy()]);
+
+    // This test process stands in for the desktop app watching the same data.
+    let locks_root = agora_core::app_paths::AppPaths::from_root(data_dir.clone()).locks_root();
+    let mut feed = agora_core::change_feed::ChangeFeed::new(&locks_root);
+
+    let disable = run_agora(&data_dir, &["mod", "disable", "shared", "a.jar"]);
+    assert!(
+        disable.status.success(),
+        "{}",
+        String::from_utf8_lossy(&disable.stderr)
+    );
+    let changes = feed.poll();
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert_eq!(changes[0].instance_id, "shared");
+    assert_eq!(changes[0].program, "Agora CLI");
+    assert_eq!(changes[0].operation, "disable_mod");
+
+    // A database-only edit takes no instance lock but is still reported.
+    let rename = run_agora(&data_dir, &["instance", "rename", "shared", "Renamed"]);
+    assert!(rename.status.success());
+    let changes = feed.poll();
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert_eq!(changes[0].operation, "rename");
+
+    assert!(feed.poll().is_empty());
 }
 
 // ---------------------------------------------------------------------------

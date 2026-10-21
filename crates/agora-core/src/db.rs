@@ -12,8 +12,41 @@ pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 15;
 /// does not create parent directories.
 pub fn local_state_connection(db_path: &std::path::Path) -> anyhow::Result<Connection> {
     let conn = Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    ensure_wal(&conn)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     Ok(conn)
+}
+
+/// Put the database in WAL mode, tolerating another process doing the same.
+///
+/// WAL is a property of the file, so this only does work the first time a
+/// database is opened. That is exactly when the desktop app and an agent's CLI
+/// call may both be starting for the first time, and switching the journal
+/// mode answers "database is locked" at once rather than waiting the busy
+/// timeout. Checking first keeps every later open lock-free; the retry covers
+/// the first-open race.
+fn ensure_wal(conn: &Connection) -> anyhow::Result<()> {
+    const ATTEMPTS: u32 = 50;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+    let mut attempt = 0;
+    loop {
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        if mode.eq_ignore_ascii_case("wal") {
+            return Ok(());
+        }
+        match conn.query_row("PRAGMA journal_mode = WAL", [], |row| {
+            row.get::<_, String>(0)
+        }) {
+            Ok(_) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy && attempt < ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(RETRY_DELAY);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// Open a read-only connection to the cached registry database.
@@ -26,13 +59,19 @@ pub fn registry_connection(db_path: &std::path::Path) -> anyhow::Result<Connecti
 }
 
 /// Initialize the local SQLite database on first run and apply migrations.
-pub fn init_local_state_db(db_path: &std::path::PathBuf) -> anyhow::Result<()> {
+pub fn init_local_state_db(db_path: &std::path::Path) -> anyhow::Result<()> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let conn = Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-    run_migrations(&conn)?;
+    let conn = local_state_connection(db_path)?;
+    // Two processes starting at once (the desktop app and an agent's CLI call,
+    // say, right after an update) would otherwise both read the old schema
+    // version and both apply the same migrations. IMMEDIATE takes the write
+    // lock before that read, so the second waits and then finds nothing to do.
+    // The default-setting seeding below reads before it writes too, so it stays
+    // inside the same transaction.
+    let tx = rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
+    run_migrations(&tx)?;
 
     // Network feature toggles default to enabled for backward compatibility.
     // Pre-existing keys default to enabled for backward compatibility.
@@ -100,6 +139,7 @@ pub fn init_local_state_db(db_path: &std::path::PathBuf) -> anyhow::Result<()> {
 
     normalize_boolean_settings(&conn)?;
 
+    tx.commit()?;
     Ok(())
 }
 
@@ -2452,5 +2492,72 @@ mod tests {
         assert!(list_instance_pack_files(&conn, &row.instance_id)
             .unwrap()
             .is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Several processes sharing one database
+    // -----------------------------------------------------------------------
+
+    fn fresh_path() -> PathBuf {
+        let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("agora-test-shared-{}-{n}.db", std::process::id()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        path
+    }
+
+    #[test]
+    fn concurrent_first_starts_all_migrate_cleanly() {
+        let path = fresh_path();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    init_local_state_db(&path).map_err(|e| e.to_string())
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle
+                .join()
+                .unwrap()
+                .expect("every concurrent start succeeds");
+        }
+        let conn = local_state_connection(&path).unwrap();
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, LOCAL_STATE_SCHEMA_VERSION);
+    }
+
+    /// rusqlite gives every connection a 5 s busy timeout, which is what lets
+    /// the desktop app and the CLI write to one database. Pinned here so a
+    /// change of library or open flags cannot quietly turn it into an instant
+    /// "database is locked".
+    #[test]
+    fn a_write_waits_for_another_connections_write() {
+        let path = fresh_path();
+        init_local_state_db(&path).unwrap();
+
+        let holder = local_state_connection(&path).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            holder.execute_batch("COMMIT").unwrap();
+        });
+
+        let writer = local_state_connection(&path).unwrap();
+        let started = std::time::Instant::now();
+        set_setting(&writer, "busy_probe", &serde_json::json!(true))
+            .expect("waits for the lock instead of failing");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+        release.join().unwrap();
     }
 }
