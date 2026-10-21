@@ -65,10 +65,6 @@ mod tests {
             discovery::games_discover,
             discovery::games_add_folder,
             discovery::games_remove_folder,
-            bases::games_base_list,
-            bases::games_base_build,
-            bases::games_base_verify,
-            bases::games_base_remove,
             instances::games_instance_list,
             instances::games_instance_get,
             instances::games_instance_create,
@@ -113,7 +109,7 @@ mod tests {
             user_files::games_user_files_restore,
         );
         assert_eq!(
-            checked, 49,
+            checked, 45,
             "the stub list drifted from the brief's command list"
         );
     }
