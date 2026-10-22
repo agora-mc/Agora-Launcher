@@ -1,6 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
 
-type BrowseResult = { items: unknown[]; total: number; page: number; hasMore: boolean };
+type BrowseResult = {
+  items: unknown[];
+  total: number;
+  page: number;
+  hasMore: boolean;
+  hiddenByFilters?: { count: number; more: boolean } | null;
+};
 
 const item = (id: string, name: string) => ({
   id,
@@ -1438,6 +1444,33 @@ test('an empty search offers Modrinth; one click turns it on and searches again'
   await resolveCall(page, again, { items: [item('mr-create', 'Modrinth Hit')], total: 1, page: 0, hasMore: false });
   await expect(page.getByText('Modrinth Hit')).toBeVisible();
   await expect(offer).toHaveCount(0);
+});
+
+test('an empty search under the instance filter says what it hid, and Show them drops the filter', async ({ page }) => {
+  await installBrowseMock(page);
+  await overrideCommands(page, {
+    list_instances: [RECENT_INSTANCE],
+    get_instance_detail: { row: RECENT_INSTANCE, manifest: null },
+    for_you_items: [],
+  });
+  const initial = await openBrowse(page);
+  await expect(page.locator('#browse-instance-context')).toHaveValue('recent-121');
+  await resolveCall(page, initial, {
+    items: [],
+    total: 0,
+    page: 0,
+    hasMore: false,
+    hiddenByFilters: { count: 3, more: false },
+  });
+
+  await expect(page.getByTestId('browse-hidden-by-filters')).toHaveText(
+    'No results for 1.21 Fabric. 3 results for other versions or loaders.',
+  );
+  await page.getByRole('button', { name: 'Show them', exact: true }).click();
+
+  const unfiltered = await findCall(page, 'browse_search', undefined, [initial]);
+  expect(await callArg(page, unfiltered, 'mcVersion')).toBeNull();
+  expect(await callArg(page, unfiltered, 'loader')).toBeNull();
 });
 
 test('the Modrinth offer links to Settings without turning Modrinth on', async ({ page }) => {

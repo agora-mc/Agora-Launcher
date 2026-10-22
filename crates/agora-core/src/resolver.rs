@@ -923,7 +923,7 @@ impl Resolver {
                 },
             },
             Err(e) => DepDisposition::Unresolved {
-                reason: e.to_string(),
+                reason: dependency_version_reason(e, manifest),
             },
         }
     }
@@ -2095,7 +2095,7 @@ pinned_version: None,
                         }
                         Err(e) => (
                             DepDisposition::Unresolved {
-                                reason: e.to_string(),
+                                reason: dependency_version_reason(e, manifest),
                             },
                             Vec::new(),
                         ),
@@ -3435,6 +3435,20 @@ pub fn select_raw_modrinth_candidate<'a>(
             .ok_or(LauncherError::VersionNotFound);
     }
     candidates.first().ok_or(LauncherError::VersionNotFound)
+}
+
+/// Why a dependency has no usable version. A dependency is resolved without a
+/// requested version, so "not found" here means nothing is published for this
+/// instance's Minecraft version and loader. The generic message asks "Install
+/// the closest compatible version?", which the review has no answer to.
+fn dependency_version_reason(error: LauncherError, manifest: &InstanceManifest) -> String {
+    match error {
+        LauncherError::VersionNotFound => format!(
+            "no version is published for Minecraft {} on {}",
+            manifest.minecraft_version, manifest.loader
+        ),
+        other => other.to_string(),
+    }
 }
 
 fn select_closest_raw_modrinth_candidate<'a>(
@@ -5789,5 +5803,62 @@ modId=\"xaerominimap\"
         let mut dependency = batch_sibling("lithium", "lithium.jar");
         credit_requester(&mut dependency, "lithium");
         assert_eq!(dependency.requested_by, vec!["lithium".to_string()]);
+    }
+
+    #[test]
+    fn a_missing_dependency_version_says_what_is_missing_not_a_question() {
+        let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "test".into(),
+            name: "Test".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            created_from_pack: None,
+            user_preferences: serde_json::json!({}),
+        };
+        let reason = dependency_version_reason(LauncherError::VersionNotFound, &manifest);
+        assert_eq!(
+            reason,
+            "no version is published for Minecraft 1.21 on fabric"
+        );
+        assert!(!reason.contains("closest"), "{reason}");
+        assert!(!reason.contains('?'), "{reason}");
+    }
+
+    #[test]
+    fn other_dependency_errors_keep_their_own_wording() {
+        let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "test".into(),
+            name: "Test".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            created_from_pack: None,
+            user_preferences: serde_json::json!({}),
+        };
+        let error = LauncherError::Generic {
+            code: "ERR_X".into(),
+            message: "the registry is offline".into(),
+        };
+        assert_eq!(
+            dependency_version_reason(error, &manifest),
+            "the registry is offline"
+        );
     }
 }

@@ -2878,6 +2878,11 @@ export interface BrowsePage {
   hasMore: boolean;
   /** Providers that could not answer this query. Everyone else still shows. */
   providerFailures?: ProviderFailure[];
+  /**
+   * Set when the first page is empty under an instance's version or loader
+   * filter: how many matches that filter hid. `more` means at least that many.
+   */
+  hiddenByFilters?: { count: number; more: boolean } | null;
 }
 
 export const browseSearch = (
