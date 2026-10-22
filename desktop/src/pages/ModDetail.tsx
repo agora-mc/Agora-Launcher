@@ -274,6 +274,10 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   // manifest corresponds to this mod. Separate trackers for the header
   // (browse-context instance), the install-flow dialog, and the versions tab.
   const [contextInstalledEntry, setContextInstalledEntry] = useState<InstalledMod | null>(null);
+  // The instance an install just ran against, so the page can show the new
+  // installed state; `installRefresh` re-reads the instance when the flow closes.
+  const [lastInstallTarget, setLastInstallTarget] = useState<string | null>(null);
+  const [installRefresh, setInstallRefresh] = useState(0);
   const [flowInstalledEntry, setFlowInstalledEntry] = useState<InstalledMod | null>(null);
   const [versionsTabInstalledEntry, setVersionsTabInstalledEntry] = useState<InstalledMod | null>(null);
 
@@ -753,24 +757,26 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     return null;
   }, [itemId, item?.modrinth_id]);
 
+  const contextInstanceId = lastInstallTarget ?? initialInstanceId ?? null;
+
   // Header banner: when arriving with an instance context, surface the
   // installed state up front.
   useEffect(() => {
-    if (!initialInstanceId) {
+    if (!contextInstanceId) {
       setContextInstalledEntry(null);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const detail = await getInstanceDetail(initialInstanceId);
+        const detail = await getInstanceDetail(contextInstanceId);
         if (!cancelled) setContextInstalledEntry(findInstalledEntry(detail));
       } catch {
         if (!cancelled) setContextInstalledEntry(null);
       }
     })();
     return () => { cancelled = true; };
-  }, [initialInstanceId, findInstalledEntry]);
+  }, [contextInstanceId, findInstalledEntry, installRefresh]);
 
   // Versions tab: track the installed entry for the picked instance.
   useEffect(() => {
@@ -788,7 +794,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
       }
     })();
     return () => { cancelled = true; };
-  }, [versionsTabInstanceId, findInstalledEntry]);
+  }, [versionsTabInstanceId, findInstalledEntry, installRefresh]);
 
   const loadMoreVersions = useCallback(async () => {
     if (!selectedInstanceId || loadingMoreVersions || !hasMoreVersions) return;
@@ -1223,7 +1229,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
         <div className="rounded-lg border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
           <div className="flex items-center gap-2 font-semibold">
             <span aria-hidden>✓</span>
-            <span>Already installed in {versionsTabInstances.find((instance) => instance.instance_id === initialInstanceId)?.name ?? initialInstanceId}</span>
+            <span>Already installed in {versionsTabInstances.find((instance) => instance.instance_id === contextInstanceId)?.name ?? contextInstanceId}</span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             Version {contextInstalledEntry.version ?? 'unknown'} · {contextInstalledEntry.filename}
@@ -1484,7 +1490,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
               data-tour="mod-detail-install"
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              Install to Instance
+              {contextInstalledEntry ? 'Installed ✓ · Change version' : 'Install to Instance'}
             </button>
           )}
         </div>
@@ -1885,7 +1891,11 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
             intent={canonicalInstall.intent}
             instanceName={canonicalInstall.instanceName}
             onOpenInstance={onOpenInstanceEditor}
-            onClose={() => setCanonicalInstall(null)}
+            onClose={() => {
+              setLastInstallTarget(canonicalInstall.intent.targetInstance);
+              setInstallRefresh((value) => value + 1);
+              setCanonicalInstall(null);
+            }}
           />
         )}
 

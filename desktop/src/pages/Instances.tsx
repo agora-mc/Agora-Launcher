@@ -14,6 +14,7 @@ import {
   getInstanceDetail,
   getSetting,
   listInstances,
+  pickOpenFile,
   listLoaderVersions,
   listManifestLoaders,
   listManifestMcVersions,
@@ -102,7 +103,23 @@ export function Instances({
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<InstanceRow | null>(null);
-  const { getTaskForInstance, revision: packInstallRevision } = usePackInstall();
+  const { getTaskForInstance, revision: packInstallRevision, startPackFile } = usePackInstall();
+  const [packImportNotice, setPackImportNotice] = useState<string | null>(null);
+
+  // Always creates a new instance from the file; merging into an existing one
+  // is a different action inside the instance editor.
+  const handleImportPackFile = async () => {
+    setPackImportNotice(null);
+    setError(null);
+    try {
+      const path = await pickOpenFile('Import a pack file', ['mrpack', 'agora-pack.json', 'json']);
+      if (path === null) return;
+      startPackFile(path, path.split(/[\/]/).pop() ?? 'Pack import');
+      setPackImportNotice('Importing the pack as a new instance. It will appear here when it is ready.');
+    } catch (cause) {
+      setError(formatError(cause));
+    }
+  };
 
   // Load direct launch mode once
   const [directLaunch, setDirectLaunch] = useState(false);
@@ -247,6 +264,13 @@ export function Instances({
         </div>
         <div className="flex flex-wrap gap-2">
           <button
+            onClick={() => void handleImportPackFile()}
+            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Import pack file
+          </button>
+          <button
             onClick={() => setShowImport(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
           >
@@ -267,6 +291,11 @@ export function Instances({
       {error && (
         <div className="rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
           {error}
+        </div>
+      )}
+      {packImportNotice && (
+        <div role="status" className="rounded-lg border border-border bg-card p-3 text-sm text-muted-foreground">
+          {packImportNotice}
         </div>
       )}
 
@@ -306,6 +335,13 @@ export function Instances({
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
               Create your first instance
+            </button>
+            <button
+              onClick={() => void handleImportPackFile()}
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Import pack file
             </button>
             <button
               onClick={() => setShowImport(true)}
@@ -432,6 +468,14 @@ const PROFILE_ISSUE_MESSAGES: Record<string, { title: string; description: strin
       'The installed loader profile is missing.',
   },
 };
+
+/** Date only; blank when the stored value is missing or unreadable. */
+function formatCreatedDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+}
 
 function InstanceCard({
   instance,
@@ -622,6 +666,8 @@ function InstanceCard({
     }
   };
 
+  const createdLabel = formatCreatedDate(instance.created_at);
+
   const issueDef = controllerRecoverableIssue
     ? PROFILE_ISSUE_MESSAGES[controllerRecoverableIssue.kind]
     : null;
@@ -672,6 +718,9 @@ function InstanceCard({
                 'Never launched'
               )}
             </p>
+            {createdLabel && (
+              <p className="text-xs text-muted-foreground mt-0.5">Created {createdLabel}</p>
+            )}
           </div>
         </div>
         <span className="text-xs uppercase tracking-wide text-muted-foreground">

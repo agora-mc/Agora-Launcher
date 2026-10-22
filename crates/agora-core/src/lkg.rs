@@ -324,11 +324,17 @@ pub struct RetentionEntry {
     pub is_protected: bool,
 }
 
+/// How many ordinary automatic snapshots (taken before installs, launches and
+/// other changes) are kept per instance. Five is enough to step back over a
+/// few changes in a row without letting backups pile up; the size cap below
+/// still applies and trims the oldest of these first.
+pub const KEEP_AUTOMATIC_SNAPSHOTS: u32 = 5;
+
 impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
             keep_lkg_count: 3,
-            keep_non_lkg_count: 1,
+            keep_non_lkg_count: KEEP_AUTOMATIC_SNAPSHOTS,
             keep_pre_restore_count: 1,
             keep_preserved_count: 10,
             size_cap_bytes: 2_000_000_000, // 2 GB
@@ -970,8 +976,8 @@ mod tests {
         }
         let remaining = remaining_ids(dir);
         assert!(remaining.contains(&manual));
-        // The automatic ones still rotate: only the newest one is kept.
-        assert_eq!(remaining.len(), 2);
+        // The automatic ones all fit in the keep-5 window.
+        assert_eq!(remaining.len(), 4);
     }
 
     #[test]
@@ -997,15 +1003,90 @@ mod tests {
     }
 
     #[test]
-    fn automatic_snapshots_still_rotate() {
+    fn automatic_snapshots_keep_the_last_five() {
         let temp = TempDir::new().unwrap();
         let dir = temp.path();
-        let mut last = String::new();
-        for label in ["pre-launch", "pre-launch", "install-abc", "pack-merge"] {
-            last = create_test_snapshot(dir, label);
+        let mut created = Vec::new();
+        for i in 0..8 {
+            created.push(create_test_snapshot(dir, &format!("pre-launch-{i}")));
             run_retention(dir).unwrap();
         }
-        assert_eq!(remaining_ids(dir), vec![last]);
+        let mut remaining = remaining_ids(dir);
+        remaining.sort();
+        let mut expected: Vec<String> = created[3..].to_vec();
+        expected.sort();
+        assert_eq!(remaining, expected);
+    }
+
+    #[test]
+    fn automatic_retention_with_zero_or_one_snapshot_deletes_nothing() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        run_retention(dir).unwrap();
+        assert!(remaining_ids(dir).is_empty());
+        let only = create_test_snapshot(dir, "pre-launch");
+        run_retention(dir).unwrap();
+        assert_eq!(remaining_ids(dir), vec![only]);
+    }
+
+    #[test]
+    fn manual_snapshots_never_count_toward_the_automatic_five() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let manual = create_test_snapshot_as(dir, "mine", crate::snapshot::SnapshotOrigin::User);
+        for i in 0..7 {
+            create_test_snapshot(dir, &format!("install-{i}"));
+            run_retention(dir).unwrap();
+        }
+        let remaining = remaining_ids(dir);
+        assert!(remaining.contains(&manual));
+        assert_eq!(remaining.len(), 6, "1 manual + exactly 5 automatic");
+    }
+
+    #[test]
+    fn default_policy_keeps_exactly_five_automatic_and_never_a_manual() {
+        let auto = |i: usize| retention(&format!("auto-{i}"), 1, false, false, false);
+        let mut entries: Vec<RetentionEntry> = (0..9).map(auto).collect();
+        entries.insert(
+            3,
+            RetentionEntry {
+                is_preserved: true,
+                ..retention("manual", 1, false, false, false)
+            },
+        );
+        let evicted = retention_plan_with_sizes(&entries, &RetentionPolicy::default());
+        assert_eq!(
+            evicted,
+            (5..9).map(|i| format!("auto-{i}")).collect::<Vec<_>>()
+        );
+        // exactly 5 or fewer: nothing evicted
+        let few: Vec<RetentionEntry> = (0..5).map(auto).collect();
+        assert!(retention_plan_with_sizes(&few, &RetentionPolicy::default()).is_empty());
+    }
+
+    #[test]
+    fn size_cap_trims_oldest_automatic_snapshots_before_manual_ones() {
+        let mut entries: Vec<RetentionEntry> = (0..5)
+            .map(|i| retention(&format!("auto-{i}"), 30, false, false, false))
+            .collect();
+        entries.push(RetentionEntry {
+            is_preserved: true,
+            ..retention("manual", 30, false, false, false)
+        });
+        let policy = RetentionPolicy {
+            size_cap_bytes: 100,
+            ..RetentionPolicy::default()
+        };
+        let evicted = retention_plan_with_sizes(&entries, &policy);
+        assert_eq!(
+            evicted,
+            vec![
+                "auto-2".to_string(),
+                "auto-3".to_string(),
+                "auto-4".to_string()
+            ]
+        );
+        assert!(!evicted.contains(&"manual".to_string()));
     }
 
     #[test]
@@ -1082,6 +1163,6 @@ mod tests {
             .collect();
         assert!(remaining.contains(&protected));
         assert!(remaining.contains(&evicted));
-        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining.len(), 3, "protected + both ordinary automatic");
     }
 }
