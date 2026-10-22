@@ -1110,10 +1110,10 @@ function GithubStep({
   const sessionIdRef = useRef(0);
 
   // Whether a GitHub token is already stored (from an earlier run, or the OS
-  // credential store). `undefined` while the check is running. A failed check
-  // lands on the sign-in offer, which never claims an account that was not
-  // confirmed.
-  const [account, setAccount] = useState<{ login: string | null } | null | undefined>(undefined);
+  // credential store). `undefined` while the check is running. A failed check,
+  // or a stored token whose profile can't be read, lands on the sign-in offer,
+  // which never claims an account that was not confirmed.
+  const [account, setAccount] = useState<{ login: string } | null | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1124,7 +1124,7 @@ function GithubStep({
           return;
         }
         const profile = await getGithubProfile();
-        if (!cancelled) setAccount({ login: profile?.login ?? null });
+        if (!cancelled) setAccount(profile?.login ? { login: profile.login } : null);
       } catch {
         // Expired or unreadable session: the backend clears an expired token,
         // so the honest state is "not signed in".
@@ -1182,7 +1182,7 @@ function GithubStep({
         <p className="text-muted-foreground mb-6">
           <span className="text-primary">
             Signed in as{' '}
-            <strong>{account.login ? `@${account.login}` : 'GitHub'}</strong>.
+            <strong>@{account.login}</strong>.
           </span>{' '}
           Voting and proposals use this account.
         </p>

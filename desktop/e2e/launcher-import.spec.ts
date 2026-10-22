@@ -800,10 +800,10 @@ test.describe('Launcher Import — onboarding Bring Your Instances step', () => 
     await expect(javaSwitch).toHaveAttribute('aria-checked', 'false');
     await page.getByRole('button', { name: 'Continue' }).click();
 
-    // GitHub step — a token is already stored, so it says who is signed in
-    // and offers Continue, not the sign-in offer.
+    // GitHub step — a token is already stored and its profile confirms the
+    // account, so it says who is signed in and offers Continue.
     await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible();
-    await expect(page.getByText('Signed in as', { exact: false })).toBeVisible();
+    await expect(page.getByText('@tester')).toBeVisible();
     await expect(page.getByRole('button', { name: "I'll do this later" })).toHaveCount(0);
     await page.getByRole('button', { name: 'Continue' }).click();
 

@@ -13,6 +13,7 @@ interface MockOptions {
   onboardingStep?: string;
   /** Whether a GitHub token is already stored. */
   githubStored?: boolean;
+  githubProfileMissing?: boolean;
 }
 
 async function installMock(page: Page, options: MockOptions) {
@@ -40,6 +41,7 @@ async function installMock(page: Page, options: MockOptions) {
         if (command === 'set_setting') return Promise.resolve(null);
         if (command === 'get_auth_status') return Promise.resolve(options.githubStored === true);
         if (command === 'get_github_profile') {
+          if (options.githubProfileMissing) return Promise.resolve(null);
           return Promise.resolve(options.githubStored ? { login: 'octocat', avatar_url: '' } : null);
         }
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
@@ -164,6 +166,19 @@ test.describe('onboarding', () => {
 
   test('without a stored token the GitHub step still offers sign-in', async ({ page }) => {
     await installMock(page, { onboardingComplete: false, onboardingStep: 'github', githubStored: false });
+    await page.goto('/');
+
+    await expect(page.getByRole('button', { name: 'Sign in with GitHub' })).toBeVisible();
+    await expect(page.getByText(/Signed in as/)).toHaveCount(0);
+  });
+
+  test('a stored token whose profile cannot be read is not claimed as signed in', async ({ page }) => {
+    await installMock(page, {
+      onboardingComplete: false,
+      onboardingStep: 'github',
+      githubStored: true,
+      githubProfileMissing: true,
+    });
     await page.goto('/');
 
     await expect(page.getByRole('button', { name: 'Sign in with GitHub' })).toBeVisible();
