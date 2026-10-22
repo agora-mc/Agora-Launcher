@@ -401,15 +401,15 @@ pub fn retention_plan_with_sizes(
                 keep.insert(entry.id.clone());
                 kept_lkg += 1;
             }
-        } else if entry.is_pre_restore {
-            if kept_pre_restore < policy.keep_pre_restore_count as usize {
-                keep.insert(entry.id.clone());
-                kept_pre_restore += 1;
-            }
         } else if entry.is_preserved {
             if kept_preserved < policy.keep_preserved_count as usize {
                 keep.insert(entry.id.clone());
                 kept_preserved += 1;
+            }
+        } else if entry.is_pre_restore {
+            if kept_pre_restore < policy.keep_pre_restore_count as usize {
+                keep.insert(entry.id.clone());
+                kept_pre_restore += 1;
             }
         } else if kept_non_lkg < policy.keep_non_lkg_count as usize {
             keep.insert(entry.id.clone());
@@ -428,11 +428,12 @@ pub fn retention_plan_with_sizes(
             .rev() // oldest first within each safety tier
             .filter(|entry| keep.contains(&entry.id) && !entry.is_current_lkg)
             .filter(|entry| !entry.is_protected)
+            // Snapshots a person made (or a migration took) are never deleted
+            // to make room; only automatic ones are.
+            .filter(|entry| !entry.is_preserved)
             .collect();
         candidates.sort_by_key(|entry| {
-            if entry.is_preserved {
-                3u8
-            } else if !entry.is_lkg && !entry.is_pre_restore {
+            if !entry.is_lkg && !entry.is_pre_restore {
                 0
             } else if entry.is_pre_restore {
                 1
@@ -487,10 +488,14 @@ pub fn run_retention(instance_dir: &Path) -> Result<(), String> {
                 is_lkg: lkg.promoted_snapshot_ids.contains(&snapshot.id)
                     || lkg.current_lkg_snapshot_id.as_ref() == Some(&snapshot.id),
                 is_current_lkg: lkg.current_lkg_snapshot_id.as_ref() == Some(&snapshot.id),
-                is_pre_restore: snapshot
-                    .label
-                    .as_deref()
-                    .is_some_and(|label| label.starts_with("pre-restore-")),
+                // Only automatic snapshots can be undo points. The label is
+                // free text a person can type, so it never makes a recorded
+                // manual or migration snapshot one.
+                is_pre_restore: !snapshot.is_preserved()
+                    && snapshot
+                        .label
+                        .as_deref()
+                        .is_some_and(|label| label.starts_with("pre-restore-")),
                 is_preserved: snapshot.is_preserved(),
                 is_protected: snapshot
                     .label
@@ -501,6 +506,19 @@ pub fn run_retention(instance_dir: &Path) -> Result<(), String> {
         .collect();
     let policy = RetentionPolicy::default();
     let to_evict = retention_plan_with_sizes(&entries, &policy);
+    let kept_manual_size: u64 = entries
+        .iter()
+        .filter(|entry| entry.is_preserved && !to_evict.contains(&entry.id))
+        .map(|entry| entry.size_bytes)
+        .sum();
+    if kept_manual_size > policy.size_cap_bytes {
+        eprintln!(
+            "snapshots you made in {} use {} MB, over the {} MB limit; they are kept, but automatic snapshots may not fit. Delete some to free space.",
+            instance_dir.display(),
+            kept_manual_size / 1_000_000,
+            policy.size_cap_bytes / 1_000_000
+        );
+    }
 
     let mut errors = Vec::new();
     for id in &to_evict {
@@ -1166,8 +1184,6 @@ mod tests {
         assert_eq!(remaining.len(), 3, "protected + both ordinary automatic");
     }
 
-    // REVIEW: the next two tests are expected to FAIL on this branch.
-
     #[test]
     fn manual_snapshot_named_pre_restore_is_not_evicted_as_an_undo_point() {
         // Labels are free text in the UI, so a person can type a pre-restore-
@@ -1203,5 +1219,26 @@ mod tests {
             evicted.is_empty(),
             "just-taken manual snapshot was evicted: {evicted:?}"
         );
+    }
+
+    #[test]
+    fn size_cap_never_evicts_manual_but_still_trims_automatic() {
+        let manual = RetentionEntry {
+            is_preserved: true,
+            ..retention("manual", 3_000_000_000, false, false, false)
+        };
+        let entries = vec![retention("auto", 10, false, false, false), manual];
+        let evicted = retention_plan_with_sizes(&entries, &RetentionPolicy::default());
+        assert_eq!(evicted, vec!["auto".to_string()]);
+    }
+
+    #[test]
+    fn preserved_entry_flagged_pre_restore_does_not_take_the_undo_slot() {
+        let manual = RetentionEntry {
+            is_preserved: true,
+            ..retention("manual", 1, false, false, true)
+        };
+        let entries = vec![manual, retention("undo", 1, false, false, true)];
+        assert!(retention_plan_with_sizes(&entries, &RetentionPolicy::default()).is_empty());
     }
 }
