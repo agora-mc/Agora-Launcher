@@ -5,6 +5,8 @@ import {
   ensureJavaRuntime,
   focusMainWindow,
   formatError,
+  getAuthStatus,
+  getGithubProfile,
   getSetting,
   githubLogin,
   githubLoginPoll,
@@ -40,6 +42,7 @@ import {
 import { pinnedMotion } from '../components/presentation-capabilities';
 import { motionAfterPinEnds, rememberMotionBeforePin, takeMotionBeforePin } from '../components/motion-before-pin';
 import { useConfirm } from '@/components/ui/confirm';
+import { Check } from 'lucide-react';
 
 /**
  * Every step's Back/Continue row. Sticky inside the card's scroll area: at
@@ -340,8 +343,11 @@ function AppearanceStep({
   onBack: () => void;
 }) {
   const { preferences, setPreferences } = useUiPreferences();
+  // Compare key by key, as Settings → Appearance does. Comparing whole objects
+  // as JSON is sensitive to key order and to any key a preset leaves out, and
+  // left the default preset looking unselected.
   const activePreset = (preset: UiPreferences) =>
-    JSON.stringify(preset) === JSON.stringify(preferences);
+    (Object.keys(preset) as (keyof UiPreferences)[]).every((key) => preset[key] === preferences[key]);
   // The interaction mode is a presentation preference with its own versioned
   // key (mirrors Settings → Appearance → Interaction mode), so it is
   // read/written directly rather than folded into the theme blob.
@@ -386,12 +392,15 @@ function AppearanceStep({
               type="button"
               aria-pressed={active}
               onClick={() => setPreferences(preset.preferences)}
-              className={`rounded-lg border p-3 text-left transition-colors ${
+              className={`relative rounded-lg border-2 p-3 text-left transition-colors ${
                 active
-                  ? 'border-primary bg-primary/5'
+                  ? 'border-primary bg-primary/10 shadow-xs'
                   : 'border-border bg-card hover:border-primary/40 hover:bg-accent'
               }`}
             >
+              {active && (
+                <Check aria-hidden="true" className="absolute right-2 top-2 h-4 w-4 text-primary" />
+              )}
               <span className="flex gap-1">
                 <span className="h-3 w-3 rounded-full ring-1 ring-black/10" style={{ backgroundColor: swatches.bg }} />
                 <span className="h-3 w-3 rounded-full ring-1 ring-black/10" style={{ backgroundColor: swatches.surface }} />
@@ -1100,6 +1109,31 @@ function GithubStep({
   // in-flight one.
   const sessionIdRef = useRef(0);
 
+  // Whether a GitHub token is already stored (from an earlier run, or the OS
+  // credential store). `undefined` while the check is running. A failed check
+  // lands on the sign-in offer, which never claims an account that was not
+  // confirmed.
+  const [account, setAccount] = useState<{ login: string | null } | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stored = await getAuthStatus();
+        if (!stored) {
+          if (!cancelled) setAccount(null);
+          return;
+        }
+        const profile = await getGithubProfile();
+        if (!cancelled) setAccount({ login: profile?.login ?? null });
+      } catch {
+        // Expired or unreadable session: the backend clears an expired token,
+        // so the honest state is "not signed in".
+        if (!cancelled) setAccount(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const signIn = async () => {
     setError(null);
     setResult(null);
@@ -1144,10 +1178,20 @@ function GithubStep({
     <div>
       <Stepper current="github" />
       <h2 className="text-2xl font-bold mb-2">Connect GitHub</h2>
-      <p className="text-muted-foreground mb-6">
-        Sign in with GitHub to participate in community governance (voting, proposals). This is
-        optional and can be completed later in Settings.
-      </p>
+      {account ? (
+        <p className="text-muted-foreground mb-6">
+          <span className="text-primary">
+            Signed in as{' '}
+            <strong>{account.login ? `@${account.login}` : 'GitHub'}</strong>.
+          </span>{' '}
+          Voting and proposals use this account.
+        </p>
+      ) : (
+        <p className="text-muted-foreground mb-6">
+          Sign in with GitHub to participate in community governance (voting, proposals). This is
+          optional and can be completed later in Settings.
+        </p>
+      )}
 
       {device && (
         <DeviceFlowPanel
@@ -1178,7 +1222,27 @@ function GithubStep({
           Back
         </button>
         <div className="flex gap-2">
-          {!polling && (
+          {account === undefined && (
+            <button
+              disabled
+              className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground opacity-50"
+            >
+              Checking GitHub…
+            </button>
+          )}
+          {account && (
+            <button
+              onClick={() => {
+                // Invalidate the polling session before navigating away.
+                sessionIdRef.current += 1;
+                onContinue();
+              }}
+              className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Continue
+            </button>
+          )}
+          {account === null && !polling && (
             <button
               onClick={() => {
                 // Invalidate the polling session before navigating away.
@@ -1190,13 +1254,15 @@ function GithubStep({
               I'll do this later
             </button>
           )}
-          <button
-            onClick={signIn}
-            disabled={polling}
-          className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {polling ? 'Waiting…' : 'Sign in with GitHub'}
-          </button>
+          {account === null && (
+            <button
+              onClick={signIn}
+              disabled={polling}
+              className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {polling ? 'Waiting…' : 'Sign in with GitHub'}
+            </button>
+          )}
         </div>
       </div>
     </div>

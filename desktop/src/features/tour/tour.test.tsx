@@ -82,7 +82,7 @@ describe('the guided tour', () => {
 
     await user.click(screen.getByRole('button', { name: 'Start the walkthrough' }));
     expect(await screen.findByText('Here is the home page')).toBeInTheDocument();
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expectStep(1);
 
     // An explain-only step offers Continue.
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -141,14 +141,14 @@ describe('the guided tour', () => {
     await user.click(screen.getByRole('button', { name: 'Back' }));
     expect(await screen.findByText('Open Browse')).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+      expectStep(2);
     });
     expect(screen.getByText('Press Skip step to continue.')).toBeInTheDocument();
 
     // Skip step finishes it and lets the tour move on.
     await user.click(screen.getByRole('button', { name: 'Skip step' }));
     expect(await screen.findByText('About this page')).toBeInTheDocument();
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expectStep(3);
   });
 
   it('can be ended at any point and remembers that it is no longer running', async () => {
@@ -172,6 +172,50 @@ describe('the guided tour', () => {
 
     renderTour();
     expect(await screen.findByText('Open Browse')).toBeInTheDocument();
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expectStep(2);
+  });
+
+  it('moves on when the user types in the field a step is about', async () => {
+    const user = userEvent.setup();
+    const named: TourStep[] = [
+      {
+        id: 'name-it',
+        title: 'Name it',
+        body: 'Type a name here.',
+        anchors: ['name-form'],
+        advance: { kind: 'any', of: [{ kind: 'focus' }, { kind: 'next' }] },
+      },
+      {
+        id: 'after',
+        title: 'Then this',
+        body: 'Next step.',
+        advance: { kind: 'next' },
+      },
+    ];
+    render(
+      <TourProvider steps={named}>
+        <div data-tour="name-form">
+          <input aria-label="Name" />
+          <button type="button">Other</button>
+        </div>
+        <TourStartButton />
+        <TourOverlay />
+      </TourProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Start the walkthrough' }));
+    expect(await screen.findByText('Name it')).toBeInTheDocument();
+
+    // Pressing a button in the same form does not count as working in the field.
+    await user.click(screen.getByRole('button', { name: 'Other' }));
+    expect(screen.getByText('Name it')).toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Mine');
+    expect(await screen.findByText('Then this')).toBeInTheDocument();
   });
 });
+
+/** Asserts the progress bar's step, the only place the card still shows a number. */
+function expectStep(n: number) {
+  expect(screen.getByRole('progressbar', { name: 'Tour progress' }))
+    .toHaveAttribute('aria-valuetext', `Step ${n} of 4`);
+}

@@ -258,7 +258,7 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
           aria-label="Guided tour"
         >
           <span className="min-w-0 truncate text-xs font-medium text-foreground">
-            Tour · Step {tour.stepNumber} of {tour.totalSteps}: {step.title}
+            Tour: {step.title}
           </span>
           <button
             type="button"
@@ -282,7 +282,6 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
             Guided tour
           </span>
           <span className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
-            Step {tour.stepNumber} of {tour.totalSteps}
             <button
               type="button"
               onClick={() => setCollapsed(true)}
@@ -300,6 +299,7 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={progress}
+          aria-valuetext={`Step ${tour.stepNumber} of ${tour.totalSteps}`}
         >
           <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
         </div>

@@ -833,7 +833,7 @@ function AppContent() {
       <AmbienceProvider>
       <AmbienceEnabledBridge onChange={setAmbienceEnabled} />
       <QueuedTourStarter />
-      <div ref={appShellRef} className="app-shell flex h-screen w-screen overflow-hidden gap-3 p-3">
+      <div ref={appShellRef} className="app-shell flex h-screen w-full overflow-hidden gap-3 p-3">
         <ControllerRootBindings
           rootRef={appShellRef}
           onOpenPalette={() => setCommandPaletteOpen(true)}
