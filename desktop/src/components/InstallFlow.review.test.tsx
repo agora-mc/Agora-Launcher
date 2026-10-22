@@ -440,3 +440,62 @@ describe('install success: the restore point', () => {
     expect(within(panel()).getByText('snap-fallback-id')).toBeInTheDocument();
   });
 });
+
+describe('install review: optional choices survive every replan', () => {
+  const extraDep = (): ResolvedDep => dep('amecs', { type: 'install-candidate', artifact: {} as never }, {
+    requirement: 'optional',
+    displayName: 'Amecs',
+  });
+  const amecsBox = (review: HTMLElement) => within(review).getByRole('checkbox', {
+    name: 'Include optional dependency Amecs',
+  });
+
+  it('keeps an extra the user ticked when Skip This Mod re-plans', async () => {
+    const blocked = planWith([extraDep()]);
+    blocked.blockingErrors = [{ code: 'ERR_HASH_UNAVAILABLE', message: 'sodium has no acceptable published hash' }];
+    installFlowMocks.resolveInstallPlan
+      .mockResolvedValueOnce(blocked)
+      .mockResolvedValueOnce(planWith([extraDep()]));
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+
+    fireEvent.click(amecsBox(review));
+    fireEvent.click(within(review).getByRole('button', { name: 'Skip This Mod' }));
+
+    await waitFor(() => expect(installFlowMocks.resolveInstallPlan).toHaveBeenCalledTimes(2));
+    const replanIntent = installFlowMocks.resolveInstallPlan.mock.calls[1][0] as InstallIntent;
+    expect(replanIntent.optionalDeps).toEqual({ type: 'include', deps: ['amecs'] });
+    expect(replanIntent.overrides.skipItems).toEqual(['sodium']);
+    await waitFor(() => expect(amecsBox(panel())).toBeChecked());
+  });
+
+  it('keeps an extra the user ticked when Install Anyway re-plans', async () => {
+    const blocked = planWith([extraDep()]);
+    blocked.blockingErrors = [{
+      code: 'ERR_REQUIRED_DEPENDENCY',
+      message: 'Required dependency MezzConfig could not be resolved: no version is published for Minecraft 1.21 on fabric. Install Anyway continues without it.',
+    }];
+    installFlowMocks.resolveInstallPlan
+      .mockResolvedValueOnce(blocked)
+      .mockResolvedValueOnce(planWith([extraDep()]));
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+
+    fireEvent.click(amecsBox(review));
+    fireEvent.click(within(review).getByRole('button', { name: 'Install Anyway' }));
+
+    await waitFor(() => expect(installFlowMocks.resolveInstallPlan).toHaveBeenCalledTimes(2));
+    const replanIntent = installFlowMocks.resolveInstallPlan.mock.calls[1][0] as InstallIntent;
+    expect(replanIntent.optionalDeps).toEqual({ type: 'include', deps: ['amecs'] });
+    expect(replanIntent.overrides.allowMissingDependencies).toBe(true);
+    await waitFor(() => expect(amecsBox(panel())).toBeChecked());
+  });
+});

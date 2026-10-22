@@ -442,26 +442,40 @@ export function InstallFlow({
     }
   }, [state, onClose]);
 
-  const handleConfirm = useCallback(() => {
+  /**
+   * Re-plan from the open review. Every replan that starts here sends the
+   * user's optional-extra choices with it and keeps the ticks the review shows,
+   * so no path can reset what the user chose. Only valid during review: the
+   * error screen has no choices to keep.
+   */
+  const replanFromReview = useCallback((change: (current: InstallIntent) => InstallIntent) => {
     if (state.phase !== 'review') return;
-    if (state.dirty || state.plan.pendingChoices.length > 0) {
-      recheckPlanRef.current = state.plan;
-      recheckChoicesRef.current = state.choices;
-      forceFinalReviewRef.current = false;
-      setNewlyAddedFiles(new Set());
-      setReviewNotice(null);
-      setResolutionIntent({
-        ...resolutionIntent,
+    recheckPlanRef.current = state.plan;
+    recheckChoicesRef.current = state.choices;
+    forceFinalReviewRef.current = false;
+    setNewlyAddedFiles(new Set());
+    setReviewNotice(null);
+    setResolutionIntent((current) => {
+      const next = change(current);
+      return {
+        ...next,
         optionalDeps: {
           type: 'include',
           deps: [...state.choices.optionalIncluded].sort(),
         },
         overrides: {
-          ...resolutionIntent.overrides,
+          ...next.overrides,
           forceConflictResolution: Object.fromEntries(state.choices.conflictResolutions),
         },
-      });
-      dispatch({ type: 'retry' });
+      };
+    });
+    dispatch({ type: 'retry' });
+  }, [state]);
+
+  const handleConfirm = useCallback(() => {
+    if (state.phase !== 'review') return;
+    if (state.dirty || state.plan.pendingChoices.length > 0) {
+      replanFromReview((current) => current);
       return;
     }
     if (background) {
@@ -472,31 +486,16 @@ export function InstallFlow({
     } else {
       dispatch({ type: 'confirm' });
     }
-  }, [background, onBackgroundStart, onClose, state, resolutionIntent]);
+  }, [background, onBackgroundStart, onClose, state, replanFromReview]);
 
   // Explicit opt-in past a missing required dependency: replan with the
   // override, so the review shows the named warning before anything is written.
   const handleInstallAnyway = useCallback(() => {
-    if (state.phase !== 'review') return;
-    recheckPlanRef.current = state.plan;
-    recheckChoicesRef.current = state.choices;
-    forceFinalReviewRef.current = false;
-    setNewlyAddedFiles(new Set());
-    setReviewNotice(null);
-    setResolutionIntent({
-      ...resolutionIntent,
-      optionalDeps: {
-        type: 'include',
-        deps: [...state.choices.optionalIncluded].sort(),
-      },
-      overrides: {
-        ...resolutionIntent.overrides,
-        allowMissingDependencies: true,
-        forceConflictResolution: Object.fromEntries(state.choices.conflictResolutions),
-      },
-    });
-    dispatch({ type: 'retry' });
-  }, [state, resolutionIntent]);
+    replanFromReview((current) => ({
+      ...current,
+      overrides: { ...current.overrides, allowMissingDependencies: true },
+    }));
+  }, [replanFromReview]);
 
   const handleClose = useCallback(() => {
     dispatch({ type: 'close' });
@@ -536,15 +535,14 @@ export function InstallFlow({
    * transaction, so we just re-resolve with the approval recorded.
    */
   const handleChooseLoaderVersion = useCallback((version: string) => {
-    setResolutionIntent((current) => ({
+    replanFromReview((current) => ({
       ...current,
       overrides: {
         ...current.overrides,
         approveLoaderVersion: version,
       },
     }));
-    dispatch({ type: 'retry' });
-  }, []);
+  }, [replanFromReview]);
 
   /**
    * Escape hatch from a loader mismatch: don't switch the loader, skip the
@@ -563,7 +561,7 @@ export function InstallFlow({
     // resolved plan is guaranteed to exist.
     if (action.type === 'batch-install' && state.phase === 'review') {
       const itemsToSkip = loaderMismatchSkipItems(state.plan);
-      setResolutionIntent((current) => ({
+      replanFromReview((current) => ({
         ...current,
         overrides: {
           ...current.overrides,
@@ -572,9 +570,8 @@ export function InstallFlow({
           ],
         },
       }));
-      dispatch({ type: 'retry' });
     }
-  }, [resolutionIntent, state.phase, onClose]);
+  }, [resolutionIntent, state, onClose, replanFromReview]);
 
   // Only claims controller input while it is actually asking something. The
   // corner progress panel must not, or an install running in the background
@@ -606,14 +603,13 @@ export function InstallFlow({
           const skippedItemId = failedBlockingBatchItemId(state.plan);
           const onSkip = skippedItemId
             ? () => {
-              setResolutionIntent((current) => ({
+              replanFromReview((current) => ({
                 ...current,
                 overrides: {
                   ...current.overrides,
                   skipItems: [...new Set([...(current.overrides.skipItems ?? []), skippedItemId])],
                 },
               }));
-              dispatch({ type: 'retry' });
             }
             : undefined;
           return <ReviewView
