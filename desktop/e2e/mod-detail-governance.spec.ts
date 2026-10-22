@@ -135,6 +135,7 @@ async function installModDetailMock(
           }
           if (command === 'set_setting') return Promise.resolve(null);
           if (command === 'get_auth_status') return Promise.resolve(authenticated);
+          if (command === 'get_github_profile') return Promise.resolve({ login: 'octocat', avatar_url: '' });
           if (command === 'get_registry_status') return Promise.resolve({
             has_cached_db: true,
             cached_tag: 'test',
@@ -342,6 +343,11 @@ test.describe('ModDetail Governance summary fields', () => {
 });
 
 test.describe('ModDetail canonical voting controls', () => {
+  // These tests are about the vote itself; the first-vote explainer has its own describe.
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('agora-vote-explainer-acknowledged', '1'));
+  });
+
   test('shows arrow controls with authoritative counts for mapped curated items', async ({ page }) => {
     await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
     await page.goto('/');
@@ -428,5 +434,47 @@ test.describe('ModDetail canonical voting controls', () => {
     await page.getByRole('button', { name: 'Downvote Test Mod. 2 downvotes.' }).click();
     await expect(upvote).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByRole('alert')).toContainText('GitHub rejected the vote.');
+  });
+});
+
+test.describe('ModDetail first-vote explainer', () => {
+  const voteCalls = (page: import('@playwright/test').Page) =>
+    page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+
+  test('the first vote asks first and sends nothing until confirmed', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
+    await page.goto('/');
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Votes are public')).toBeVisible();
+    await expect(dialog.getByText('@octocat')).toBeVisible();
+    expect(await voteCalls(page)).toEqual([]);
+
+    await dialog.getByRole('button', { name: 'Vote publicly' }).click();
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    expect(await voteCalls(page)).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
+
+    // Acknowledged: the next vote goes straight through.
+    await page.getByRole('button', { name: 'Downvote Test Mod. 2 downvotes.' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect.poll(async () => (await voteCalls(page)).length).toBe(2);
+    expect(await page.evaluate(() => localStorage.getItem('agora-vote-explainer-acknowledged'))).toBe('1');
+  });
+
+  test('cancelling sends nothing and asks again next time', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
+    await page.goto('/');
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(await voteCalls(page)).toEqual([]);
+    await expect(upvote).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.evaluate(() => localStorage.getItem('agora-vote-explainer-acknowledged'))).toBeNull();
+
+    await upvote.click();
+    await expect(page.getByRole('dialog').getByText('Votes are public')).toBeVisible();
   });
 });
