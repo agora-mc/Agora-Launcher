@@ -969,7 +969,7 @@ test.describe('Guided install version order', () => {
     await expect(other.locator('li[role="button"]')).toHaveCount(9);
   });
 
-  test('the destination step moves on when the right instance is already selected', async ({ page }) => {
+  test('one click advances one step: the destination step is shown when the right instance is already selected', async ({ page }) => {
     const stepIndex = TOUR_STEPS.findIndex((step) => step.id === 'install-pick-instance');
     await page.addInitScript((index) => {
       localStorage.setItem('agora-tour', JSON.stringify({ version: 1, status: 'running', index, completed: false }));
@@ -977,9 +977,14 @@ test.describe('Guided install version order', () => {
     }, stepIndex - 1);
     await installFlowMock(page);
     await page.goto('/');
-    // Opening the panel puts the tour on the destination step; the instance is
-    // preselected, so it must advance by itself to "Then pick a version".
+    // Opening the panel moves the tour onto the destination step, one step
+    // only. The instance is preselected, but the card must still show (with
+    // Continue) rather than chaining on to "Then pick a version" by itself.
     await page.getByRole('button', { name: 'Install to Instance' }).click();
-    await expect(page.getByRole('dialog', { name: 'Guided tour' }).getByText('Then pick a version')).toBeVisible();
+    const tour = page.getByRole('dialog', { name: 'Guided tour' });
+    await expect(tour.getByText('Choose where it goes')).toBeVisible();
+    await expect(tour.getByText(`Step ${stepIndex + 1} of ${TOUR_STEPS.length}`)).toBeVisible();
+    await tour.getByRole('button', { name: 'Continue' }).click();
+    await expect(tour.getByText('Then pick a version')).toBeVisible();
   });
 });

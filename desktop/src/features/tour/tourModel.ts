@@ -244,20 +244,22 @@ export const TOUR_STEPS: readonly TourStep[] = [
     title: 'Choose where it goes',
     body:
       'Pick the instance you want this mod installed into. If the right one is already selected, '
-      + 'the tour moves straight on.',
-    anchors: ['install-instance-select'],
+      + 'press Continue.',
+    // The wrapper is a fallback spotlight only and must not advance the step.
+    // The picker preselects the instance you came from, so it is already on
+    // screen when this step starts; advancing on it chained straight through
+    // the step (one click, two steps, a counter jump, and no picker shown).
+    anchors: ['install-instance-select', 'install-instance-chosen'],
     gate: 'install-panel',
     advance: {
       kind: 'any',
       of: [
         { kind: 'change' },
-        // The picker preselects the instance you came from, and re-picking the
-        // same option fires no change event; an instance being chosen is enough.
-        { kind: 'appear', anchor: 'install-instance-chosen' },
+        { kind: 'next' },
         { kind: 'appear', anchor: 'install-version-list' },
       ],
     },
-    waitingHint: 'Select your instance from the list.',
+    waitingHint: 'Select your instance from the list, or press Continue if the right one is selected.',
     offTrackHint: 'Reopen “Install to Instance” to continue.',
     cardEdge: 'bottom',
   },

@@ -214,8 +214,7 @@ describe('the guided tour', () => {
   });
 });
 
-/** Asserts the progress bar's step, the only place the card still shows a number. */
+/** Asserts the card's step counter. */
 function expectStep(n: number) {
-  expect(screen.getByRole('progressbar', { name: 'Tour progress' }))
-    .toHaveAttribute('aria-valuetext', `Step ${n} of 4`);
+  expect(screen.getByText(`Step ${n} of 4`)).toBeInTheDocument();
 }

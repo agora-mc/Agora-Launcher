@@ -174,11 +174,20 @@ test.describe('onboarding', () => {
     await installMock(page, { onboardingComplete: false, onboardingStep: 'appearance' });
     await page.goto('/');
 
-    await expect(page.getByRole('button', { name: /Civic Gold/ })).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.getByRole('button', { name: /Agora Blue/ })).toHaveAttribute('aria-pressed', 'false');
+    // The selected card must be visibly different. In the original build it
+    // had aria-pressed="true", but the same gold border as every other card and
+    // only a 5% tint, so it looked unselected. The check mark is the marker.
+    const civic = page.getByRole('button', { name: /Civic Gold/ });
+    const agoraBlue = page.getByRole('button', { name: /Agora Blue/ });
+    await expect(civic).toHaveAttribute('aria-pressed', 'true');
+    await expect(civic.locator('svg')).toHaveCount(1);
+    await expect(agoraBlue).toHaveAttribute('aria-pressed', 'false');
+    await expect(agoraBlue.locator('svg')).toHaveCount(0);
 
-    await page.getByRole('button', { name: /Agora Blue/ }).click();
-    await expect(page.getByRole('button', { name: /Agora Blue/ })).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.getByRole('button', { name: /Civic Gold/ })).toHaveAttribute('aria-pressed', 'false');
+    await agoraBlue.click();
+    await expect(agoraBlue).toHaveAttribute('aria-pressed', 'true');
+    await expect(agoraBlue.locator('svg')).toHaveCount(1);
+    await expect(civic).toHaveAttribute('aria-pressed', 'false');
+    await expect(civic.locator('svg')).toHaveCount(0);
   });
 });

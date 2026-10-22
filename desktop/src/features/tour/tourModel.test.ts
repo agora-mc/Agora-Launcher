@@ -6,6 +6,7 @@ import {
   TOUR_STEPS,
   tourReducer,
   watchedAnchors,
+  type TourState,
   type TourStep,
 } from './tourModel';
 
@@ -228,12 +229,15 @@ describe('the shipped script', () => {
     }
   });
 
-  it('does not stall the destination step when the instance is already chosen', () => {
+  it('waits on the picker when the instance is already chosen, and Continue moves on', () => {
     const index = TOUR_STEPS.findIndex((step) => step.id === 'install-pick-instance');
     expect(index).toBeGreaterThan(-1);
     const state = { status: 'running' as const, index, manual: false };
     // The picker preselects the instance; no change event ever fires for it.
+    // Its card must stay up so the step is shown, not skipped.
     expect(tourReducer(state, { type: 'anchor-present', anchor: 'install-instance-chosen' }))
+      .toEqual(state);
+    expect(tourReducer(state, { type: 'next' }))
       .toEqual({ status: 'running', index: index + 1, manual: false });
   });
 
@@ -263,6 +267,20 @@ describe('the shipped script', () => {
     expect(step).toBeDefined();
     expect(step?.advance).toEqual({ kind: 'next' });
     expect(step?.body).toMatch(/public/i);
+  });
+
+  it('one user action advances exactly one step, even when the next step is already satisfied', () => {
+    // Clicking "Install to Instance" opens the panel: one advance. The picker
+    // then sees the preselected instance on the next frame. That must not
+    // advance a second time, or the card counter jumps (11 -> 13) and the
+    // picker is never shown.
+    const index = TOUR_STEPS.findIndex((step) => step.id === 'mod-detail-install');
+    expect(index).toBeGreaterThan(-1);
+    let state: TourState = { status: 'running', index, manual: false };
+    state = tourReducer(state, { type: 'anchor-present', anchor: 'install-panel' });
+    expect(TOUR_STEPS[state.index].id).toBe('install-pick-instance');
+    state = tourReducer(state, { type: 'anchor-present', anchor: 'install-instance-chosen' });
+    expect(TOUR_STEPS[state.index].id).toBe('install-pick-instance');
   });
 
   it('reaches the end by performing every step in order', () => {
