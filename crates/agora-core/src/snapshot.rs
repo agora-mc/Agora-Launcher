@@ -2479,40 +2479,79 @@ pub fn delete_snapshot(instance_dir: &Path, snapshot_id: &str) -> Result<(), Str
     Ok(())
 }
 
+/// Whether a blob may still be needed by some snapshot.
+///
+/// Fails closed: the object store is shared by every instance, so if any
+/// snapshot directory or manifest cannot be read right now (a sharing
+/// violation and a half-written file look the same), the blob is reported as
+/// referenced and kept. Leaving an orphan blob costs disk space; deleting a
+/// needed one costs a restore point.
 fn blob_is_referenced_by_any_snapshot(instance_dir: &Path, hash: &str) -> bool {
     if validate_blob_hash(hash).is_err() {
         return false;
     }
     let instances_root = instance_dir.parent().unwrap_or(instance_dir);
-    let candidates = fs::read_dir(instances_root)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .map(|entry| entry.path().join(".agora_snapshots"))
-        .chain(std::iter::once(snapshots_dir(instance_dir)));
+    let mut dirs: Vec<PathBuf> = match fs::read_dir(instances_root) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join(".agora_snapshots"))
+            .collect(),
+        Err(error) => {
+            eprintln!("snapshot blob cleanup skipped: cannot list instances: {error}");
+            return true;
+        }
+    };
+    dirs.push(snapshots_dir(instance_dir));
 
-    candidates
-        .filter_map(|dir| fs::read_dir(dir).ok())
-        .flatten()
-        .any(|entry| {
-            let Ok(entry) = entry else {
-                return false;
-            };
-            if entry.path().extension().and_then(|e| e.to_str()) != Some("json") {
-                return false;
+    for dir in dirs {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                eprintln!(
+                    "snapshot blob cleanup skipped: cannot read {}: {error}",
+                    dir.display()
+                );
+                return true;
             }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
             let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let is_manifest = name.ends_with(".json")
+                && !name.ends_with(".agora-verified.json")
+                && name != "live-file-index.json"
+                && name != "mutation-journal.json";
+            if !is_manifest {
+                continue;
+            }
             let Some(id) = path.file_stem().and_then(|name| name.to_str()) else {
-                return false;
+                continue;
             };
-            let Ok(manifest) = read_manifest_file(&path, id) else {
-                return false;
-            };
-            manifest
-                .files
-                .iter()
-                .any(|file| file.blob_sha256.as_deref().or(file.sha256.as_deref()) == Some(hash))
-        })
+            match read_manifest_file(&path, id) {
+                Ok(manifest) => {
+                    if manifest.files.iter().any(|file| {
+                        file.blob_sha256.as_deref().or(file.sha256.as_deref()) == Some(hash)
+                    }) {
+                        return true;
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "snapshot blob cleanup skipped: cannot read manifest {}: {error}",
+                        path.display()
+                    );
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Return the physical storage estimate used by retention for a snapshot.
@@ -2601,6 +2640,88 @@ mod tests {
             .filter_map(Result::ok)
             .map(|prefix| fs::read_dir(prefix.path()).unwrap().count())
             .sum()
+    }
+
+    // Shared blobs live in one app-wide object store. An unreadable sibling
+    // manifest must count as "may still reference this blob".
+    #[test]
+    fn review_delete_keeps_shared_blob_when_another_manifest_is_unreadable() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("inst-a");
+        let b = tmp.path().join("inst-b");
+        for dir in [&a, &b] {
+            fs::create_dir_all(dir.join("mods")).unwrap();
+            fs::write(dir.join("mods").join("shared.jar"), b"same bytes in both").unwrap();
+        }
+        let snap_a = create_snapshot(&a, Some("a")).unwrap();
+        let snap_b = create_snapshot(&b, Some("b")).unwrap();
+
+        let manifest_a =
+            read_manifest_file(&snapshot_manifest_path(&a, &snap_a.id), &snap_a.id).unwrap();
+        let hash = manifest_a
+            .files
+            .iter()
+            .filter_map(|file| file.blob_sha256.as_deref().or(file.sha256.as_deref()))
+            .next()
+            .expect("snapshot a records a blob hash")
+            .to_string();
+        let blob = snapshot_blob_path(&a, &hash);
+        assert!(
+            blob.is_file(),
+            "setup: shared blob should exist before delete"
+        );
+
+        // Snapshot b still needs the blob, but its manifest cannot be read
+        // right now (a sharing violation or a half-written file looks the same).
+        fs::write(snapshot_manifest_path(&b, &snap_b.id), b"{ not json").unwrap();
+
+        delete_snapshot(&a, &snap_a.id).unwrap();
+
+        assert!(
+            blob.is_file(),
+            "shared blob {hash} was removed while snapshot {} may still need it",
+            snap_b.id
+        );
+    }
+
+    #[test]
+    fn prune_unreferenced_objects_keeps_blobs_when_a_manifest_is_unreadable() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("inst-a");
+        let b = tmp.path().join("inst-b");
+        for dir in [&a, &b] {
+            fs::create_dir_all(dir.join("mods")).unwrap();
+            fs::write(dir.join("mods").join("shared.jar"), b"same bytes in both").unwrap();
+        }
+        let snap_a = create_snapshot(&a, Some("a")).unwrap();
+        let snap_b = create_snapshot(&b, Some("b")).unwrap();
+        let before = count_snapshot_objects(&a);
+        assert!(before > 0);
+
+        // Healthy store: everything is referenced, nothing is pruned.
+        prune_unreferenced_objects(&a).unwrap();
+        assert_eq!(count_snapshot_objects(&a), before);
+
+        // Snapshot a goes away; b's manifest is unreadable: keep every blob.
+        fs::remove_file(snapshot_manifest_path(&a, &snap_a.id)).unwrap();
+        fs::write(snapshot_manifest_path(&b, &snap_b.id), b"{ not json").unwrap();
+        prune_unreferenced_objects(&a).unwrap();
+        assert_eq!(count_snapshot_objects(&a), before);
+    }
+
+    #[test]
+    fn delete_still_removes_blobs_nothing_references_and_ignores_helper_json() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("inst-a");
+        fs::create_dir_all(a.join("mods")).unwrap();
+        fs::write(a.join("mods").join("only.jar"), b"only here").unwrap();
+        let snap = create_snapshot(&a, Some("a")).unwrap();
+        // Helper files that are not manifests must not block cleanup.
+        fs::write(snapshots_dir(&a).join("live-file-index.json"), b"garbage").unwrap();
+        fs::write(snapshots_dir(&a).join("mutation-journal.json"), b"garbage").unwrap();
+        assert!(count_snapshot_objects(&a) > 0);
+        delete_snapshot(&a, &snap.id).unwrap();
+        assert!(!snapshot_objects_dir(&a).exists() || count_snapshot_objects(&a) == 0);
     }
 
     #[test]

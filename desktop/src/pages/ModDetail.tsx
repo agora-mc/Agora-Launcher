@@ -19,6 +19,7 @@ import {
   getGovernanceSummary,
   getGovernanceConfig,
   getInstanceDetail,
+  getGithubProfile,
   getItemVote,
   getRegistryItem,
   openExternalUrl,
@@ -200,6 +201,24 @@ const SANITIZE_SCHEMA: Schema = {
 
 type CuratorNotesRegistryItem = RegistryItem & { curator_notes?: string | null };
 
+const VOTE_EXPLAINER_KEY = 'agora-vote-explainer-acknowledged';
+
+function voteExplainerAcknowledged(): boolean {
+  try {
+    return window.localStorage.getItem(VOTE_EXPLAINER_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function acknowledgeVoteExplainer() {
+  try {
+    window.localStorage.setItem(VOTE_EXPLAINER_KEY, '1');
+  } catch {
+    // Storage unavailable: the explainer simply shows again next time.
+  }
+}
+
 export function ModDetail({ itemId, initialInstanceId, requestedContentType, onBack, onOpenInstanceEditor }: { itemId: string; initialInstanceId?: string; requestedContentType?: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
   const [item, setItem] = useState<RegistryItem | null>(null);
   // Which format of a multi-format project the user is after. Seeded from the
@@ -274,6 +293,10 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   // manifest corresponds to this mod. Separate trackers for the header
   // (browse-context instance), the install-flow dialog, and the versions tab.
   const [contextInstalledEntry, setContextInstalledEntry] = useState<InstalledMod | null>(null);
+  // The instance an install just ran against, so the page can show the new
+  // installed state; `installRefresh` re-reads the instance when the flow closes.
+  const [lastInstallTarget, setLastInstallTarget] = useState<string | null>(null);
+  const [installRefresh, setInstallRefresh] = useState(0);
   const [flowInstalledEntry, setFlowInstalledEntry] = useState<InstalledMod | null>(null);
   const [versionsTabInstalledEntry, setVersionsTabInstalledEntry] = useState<InstalledMod | null>(null);
 
@@ -753,24 +776,26 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     return null;
   }, [itemId, item?.modrinth_id]);
 
+  const contextInstanceId = lastInstallTarget ?? initialInstanceId ?? null;
+
   // Header banner: when arriving with an instance context, surface the
   // installed state up front.
   useEffect(() => {
-    if (!initialInstanceId) {
+    if (!contextInstanceId) {
       setContextInstalledEntry(null);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const detail = await getInstanceDetail(initialInstanceId);
+        const detail = await getInstanceDetail(contextInstanceId);
         if (!cancelled) setContextInstalledEntry(findInstalledEntry(detail));
       } catch {
         if (!cancelled) setContextInstalledEntry(null);
       }
     })();
     return () => { cancelled = true; };
-  }, [initialInstanceId, findInstalledEntry]);
+  }, [contextInstanceId, findInstalledEntry, installRefresh]);
 
   // Versions tab: track the installed entry for the picked instance.
   useEffect(() => {
@@ -788,7 +813,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
       }
     })();
     return () => { cancelled = true; };
-  }, [versionsTabInstanceId, findInstalledEntry]);
+  }, [versionsTabInstanceId, findInstalledEntry, installRefresh]);
 
   const loadMoreVersions = useCallback(async () => {
     if (!selectedInstanceId || loadingMoreVersions || !hasMoreVersions) return;
@@ -1166,6 +1191,34 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     if (!item || item.id !== itemId || !itemVoteState || votePending) return;
     const previous = itemVoteState;
     const desired = !previous.conflicted && previous.vote === direction ? null : direction;
+    // The first vote ever explains that it is public; removing a vote does not need it.
+    if (desired !== null && !voteExplainerAcknowledged()) {
+      setVotePending(true);
+      let login: string | null = null;
+      try {
+        login = (await getGithubProfile())?.login ?? null;
+      } catch {
+        login = null;
+      }
+      const proceed = await confirm({
+        title: 'Votes are public',
+        body: (
+          <>
+            Your vote is a public GitHub reaction, posted as{' '}
+            <strong>{login ? `@${login}` : 'your GitHub account'}</strong>. Anyone can see it on GitHub.
+            You will not be asked again.
+          </>
+        ),
+        confirmLabel: 'Vote publicly',
+        cancelLabel: 'Cancel',
+      });
+      if (!proceed) {
+        setVotePending(false);
+        return;
+      }
+      acknowledgeVoteExplainer();
+      setVotePending(false);
+    }
     setVotePending(true);
     try {
       const next = await setItemVote(item.id, desired);
@@ -1223,7 +1276,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
         <div className="rounded-lg border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
           <div className="flex items-center gap-2 font-semibold">
             <span aria-hidden>✓</span>
-            <span>Already installed in {versionsTabInstances.find((instance) => instance.instance_id === initialInstanceId)?.name ?? initialInstanceId}</span>
+            <span>Already installed in {versionsTabInstances.find((instance) => instance.instance_id === contextInstanceId)?.name ?? contextInstanceId}</span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             Version {contextInstalledEntry.version ?? 'unknown'} · {contextInstalledEntry.filename}
@@ -1355,8 +1408,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
               <p className="text-sm text-foreground mt-2">{item.description}</p>
             )}
             {isRegistryBacked && !item.is_immune && governanceSummary?.vote_issue_number ? (
-              <div className="mt-3 space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
+              <div className="mt-5 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+                  <div className="inline-flex items-center gap-3">
                   <button
                     type="button"
                     aria-label={`Upvote ${item.name}. ${item.upvotes} upvotes.`}
@@ -1388,6 +1442,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                     <ArrowDown aria-hidden size={15} />
                     <span>{item.downvotes}</span>
                   </button>
+                  </div>
                   <span className="text-muted-foreground">
                     net {item.net_score} · velocity {velocityLabel}
                   </span>
@@ -1484,7 +1539,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
               data-tour="mod-detail-install"
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              Install to Instance
+              {contextInstalledEntry ? 'Installed ✓ · Change version' : 'Install to Instance'}
             </button>
           )}
         </div>
@@ -1885,7 +1940,11 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
             intent={canonicalInstall.intent}
             instanceName={canonicalInstall.instanceName}
             onOpenInstance={onOpenInstanceEditor}
-            onClose={() => setCanonicalInstall(null)}
+            onClose={() => {
+              setLastInstallTarget(canonicalInstall.intent.targetInstance);
+              setInstallRefresh((value) => value + 1);
+              setCanonicalInstall(null);
+            }}
           />
         )}
 

@@ -755,8 +755,10 @@ test.describe('Release C3 — Install flow entry points', () => {
     await expect(page.getByRole('button', { name: 'Review replace plan' })).toBeVisible();
 
     // The inline flow shows the installed notice, marks the row, and offers
-    // "Replace with" instead of "Install".
-    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    // "Replace with" instead of "Install". The page's main button already
+    // reflects the installed state rather than offering a fresh install.
+    await expect(page.getByRole('button', { name: 'Install to Instance' })).toHaveCount(0);
+    await page.getByRole('button', { name: /Installed .*Change version/ }).click();
     await page.getByRole('button', { name: 'Next: Choose Version' }).click();
     await expect(page.getByText(/Already installed: version 1\.0\.0/)).toBeVisible();
     await page.getByText('test-mod-1.0.0.jar', { exact: true }).click();
@@ -979,7 +981,8 @@ test.describe('Guided install version order', () => {
     await page.goto('/');
     // Opening the panel puts the tour on the destination step; the instance is
     // preselected, so it must advance by itself to "Then pick a version".
-    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    // The mod may already be installed there, which relabels the button.
+    await page.getByRole('button', { name: /Install to Instance|Installed .*Change version/ }).click();
     await expect(page.getByRole('dialog', { name: 'Guided tour' }).getByText('Then pick a version')).toBeVisible();
   });
 });
