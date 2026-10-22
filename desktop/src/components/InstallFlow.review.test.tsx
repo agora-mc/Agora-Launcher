@@ -7,7 +7,7 @@
  * line states what the snapshot really covers.
  */
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { InstallFlow } from './InstallFlow';
 import type {
   DepDisposition,
@@ -192,5 +192,58 @@ describe('install review: restore point copy', () => {
     expect(copy.textContent).toContain('not logs or screenshots');
     expect(copy.textContent).toContain('Snapshots tab');
     expect(copy.textContent).not.toContain('one click');
+  });
+});
+
+describe('install review: a required mod the jar declares', () => {
+  const missing = (): ResolvedDep => dep('fabric-api', { type: 'unresolved', reason: 'it is not in the Agora catalog' }, {
+    source: 'jar',
+    displayName: 'Fabric API',
+    requestedBy: ['xaeros-minimap'],
+  });
+
+  it('says what needs it', async () => {
+    const review = await renderReview([
+      dep('fabric-api', { type: 'install-candidate', artifact: {} as never }, {
+        source: 'jar',
+        displayName: 'Fabric API',
+        requestedBy: ['xaeros-minimap'],
+      }),
+    ]);
+    expect(within(review).getByText('Needed by xaeros-minimap')).toBeInTheDocument();
+  });
+
+  it('offers Install Anyway when it blocks, and replans with the override', async () => {
+    const blocked = planWith([missing()]);
+    blocked.blockingErrors = [{
+      code: 'ERR_MISSING_DEPENDENCY',
+      message: 'xaeros-minimap needs Fabric API, which Agora could not find for this instance. Install it separately, or use Install Anyway.',
+    }];
+    const replanned = planWith([missing()]);
+    replanned.warnings = [{ code: 'WARN_MISSING_DEPENDENCY', message: 'Fabric API is missing. Installing anyway, as you chose.' }];
+    installFlowMocks.resolveInstallPlan.mockResolvedValueOnce(blocked).mockResolvedValueOnce(replanned);
+
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+    expect(within(review).getByText(/needs Fabric API/)).toBeInTheDocument();
+
+    fireEvent.click(within(review).getByRole('button', { name: 'Install Anyway' }));
+
+    await waitFor(() => expect(installFlowMocks.resolveInstallPlan).toHaveBeenCalledTimes(2));
+    const secondIntent = installFlowMocks.resolveInstallPlan.mock.calls[1][0] as InstallIntent;
+    expect(secondIntent.overrides.allowMissingDependencies).toBe(true);
+    await waitFor(() => expect(within(panel()).getByText(/Fabric API is missing/)).toBeInTheDocument());
+  });
+
+  it('does not offer Install Anyway for an ordinary blocking error', async () => {
+    const blocked = planWith([]);
+    blocked.blockingErrors = [{ code: 'ERR_INSTANCE_LOCKED', message: 'This instance is locked.' }];
+    installFlowMocks.resolveInstallPlan.mockResolvedValueOnce(blocked);
+    const review = await renderReview([]);
+    expect(within(review).queryByRole('button', { name: 'Install Anyway' })).toBeNull();
   });
 });

@@ -438,6 +438,29 @@ export function InstallFlow({
     }
   }, [background, onBackgroundStart, onClose, state, resolutionIntent]);
 
+  // Explicit opt-in past a missing required dependency: replan with the
+  // override, so the review shows the named warning before anything is written.
+  const handleInstallAnyway = useCallback(() => {
+    if (state.phase !== 'review') return;
+    recheckPlanRef.current = state.plan;
+    forceFinalReviewRef.current = false;
+    setNewlyAddedFiles(new Set());
+    setReviewNotice(null);
+    setResolutionIntent({
+      ...resolutionIntent,
+      optionalDeps: {
+        type: 'include',
+        deps: [...state.choices.optionalIncluded].sort(),
+      },
+      overrides: {
+        ...resolutionIntent.overrides,
+        allowMissingDependencies: true,
+        forceConflictResolution: Object.fromEntries(state.choices.conflictResolutions),
+      },
+    });
+    dispatch({ type: 'retry' });
+  }, [state, resolutionIntent]);
+
   const handleClose = useCallback(() => {
     dispatch({ type: 'close' });
     onClose?.();
@@ -564,6 +587,7 @@ export function InstallFlow({
            onToggleOptional={(id, inc) => dispatch({ type: 'patch-choice', modJarId: id, included: inc })}
            onResolveConflict={(id, res) => dispatch({ type: 'resolve-conflict', conflictId: id, resolution: res })}
              onRetry={() => dispatch({ type: 'retry' })}
+             onInstallAnyway={handleInstallAnyway}
              onSkip={onSkip}
              onChooseLoaderVersion={handleChooseLoaderVersion}
              onSkipLoaderMismatch={handleSkipLoaderMismatch}
@@ -720,6 +744,7 @@ function ReviewView({
   onToggleOptional,
   onResolveConflict,
   onRetry,
+  onInstallAnyway,
   onSkip,
   onChooseLoaderVersion,
   onSkipLoaderMismatch,
@@ -733,6 +758,7 @@ function ReviewView({
   onToggleOptional: (id: string, inc: boolean) => void;
   onResolveConflict: (id: string, res: string) => void;
   onRetry: () => void;
+  onInstallAnyway: () => void;
   onSkip?: () => void;
   onChooseLoaderVersion: (version: string) => void;
   onSkipLoaderMismatch: () => void;
@@ -1002,7 +1028,7 @@ function ReviewView({
       <div className="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
         <ShieldCheck className="mt-px h-4 w-4 shrink-0 text-green-600" aria-hidden="true" />
         <p>
-          Agora saves an automatic restore point before anything is written. It covers mods,
+          Agora saves a restore point before anything is written. It is automatic and covers mods,
           configs, worlds, resource and shader packs, datapacks and options, but not logs or
           screenshots. You can roll back from the result screen, or later from the instance&apos;s
           Snapshots tab. The 5 most recent automatic restore points are kept.
@@ -1040,6 +1066,14 @@ function ReviewView({
         {plan.blockingErrors.length > 0 && (
           <button onClick={onRetry} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
             Try Again
+          </button>
+        )}
+        {plan.blockingErrors.some((error) => error.code === 'ERR_MISSING_DEPENDENCY') && (
+          <button
+            onClick={onInstallAnyway}
+            className="rounded-lg border border-amber-500/50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+          >
+            Install Anyway
           </button>
         )}
         {onSkip && (
@@ -1152,6 +1186,11 @@ function DepRow({ dep, checked, onToggle, highlighted }: { dep: ResolvedDep; che
     <span className="min-w-0 flex-1">
       <span className="block truncate text-sm font-medium" title={displayName}>{displayName}</span>
       <span className={cn('block text-xs', status.tone)}>{status.label}</span>
+      {dep.source === 'jar' && (dep.requestedBy?.length ?? 0) > 0 && (
+        <span className="block text-xs text-muted-foreground">
+          Needed by {dep.requestedBy?.join(', ')}
+        </span>
+      )}
     </span>
   );
 

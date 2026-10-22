@@ -51,6 +51,11 @@ export interface PlanOverrides {
    * leaves the `loader-change` pending choice unresolved.
    */
   approveLoaderVersion?: string;
+  /**
+   * Explicit approval to install although a mod's own jar requires something
+   * Agora could not find. Without it the plan is blocked (`ERR_MISSING_DEPENDENCY`).
+   */
+  allowMissingDependencies?: boolean;
 }
 
 export interface InstallIntent {
