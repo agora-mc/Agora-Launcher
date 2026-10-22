@@ -156,9 +156,265 @@ impl ModCache {
         Ok(jars.iter().map(|j| j.size_bytes).sum())
     }
 
+    /// Store verified bytes under their own SHA-256 and return that hash.
+    ///
+    /// The write is atomic: the bytes go to a uniquely named temporary file in
+    /// the entry directory and are renamed into place, so a concurrent reader
+    /// sees either no entry or a complete one, never a half-written jar.
+    pub fn store_bytes(&self, bytes: &[u8], filename: &str) -> Result<String, String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let sha256 = crate::download::sha256_hex(bytes);
+        // Already present and intact (another install stored it): leave it
+        // alone rather than racing a reader with a replace.
+        if self.read_verified(&sha256).is_ok() {
+            return Ok(sha256);
+        }
+        let cache_path = self.cache_path_for(&sha256);
+        let dir = cache_path
+            .parent()
+            .ok_or_else(|| "Invalid cache path".to_string())?;
+        fs::create_dir_all(dir).map_err(|e| format!("failed to create cache dir: {e}"))?;
+
+        let tmp = dir.join(format!(
+            "file.jar.{}.{}.tmp",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let write = || -> Result<(), String> {
+            use std::io::Write;
+            let mut file =
+                fs::File::create(&tmp).map_err(|e| format!("failed to create cache file: {e}"))?;
+            file.write_all(bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|e| format!("failed to write cache file: {e}"))?;
+            drop(file);
+            // A same-hash entry may already exist (another install won the
+            // race, or it is corrupt). Replace it: the content is the one we
+            // just hashed.
+            if cache_path.exists() {
+                let _ = fs::remove_file(&cache_path);
+            }
+            fs::rename(&tmp, &cache_path).map_err(|e| format!("failed to finalize cache file: {e}"))
+        };
+        if let Err(error) = write() {
+            let _ = fs::remove_file(&tmp);
+            // Another writer may have finished the same entry meanwhile.
+            if self.read_verified(&sha256).is_ok() {
+                return Ok(sha256);
+            }
+            return Err(error);
+        }
+
+        let metadata = CachedJar {
+            sha256: sha256.clone(),
+            filename: filename.to_string(),
+            size_bytes: bytes.len() as u64,
+            cached_at: chrono::Utc::now().to_rfc3339(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&metadata) {
+            let _ = fs::write(dir.join("metadata.json"), json);
+        }
+        Ok(sha256)
+    }
+
+    /// Read an entry and confirm its bytes still hash to the key. Any error,
+    /// including an absent entry, means "not usable".
+    pub fn read_verified(&self, sha256: &str) -> Result<Vec<u8>, String> {
+        if !is_sha256_hex(sha256) {
+            return Err("not a SHA-256 key".into());
+        }
+        let bytes =
+            fs::read(self.cache_path_for(sha256)).map_err(|e| format!("cache read failed: {e}"))?;
+        if crate::download::sha256_hex(&bytes) != sha256 {
+            return Err("cache entry does not match its hash".into());
+        }
+        Ok(bytes)
+    }
+
+    /// Record a use of an entry, so eviction treats it as recently needed.
+    pub fn mark_used(&self, sha256: &str) {
+        if let Some(dir) = self.entry_dir(sha256) {
+            let _ = fs::write(dir.join("used"), b"");
+        }
+    }
+
+    /// Remove one entry. Only a well-formed `<xx>/<64 hex>` directory under the
+    /// cache root is ever deleted, and never through a symlink or junction.
+    /// Hard links made from an entry (see `resolve_and_link`) are separate
+    /// directory entries for the same data, so removing the entry cannot break
+    /// a file already linked into an instance.
+    pub fn remove_entry(&self, sha256: &str) -> Result<(), String> {
+        let dir = self
+            .entry_dir(sha256)
+            .ok_or_else(|| "not a SHA-256 key".to_string())?;
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.file_type().is_dir() && !is_link_like(&meta) => {
+                fs::remove_dir_all(&dir).map_err(|e| format!("failed to remove entry: {e}"))
+            }
+            Ok(_) => Err("refusing to remove a non-directory cache entry".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("failed to inspect entry: {e}")),
+        }
+    }
+
+    /// Every well-formed entry found on disk, discovered from the directory
+    /// layout (not metadata files, which may be missing or damaged). Anything
+    /// that does not look like an entry is ignored and never touched.
+    pub fn entries(&self) -> Vec<CacheEntryInfo> {
+        let mut out = Vec::new();
+        let Ok(prefixes) = fs::read_dir(&self.cache_dir) else {
+            return out;
+        };
+        for prefix in prefixes.flatten() {
+            let Some(prefix_name) = prefix.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if prefix_name.len() != 2 || !is_lower_hex(&prefix_name) {
+                continue;
+            }
+            let Ok(hashes) = fs::read_dir(prefix.path()) else {
+                continue;
+            };
+            for hash in hashes.flatten() {
+                let Some(name) = hash.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if !is_sha256_hex(&name) || !name.starts_with(&prefix_name) {
+                    continue;
+                }
+                let Ok(jar_meta) = fs::metadata(hash.path().join("file.jar")) else {
+                    continue;
+                };
+                let modified = |p: PathBuf| fs::metadata(p).and_then(|m| m.modified()).ok();
+                let last_used = [jar_meta.modified().ok(), modified(hash.path().join("used"))]
+                    .into_iter()
+                    .flatten()
+                    .max();
+                out.push(CacheEntryInfo {
+                    sha256: name,
+                    size_bytes: jar_meta.len(),
+                    last_used,
+                });
+            }
+        }
+        out
+    }
+
+    /// Bound the cache. See [`EvictionPolicy`]. `is_protected` names entries an
+    /// in-flight install holds; they are never removed. Anything that cannot be
+    /// inspected or removed is left alone.
+    pub fn evict(
+        &self,
+        policy: &EvictionPolicy,
+        now: std::time::SystemTime,
+        is_protected: &dyn Fn(&str) -> bool,
+    ) -> EvictionReport {
+        let mut report = EvictionReport::default();
+        let mut entries = self.entries();
+        // Oldest first.
+        entries.sort_by_key(|e| e.last_used);
+        let age = |e: &CacheEntryInfo| match e.last_used {
+            // No readable timestamp, or one in the future: treat as fresh.
+            Some(t) => now.duration_since(t).unwrap_or_default(),
+            None => std::time::Duration::ZERO,
+        };
+        let mut total: u64 = entries.iter().map(|e| e.size_bytes).sum();
+        for entry in &entries {
+            let evictable = !is_protected(&entry.sha256) && age(entry) >= policy.grace;
+            if !evictable {
+                report.kept_in_use += 1;
+                continue;
+            }
+            let too_old = age(entry) > policy.max_age;
+            let too_big = total > policy.max_bytes;
+            if !(too_old || too_big) {
+                continue;
+            }
+            match self.remove_entry(&entry.sha256) {
+                Ok(()) => {
+                    total = total.saturating_sub(entry.size_bytes);
+                    report.removed += 1;
+                    report.bytes_freed += entry.size_bytes;
+                }
+                Err(_) => report.failed += 1,
+            }
+        }
+        report
+    }
+
+    fn entry_dir(&self, sha256: &str) -> Option<PathBuf> {
+        is_sha256_hex(sha256).then(|| self.cache_dir.join(&sha256[..2]).join(sha256))
+    }
+
     fn cache_path_for(&self, sha256: &str) -> PathBuf {
         let prefix = &sha256[..2.min(sha256.len())];
         self.cache_dir.join(prefix).join(sha256).join("file.jar")
+    }
+}
+
+/// How a cache is kept bounded.
+///
+/// Mod jars are re-downloadable, so the cache is a convenience and eviction is
+/// always safe for correctness; the policy only has to avoid hurting a running
+/// install. Entries go oldest-use first when the total exceeds `max_bytes`, and
+/// any entry unused for longer than `max_age` goes regardless. An entry used
+/// within `grace` is never removed (this protects installs in other processes,
+/// which cannot be seen from here), nor is one the caller names as protected.
+/// The bound is therefore soft while entries are in use.
+#[derive(Debug, Clone)]
+pub struct EvictionPolicy {
+    pub max_bytes: u64,
+    pub max_age: std::time::Duration,
+    pub grace: std::time::Duration,
+}
+
+impl Default for EvictionPolicy {
+    fn default() -> Self {
+        EvictionPolicy {
+            max_bytes: 512 * 1024 * 1024,
+            max_age: std::time::Duration::from_secs(30 * 24 * 3600),
+            grace: std::time::Duration::from_secs(3600),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheEntryInfo {
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub last_used: Option<std::time::SystemTime>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EvictionReport {
+    pub removed: usize,
+    pub bytes_freed: u64,
+    pub kept_in_use: usize,
+    pub failed: usize,
+}
+
+fn is_lower_hex(s: &str) -> bool {
+    s.bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A SHA-256 cache key: exactly 64 lowercase hex characters.
+pub fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && is_lower_hex(s)
+}
+
+fn is_link_like(meta: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT: junctions and symlinks.
+        meta.file_attributes() & 0x400 != 0 || meta.file_type().is_symlink()
+    }
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
     }
 }
 

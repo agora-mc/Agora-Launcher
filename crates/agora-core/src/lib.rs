@@ -28,6 +28,7 @@ pub mod datapack_sync;
 pub mod db;
 pub mod dependency_ops;
 pub mod download;
+pub mod download_cache;
 pub mod error;
 pub mod event_sink;
 pub mod export_service;

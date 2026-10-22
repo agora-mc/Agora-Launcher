@@ -953,15 +953,19 @@ impl Resolver {
                 ),
             });
         };
-        let bytes = crate::install_pipeline::fetch_download_bytes(download, url)
-            .await
-            .map_err(|message| LauncherError::Generic {
-                code: "ERR_DEPENDENCY_CHECK_DOWNLOAD".into(),
-                message: format!(
-                    "Could not download {} to check the mods it needs: {message}",
-                    download.item_id
-                ),
-            })?;
+        // Kept for staging: the install reads the same bytes from the cache
+        // instead of downloading the jar a second time.
+        let cache = crate::download_cache::DownloadCache::new(self.ctx.paths.download_cache_dir());
+        let bytes =
+            crate::install_pipeline::fetch_download_bytes_cached(Some(&cache), download, url)
+                .await
+                .map_err(|message| LauncherError::Generic {
+                    code: "ERR_DEPENDENCY_CHECK_DOWNLOAD".into(),
+                    message: format!(
+                        "Could not download {} to check the mods it needs: {message}",
+                        download.item_id
+                    ),
+                })?;
         crate::install_pipeline::verify_bytes(&bytes, &download.hashes).map_err(|message| {
             LauncherError::Generic {
                 code: "ERR_DEPENDENCY_CHECK_HASH".into(),
