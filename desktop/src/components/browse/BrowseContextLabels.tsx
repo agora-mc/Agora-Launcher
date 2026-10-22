@@ -1,4 +1,3 @@
-import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { BrowseItem, BrowseItemContext } from './types';
 
 export function CuratedBadge() {
@@ -22,15 +21,15 @@ export function BrowseContextLabels({ context }: { context: BrowseItemContext | 
 
 export function BrowseStats({ item }: { item: BrowseItem }) {
   if (item.source === 'curated' && item.netScore !== null) {
+    // Read-only. The vote arrows are on the mod's page, so the numbers here are
+    // plain text: no arrow glyphs that look like buttons.
     return (
-      <p className="browse-stats" aria-label={`${item.upvotes ?? 0} upvotes, ${item.downvotes ?? 0} downvotes, score ${item.netScore}`}>
-        <span title={`${item.upvotes ?? 0} upvotes`}>
-          <ArrowUp aria-hidden size={13} /> {item.upvotes ?? 0}
-        </span>
-        <span title={`${item.downvotes ?? 0} downvotes`}>
-          <ArrowDown aria-hidden size={13} /> {item.downvotes ?? 0}
-        </span>
-        <span>Score {item.netScore}</span>
+      <p
+        className="browse-stats"
+        title="Votes are cast on the mod's page"
+        aria-label={`${item.upvotes ?? 0} upvotes, ${item.downvotes ?? 0} downvotes, score ${item.netScore}`}
+      >
+        <span>{item.upvotes ?? 0} up</span> · <span>{item.downvotes ?? 0} down</span> · <span>Score {item.netScore}</span>
       </p>
     );
   }
