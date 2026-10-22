@@ -23,6 +23,7 @@ import {
   cancelInstall,
   subscribeProgress,
   planNeedsUserReview,
+  isCuratorWarning,
 } from '../lib/installFlow';
 import {
   describeRestoreCoverage,
@@ -824,6 +825,11 @@ function ReviewView({
   const disableCount = plan.filesToDisable.length;
   const touchesFiles = addCount + removeCount + disableCount > 0;
 
+  // The curator's own cautions come first and get their own heading; the rest
+  // of the plan warnings keep their existing list.
+  const curatorWarnings = plan.warnings.filter(isCuratorWarning);
+  const otherWarnings = plan.warnings.filter((warning) => !isCuratorWarning(warning));
+
   return (
     <div className="space-y-4">
       {reviewNotice && (
@@ -1011,15 +1017,28 @@ function ReviewView({
         </div>
       )}
 
+      {/* Curator warnings — the curator asked for these to be read before installing */}
+      {curatorWarnings.length > 0 && (
+        <section className="rounded-lg border border-amber-600/50 bg-amber-100 p-3 dark:bg-amber-900/30">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200">
+            <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Curator warnings
+          </h3>
+          <ul className="mt-2 space-y-1 text-xs text-amber-800 dark:text-amber-200">
+            {curatorWarnings.map((w, i) => <li key={i}>{w.message}</li>)}
+          </ul>
+        </section>
+      )}
+
       {/* Warnings — worth reading, but they do not stop anything */}
-      {plan.warnings.length > 0 && (
+      {otherWarnings.length > 0 && (
         <section className="rounded-lg border border-amber-500/30 bg-amber-50 p-3 dark:bg-amber-900/20">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-300">
             <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
             Worth knowing
           </h3>
           <ul className="mt-2 space-y-1 text-xs text-amber-700 dark:text-amber-300">
-            {plan.warnings.map((w, i) => <li key={i}>{w.message}</li>)}
+            {otherWarnings.map((w, i) => <li key={i}>{w.message}</li>)}
           </ul>
         </section>
       )}

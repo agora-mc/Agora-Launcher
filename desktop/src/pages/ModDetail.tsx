@@ -1272,6 +1272,20 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
         </div>
       )}
 
+      {curatedAnnotation?.curator_warning && (
+        <div
+          role="note"
+          aria-label="Curator warning"
+          className="rounded-lg border border-amber-600/50 bg-amber-100 px-4 py-3 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100"
+        >
+          <div className="flex items-center gap-2 font-semibold">
+            <span aria-hidden>⚠️</span>
+            <span>Curator warning</span>
+          </div>
+          <p className="mt-1 whitespace-pre-wrap">{curatedAnnotation.curator_warning}</p>
+        </div>
+      )}
+
       {contextInstalledEntry && (
         <div className="rounded-lg border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
           <div className="flex items-center gap-2 font-semibold">

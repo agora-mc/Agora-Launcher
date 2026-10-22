@@ -1462,5 +1462,39 @@ class TestLoadKnownConflicts(unittest.TestCase):
         self.assertEqual(rows[0][4], "maven")
 
 
+class TestNormalizeCuratorWarning(unittest.TestCase):
+    """Tests for normalize_curator_warning.
+
+    The warning is the curator's own plain-text caution shown before an
+    install. A manifest that states it in the wrong shape must fail the build
+    rather than publish a warning that the launcher cannot read.
+    """
+
+    def test_absent_is_none(self):
+        self.assertIsNone(_compile.normalize_curator_warning({"id": "mod"}))
+
+    def test_null_is_none(self):
+        self.assertIsNone(_compile.normalize_curator_warning({"curator_warning": None}))
+
+    def test_empty_and_whitespace_only_are_none(self):
+        for raw in ("", "   ", "\t\n"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(_compile.normalize_curator_warning({"curator_warning": raw}))
+
+    def test_text_is_trimmed(self):
+        item = {"curator_warning": "  Do not use X with this mod.  \n"}
+        self.assertEqual(_compile.normalize_curator_warning(item), "Do not use X with this mod.")
+
+    def test_text_is_kept_as_plain_text(self):
+        raw = "Use **Iris** instead of <b>OptiFine</b>."
+        self.assertEqual(_compile.normalize_curator_warning({"curator_warning": raw}), raw)
+
+    def test_non_string_rejected(self):
+        for raw in (7, True, ["a"], {"text": "a"}):
+            with self.subTest(raw=raw):
+                with self.assertRaises(SystemExit):
+                    _compile.normalize_curator_warning({"curator_warning": raw})
+
+
 if __name__ == "__main__":
     unittest.main()
