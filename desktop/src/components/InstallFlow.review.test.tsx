@@ -207,10 +207,10 @@ describe('install review: a required mod the jar declares', () => {
       dep('fabric-api', { type: 'install-candidate', artifact: {} as never }, {
         source: 'jar',
         displayName: 'Fabric API',
-        requestedBy: ['xaeros-minimap'],
+        requestedBy: ["Xaero's Minimap"],
       }),
     ]);
-    expect(within(review).getByText('Needed by xaeros-minimap')).toBeInTheDocument();
+    expect(within(review).getByText("Needed by Xaero's Minimap")).toBeInTheDocument();
   });
 
   it('offers Install Anyway when it blocks, and replans with the override', async () => {
@@ -245,5 +245,24 @@ describe('install review: a required mod the jar declares', () => {
     installFlowMocks.resolveInstallPlan.mockResolvedValueOnce(blocked);
     const review = await renderReview([]);
     expect(within(review).queryByRole('button', { name: 'Install Anyway' })).toBeNull();
+  });
+});
+
+describe('install review: a jar that cannot be read', () => {
+  it('shows what could not be checked and offers Install Anyway', async () => {
+    const unchecked = dep('xaeros-minimap', { type: 'unchecked', reason: 'the jar is not a valid archive' }, {
+      source: 'jar',
+      displayName: "Xaero's Minimap",
+      requestedBy: ["Xaero's Minimap"],
+    });
+    const blocked = planWith([unchecked]);
+    blocked.blockingErrors = [{
+      code: 'ERR_UNCHECKED_REQUIREMENTS',
+      message: "Couldn't check what Xaero's Minimap needs (the jar is not a valid archive). Install Anyway continues without that check.",
+    }];
+    installFlowMocks.resolveInstallPlan.mockResolvedValueOnce(blocked);
+    const review = await renderReview([unchecked]);
+    expect(within(review).getByText(/Couldn't check what this mod needs/)).toBeInTheDocument();
+    expect(within(review).getByRole('button', { name: 'Install Anyway' })).toBeInTheDocument();
   });
 });

@@ -764,7 +764,30 @@ impl Resolver {
         // review so a required mod the registry never declared is still shown
         // (and offered), instead of surfacing only after the install.
         if let Some(artifact) = root_artifact {
-            let declared = self.declared_jar_requirements(manifest, artifact).await?;
+            // Named by its display name: the review says "needed by Xaero's Minimap".
+            let root_name = dep_display
+                .get(&root_item_id.to_ascii_lowercase())
+                .map(|(name, _)| name.clone())
+                .unwrap_or_else(|| root_item_id.to_string());
+            let declared = match self.declared_jar_requirements(manifest, artifact).await? {
+                JarRequirements::Declared(ids) => ids,
+                JarRequirements::Unreadable(reason) => {
+                    resolved.insert(
+                        format!("unchecked:{}", root_item_id.to_ascii_lowercase()),
+                        ResolvedDep {
+                            requested_by: vec![root_name.clone()],
+                            pinned_version: None,
+                            mod_jar_id: root_item_id.to_string(),
+                            requirement: Requirement::Required,
+                            source: DepSource::Jar,
+                            display_name: Some(root_name.clone()),
+                            page_url: None,
+                            disposition: DepDisposition::Unchecked { reason },
+                        },
+                    );
+                    Vec::new()
+                }
+            };
             let installed_lookup = installed_by_identity(&installed, &aliases);
             for jar_id in declared {
                 let key = aliases.resolve_or_self(&jar_id).to_ascii_lowercase();
@@ -788,7 +811,7 @@ impl Resolver {
                         resolved.insert(
                             key.clone(),
                             ResolvedDep {
-                                requested_by: vec![root_item_id.to_string()],
+                                requested_by: vec![root_name.clone()],
                                 pinned_version: None,
                                 mod_jar_id: key.clone(),
                                 requirement: Requirement::Required,
@@ -811,7 +834,7 @@ impl Resolver {
                         resolved.insert(
                             key.clone(),
                             ResolvedDep {
-                                requested_by: vec![root_item_id.to_string()],
+                                requested_by: vec![root_name.clone()],
                                 pinned_version: None,
                                 mod_jar_id: key.clone(),
                                 requirement: Requirement::Required,
@@ -828,7 +851,7 @@ impl Resolver {
                         resolved.insert(
                             key.clone(),
                             ResolvedDep {
-                                requested_by: vec![root_item_id.to_string()],
+                                requested_by: vec![root_name.clone()],
                                 pinned_version: None,
                                 mod_jar_id: key.clone(),
                                 requirement: Requirement::Required,
@@ -907,13 +930,14 @@ impl Resolver {
 
     /// Required mod ids the root artifact's own jar declares, read after the
     /// bytes are fetched and checked against the artifact's published hashes.
-    /// Every failure is an error: a jar that cannot be read is not "no
-    /// requirements".
+    /// A download or hash failure is an error. A jar whose metadata cannot be
+    /// read is `Unreadable`: the plan flags it for an explicit override, and
+    /// it is never treated as "no requirements".
     async fn declared_jar_requirements(
         &self,
         manifest: &InstanceManifest,
         artifact: &ResolvedArtifact,
-    ) -> LauncherResult<Vec<String>> {
+    ) -> LauncherResult<JarRequirements> {
         let ResolvedArtifact::Download(download) = artifact else {
             return Err(LauncherError::Generic {
                 code: "ERR_DEPENDENCY_CHECK_SOURCE".into(),
@@ -947,15 +971,7 @@ impl Resolver {
                 ),
             }
         })?;
-        declared_required_jar_ids(&bytes, &manifest.loader).map_err(|message| {
-            LauncherError::Generic {
-                code: "ERR_DEPENDENCY_CHECK_JAR".into(),
-                message: format!(
-                    "Could not read the mods {} needs: {message}",
-                    download.item_id
-                ),
-            }
-        })
+        Ok(jar_requirements_from_bytes(&bytes, &manifest.loader))
     }
 
     /// Find a jar-declared requirement the registry did not list: the Agora
@@ -2425,7 +2441,7 @@ pinned_version: None,
             let dependencies = dependencies
                 .into_iter()
                 .map(|mut dependency| {
-                    dependency.requested_by = vec![item.item_id.clone()];
+                    credit_requester(&mut dependency, &item.item_id);
                     dependency
                 })
                 .collect();
@@ -3876,6 +3892,28 @@ pub(crate) fn declared_required_jar_ids(bytes: &[u8], loader: &str) -> Result<Ve
         .into_iter()
         .filter(|id| !is_platform_dependency(id, loader))
         .collect())
+}
+
+/// What the root jar says it requires, or why it could not say.
+enum JarRequirements {
+    Declared(Vec<String>),
+    Unreadable(String),
+}
+
+/// What a jar declares for `loader`, or why it could not be read.
+fn jar_requirements_from_bytes(bytes: &[u8], loader: &str) -> JarRequirements {
+    match declared_required_jar_ids(bytes, loader) {
+        Ok(ids) => JarRequirements::Declared(ids),
+        Err(reason) => JarRequirements::Unreadable(reason),
+    }
+}
+
+/// Name the batch item that pulled a dependency in, unless it already names
+/// who needs it (a jar-declared requirement does).
+fn credit_requester(dependency: &mut ResolvedDep, item_id: &str) {
+    if dependency.requested_by.is_empty() {
+        dependency.requested_by = vec![item_id.to_string()];
+    }
 }
 
 /// What the plan does with one requirement a jar declares.
@@ -5719,5 +5757,37 @@ modId=\"xaerominimap\"
         let aliases = AliasMap::from_pairs(&[("fabric-api".to_string(), "fabric".to_string())]);
         let lookup = installed_by_identity(&installed, &aliases);
         assert!(lookup.contains_key("fabric-api"));
+    }
+
+    #[test]
+    fn a_jar_that_cannot_be_read_is_unreadable_not_requirement_free() {
+        assert!(matches!(
+            jar_requirements_from_bytes(b"not a zip archive", "fabric"),
+            JarRequirements::Unreadable(_)
+        ));
+    }
+
+    #[test]
+    fn a_readable_jar_reports_its_requirements() {
+        let jar = jar_with_entries(&[("fabric.mod.json", XAERO_FABRIC_JSON)]);
+        assert!(matches!(
+            jar_requirements_from_bytes(&jar, "fabric"),
+            JarRequirements::Declared(ids) if ids == ["fabric-api".to_string()]
+        ));
+    }
+
+    #[test]
+    fn a_jar_requirement_keeps_the_name_it_was_given_when_it_is_batched() {
+        let mut dependency = batch_sibling("fabric-api", "fabric-api.jar");
+        dependency.requested_by = vec!["Xaero's Minimap".into()];
+        credit_requester(&mut dependency, "xaeros-minimap");
+        assert_eq!(dependency.requested_by, vec!["Xaero's Minimap".to_string()]);
+    }
+
+    #[test]
+    fn a_dependency_with_no_requester_is_credited_to_its_batch_item() {
+        let mut dependency = batch_sibling("lithium", "lithium.jar");
+        credit_requester(&mut dependency, "lithium");
+        assert_eq!(dependency.requested_by, vec!["lithium".to_string()]);
     }
 }

@@ -1068,7 +1068,7 @@ function ReviewView({
             Try Again
           </button>
         )}
-        {plan.blockingErrors.some((error) => error.code === 'ERR_MISSING_DEPENDENCY') && (
+        {plan.blockingErrors.some((error) => error.code === 'ERR_MISSING_DEPENDENCY' || error.code === 'ERR_UNCHECKED_REQUIREMENTS') && (
           <button
             onClick={onInstallAnyway}
             className="rounded-lg border border-amber-500/50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
@@ -1247,6 +1247,8 @@ function depStatus(dep: ResolvedDep): { label: string; tone: string } {
       return { label: 'Not included', tone: 'text-muted-foreground' };
     case 'unresolved':
       return { label: `Could not be found — ${dep.disposition.reason}`, tone: 'text-red-700 dark:text-red-300' };
+    case 'unchecked':
+      return { label: `Couldn't check what this mod needs — ${dep.disposition.reason}`, tone: 'text-red-700 dark:text-red-300' };
     default:
       return { label: '', tone: 'text-muted-foreground' };
   }

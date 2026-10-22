@@ -284,6 +284,9 @@ pub enum DepDisposition {
     Excluded,
     /// Could not be resolved — kept for diagnostics.
     Unresolved { reason: String },
+    /// The mod's own jar could not be read, so what it requires is unchecked.
+    /// Blocks until the user installs anyway, like an unresolved requirement.
+    Unchecked { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -966,6 +969,28 @@ impl InstallPipeline {
                 .as_deref()
                 .unwrap_or(&dependency.mod_jar_id);
             if dependency.requirement == Requirement::Required {
+                if let DepDisposition::Unchecked { reason } = &dependency.disposition {
+                    let needed_by = if dependency.requested_by.is_empty() {
+                        "A selected mod".to_string()
+                    } else {
+                        dependency.requested_by.join(", ")
+                    };
+                    if intent.overrides.allow_missing_dependencies {
+                        warnings.push(PlanWarning {
+                            code: "WARN_UNCHECKED_REQUIREMENTS".into(),
+                            message: format!(
+                                "Couldn't check what {dependency_name} needs ({reason}). Installing anyway, as you chose."
+                            ),
+                        });
+                    } else {
+                        blocking_errors.push(PlanError {
+                            code: "ERR_UNCHECKED_REQUIREMENTS".into(),
+                            message: format!(
+                                "Couldn't check what {dependency_name} needs ({reason}). {needed_by} may need something Agora can't verify. Install Anyway continues without that check."
+                            ),
+                        });
+                    }
+                }
                 if let DepDisposition::Unresolved { reason } = &dependency.disposition {
                     if dependency.source == DepSource::Jar {
                         // Named by the mod's own jar, so the user can see who
@@ -4414,6 +4439,55 @@ mod tests {
             .blocking_errors
             .iter()
             .any(|e| e.code == "ERR_REQUIRED_DEPENDENCY"));
+    }
+
+    #[test]
+    fn an_unreadable_jar_blocks_until_installed_anyway_and_says_so() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let run = |allow: bool| {
+            let mut intent = local_intent("xaeros-minimap");
+            intent.overrides.allow_missing_dependencies = allow;
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(InstallPipeline.resolve_plan(
+                    intent,
+                    &instance_dir,
+                    jar_requirement_prepared(DepDisposition::Unchecked {
+                        reason: "the jar is not a valid archive".into(),
+                    }),
+                    &NoopReporter,
+                ))
+                .unwrap()
+        };
+
+        let blocked = run(false);
+        let error = blocked
+            .blocking_errors
+            .iter()
+            .find(|e| e.code == "ERR_UNCHECKED_REQUIREMENTS")
+            .expect("unchecked requirements must block until the user decides");
+        assert!(
+            error
+                .message
+                .contains("Couldn't check what Fabric API needs"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("Install Anyway"));
+        assert!(!blocked.is_fully_resolved());
+
+        let anyway = run(true);
+        assert!(
+            anyway.blocking_errors.is_empty(),
+            "{:?}",
+            anyway.blocking_errors
+        );
+        assert!(anyway
+            .warnings
+            .iter()
+            .any(|w| w.code == "WARN_UNCHECKED_REQUIREMENTS"));
+        assert!(anyway.is_fully_resolved());
     }
 
     #[test]
