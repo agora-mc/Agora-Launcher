@@ -3696,10 +3696,20 @@ fn merge_deps(target: &mut BTreeMap<String, ResolvedDep>, incoming: Vec<Resolved
         // Different versions of one project chosen by different parents are
         // kept apart so the install pipeline can pick one every parent accepts.
         let mut key = dependency.mod_jar_id.to_ascii_lowercase();
-        if let DepDisposition::InstallCandidate { artifact } = &dependency.disposition {
-            if let ResolvedArtifact::Download(download) = artifact.as_ref() {
-                key = format!("{key}#{}", download.version_id);
+        match &dependency.disposition {
+            DepDisposition::InstallCandidate { artifact } => {
+                if let ResolvedArtifact::Download(download) = artifact.as_ref() {
+                    key = format!("{key}#{}", download.version_id);
+                }
             }
+            // A batch sibling is reached under every identity its parents know
+            // it by (a registry id from one parent, a Modrinth project id from
+            // another). They all point at the same batch file, so they are one
+            // entry, not one per spelling.
+            DepDisposition::IncludedInBatch { target_filename } => {
+                key = format!("batch#{}", target_filename.to_ascii_lowercase());
+            }
+            _ => {}
         }
         target
             .entry(key)
@@ -5251,5 +5261,48 @@ mod tests {
         assert_eq!(selected.version_id, "best-available");
         let closest = select_closest_raw_modrinth_candidate(&candidates, "1.20.1").unwrap();
         assert_eq!(closest.version_id, "old-pinned");
+    }
+
+    fn batch_sibling(mod_jar_id: &str, target_filename: &str) -> ResolvedDep {
+        ResolvedDep {
+            requested_by: Vec::new(),
+            pinned_version: None,
+            mod_jar_id: mod_jar_id.into(),
+            requirement: Requirement::Required,
+            source: DepSource::Manifest,
+            display_name: Some("Fabric API".into()),
+            page_url: None,
+            disposition: DepDisposition::IncludedInBatch {
+                target_filename: target_filename.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn two_spellings_of_one_batch_sibling_merge_into_one_entry() {
+        // The curated Fabric API (registry id) and Xaero's Modrinth dependency
+        // (project id) both resolve to the batch's own Fabric API file.
+        let mut merged = BTreeMap::new();
+        merge_deps(
+            &mut merged,
+            vec![
+                batch_sibling("fabric-api", "fabric-api-0.102.0+1.21.jar"),
+                batch_sibling("P7dR8mSH", "Fabric-API-0.102.0+1.21.jar"),
+            ],
+        );
+        assert_eq!(merged.len(), 1, "one Fabric API, not one per spelling");
+    }
+
+    #[test]
+    fn batch_siblings_with_different_files_stay_apart() {
+        let mut merged = BTreeMap::new();
+        merge_deps(
+            &mut merged,
+            vec![
+                batch_sibling("fabric-api", "fabric-api-0.102.0+1.21.jar"),
+                batch_sibling("lithium", "lithium-0.15.2.jar"),
+            ],
+        );
+        assert_eq!(merged.len(), 2);
     }
 }

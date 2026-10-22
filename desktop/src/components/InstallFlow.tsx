@@ -972,9 +972,7 @@ function ReviewView({
       {satisfiedRequired.length > 0 && (
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
           <CircleCheck className="h-3.5 w-3.5 shrink-0 text-green-600" aria-hidden="true" />
-          {satisfiedRequired.length === 1
-            ? 'One required dependency is already installed.'
-            : `${satisfiedRequired.length} required dependencies are already installed.`}
+          {satisfiedRequiredSentence(satisfiedRequired)}
         </p>
       )}
 
@@ -1004,8 +1002,10 @@ function ReviewView({
       <div className="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
         <ShieldCheck className="mt-px h-4 w-4 shrink-0 text-green-600" aria-hidden="true" />
         <p>
-          Agora saves a restore point before anything is written, so this can be undone in one
-          click if it goes wrong.
+          Agora saves an automatic restore point before anything is written. It covers mods,
+          configs, worlds, resource and shader packs, datapacks and options, but not logs or
+          screenshots. You can roll back from the result screen, or later from the instance&apos;s
+          Snapshots tab. The 5 most recent automatic restore points are kept.
         </p>
       </div>
 
@@ -1161,10 +1161,16 @@ function DepRow({ dep, checked, onToggle, highlighted }: { dep: ResolvedDep; che
       highlighted && 'border-primary/40 bg-primary/10',
     )}>
       {isOptional ? (
-        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
+        // An extra that cannot be found for this instance cannot be ticked:
+        // ticking it only turned into a blocking error at the next plan.
+        <label className={cn(
+          'flex min-w-0 flex-1 items-start gap-2',
+          dep.disposition.type === 'unresolved' ? 'cursor-not-allowed opacity-70' : 'cursor-pointer',
+        )}>
           <input
             type="checkbox"
             checked={checked}
+            disabled={dep.disposition.type === 'unresolved'}
             onChange={(e) => onToggle(dep.modJarId, e.target.checked)}
             className="mt-0.5 rounded-sm"
             aria-label={`Include optional dependency ${displayName}`}
@@ -1205,6 +1211,20 @@ function depStatus(dep: ResolvedDep): { label: string; tone: string } {
     default:
       return { label: '', tone: 'text-muted-foreground' };
   }
+}
+
+/** Says which required dependencies were already there, by name when there are few. */
+function satisfiedRequiredSentence(deps: ResolvedDep[]): string {
+  const names = deps.map((dep) => dep.displayName?.trim() || dep.modJarId);
+  if (names.length === 1) return `${names[0]} is already installed.`;
+  if (names.length <= 3) {
+    const last = names[names.length - 1];
+    const list = names.length === 2
+      ? `${names[0]} and ${last}`
+      : `${names.slice(0, -1).join(', ')} and ${last}`;
+    return `${list} are already installed.`;
+  }
+  return `${names.length} required dependencies are already installed.`;
 }
 
 function dependencyIsNew(dep: ResolvedDep, newlyAddedFiles: Set<string>): boolean {

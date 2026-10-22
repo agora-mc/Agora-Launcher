@@ -1209,6 +1209,15 @@ impl InstallPipeline {
         }
 
         for dependency in &dependencies {
+            // Under the prompt policy an optional candidate is only offered: it
+            // sits in the pending optional-dependencies choice until the user
+            // picks it, and its file is planned on the follow-up plan. Adding
+            // it here would show files the user has not chosen (and count them).
+            if dependency.requirement == Requirement::Optional
+                && matches!(intent.optional_deps, OptionalDepsPolicy::Prompt)
+            {
+                continue;
+            }
             if let DepDisposition::InstallCandidate { artifact } = &dependency.disposition {
                 plan_artifact_change(
                     artifact,
@@ -4095,6 +4104,116 @@ mod tests {
             plan.pending_choices.as_slice(),
             [PendingChoice::OptionalDependencies { options, .. }] if options.len() == 1
         ));
+    }
+
+    #[test]
+    fn prompted_optional_dependencies_are_not_added_until_chosen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let required_path = tmp.path().join("required.jar");
+        let optional_path = tmp.path().join("optional.jar");
+        std::fs::write(&required_path, b"required").unwrap();
+        std::fs::write(&optional_path, b"optional").unwrap();
+        let build_prepared = || PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "root",
+                    "root.jar",
+                    "a".repeat(64),
+                    ArtifactSource::Download {
+                        url: "https://example.com/root.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![
+                ResolvedDep {
+                    requested_by: Vec::new(),
+                    pinned_version: None,
+                    mod_jar_id: "required-dep".into(),
+                    requirement: Requirement::Required,
+                    source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
+                    disposition: DepDisposition::InstallCandidate {
+                        artifact: Box::new(test_artifact(
+                            "required-dep",
+                            "required.jar",
+                            crate::download::sha256_hex(b"required"),
+                            ArtifactSource::LocalFile {
+                                path: required_path.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        )),
+                    },
+                },
+                ResolvedDep {
+                    requested_by: Vec::new(),
+                    pinned_version: None,
+                    mod_jar_id: "optional-dep".into(),
+                    requirement: Requirement::Optional,
+                    source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
+                    disposition: DepDisposition::InstallCandidate {
+                        artifact: Box::new(test_artifact(
+                            "optional-dep",
+                            "optional.jar",
+                            crate::download::sha256_hex(b"optional"),
+                            ArtifactSource::LocalFile {
+                                path: optional_path.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        )),
+                    },
+                },
+            ],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let file_names = |plan: &ResolvedInstallPlan| {
+            plan.files_to_add
+                .iter()
+                .map(|file| file.target_filename.clone())
+                .collect::<Vec<_>>()
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        // Prompt: the required file is planned, the unchosen optional one is
+        // only offered as a pending choice.
+        let mut prompt_intent = local_intent("root");
+        prompt_intent.optional_deps = OptionalDepsPolicy::Prompt;
+        let prompted = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                prompt_intent,
+                &instance_dir,
+                build_prepared(),
+                &NoopReporter,
+            ))
+            .unwrap();
+        assert_eq!(file_names(&prompted), vec!["required.jar", "root.jar"]);
+        assert!(matches!(
+            prompted.pending_choices.as_slice(),
+            [PendingChoice::OptionalDependencies { .. }]
+        ));
+
+        // Once the user picks it, the follow-up plan adds its file too.
+        let mut chosen_intent = local_intent("root");
+        chosen_intent.optional_deps = OptionalDepsPolicy::Include {
+            deps: vec!["optional-dep".into()],
+        };
+        let chosen = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                chosen_intent,
+                &instance_dir,
+                build_prepared(),
+                &NoopReporter,
+            ))
+            .unwrap();
+        assert_eq!(
+            file_names(&chosen),
+            vec!["optional.jar", "required.jar", "root.jar"]
+        );
     }
 
     #[test]
