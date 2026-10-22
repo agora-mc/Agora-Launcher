@@ -28,6 +28,7 @@ import {
   describeRestoreCoverage,
   formatError,
   getSetting,
+  listSnapshots,
   parseLauncherError,
   restoreSnapshot,
 } from '../lib/tauri';
@@ -35,7 +36,7 @@ import { emitTourSignal } from '../features/tour/tourSignals';
 import { LoaderChooser } from './LoaderChooser';
 import { DatapackWorldsNote } from './DatapackWorldsNote';
 import { useControllerLayer } from '@/features/controller/useControllerLayer';
-import { cn } from '@/lib/utils';
+import { cn, formatDateTime } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // User choices model
@@ -59,7 +60,7 @@ type FlowState =
   | { phase: 'closed' };
 
 type FlowAction =
-  | { type: 'resolved'; plan: ResolvedInstallPlan }
+  | { type: 'resolved'; plan: ResolvedInstallPlan; choices?: PlanChoices }
   | { type: 'resolve-error'; error: string; code?: string }
   | { type: 'patch-choice'; modJarId: string; included: boolean }
   | { type: 'resolve-conflict'; conflictId: string; resolution: string }
@@ -78,7 +79,7 @@ function flowReducer(state: FlowState, action: FlowAction): FlowState {
       return {
         phase: 'review',
         plan: action.plan,
-        choices: defaultChoices(action.plan),
+        choices: action.choices ?? defaultChoices(action.plan),
         dirty: false,
       };
 
@@ -166,6 +167,30 @@ function defaultChoices(plan: ResolvedInstallPlan): PlanChoices {
         .map((c) => [c.conflictId, c.chosen!]),
     ),
   };
+}
+
+/**
+ * Choices for a re-review, after the user changed an extra and Agora re-planned.
+ * A tick or untick on an extra the previous review already showed sticks; an
+ * extra that only this plan brings in gets the usual default for this install.
+ */
+function carryOptionalChoices(
+  plan: ResolvedInstallPlan,
+  previousPlan: ResolvedInstallPlan,
+  previous: PlanChoices,
+): PlanChoices {
+  const choices = defaultChoices(plan);
+  const shown = new Set(
+    previousPlan.dependencies
+      .filter((dep) => dep.requirement === 'optional')
+      .map((dep) => dep.modJarId),
+  );
+  for (const dep of plan.dependencies) {
+    if (dep.requirement !== 'optional' || !shown.has(dep.modJarId)) continue;
+    if (previous.optionalIncluded.has(dep.modJarId)) choices.optionalIncluded.add(dep.modJarId);
+    else choices.optionalIncluded.delete(dep.modJarId);
+  }
+  return choices;
 }
 
 function failedBatchItemId(intent: InstallIntent, message: string): string | undefined {
@@ -261,6 +286,7 @@ export function InstallFlow({
   const [settingAlwaysAutoConfirm, setSettingAlwaysAutoConfirm] = useState(false);
   const initialPlanRef = useRef<ResolvedInstallPlan | null>(initialPlan ?? null);
   const recheckPlanRef = useRef<ResolvedInstallPlan | null>(null);
+  const recheckChoicesRef = useRef<PlanChoices | null>(null);
   const forceFinalReviewRef = useRef(false);
   const [newlyAddedFiles, setNewlyAddedFiles] = useState<Set<string>>(new Set());
   const [reviewNotice, setReviewNotice] = useState<string | null>(null);
@@ -289,6 +315,7 @@ export function InstallFlow({
     if (!open) return;
     setResolutionIntent(intent);
     recheckPlanRef.current = null;
+    recheckChoicesRef.current = null;
     forceFinalReviewRef.current = false;
     setNewlyAddedFiles(new Set());
     setReviewNotice(null);
@@ -316,22 +343,30 @@ export function InstallFlow({
           const plan = await resolveInstallPlan(resolutionIntent);
           if (!cancelled) {
             const previousPlan = recheckPlanRef.current;
+            const previousChoices = recheckChoicesRef.current;
+            let choices: PlanChoices | undefined;
             if (previousPlan) {
               recheckPlanRef.current = null;
+              recheckChoicesRef.current = null;
               forceFinalReviewRef.current = true;
               const previousFiles = new Set(previousPlan.filesToAdd.map((file) => file.targetFilename));
-              setNewlyAddedFiles(new Set(
-                plan.filesToAdd
-                  .map((file) => file.targetFilename)
-                  .filter((filename) => !previousFiles.has(filename)),
-              ));
-              setReviewNotice('New options have been checked. Review the highlighted additions before installing.');
+              const added = plan.filesToAdd
+                .map((file) => file.targetFilename)
+                .filter((filename) => !previousFiles.has(filename));
+              setNewlyAddedFiles(new Set(added));
+              // Only say something new was checked when something new was added;
+              // an untick re-plans with fewer files and needs no notice.
+              if (added.length > 0) {
+                setReviewNotice('New options have been checked. Review the highlighted additions before installing.');
+              }
+              if (previousChoices) choices = carryOptionalChoices(plan, previousPlan, previousChoices);
             }
-            dispatch({ type: 'resolved', plan });
+            dispatch({ type: 'resolved', plan, choices });
           }
         } catch (e) {
           if (!cancelled) {
             recheckPlanRef.current = null;
+            recheckChoicesRef.current = null;
             forceFinalReviewRef.current = false;
             const parsed = parseLauncherError(e);
           dispatch({ type: 'resolve-error', error: parsed.message, code: parsed.code });
@@ -411,6 +446,7 @@ export function InstallFlow({
     if (state.phase !== 'review') return;
     if (state.dirty || state.plan.pendingChoices.length > 0) {
       recheckPlanRef.current = state.plan;
+      recheckChoicesRef.current = state.choices;
       forceFinalReviewRef.current = false;
       setNewlyAddedFiles(new Set());
       setReviewNotice(null);
@@ -443,6 +479,7 @@ export function InstallFlow({
   const handleInstallAnyway = useCallback(() => {
     if (state.phase !== 'review') return;
     recheckPlanRef.current = state.plan;
+    recheckChoicesRef.current = state.choices;
     forceFinalReviewRef.current = false;
     setNewlyAddedFiles(new Set());
     setReviewNotice(null);
@@ -1068,7 +1105,9 @@ function ReviewView({
             Try Again
           </button>
         )}
-        {plan.blockingErrors.some((error) => error.code === 'ERR_MISSING_DEPENDENCY' || error.code === 'ERR_UNCHECKED_REQUIREMENTS') && (
+        {plan.blockingErrors.some((error) => error.code === 'ERR_MISSING_DEPENDENCY'
+          || error.code === 'ERR_UNCHECKED_REQUIREMENTS'
+          || error.code === 'ERR_REQUIRED_DEPENDENCY') && (
           <button
             onClick={onInstallAnyway}
             className="rounded-lg border border-amber-500/50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
@@ -1181,7 +1220,15 @@ function pluralFiles(count: number): string {
 function DepRow({ dep, checked, onToggle, highlighted }: { dep: ResolvedDep; checked: boolean; onToggle: (id: string, inc: boolean) => void; highlighted: boolean }) {
   const isOptional = dep.requirement === 'optional';
   const displayName = dep.displayName ?? dep.modJarId;
-  const status = depStatus(dep);
+  // The label follows the box for an extra the plan could add: an unticked
+  // one is not included, and a ticked one is added once the review re-runs.
+  const status = isOptional && (dep.disposition.type === 'install-candidate' || dep.disposition.type === 'excluded')
+    ? checked
+      ? dep.disposition.type === 'install-candidate'
+        ? { label: 'Will be added', tone: 'text-muted-foreground' }
+        : { label: 'Will be added when you review changes', tone: 'text-muted-foreground' }
+      : { label: 'Not included', tone: 'text-muted-foreground' }
+    : depStatus(dep);
   const details = (
     <span className="min-w-0 flex-1">
       <span className="block truncate text-sm font-medium" title={displayName}>{displayName}</span>
@@ -1403,6 +1450,22 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
     outcome.type === 'success' || outcome.type === 'health-rollback' || outcome.type === 'failed'
       ? outcome.snapshotId
       : undefined;
+  // The success screen names the restore point by its label and time. The id
+  // stays available below for support.
+  const [snapshotInfo, setSnapshotInfo] = useState<{ label: string | null; createdAt: string } | null>(null);
+  useEffect(() => {
+    if (outcome.type !== 'success') return;
+    let cancelled = false;
+    listSnapshots(instanceId)
+      .then((snapshots) => {
+        const found = snapshots.find((snapshot) => snapshot.id === outcome.snapshotId);
+        if (!cancelled && found) setSnapshotInfo({ label: found.label, createdAt: found.created_at });
+      })
+      .catch(() => {
+        // The id is still shown below, so the restore point stays findable.
+      });
+    return () => { cancelled = true; };
+  }, [instanceId, outcome]);
   const canRestore =
     rollbackState !== 'restored'
     && (
@@ -1433,8 +1496,14 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
             All verified changes were applied successfully.
           </div>
           <p className="text-xs text-muted-foreground">
-            Recovery snapshot: {outcome.snapshotId}
+            Recovery snapshot: {snapshotInfo
+              ? `${snapshotInfo.label || 'Restore point'}, ${formatDateTime(snapshotInfo.createdAt)}`
+              : 'saved before the install'}
           </p>
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none">Support reference</summary>
+            <p className="mt-1 break-all font-mono">{outcome.snapshotId}</p>
+          </details>
         </>
       )}
       {outcome.type === 'health-rollback' && (

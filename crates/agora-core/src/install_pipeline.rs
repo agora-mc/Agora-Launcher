@@ -1016,12 +1016,28 @@ impl InstallPipeline {
                             });
                         }
                     } else {
-                        blocking_errors.push(PlanError {
-                            code: "ERR_REQUIRED_DEPENDENCY".into(),
-                            message: format!(
-                                "Required dependency {dependency_name} could not be resolved: {reason}"
-                            ),
-                        });
+                        // Same opt-in as a jar requirement: blocked until the
+                        // user installs anyway, then a named warning.
+                        let needed_by = if dependency.requested_by.is_empty() {
+                            "A selected mod".to_string()
+                        } else {
+                            dependency.requested_by.join(", ")
+                        };
+                        if intent.overrides.allow_missing_dependencies {
+                            warnings.push(PlanWarning {
+                                code: "WARN_MISSING_DEPENDENCY".into(),
+                                message: format!(
+                                    "{dependency_name} is missing. {needed_by} needs it and may not start without it. Installing anyway, as you chose."
+                                ),
+                            });
+                        } else {
+                            blocking_errors.push(PlanError {
+                                code: "ERR_REQUIRED_DEPENDENCY".into(),
+                                message: format!(
+                                    "Required dependency {dependency_name} could not be resolved: {reason}. Install Anyway continues without it."
+                                ),
+                            });
+                        }
                     }
                 }
             } else if matches!(&intent.optional_deps, OptionalDepsPolicy::Include { .. }) {
@@ -4420,9 +4436,10 @@ mod tests {
     }
 
     #[test]
-    fn the_install_anyway_override_does_not_unblock_a_registry_dependency() {
-        // Only requirements the jar declares get the override; a registry
-        // dependency that cannot be resolved still blocks as before.
+    fn the_install_anyway_override_turns_an_unresolved_registry_dependency_into_a_warning() {
+        // A required dependency the registry or Modrinth cannot resolve gets the
+        // same opt-in as a jar requirement: it blocks until the user installs
+        // anyway, and then the plan names what is missing.
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         let mut prepared = jar_requirement_prepared(DepDisposition::Unresolved {
@@ -4435,10 +4452,51 @@ mod tests {
             .unwrap()
             .block_on(InstallPipeline.resolve_plan(intent, &instance_dir, prepared, &NoopReporter))
             .unwrap();
-        assert!(plan
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|w| w.code == "WARN_MISSING_DEPENDENCY")
+            .expect("installing anyway must name what is missing");
+        assert!(
+            warning.message.contains("Fabric API is missing"),
+            "{}",
+            warning.message
+        );
+    }
+
+    #[test]
+    fn an_unresolved_registry_dependency_still_blocks_without_install_anyway() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let mut prepared = jar_requirement_prepared(DepDisposition::Unresolved {
+            reason: "no build".into(),
+        });
+        prepared.dependencies[0].source = DepSource::Manifest;
+        let plan = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(
+                local_intent("xaeros-minimap"),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+        let blocking = plan
             .blocking_errors
             .iter()
-            .any(|e| e.code == "ERR_REQUIRED_DEPENDENCY"));
+            .find(|e| e.code == "ERR_REQUIRED_DEPENDENCY")
+            .expect("an unresolved required dependency must block by default");
+        assert!(
+            blocking.message.contains("Install Anyway"),
+            "{}",
+            blocking.message
+        );
+        assert!(!plan.is_fully_resolved());
     }
 
     #[test]

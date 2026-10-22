@@ -360,6 +360,16 @@ test.describe('ModDetail canonical voting controls', () => {
     await expect(downvote.locator('svg')).toHaveCount(1);
   });
 
+  test('keeps the arrow controls in their own community area, out of the install row', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
+    await page.goto('/');
+
+    const community = page.getByTestId('mod-detail-community');
+    await expect(community.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' })).toBeVisible();
+    await expect(community.getByRole('button', { name: 'Downvote Test Mod. 2 downvotes.' })).toBeVisible();
+    await expect(community.getByRole('button', { name: 'Install to Instance' })).toHaveCount(0);
+  });
+
   test('records an upvote without changing the published count', async ({ page }) => {
     await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
     await page.goto('/');

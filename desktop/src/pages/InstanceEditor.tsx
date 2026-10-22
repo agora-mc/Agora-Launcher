@@ -109,6 +109,7 @@ import {
 } from '../lib/tauri';
 import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { useConfirm } from '@/components/ui/confirm';
+import { formatDateTime } from '@/lib/utils';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
 import { DatapackWorldsDialog } from '../components/DatapackWorldsDialog';
@@ -2438,7 +2439,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       )}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {snap.created_at} · {snap.file_count} file{snap.file_count !== 1 ? 's' : ''}
+                      {formatDateTime(snap.created_at)} · {snap.file_count} file{snap.file_count !== 1 ? 's' : ''}
                     </span>
                   </div>
                   <div className="flex gap-2 ml-3">

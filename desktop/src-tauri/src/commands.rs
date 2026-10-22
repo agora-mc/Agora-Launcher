@@ -2569,13 +2569,16 @@ pub async fn enrich_instance_content(
             let cache_key = row.key.clone();
             InstalledContentMetadata {
                 key: cache_key.clone(),
-                display_name: row.modrinth_id.as_ref().and_then(|id| {
-                    cached
-                        .get(&cache_key)
-                        .filter(|entry| entry.project_id == *id)
-                        .map(|entry| entry.title.clone())
-                        .or_else(|| fetched.get(id).map(|item| item.title.clone()))
-                }),
+                display_name: agora_core::installed_content::enriched_display_name(
+                    &row.metadata_status,
+                    row.modrinth_id.as_ref().and_then(|id| {
+                        cached
+                            .get(&cache_key)
+                            .filter(|entry| entry.project_id == *id)
+                            .map(|entry| entry.title.clone())
+                            .or_else(|| fetched.get(id).map(|item| item.title.clone()))
+                    }),
+                ),
                 icon_url: row.modrinth_id.as_ref().and_then(|id| {
                     cached
                         .get(&cache_key)
