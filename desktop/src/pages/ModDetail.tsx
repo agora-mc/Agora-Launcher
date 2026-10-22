@@ -1421,6 +1421,35 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
             {!modrinthProject && item.description && (
               <p className="text-sm text-foreground mt-2">{item.description}</p>
             )}
+            {item.date_added && (
+              <p className="text-xs text-muted-foreground mt-1">
+                Added {formatDate(item.date_added)}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground mt-2 flex flex-wrap gap-x-3 gap-y-1">
+              {modrinthProject?.license_id ? <span>License: {modrinthProject.license_id}</span> : item.license_id ? <span>License: {item.license_id}</span> : null}
+              {modrinthProject?.source_updated_at ? <span>Updated {modrinthProject.source_updated_at.slice(0, 10)}</span> : item.source_updated_at ? <span>Source updated {item.source_updated_at.slice(0, 10)}</span> : null}
+              {(modrinthProject?.page_url || item.page_url) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // target="_blank" is inert in the Tauri webview.
+                    void openExternalUrl(modrinthProject?.page_url ?? item.page_url!);
+                  }}
+                  className="text-primary hover:underline dark:text-primary"
+                >
+                  {externalLinkLabel(modrinthProject?.page_url ?? item.page_url!)} ↗
+                </button>
+              )}
+            </p>
+          </div>
+        </div>
+
+        {(isRegistryBacked || technicDetail || modrinthProject) && (
+          // Its own area, apart from the install controls: a vote is a public
+          // GitHub reaction, so the arrows should not sit beside Install.
+          <div className="mt-5 border-t border-border pt-4" data-testid="mod-detail-community">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Community</p>
             {isRegistryBacked && !item.is_immune && governanceSummary?.vote_issue_number ? (
               <div className="mt-5 space-y-1.5">
                 <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
@@ -1507,29 +1536,8 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                 ) : null;
               })()
             )}
-            {item.date_added && (
-              <p className="text-xs text-muted-foreground mt-1">
-                Added {formatDate(item.date_added)}
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground mt-2 flex flex-wrap gap-x-3 gap-y-1">
-              {modrinthProject?.license_id ? <span>License: {modrinthProject.license_id}</span> : item.license_id ? <span>License: {item.license_id}</span> : null}
-              {modrinthProject?.source_updated_at ? <span>Updated {modrinthProject.source_updated_at.slice(0, 10)}</span> : item.source_updated_at ? <span>Source updated {item.source_updated_at.slice(0, 10)}</span> : null}
-              {(modrinthProject?.page_url || item.page_url) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    // target="_blank" is inert in the Tauri webview.
-                    void openExternalUrl(modrinthProject?.page_url ?? item.page_url!);
-                  }}
-                  className="text-primary hover:underline dark:text-primary"
-                >
-                  {externalLinkLabel(modrinthProject?.page_url ?? item.page_url!)} ↗
-                </button>
-              )}
-            </p>
           </div>
-        </div>
+        )}
 
         <div className="mt-5 flex flex-wrap gap-2">
           {item.content_type === 'pack' && item.download_strategy === 'provider_pack' ? (

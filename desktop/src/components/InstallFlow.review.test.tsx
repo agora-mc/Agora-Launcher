@@ -9,6 +9,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { InstallFlow } from './InstallFlow';
+import { listSnapshots } from '../lib/tauri';
 import type {
   DepDisposition,
   InstallIntent,
@@ -45,6 +46,7 @@ vi.mock('../lib/tauri', async () => {
     formatError: (e: unknown) => String(e),
     parseLauncherError: (e: unknown) => ({ message: String(e), code: 'ERR_TEST' }),
     restoreSnapshot: vi.fn(async () => {}),
+    listSnapshots: vi.fn(async () => []),
     getCachedInstanceUpdates: vi.fn(async () => []),
     clearCachedInstanceUpdates: vi.fn(async () => {}),
   };
@@ -83,10 +85,10 @@ const reused = (modJarId: string): DepDisposition => ({
   installedFilename: `${modJarId}.jar`,
 });
 
-function planWith(dependencies: ResolvedDep[]): ResolvedInstallPlan {
+function planWith(dependencies: ResolvedDep[], planIntent: InstallIntent = intent): ResolvedInstallPlan {
   return {
     fingerprint: 'fp-review-123',
-    intent,
+    intent: planIntent,
     operation: { type: 'batch-install', operations: [] },
     dependencies,
     conflicts: [],
@@ -320,5 +322,236 @@ describe('install review: a jar that cannot be read', () => {
     const review = await renderReview([unchecked]);
     expect(within(review).getByText(/Couldn't check what this mod needs/)).toBeInTheDocument();
     expect(within(review).getByRole('button', { name: 'Install Anyway' })).toBeInTheDocument();
+  });
+});
+
+describe('install review: optional choices survive a re-review', () => {
+  const singleIntent: InstallIntent = {
+    ...intent,
+    action: { type: 'install', sourceType: 'curated', itemId: 'sodium' },
+  };
+  const extra = (disposition: DepDisposition): ResolvedDep => dep('amecs', disposition, {
+    requirement: 'optional',
+    displayName: 'Amecs',
+  });
+  const candidate = (): DepDisposition => ({ type: 'install-candidate', artifact: {} as never });
+  const extraBox = (review: HTMLElement) => within(review).getByRole('checkbox', {
+    name: 'Include optional dependency Amecs',
+  });
+
+  it('keeps an extra the user ticked when the review re-runs', async () => {
+    // A batch starts with extras unticked, so the user has to tick this one.
+    installFlowMocks.resolveInstallPlan
+      .mockResolvedValueOnce(planWith([extra(candidate())]))
+      .mockResolvedValueOnce(planWith([extra(candidate())]));
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+
+    fireEvent.click(extraBox(review));
+    fireEvent.click(within(review).getByRole('button', { name: /Install Batch/ }));
+
+    await waitFor(() => expect(installFlowMocks.resolveInstallPlan).toHaveBeenCalledTimes(2));
+    const replanIntent = installFlowMocks.resolveInstallPlan.mock.calls[1][0] as InstallIntent;
+    expect(replanIntent.optionalDeps).toEqual({ type: 'include', deps: ['amecs'] });
+    await waitFor(() => expect(extraBox(panel())).toBeChecked());
+  });
+
+  it('keeps an extra the user unticked when the review re-runs', async () => {
+    // A single install starts with extras ticked. Untick it, then re-plan.
+    installFlowMocks.resolveInstallPlan
+      .mockResolvedValueOnce(planWith([extra(candidate())], singleIntent))
+      .mockResolvedValueOnce(planWith([extra({ type: 'excluded' })], singleIntent));
+    render(<InstallFlow intent={singleIntent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+    expect(extraBox(review)).toBeChecked();
+
+    fireEvent.click(extraBox(review));
+    fireEvent.click(within(review).getByRole('button', { name: /^Install$/ }));
+
+    await waitFor(() => expect(installFlowMocks.resolveInstallPlan).toHaveBeenCalledTimes(2));
+    const replanIntent = installFlowMocks.resolveInstallPlan.mock.calls[1][0] as InstallIntent;
+    expect(replanIntent.optionalDeps).toEqual({ type: 'include', deps: [] });
+    await waitFor(() => expect(extraBox(panel())).not.toBeChecked());
+    expect(within(panel()).queryByText(/New options have been checked/)).toBeNull();
+  });
+
+  it('says Not included as soon as an extra is unticked, matching the box', async () => {
+    installFlowMocks.resolveInstallPlan.mockResolvedValueOnce(planWith([extra(candidate())], singleIntent));
+    render(<InstallFlow intent={singleIntent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+    expect(within(review).getByText('Will be added')).toBeInTheDocument();
+
+    fireEvent.click(extraBox(review));
+
+    expect(extraBox(review)).not.toBeChecked();
+    expect(within(review).getByText('Not included')).toBeInTheDocument();
+    expect(within(review).queryByText('Will be added')).toBeNull();
+  });
+});
+
+describe('install review: a required dependency that cannot be resolved', () => {
+  const blockedBy = (message: string): ResolvedInstallPlan => {
+    const blocked = planWith([
+      dep('mezzconfig', { type: 'unresolved', reason: 'no version is published for Minecraft 1.21 on fabric' }, {
+        displayName: 'MezzConfig',
+        requestedBy: ['JEI'],
+      }),
+    ]);
+    blocked.blockingErrors = [{ code: 'ERR_REQUIRED_DEPENDENCY', message }];
+    return blocked;
+  };
+
+  it('offers Install Anyway, so the review is not a dead end', async () => {
+    installFlowMocks.resolveInstallPlan.mockResolvedValueOnce(blockedBy(
+      'Required dependency MezzConfig could not be resolved: no version is published for Minecraft 1.21 on fabric. Install Anyway continues without it.',
+    ));
+    const review = await renderReview([]);
+    expect(within(review).getByRole('button', { name: 'Install Anyway' })).toBeInTheDocument();
+    expect(within(review).queryByText(/Install the closest compatible version/)).toBeNull();
+  });
+
+  it('replans with the override when Install Anyway is pressed', async () => {
+    const replanned = planWith([]);
+    replanned.warnings = [{ code: 'WARN_MISSING_DEPENDENCY', message: 'MezzConfig is missing. JEI needs it and may not start without it. Installing anyway, as you chose.' }];
+    installFlowMocks.resolveInstallPlan
+      .mockResolvedValueOnce(blockedBy('Required dependency MezzConfig could not be resolved: no version is published for Minecraft 1.21 on fabric. Install Anyway continues without it.'))
+      .mockResolvedValueOnce(replanned);
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+
+    fireEvent.click(within(review).getByRole('button', { name: 'Install Anyway' }));
+
+    await waitFor(() => expect(installFlowMocks.resolveInstallPlan).toHaveBeenCalledTimes(2));
+    const secondIntent = installFlowMocks.resolveInstallPlan.mock.calls[1][0] as InstallIntent;
+    expect(secondIntent.overrides.allowMissingDependencies).toBe(true);
+    await waitFor(() => expect(within(panel()).getByText(/MezzConfig is missing/)).toBeInTheDocument());
+  });
+});
+
+describe('install success: the restore point', () => {
+  it('names the restore point by its label and time, with the id kept for support', async () => {
+    vi.mocked(listSnapshots).mockResolvedValueOnce([{
+      id: 'snap-7f3a9c2e-uuid',
+      label: 'Before installing Sodium',
+      created_at: '2026-10-22T18:15:58.781044+00:00',
+      file_count: 12,
+      size_estimate: 0,
+      effective_origin: 'automatic',
+      is_lkg: false,
+      is_current_lkg: false,
+      is_pre_restore: false,
+    }]);
+    installFlowMocks.applyInstallPlan.mockResolvedValueOnce({
+      type: 'success',
+      installedItems: [],
+      existingItemsReused: [],
+      warnings: [],
+      health: {} as never,
+      snapshotId: 'snap-7f3a9c2e-uuid',
+    });
+    const review = await renderReview([]);
+    fireEvent.click(within(review).getByRole('button', { name: /Install Batch|^Install$/ }));
+
+    const line = await waitFor(() => {
+      const found = within(panel()).getByText(/Recovery snapshot:/);
+      expect(found.textContent).toContain('Before installing Sodium');
+      return found;
+    });
+    expect(line.textContent).not.toContain('snap-7f3a9c2e-uuid');
+    expect(line.textContent).not.toContain('T18:15');
+    expect(line.textContent).not.toContain('.781044');
+    expect(within(panel()).getByText('snap-7f3a9c2e-uuid')).toBeInTheDocument();
+  });
+
+  it('still shows the id when the snapshot list cannot be read', async () => {
+    vi.mocked(listSnapshots).mockRejectedValueOnce(new Error('list unavailable'));
+    installFlowMocks.applyInstallPlan.mockResolvedValueOnce({
+      type: 'success',
+      installedItems: [],
+      existingItemsReused: [],
+      warnings: [],
+      health: {} as never,
+      snapshotId: 'snap-fallback-id',
+    });
+    const review = await renderReview([]);
+    fireEvent.click(within(review).getByRole('button', { name: /Install Batch|^Install$/ }));
+
+    await waitFor(() => expect(within(panel()).getByText(/saved before the install/)).toBeInTheDocument());
+    expect(within(panel()).getByText('snap-fallback-id')).toBeInTheDocument();
+  });
+});
+
+describe('install review: optional choices survive every replan', () => {
+  const extraDep = (): ResolvedDep => dep('amecs', { type: 'install-candidate', artifact: {} as never }, {
+    requirement: 'optional',
+    displayName: 'Amecs',
+  });
+  const amecsBox = (review: HTMLElement) => within(review).getByRole('checkbox', {
+    name: 'Include optional dependency Amecs',
+  });
+
+  it('keeps an extra the user ticked when Skip This Mod re-plans', async () => {
+    const blocked = planWith([extraDep()]);
+    blocked.blockingErrors = [{ code: 'ERR_HASH_UNAVAILABLE', message: 'sodium has no acceptable published hash' }];
+    installFlowMocks.resolveInstallPlan
+      .mockResolvedValueOnce(blocked)
+      .mockResolvedValueOnce(planWith([extraDep()]));
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+
+    fireEvent.click(amecsBox(review));
+    fireEvent.click(within(review).getByRole('button', { name: 'Skip This Mod' }));
+
+    await waitFor(() => expect(installFlowMocks.resolveInstallPlan).toHaveBeenCalledTimes(2));
+    const replanIntent = installFlowMocks.resolveInstallPlan.mock.calls[1][0] as InstallIntent;
+    expect(replanIntent.optionalDeps).toEqual({ type: 'include', deps: ['amecs'] });
+    expect(replanIntent.overrides.skipItems).toEqual(['sodium']);
+    await waitFor(() => expect(amecsBox(panel())).toBeChecked());
+  });
+
+  it('keeps an extra the user ticked when Install Anyway re-plans', async () => {
+    const blocked = planWith([extraDep()]);
+    blocked.blockingErrors = [{
+      code: 'ERR_REQUIRED_DEPENDENCY',
+      message: 'Required dependency MezzConfig could not be resolved: no version is published for Minecraft 1.21 on fabric. Install Anyway continues without it.',
+    }];
+    installFlowMocks.resolveInstallPlan
+      .mockResolvedValueOnce(blocked)
+      .mockResolvedValueOnce(planWith([extraDep()]));
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    const review = await waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+
+    fireEvent.click(amecsBox(review));
+    fireEvent.click(within(review).getByRole('button', { name: 'Install Anyway' }));
+
+    await waitFor(() => expect(installFlowMocks.resolveInstallPlan).toHaveBeenCalledTimes(2));
+    const replanIntent = installFlowMocks.resolveInstallPlan.mock.calls[1][0] as InstallIntent;
+    expect(replanIntent.optionalDeps).toEqual({ type: 'include', deps: ['amecs'] });
+    expect(replanIntent.overrides.allowMissingDependencies).toBe(true);
+    await waitFor(() => expect(amecsBox(panel())).toBeChecked());
   });
 });
