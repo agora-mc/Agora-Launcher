@@ -496,6 +496,79 @@ mod tests {
         assert_eq!(err.code(), "ERR_INVALID_INSTANCE");
     }
 
+    // REVIEW: expected to FAIL on this branch. A mod the manifest lists but whose
+    // jar cannot be read is written as a metadata-only entry, and the export
+    // still reports success.
+    #[tokio::test]
+    async fn review_mrpack_export_fails_when_an_installed_jar_is_missing() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        let mut manifest = empty_manifest("test-missing-jar");
+        manifest.mods.push(crate::models::InstalledMod {
+            provider: None,
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            filename: "gone.jar".into(),
+            registry_id: None,
+            modrinth_id: None,
+            source: "test".into(),
+            source_url: None,
+            version: None,
+            sha256: "00".repeat(32),
+            installed_at: String::new(),
+            java_packages: vec![],
+            mod_jar_id: None,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+        });
+        let out = tmp.path().join("pack.mrpack");
+
+        let result = export_instance_pack_to(&instance_dir, &manifest, &out, "mrpack").await;
+
+        assert!(
+            result.is_err(),
+            "export reported success although gone.jar was not bundled"
+        );
+    }
+
+    // REVIEW: expected to FAIL on this branch. When the final rename fails, the
+    // sibling .tmp file is left in the folder the user chose.
+    #[tokio::test]
+    async fn review_failed_export_leaves_no_tmp_file_in_chosen_folder() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        // A folder already sits at the chosen name, so renaming the file onto it fails.
+        let chosen = tmp.path().join("pack.agora-pack.json");
+        std::fs::create_dir_all(&chosen).unwrap();
+
+        let result = export_instance_pack_to(
+            &instance_dir,
+            &empty_manifest("test-blocked"),
+            &chosen,
+            "json",
+        )
+        .await;
+        assert!(result.is_err(), "setup: export onto a folder should fail");
+
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "failed export left tmp files behind: {leftovers:?}"
+        );
+    }
+
     /// Read `modrinth.index.json` back out of an exported `.mrpack`.
     fn read_exported_index(path: &str) -> serde_json::Value {
         let file = std::fs::File::open(path).unwrap();
