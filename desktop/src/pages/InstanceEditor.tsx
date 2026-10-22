@@ -2408,7 +2408,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             A snapshot is a restore point. It copies your mods, configs, resource packs, shader packs, data packs and options.txt. Worlds are included in full snapshots, but not in the quick ones taken before each launch. Logs, screenshots and other files are not included.
           </p>
           <p className="text-xs text-muted-foreground">
-            Agora takes an automatic snapshot before changes such as launches, installs and templates, and keeps the last 5 of those. Snapshots you create yourself, and ones from version moves, are kept (up to 10).
+            Agora takes an automatic snapshot before changes such as launches, installs and templates, and keeps the last 5 of those. Snapshots you create yourself, and ones from version moves, are kept until you delete them.
           </p>
           {snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground">
