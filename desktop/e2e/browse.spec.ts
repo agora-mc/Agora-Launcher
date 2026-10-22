@@ -146,8 +146,9 @@ async function resolveCall(page: Page, index: number, result: BrowseResult) {
 async function openBrowse(page: Page) {
   await page.goto('/');
   await page.getByRole('button', { name: 'Browse', exact: true }).click();
-  // React StrictMode intentionally runs mount effects twice in development.
-  await waitForCalls(page, 2);
+  // Browse waits for the instance context before its first search, so the
+  // first query is one call (StrictMode's discarded mount run never reaches it).
+  await waitForCalls(page, 1);
   return page.evaluate(() => (window as any).__browseCalls.length - 1) as Promise<number>;
 }
 
@@ -290,10 +291,17 @@ test('category lists follow the selected content type', async ({ page }) => {
   const initial = await openBrowse(page);
   await resolveCall(page, initial, { items: [], total: 0, page: 0, hasMore: false });
 
-  // Default content type is 'mod' — only mod categories are shown initially.
+  // Default content type is All types, so every source category is offered.
+  await expect(page.getByText('Combined categories for all content types.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Technology', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Kitchen Sink', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Adventure', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Minigame', exact: true })).toBeVisible();
+
+  await page.getByLabel('Content type').selectOption('mod');
+  await expect(page.getByText('Categories for mod content.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Technology', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Kitchen Sink', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Adventure', exact: true })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Minigame', exact: true })).toHaveCount(0);
 
   await page.getByLabel('Content type').selectOption('pack');
@@ -899,7 +907,8 @@ test.describe('E3 — Bulk select and install', () => {
 
     await cardB.click();
     await expect(page.getByTestId('browse-selection-count')).toHaveText('2 selected');
-    await expect(page.getByRole('button', { name: 'Install 2', exact: true })).toBeVisible();
+    // Browse opens on the most recent instance, so the bar names it.
+    await expect(page.getByRole('button', { name: 'Install 2 to My Fabric World', exact: true })).toBeVisible();
 
     // Clicking a selected card unselects it
     await cardA.click();
@@ -1014,6 +1023,9 @@ test.describe('E3 — Bulk select and install', () => {
   test('bulk install without an instance context opens an instance picker', async ({ page }) => {
     await installBulkSelectMock(page);
     await openBrowseAndWait(page);
+    // Browse opens on the most recent instance by default, so this test chooses
+    // "No instance context" to get the picker.
+    await page.locator('#browse-instance-context').selectOption('');
 
     await bulkCard(page, 'Bulk Mod A').click();
     await bulkCard(page, 'Bulk Mod B').click();
@@ -1314,4 +1326,202 @@ test('returning from mod details keeps the loaded pages', async ({ page }) => {
   // ...and no fresh browse_search was issued to rebuild them.
   const callsAfter = await page.evaluate(() => (window as any).__browseCalls.length);
   expect(callsAfter).toBe(callsBefore);
+});
+
+// ---------------------------------------------------------------------------
+// S3 (browse) UX fixes: results belong to the query on screen; an empty
+// search can offer Modrinth; Browse opens on the most recent instance; the
+// card score line is plain text.
+// ---------------------------------------------------------------------------
+
+/**
+ * Overrides some command answers on top of installBrowseMock. Call it AFTER
+ * installBrowseMock so it wraps the mock. `set_content_provider_enabled` is
+ * recorded in `__commandLog` and updates the provider list it returns.
+ */
+async function overrideCommands(page: Page, overrides: Record<string, unknown>) {
+  await page.addInitScript((data: Record<string, unknown>) => {
+    const state: Record<string, unknown> = { ...data };
+    const internals = (window as any).__TAURI_INTERNALS__;
+    const base = internals.invoke;
+    (window as any).__commandLog = [];
+    (window as any).__navigated = null;
+    window.addEventListener('agora-navigate', (event: Event) => {
+      (window as any).__navigated = (event as CustomEvent).detail;
+    });
+    internals.invoke = (command: string, args: Record<string, unknown> = {}) => {
+      if (command === 'set_content_provider_enabled') {
+        (window as any).__commandLog.push({ command, args });
+        const providers = (state.list_content_providers as Array<Record<string, unknown>>).map((provider) =>
+          provider.id === args.providerId ? { ...provider, enabled: args.enabled } : provider,
+        );
+        state.list_content_providers = providers;
+        return Promise.resolve(providers);
+      }
+      if (command in state) return Promise.resolve(state[command]);
+      return base(command, args);
+    };
+  }, overrides);
+}
+
+const MODRINTH_OFF = {
+  id: 'modrinth',
+  title: 'Modrinth',
+  description: 'Mods, packs, shaders and resource packs from modrinth.com',
+  origin: 'official',
+  contentTypes: ['mod', 'pack', 'shader', 'resourcepack', 'datapack'],
+  filters: [],
+  sorts: [],
+  paginates: true,
+  downloadHosts: [],
+  enabled: false,
+  unavailableReason: null,
+};
+
+test('typing a new query never shows the previous results while it loads', async ({ page }) => {
+  await installBrowseMock(page);
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, { items: [item('old', 'Old Result')], total: 1, page: 0, hasMore: false });
+  await expect(page.getByText('Old Result')).toBeVisible();
+
+  const search = page.getByPlaceholder('Search mods, packs, and more…');
+  await search.fill('create');
+  // Read straight after the keystroke: before the debounce ends and before any reply.
+  const listShown = await page.evaluate(() => document.querySelector('[data-testid="browse-list-results"]') !== null);
+  expect(listShown).toBe(false);
+  await expect(page.getByText('Loading items…')).toBeVisible();
+
+  const create = await findCall(page, 'browse_search', 'create');
+  await resolveCall(page, create, { items: [item('create', 'Create Result')], total: 1, page: 0, hasMore: false });
+  await expect(page.getByText('Create Result')).toBeVisible();
+  await expect(page.getByText('Old Result')).toHaveCount(0);
+});
+
+test('a pending search never reads as "No items to display"', async ({ page }) => {
+  await installBrowseMock(page);
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, { items: [], total: 0, page: 0, hasMore: false });
+  await expect(page.getByText('No items to display.')).toBeVisible();
+
+  await page.getByPlaceholder('Search mods, packs, and more…').fill('sodium');
+  await expect(page.getByText('Loading items…')).toBeVisible();
+  await expect(page.getByText('No items to display.')).toHaveCount(0);
+
+  const sodium = await findCall(page, 'browse_search', 'sodium');
+  await resolveCall(page, sodium, { items: [item('sodium', 'Sodium')], total: 1, page: 0, hasMore: false });
+  await expect(page.getByText('Sodium', { exact: true })).toBeVisible();
+});
+
+test('an empty search offers Modrinth; one click turns it on and searches again', async ({ page }) => {
+  await installBrowseMock(page);
+  await overrideCommands(page, { list_content_providers: [MODRINTH_OFF] });
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, { items: [], total: 0, page: 0, hasMore: false });
+
+  await page.getByPlaceholder('Search mods, packs, and more…').fill('Create');
+  const first = await findCall(page, 'browse_search', 'Create');
+  await resolveCall(page, first, { items: [], total: 0, page: 0, hasMore: false });
+
+  const offer = page.getByTestId('browse-modrinth-offer');
+  await expect(offer).toContainText('Not in the curated catalog. Search Modrinth too? Your searches will be sent to Modrinth.');
+  // Default stays off: nothing has been switched on yet.
+  expect(await page.evaluate(() => (window as any).__commandLog.length)).toBe(0);
+
+  await page.getByRole('button', { name: 'Turn on Modrinth search', exact: true }).click();
+  await expect(page.getByText('Modrinth search is on.')).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__commandLog)).toEqual([
+    { command: 'set_content_provider_enabled', args: { providerId: 'modrinth', enabled: true } },
+  ]);
+
+  // The same search runs again, and this time it includes Modrinth.
+  const again = await findCall(page, 'browse_search', 'Create', [first]);
+  await resolveCall(page, again, { items: [item('mr-create', 'Modrinth Hit')], total: 1, page: 0, hasMore: false });
+  await expect(page.getByText('Modrinth Hit')).toBeVisible();
+  await expect(offer).toHaveCount(0);
+});
+
+test('the Modrinth offer links to Settings without turning Modrinth on', async ({ page }) => {
+  await installBrowseMock(page);
+  await overrideCommands(page, { list_content_providers: [MODRINTH_OFF] });
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, { items: [], total: 0, page: 0, hasMore: false });
+
+  await page.getByPlaceholder('Search mods, packs, and more…').fill('Create');
+  const first = await findCall(page, 'browse_search', 'Create');
+  await resolveCall(page, first, { items: [], total: 0, page: 0, hasMore: false });
+
+  await page.getByRole('button', { name: 'Open Settings > Services', exact: true }).click();
+  expect(await page.evaluate(() => (window as any).__navigated)).toBe('settings');
+  expect(await page.evaluate(() => (window as any).__commandLog.length)).toBe(0);
+});
+
+test('no Modrinth offer when the provider state is unknown or blocked', async ({ page }) => {
+  await installBrowseMock(page);
+  // Unknown: the provider list did not read as a list.
+  await overrideCommands(page, { list_content_providers: null });
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, { items: [], total: 0, page: 0, hasMore: false });
+
+  await page.getByPlaceholder('Search mods, packs, and more…').fill('Create');
+  const first = await findCall(page, 'browse_search', 'Create');
+  await resolveCall(page, first, { items: [], total: 0, page: 0, hasMore: false });
+  await expect(page.getByText('No items to display.')).toBeVisible();
+  await expect(page.getByTestId('browse-modrinth-offer')).toHaveCount(0);
+});
+
+const RECENT_INSTANCE: Record<string, unknown> = {
+  ...CONTEXT_INSTANCE,
+  instance_id: 'recent-121',
+  name: 'Recent Fabric',
+  last_launched_at: '2026-07-20T08:00:00Z',
+};
+
+const OLDER_INSTANCE: Record<string, unknown> = {
+  ...CONTEXT_INSTANCE,
+  instance_id: 'older-120',
+  name: 'Older Forge',
+  minecraft_version: '1.20.1',
+  loader: 'forge',
+  last_launched_at: '2026-05-01T08:00:00Z',
+};
+
+test('Browse opens on the most recently launched instance, and "No instance context" clears it', async ({ page }) => {
+  await installBrowseMock(page);
+  await overrideCommands(page, {
+    list_instances: [OLDER_INSTANCE, RECENT_INSTANCE],
+    get_instance_detail: { row: RECENT_INSTANCE, manifest: null },
+    // Home shows recommendations once an instance exists; an empty list keeps it rendering.
+    for_you_items: [],
+  });
+  const initial = await openBrowse(page);
+
+  const select = page.locator('#browse-instance-context');
+  await expect(select).toHaveValue('recent-121');
+  await expect(page.getByText(/Results follow Recent Fabric/)).toBeVisible();
+  // The first query carries that instance's version, and All types (no type filter).
+  expect(await callArg(page, initial, 'mcVersion')).toBe('1.21');
+  // No content type was sent (page.evaluate reports the missing key as null).
+  expect(await callArg(page, initial, 'contentType')).toBeNull();
+  await expect(page.getByText('MC 1.21 ✕')).toBeVisible();
+
+  await select.selectOption('');
+  await expect(select).toHaveValue('');
+  await expect(page.getByText(/Choose an instance to match results/)).toBeVisible();
+  await expect(page.getByText('MC 1.21 ✕')).toHaveCount(0);
+});
+
+test('the card score line is plain text, not vote buttons', async ({ page }) => {
+  await installBrowseMock(page);
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, {
+    items: [{ ...item('scored', 'Scored Mod'), upvotes: 7, downvotes: 2, netScore: 5 }],
+    total: 1,
+    page: 0,
+    hasMore: false,
+  });
+
+  // A list card renders the stats twice (inline and in its side column).
+  const stats = page.locator('.browse-stats', { hasText: 'Score 5' }).first();
+  await expect(stats).toHaveText('7 up · 2 down · Score 5');
+  await expect(stats.locator('button, a, svg')).toHaveCount(0);
 });
