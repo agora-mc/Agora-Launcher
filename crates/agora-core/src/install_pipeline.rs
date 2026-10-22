@@ -5454,6 +5454,97 @@ mod tests {
     }
 
     #[test]
+    fn test_curator_warning_reaches_the_plan_for_an_updated_item() {
+        // An update is the one route where a warned item is already installed,
+        // so its new file has to reach files_to_add for the review to warn.
+        // This runs the real planner rather than building files_to_add by hand.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        seed_installed_mod(&instance_dir, "alpha", "alpha-1.jar", "1.0", b"alpha old");
+        seed_installed_mod(&instance_dir, "beta", "beta-1.jar", "1.0", b"beta old");
+        let alpha_source = tmp.path().join("alpha-2.jar");
+        let beta_source = tmp.path().join("beta-2.jar");
+        std::fs::write(&alpha_source, b"alpha new").unwrap();
+        std::fs::write(&beta_source, b"beta new").unwrap();
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchUpdate {
+                operations: vec![
+                    ResolvedOperation::Update {
+                        old_version_id: "1.0".into(),
+                        new_artifact: test_artifact_with_version(
+                            "alpha",
+                            "alpha-2.jar",
+                            "2.0",
+                            crate::download::sha256_hex(b"alpha new"),
+                            ArtifactSource::LocalFile {
+                                path: alpha_source.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        ),
+                    },
+                    ResolvedOperation::Update {
+                        old_version_id: "1.0".into(),
+                        new_artifact: test_artifact_with_version(
+                            "beta",
+                            "beta-2.jar",
+                            "2.0",
+                            crate::download::sha256_hex(b"beta new"),
+                            ArtifactSource::LocalFile {
+                                path: beta_source.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        ),
+                    },
+                ],
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                batch_update_intent(),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let added: Vec<Option<&str>> = plan
+            .files_to_add
+            .iter()
+            .map(|add| match &add.artifact {
+                ResolvedArtifact::Download(download) => download.metadata.registry_id.as_deref(),
+                ResolvedArtifact::LocalFile(local) => local.metadata.registry_id.as_deref(),
+            })
+            .collect();
+        assert!(
+            added.contains(&Some("alpha")),
+            "updated alpha not in files_to_add: {added:?}"
+        );
+
+        let warnings = crate::install_service::curator_warning_plan_warnings(
+            &plan,
+            &[crate::registry::CuratorWarning {
+                item_id: "alpha".into(),
+                name: "Alpha".into(),
+                warning: "Do not use Y with alpha.".into(),
+            }],
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, "WARN_CURATOR_WARNING");
+        assert_eq!(
+            warnings[0].message,
+            "Curator warning for Alpha: Do not use Y with alpha."
+        );
+    }
+
+    #[test]
     fn test_batch_update_conflict_blocks_before_artifact_staging() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);

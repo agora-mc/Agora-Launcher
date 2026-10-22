@@ -666,7 +666,7 @@ pub const CURATOR_WARNINGS_UNAVAILABLE_CODE: &str = "WARN_CURATOR_WARNINGS_UNAVA
 /// Only planned adds are checked, so the warning sits in the review that comes
 /// before anything is written. A warned item pulled in as a dependency counts
 /// too. Ids match exactly, the same key the annotation lookup uses.
-fn curator_warning_plan_warnings(
+pub(crate) fn curator_warning_plan_warnings(
     plan: &ResolvedInstallPlan,
     warnings: &[crate::registry::CuratorWarning],
 ) -> Vec<crate::install_pipeline::PlanWarning> {

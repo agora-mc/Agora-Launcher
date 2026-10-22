@@ -1495,6 +1495,23 @@ class TestNormalizeCuratorWarning(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     _compile.normalize_curator_warning({"curator_warning": raw})
 
+    def test_length_at_the_cap_is_accepted(self):
+        raw = "a" * _compile.CURATOR_WARNING_MAX_CHARS
+        self.assertEqual(_compile.normalize_curator_warning({"curator_warning": raw}), raw)
+
+    def test_length_over_the_cap_is_rejected(self):
+        raw = "a" * (_compile.CURATOR_WARNING_MAX_CHARS + 1)
+        with self.assertRaises(SystemExit):
+            _compile.normalize_curator_warning({"id": "too-long", "curator_warning": raw})
+
+    def test_padding_does_not_count_toward_the_cap(self):
+        # The cap is on the text the banner shows, so surrounding whitespace is free.
+        raw = "  " + "a" * _compile.CURATOR_WARNING_MAX_CHARS + "  \n"
+        self.assertEqual(
+            _compile.normalize_curator_warning({"curator_warning": raw}),
+            "a" * _compile.CURATOR_WARNING_MAX_CHARS,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

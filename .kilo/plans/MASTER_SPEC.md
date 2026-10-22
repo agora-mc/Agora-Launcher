@@ -183,6 +183,7 @@ README.md                   # Code of Engagement (full text, see §5)
 | `base_categories` | string[] | Official curated categories |
 | `community_categories` | string[] | Freeform community tags (dynamic; auto-discovered by compiler) |
 | `curator_note` | string | Human-written markdown write-up for display and AI semantic context |
+| `curator_warning` | string | Optional plain-text install caution, at most 300 characters. Shown on the mod page and in the install review; never blocks |
 | `icon_url` | string | CDN URL for the mod's icon image. For `github_release` strategy, curators provide this manually (e.g., pointing to the repo's `raw.githubusercontent.com` assets or the `launcher-media` repo). For `modrinth_id`, auto-populated from Modrinth API. For `direct_hash`, manually provided. |
 | `gallery_urls` | string[] | Array of CDN URLs for gallery/screenshot images. Auto-populated from Modrinth API or manually provided |
 | `governance.immune` | boolean | If `true`, bypasses all automated triage and vote penalties |

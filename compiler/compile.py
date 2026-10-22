@@ -2216,25 +2216,42 @@ def validate_pinned_source(
             raise SystemExit(1)
 
 
+# A curator warning is a banner, not documentation. Longer text belongs in
+# curator_note. Counted after trimming surrounding whitespace.
+CURATOR_WARNING_MAX_CHARS = 300
+
+
 def normalize_curator_warning(item: dict[str, Any]) -> str | None:
     """Return the curator's install warning for *item*, or None when it has none.
 
-    ``curator_warning`` is optional plain text. It informs the user before an
+    ``curator_warning`` is optional plain text of at most
+    ``CURATOR_WARNING_MAX_CHARS`` characters. It informs the user before an
     install and never blocks one. Absent, null, empty and whitespace-only values
-    all mean "no warning". Anything that is not a string is a manifest error:
-    the build stops rather than publishing a warning the launcher cannot read.
+    all mean "no warning". Anything that is not a string, or is too long, is a
+    manifest error: the build stops rather than publishing a warning the
+    launcher cannot show as written.
     """
     raw = item.get("curator_warning")
     if raw is None:
         return None
+    item_id = item.get("id", "<unknown>")
     if not isinstance(raw, str):
         logger.error(
             "curator_warning must be a string in %s, got %s",
-            item.get("id", "<unknown>"),
+            item_id,
             type(raw).__name__,
         )
         raise SystemExit(1)
     text = raw.strip()
+    if len(text) > CURATOR_WARNING_MAX_CHARS:
+        logger.error(
+            "curator_warning in %s is %d characters; the limit is %d. "
+            "Shorten it to a one-line caution and move the detail into curator_note.",
+            item_id,
+            len(text),
+            CURATOR_WARNING_MAX_CHARS,
+        )
+        raise SystemExit(1)
     return text or None
 
 
