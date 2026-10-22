@@ -467,8 +467,12 @@ async function browseToModDetail(page: Page) {
 // Helper: primary install flow steps (ModDetail inline) up to InstallFlow
 // ---------------------------------------------------------------------------
 
+// The main ModDetail button reads "Installed ✓ · Change version" once the mod is
+// in the instance (the default fixture has it installed), so match either label.
+const INSTALL_TO_INSTANCE_BUTTON = /Install to Instance|Installed .*Change version/;
+
 async function triggerInlineInstallFlow(page: Page) {
-  await page.getByRole('button', { name: 'Install to Instance' }).click();
+  await page.getByRole('button', { name: INSTALL_TO_INSTANCE_BUTTON }).click();
   await pickFirstInstanceSelect(page, 'test-instance');
   await page.getByRole('button', { name: 'Next: Choose Version' }).click();
   // Click the first version entry
@@ -519,7 +523,9 @@ test.describe('Release C3 — Install flow entry points', () => {
     await page.getByRole('button', { name: 'Versions' }).click();
 
     // Wait for GitHub version list, click the "1.0.0" version row
-    await page.getByText('1.0.0').first().click();
+    // The row is a role=button; a plain text match can hit the installed-state
+    // header ("Version 1.0.0 · ...") instead.
+    await page.getByRole('button', { name: /^1\.0\.0/ }).first().click();
 
     // Now the selected-version detail panel appears with "Install to instance" label
     // and a <select> plus "Review install plan" button.
@@ -529,6 +535,9 @@ test.describe('Release C3 — Install flow entry points', () => {
     const count = await selects.count();
     let instanceSelected = false;
     for (let i = 0; i < count; i++) {
+      // Browse's own instance selector is in the DOM too (hidden behind this
+      // page) and lists the same instance, so only a visible select counts.
+      if (!(await selects.nth(i).isVisible())) continue;
       const options = await selects.nth(i).locator('option').allTextContents();
       if (options.some((t) => t.includes('Test Instance'))) {
         await selects.nth(i).selectOption('test-instance');
@@ -575,7 +584,7 @@ test.describe('Release C3 — Install flow entry points', () => {
     });
     await page.goto('/');
 
-    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    await page.getByRole('button', { name: INSTALL_TO_INSTANCE_BUTTON }).click();
 
     // Select instance
     await pickFirstInstanceSelect(page, 'test-instance');
@@ -950,7 +959,7 @@ test.describe('Guided install version order', () => {
     await installFlowMock(page, { versions: [...newer, ...fitting] });
     await page.goto('/');
     await browseToModDetail(page);
-    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    await page.getByRole('button', { name: INSTALL_TO_INSTANCE_BUTTON }).click();
     await pickFirstInstanceSelect(page, 'test-instance');
     await page.getByRole('button', { name: 'Next: Choose Version' }).click();
 

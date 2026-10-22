@@ -306,7 +306,7 @@ async function installOnboardingMockWithImport(page: Page) {
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command === 'get_lkg_marker') return Promise.resolve(null);
         if (command === 'get_auth_status') return Promise.resolve(true);
-        if (command === 'get_github_profile') return Promise.resolve(null);
+        if (command === 'get_github_profile') return Promise.resolve({ login: 'tester', avatar_url: '' });
         if (command === 'get_flag_rate_limit') return Promise.resolve(null);
         if (command === 'list_mod_reviews') return Promise.resolve([]);
         if (command === 'get_curated_annotation') return Promise.resolve(null);
@@ -800,9 +800,12 @@ test.describe('Launcher Import — onboarding Bring Your Instances step', () => 
     await expect(javaSwitch).toHaveAttribute('aria-checked', 'false');
     await page.getByRole('button', { name: 'Continue' }).click();
 
-    // GitHub step
+    // GitHub step — a token is already stored, so it says who is signed in
+    // and offers Continue, not the sign-in offer.
     await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible();
-    await page.getByRole('button', { name: "I'll do this later" }).click();
+    await expect(page.getByText('Signed in as', { exact: false })).toBeVisible();
+    await expect(page.getByRole('button', { name: "I'll do this later" })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Continue' }).click();
 
     // Registry step — mock returns ready, so Finish should be available
     await expect(page.getByRole('heading', { name: 'Download Catalog' })).toBeVisible({ timeout: 5000 });

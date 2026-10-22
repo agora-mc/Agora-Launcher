@@ -107,8 +107,9 @@ test('the Bazaar does not give the whole window a scrollbar', async ({ page }) =
   await page.setViewportSize({ width: 1280, height: 800 });
   await installBazaarMock(page);
   await openBazaar(page);
-  // React StrictMode runs mount effects twice: resolve the newest search.
-  await expect.poll(() => page.evaluate(() => (window as any).__browseCalls.length)).toBeGreaterThanOrEqual(2);
+  // Wait for the first search, then resolve the newest one. Dev StrictMode may
+  // run the search twice; the count is not the thing under test.
+  await expect.poll(() => page.evaluate(() => (window as any).__browseCalls.length)).toBeGreaterThanOrEqual(1);
   const items = Array.from({ length: 24 }, (_, i) => item(`mod-${i}`, `Mod ${i}`));
   await page.evaluate((payload) => {
     (window as any).__resolveBrowse((window as any).__browseCalls.length - 1, { items: payload, total: 24, page: 0, hasMore: false });

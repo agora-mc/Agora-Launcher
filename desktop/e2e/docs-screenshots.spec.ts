@@ -529,7 +529,7 @@ test('docs screenshot: install plan review', async ({ page }) => {
   await page.getByRole('button', { name: 'View Details', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Test Mod', exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Install to Instance' }).click();
+  await page.getByRole('button', { name: /Install to Instance|Installed .*Change version/ }).click();
   await pickFirstInstanceSelect(page, 'test-instance');
   await page.getByRole('button', { name: 'Next: Choose Version' }).click();
   await page.getByText('test-mod-1.0.0.jar').click();
