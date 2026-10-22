@@ -1498,16 +1498,21 @@ test('Browse opens on the most recently launched instance, and "No instance cont
   const select = page.locator('#browse-instance-context');
   await expect(select).toHaveValue('recent-121');
   await expect(page.getByText(/Results follow Recent Fabric/)).toBeVisible();
-  // The first query carries that instance's version, and All types (no type filter).
+  // The first query carries that instance's version and loader, with All types
+  // (no type filter). Core keeps packs out of the loader filter, so the loader
+  // is still sent here.
   expect(await callArg(page, initial, 'mcVersion')).toBe('1.21');
+  expect(await callArg(page, initial, 'loader')).toBe('fabric');
   // No content type was sent (page.evaluate reports the missing key as null).
   expect(await callArg(page, initial, 'contentType')).toBeNull();
   await expect(page.getByText('MC 1.21 ✕')).toBeVisible();
+  await expect(page.getByText('fabric ✕')).toBeVisible();
 
   await select.selectOption('');
   await expect(select).toHaveValue('');
   await expect(page.getByText(/Choose an instance to match results/)).toBeVisible();
   await expect(page.getByText('MC 1.21 ✕')).toHaveCount(0);
+  await expect(page.getByText('fabric ✕')).toHaveCount(0);
 });
 
 test('the card score line is plain text, not vote buttons', async ({ page }) => {

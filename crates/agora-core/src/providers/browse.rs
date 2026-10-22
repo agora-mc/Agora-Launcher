@@ -251,7 +251,9 @@ pub async fn search(
         sort: request.sort.clone().unwrap_or_else(|| "net_score".into()),
         mc_version: request.mc_version.clone(),
         // A mod loader says nothing about a resource pack, shader or data
-        // pack, so it is not a filter for them.
+        // pack. With a single non-mod content type it is not a filter at all;
+        // in an all-types search it narrows mods and modpacks, and each source
+        // keeps the packs out of that filter.
         loader: request.loader.clone().filter(|_| {
             request
                 .content_type

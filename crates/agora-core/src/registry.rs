@@ -861,9 +861,12 @@ pub fn browse_items(
     }
     if let Some(ld) = loader {
         if ld != "all" {
+            // Packs, shaders, data packs and worlds carry no mod loader, so the
+            // loader narrows mods and modpacks only.
             where_parts.push(
-                "ri.id IN (SELECT r.id FROM registry_items r, json_each(r.compatible_versions_json) cv \
-                 WHERE json_extract(cv.value, '$.loader') = ?)"
+                "(ri.content_type IN ('resourcepack', 'shader', 'datapack', 'world') \
+                 OR ri.id IN (SELECT r.id FROM registry_items r, json_each(r.compatible_versions_json) cv \
+                 WHERE json_extract(cv.value, '$.loader') = ?))"
                     .to_string(),
             );
             params.push(Box::new(ld.to_string()));
@@ -2193,9 +2196,11 @@ fn for_you_items_query(
     }
     if let Some(ld) = loader {
         if ld != "all" {
+            // Same rule as browse_items: the loader narrows mods and modpacks only.
             where_parts.push(
-                "ri.id IN (SELECT r.id FROM registry_items r, json_each(r.compatible_versions_json) cv \
-                 WHERE json_extract(cv.value, '$.loader') = ?)"
+                "(ri.content_type IN ('resourcepack', 'shader', 'datapack', 'world') \
+                 OR ri.id IN (SELECT r.id FROM registry_items r, json_each(r.compatible_versions_json) cv \
+                 WHERE json_extract(cv.value, '$.loader') = ?))"
                     .to_string(),
             );
         }
@@ -2767,6 +2772,68 @@ mod tests {
         .unwrap();
         assert_eq!(matching.len(), 1);
         assert!(missing.is_empty());
+    }
+
+    /// Under All types a loader narrows mods and modpacks, not packs: for a
+    /// Fabric context the Forge-only mod is hidden and the resource pack (which
+    /// carries no loader tag) is still shown.
+    #[test]
+    fn all_types_loader_hides_other_loaders_but_keeps_packs() {
+        let dir = temp_registry_db();
+        let db = dir.path().join("registry.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "INSERT INTO registry_items VALUES (
+                    'forge-only-mod', 'Forge Only Mod', 'mod', 'github_release',
+                    'owner/forge', 'abc', 5, 0, 5, 1.0, 'approved',
+                    0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z',
+                    '[{\"mc_version\":\"1.20.1\",\"loader\":\"forge\"}]',
+                    'Forge only', NULL, NULL, 'MIT', '2024-01-01T00:00:00Z', NULL, NULL);
+                 INSERT INTO registry_items VALUES (
+                    'faithful-pack', 'Faithful Pack', 'resourcepack', 'github_release',
+                    'owner/pack', 'def', 5, 0, 5, 1.0, 'approved',
+                    0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z',
+                    NULL, 'A pack', NULL, NULL, 'MIT', '2024-01-01T00:00:00Z', NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let conn = registry_connection(&db).unwrap();
+        let sort = SortOption::NetScore;
+        let ids = |content_type: Option<&str>| -> Vec<String> {
+            browse_items(
+                &conn,
+                content_type,
+                None,
+                &sort,
+                &all_curated_strategies(),
+                None,
+                Some("fabric"),
+                None,
+                100,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|item| item.id)
+            .collect()
+        };
+
+        let all = ids(None);
+        assert!(
+            all.contains(&"test-mod-1".to_string()),
+            "fabric mod kept: {all:?}"
+        );
+        assert!(
+            all.contains(&"faithful-pack".to_string()),
+            "pack kept under All types: {all:?}"
+        );
+        assert!(
+            !all.contains(&"forge-only-mod".to_string()),
+            "forge mod hidden for fabric: {all:?}"
+        );
+
+        // Mods only: the same loader rule for mods, and packs are out by type.
+        assert_eq!(ids(Some("mod")), vec!["test-mod-1".to_string()]);
     }
 
     #[test]

@@ -4,10 +4,10 @@
  * Only mods and modpacks are tagged with a mod loader. Resource packs, shaders
  * and data packs carry their own tags (`minecraft`, `iris`, `datapack`), so
  * filtering them by the instance's loader hides nearly everything. "All types"
- * includes those packs, so the loader filter does not apply there either.
+ * keeps the filter, as it always has.
  */
 export function loaderFilterApplies(contentType: string | null): boolean {
-  return contentType === 'mod' || contentType === 'pack';
+  return contentType === null || contentType === 'mod' || contentType === 'pack';
 }
 
 /**
