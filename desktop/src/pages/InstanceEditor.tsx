@@ -2867,6 +2867,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               The industry-standard format for sharing Minecraft modpacks. Compatible with
               Modrinth, Prism Launcher, and other launchers. Lists your mods with download
               links and checksums; a mod Agora can't find on Modrinth is bundled in the file.
+              If one of those mods can't be read, the export stops and names it.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Not included:</span> configs,

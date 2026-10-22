@@ -7,7 +7,7 @@ use crate::error::{LauncherError, LauncherResult};
 use crate::helpers::{safe_zip_entry_name, stream_jar_into_zip};
 use crate::models::InstanceManifest;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The `modrinth.index.json` `dependencies` key for a loader, or `None` when
 /// the format has no key for it (vanilla, or an unrecognised loader).
@@ -89,8 +89,10 @@ pub async fn export_instance_pack(
 /// - `format == "mrpack"`: a `.mrpack` (zip) containing `modrinth.index.json`
 ///   plus bundled jar files.
 ///
-/// The bytes go to a sibling `.tmp` file that is renamed into place, so a failed
-/// export never leaves a half-written pack at `out_path`.
+/// The bytes go to a temp file beside `out_path`, which is then renamed into
+/// place. On any failure the temp file is removed and `out_path` is untouched.
+/// A mod that is neither a Modrinth download nor a readable jar stops the
+/// export: the pack could not install it, so it is not written with a gap.
 ///
 /// Returns the absolute path to the written export file.
 pub async fn export_instance_pack_to(
@@ -100,175 +102,193 @@ pub async fn export_instance_pack_to(
     format: &str,
 ) -> LauncherResult<String> {
     match format {
-        "json" => {
-            let pack = serde_json::json!({
-                "format": "agora-pack/v1",
-                "instance": {
-                    "id": manifest.instance_id,
-                    "name": manifest.name,
-                    "minecraft_version": manifest.minecraft_version,
-                    "loader": manifest.loader,
-                    "loader_version": manifest.loader_version,
-                },
-                "mods": manifest.mods.iter().map(|m| serde_json::json!({
-                    "filename": m.filename,
-                    "registry_id": m.registry_id,
-                    "modrinth_id": m.modrinth_id,
-                    "source": m.source,
-                    "version": m.version,
-                    "sha256": m.sha256,
-                })).collect::<Vec<_>>(),
-            });
-            let tmp_path = out_path.with_extension("json.tmp");
-            let text = serde_json::to_string_pretty(&pack)
-                .map_err(|_| LauncherError::InstanceCreateFailed)?;
-            std::fs::write(&tmp_path, text).map_err(|_| LauncherError::InstanceCreateFailed)?;
-            std::fs::rename(&tmp_path, out_path)
-                .map_err(|_| LauncherError::InstanceCreateFailed)?;
-            Ok(out_path.to_string_lossy().to_string())
-        }
-        "mrpack" => {
-            let mods_dir = instance_dir.join("mods");
-            let tmp_path = out_path.with_extension("mrpack.tmp");
-
-            {
-                let file = std::fs::File::create(&tmp_path)
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-                let mut zip = zip::ZipWriter::new(file);
-                let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-
-                let mut files_meta: Vec<serde_json::Value> = Vec::new();
-
-                for m in &manifest.mods {
-                    if let Some(mid) = m.modrinth_id.as_deref().filter(|s| !s.trim().is_empty()) {
-                        if let Some(meta) =
-                            crate::modrinth::resolve_modrinth_file_metadata(mid, &m.filename).await
-                        {
-                            files_meta.push(serde_json::json!({
-                                "path": format!("mods/{}", m.filename),
-                                "hashes": { "sha1": meta.sha1, "sha512": meta.sha512 },
-                                "downloads": [meta.url],
-                                "fileSize": meta.size,
-                            }));
-                            continue;
-                        }
-                    }
-                    let entry_name = match safe_zip_entry_name(&m.filename) {
-                        Some(n) => n,
-                        None => {
-                            files_meta.push(serde_json::json!({
-                                "path": format!("mods/{}", m.filename),
-                                "hashes": { "sha256": m.sha256 },
-                                "downloads": [],
-                                "fileSize": 0u64,
-                            }));
-                            continue;
-                        }
-                    };
-                    let p = mods_dir.join(&m.filename);
-
-                    let is_symlink = std::fs::symlink_metadata(&p)
-                        .map(|md| md.file_type().is_symlink())
-                        .unwrap_or(false);
-                    if is_symlink {
-                        files_meta.push(serde_json::json!({
-                            "path": entry_name,
-                            "hashes": { "sha256": m.sha256 },
-                            "downloads": [],
-                            "fileSize": 0u64,
-                        }));
-                        continue;
-                    }
-
-                    match stream_jar_into_zip(&mut zip, opts, &entry_name, &p) {
-                        Ok((sha, size)) => {
-                            // The Modrinth format (and Agora's own importer)
-                            // verifies bundled files by sha1/sha512; sha256
-                            // alone made the pack impossible to re-import.
-                            let mut hashes = serde_json::json!({ "sha256": sha });
-                            if let Some((sha1, sha512)) = sha1_and_sha512(&p) {
-                                hashes["sha1"] = sha1.into();
-                                hashes["sha512"] = sha512.into();
-                            }
-                            files_meta.push(serde_json::json!({
-                                "path": entry_name,
-                                "hashes": hashes,
-                                "downloads": [],
-                                "fileSize": size,
-                            }));
-                        }
-                        Err(_) => {
-                            files_meta.push(serde_json::json!({
-                                "path": entry_name,
-                                "hashes": { "sha256": m.sha256 },
-                                "downloads": [],
-                                "fileSize": 0u64,
-                            }));
-                        }
-                    }
-                }
-
-                let mut deps = serde_json::Map::new();
-                deps.insert(
-                    "minecraft".to_string(),
-                    serde_json::Value::String(manifest.minecraft_version.clone()),
-                );
-                // The Modrinth spec keys the loader as `fabric-loader` /
-                // `quilt-loader` (not the bare loader name) and has no key for
-                // vanilla at all. Writing the bare name made a re-import
-                // produce an instance with no loader.
-                if let Some(key) = mrpack_dependency_key(&manifest.loader) {
-                    deps.insert(
-                        key.to_string(),
-                        serde_json::Value::String(manifest.loader_version.clone()),
-                    );
-                }
-                // `versionId` identifies the *pack* version, not the loader's.
-                // Writing `loader_version` here mislabels every exported pack
-                // for any launcher that reads it, and since import now records
-                // this field as provenance, a round-trip through Agora would
-                // store the Fabric version as the pack version.
-                //
-                // Prefer what we recorded at import so identity survives an
-                // export/import round-trip; otherwise stamp the export date,
-                // which is at least true. An edited instance still claims its
-                // source version — mrpack has no way to express "derived from".
-                let version_id = manifest
-                    .pack_origin
-                    .as_ref()
-                    .and_then(|origin| {
-                        origin
-                            .version_number
-                            .clone()
-                            .or_else(|| origin.version_id.clone())
-                    })
-                    .unwrap_or_else(|| chrono::Utc::now().format("%Y.%m.%d").to_string());
-                let index = serde_json::json!({
-                    "formatVersion": 1,
-                    "game": "minecraft",
-                    "versionId": version_id,
-                    "name": manifest.name,
-                    "dependencies": deps,
-                    "files": files_meta,
-                });
-                let index_text = serde_json::to_string_pretty(&index)
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-
-                zip.start_file("modrinth.index.json", opts)
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-                zip.write_all(index_text.as_bytes())
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-                zip.finish()
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-            }
-
-            std::fs::rename(&tmp_path, out_path)
-                .map_err(|_| LauncherError::InstanceCreateFailed)?;
-            Ok(out_path.to_string_lossy().to_string())
-        }
-        other => Err(invalid_format_error(other)),
+        "json" | "mrpack" => {}
+        other => return Err(invalid_format_error(other)),
     }
+    let tmp_path = tmp_sibling_path(out_path);
+    let written = if format == "json" {
+        write_json_pack(manifest, &tmp_path)
+    } else {
+        write_mrpack_pack(instance_dir, manifest, &tmp_path).await
+    };
+    commit_tmp_file(&tmp_path, out_path, written)?;
+    Ok(out_path.to_string_lossy().to_string())
+}
+
+/// A temp file name beside `out_path` (`<name>.tmp`). Staying in the same
+/// folder keeps the final rename on one volume.
+pub fn tmp_sibling_path(out_path: &Path) -> PathBuf {
+    let mut name = out_path.as_os_str().to_owned();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+/// Moves a finished temp file to `out_path`, or removes it if writing failed.
+///
+/// Either the new file replaces `out_path` in one step, or `out_path` is left as
+/// it was and no temp file stays behind.
+pub fn commit_tmp_file(
+    tmp_path: &Path,
+    out_path: &Path,
+    written: LauncherResult<()>,
+) -> LauncherResult<()> {
+    if let Err(error) = written {
+        // The write error is the one worth reporting; a failed cleanup is not.
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(error);
+    }
+    if std::fs::rename(tmp_path, out_path).is_err() {
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(LauncherError::Generic {
+            code: "ERR_EXPORT_WRITE".into(),
+            message: "Could not save the file. Nothing was changed.".into(),
+        });
+    }
+    Ok(())
+}
+
+fn write_json_pack(manifest: &InstanceManifest, tmp_path: &Path) -> LauncherResult<()> {
+    let pack = serde_json::json!({
+        "format": "agora-pack/v1",
+        "instance": {
+            "id": manifest.instance_id,
+            "name": manifest.name,
+            "minecraft_version": manifest.minecraft_version,
+            "loader": manifest.loader,
+            "loader_version": manifest.loader_version,
+        },
+        "mods": manifest.mods.iter().map(|m| serde_json::json!({
+            "filename": m.filename,
+            "registry_id": m.registry_id,
+            "modrinth_id": m.modrinth_id,
+            "source": m.source,
+            "version": m.version,
+            "sha256": m.sha256,
+        })).collect::<Vec<_>>(),
+    });
+    let text =
+        serde_json::to_string_pretty(&pack).map_err(|_| LauncherError::InstanceCreateFailed)?;
+    std::fs::write(tmp_path, text).map_err(|_| LauncherError::InstanceCreateFailed)
+}
+
+/// The error for a mod the pack can neither link to nor carry.
+fn unbundleable_mod(filename: &str, reason: &str) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_EXPORT_MOD_NOT_BUNDLED".into(),
+        message: format!(
+            "Could not add {filename} to the pack: {reason}. Fix it or remove the mod, then export again."
+        ),
+    }
+}
+
+async fn write_mrpack_pack(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    tmp_path: &Path,
+) -> LauncherResult<()> {
+    let mods_dir = instance_dir.join("mods");
+    let file = std::fs::File::create(tmp_path).map_err(|_| LauncherError::InstanceCreateFailed)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts: zip::write::SimpleFileOptions =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+    let mut files_meta: Vec<serde_json::Value> = Vec::new();
+
+    for m in &manifest.mods {
+        if let Some(mid) = m.modrinth_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            if let Some(meta) =
+                crate::modrinth::resolve_modrinth_file_metadata(mid, &m.filename).await
+            {
+                files_meta.push(serde_json::json!({
+                    "path": format!("mods/{}", m.filename),
+                    "hashes": { "sha1": meta.sha1, "sha512": meta.sha512 },
+                    "downloads": [meta.url],
+                    "fileSize": meta.size,
+                }));
+                continue;
+            }
+        }
+        let entry_name = safe_zip_entry_name(&m.filename).ok_or_else(|| {
+            unbundleable_mod(&m.filename, "its file name cannot be stored in a pack")
+        })?;
+        let p = mods_dir.join(&m.filename);
+        let metadata = std::fs::symlink_metadata(&p)
+            .map_err(|_| unbundleable_mod(&m.filename, "it is missing from the mods folder"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(unbundleable_mod(
+                &m.filename,
+                "it is a link, and links cannot be bundled",
+            ));
+        }
+
+        let unreadable =
+            || unbundleable_mod(&m.filename, "it could not be read from the mods folder");
+        let (sha, size) =
+            stream_jar_into_zip(&mut zip, opts, &entry_name, &p).map_err(|_| unreadable())?;
+        // The Modrinth format (and Agora's own importer) verifies bundled files
+        // by sha1/sha512; sha256 alone made the pack impossible to re-import.
+        let (sha1, sha512) = sha1_and_sha512(&p).ok_or_else(unreadable)?;
+        files_meta.push(serde_json::json!({
+            "path": entry_name,
+            "hashes": { "sha256": sha, "sha1": sha1, "sha512": sha512 },
+            "downloads": [],
+            "fileSize": size,
+        }));
+    }
+
+    let mut deps = serde_json::Map::new();
+    deps.insert(
+        "minecraft".to_string(),
+        serde_json::Value::String(manifest.minecraft_version.clone()),
+    );
+    // The Modrinth spec keys the loader as `fabric-loader` /
+    // `quilt-loader` (not the bare loader name) and has no key for
+    // vanilla at all. Writing the bare name made a re-import
+    // produce an instance with no loader.
+    if let Some(key) = mrpack_dependency_key(&manifest.loader) {
+        deps.insert(
+            key.to_string(),
+            serde_json::Value::String(manifest.loader_version.clone()),
+        );
+    }
+    // `versionId` identifies the *pack* version, not the loader's.
+    // Writing `loader_version` here mislabels every exported pack
+    // for any launcher that reads it, and since import now records
+    // this field as provenance, a round-trip through Agora would
+    // store the Fabric version as the pack version.
+    //
+    // Prefer what we recorded at import so identity survives an
+    // export/import round-trip; otherwise stamp the export date,
+    // which is at least true. An edited instance still claims its
+    // source version — mrpack has no way to express "derived from".
+    let version_id = manifest
+        .pack_origin
+        .as_ref()
+        .and_then(|origin| {
+            origin
+                .version_number
+                .clone()
+                .or_else(|| origin.version_id.clone())
+        })
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y.%m.%d").to_string());
+    let index = serde_json::json!({
+        "formatVersion": 1,
+        "game": "minecraft",
+        "versionId": version_id,
+        "name": manifest.name,
+        "dependencies": deps,
+        "files": files_meta,
+    });
+    let index_text =
+        serde_json::to_string_pretty(&index).map_err(|_| LauncherError::InstanceCreateFailed)?;
+
+    zip.start_file("modrinth.index.json", opts)
+        .map_err(|_| LauncherError::InstanceCreateFailed)?;
+    zip.write_all(index_text.as_bytes())
+        .map_err(|_| LauncherError::InstanceCreateFailed)?;
+    zip.finish()
+        .map_err(|_| LauncherError::InstanceCreateFailed)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -566,6 +586,108 @@ mod tests {
         assert!(
             leftovers.is_empty(),
             "failed export left tmp files behind: {leftovers:?}"
+        );
+    }
+
+    fn mod_named(filename: &str) -> crate::models::InstalledMod {
+        crate::models::InstalledMod {
+            provider: None,
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            filename: filename.into(),
+            registry_id: None,
+            modrinth_id: None,
+            source: "test".into(),
+            source_url: None,
+            version: None,
+            sha256: "00".repeat(32),
+            installed_at: String::new(),
+            java_packages: vec![],
+            mod_jar_id: None,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+        }
+    }
+
+    fn folder_has_tmp_files(folder: &std::path::Path) -> bool {
+        std::fs::read_dir(folder)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+    }
+
+    #[tokio::test]
+    async fn missing_jar_error_names_the_jar_and_writes_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        let mut manifest = empty_manifest("test-missing");
+        manifest.mods.push(mod_named("gone.jar"));
+        let out = tmp.path().join("pack.mrpack");
+
+        let err = export_instance_pack_to(&instance_dir, &manifest, &out, "mrpack")
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code(), "ERR_EXPORT_MOD_NOT_BUNDLED");
+        assert!(err.to_string().contains("gone.jar"), "{err}");
+        assert!(!out.exists(), "a failed export must not leave a pack");
+        assert!(!folder_has_tmp_files(tmp.path()));
+    }
+
+    #[tokio::test]
+    async fn mod_name_that_cannot_be_stored_stops_the_export() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        // Even if this file existed outside mods/, the pack must not reach for it.
+        std::fs::write(tmp.path().join("evil.jar"), b"outside the mods folder").unwrap();
+        let mut manifest = empty_manifest("test-traversal");
+        manifest.mods.push(mod_named("../evil.jar"));
+        let out = tmp.path().join("pack.mrpack");
+
+        let err = export_instance_pack_to(&instance_dir, &manifest, &out, "mrpack")
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code(), "ERR_EXPORT_MOD_NOT_BUNDLED");
+        assert!(!out.exists());
+        assert!(!folder_has_tmp_files(tmp.path()));
+    }
+
+    #[test]
+    fn failed_write_keeps_the_old_file_the_user_agreed_to_replace() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("lockfile.json");
+        std::fs::write(&out, b"the user's old file").unwrap();
+        let tmp_file = tmp_sibling_path(&out);
+        std::fs::write(&tmp_file, b"partial new bytes").unwrap();
+
+        let result = commit_tmp_file(
+            &tmp_file,
+            &out,
+            Err(LauncherError::Generic {
+                code: "ERR_TEST".into(),
+                message: "write failed".into(),
+            }),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), b"the user's old file");
+        assert!(!tmp_file.exists(), "temp file must be removed on failure");
+    }
+
+    #[test]
+    fn tmp_sibling_path_stays_beside_the_target() {
+        let out = Path::new("C:/Users/me/Save Here/my pack.mrpack");
+        assert_eq!(
+            tmp_sibling_path(out),
+            PathBuf::from("C:/Users/me/Save Here/my pack.mrpack.tmp")
         );
     }
 

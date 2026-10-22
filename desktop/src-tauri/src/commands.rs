@@ -5885,12 +5885,16 @@ pub async fn save_lockfile_export(
         return Ok(None);
     };
     let path = handle.path().to_path_buf();
-    std::fs::write(&path, contents.as_bytes()).map_err(|error| {
+    // Write beside the target and rename into place, so a failed save never
+    // truncates a file the user agreed to replace.
+    let tmp_path = agora_core::export_service::tmp_sibling_path(&path);
+    let written = std::fs::write(&tmp_path, contents.as_bytes()).map_err(|error| {
         lockfile_error(
             "ERR_LOCKFILE_SAVE",
             format!("Could not save the lockfile: {error}"),
         )
-    })?;
+    });
+    agora_core::export_service::commit_tmp_file(&tmp_path, &path, written)?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
