@@ -17,7 +17,7 @@ async function installHealthMock(page: Page, options: {
     let callbackId = 0;
     const counts: Record<string, number> = {};
     const lastArgs: Record<string, Record<string, unknown>> = {};
-    const eventListeners = new Map<string, (payload: unknown) => void>();
+    const eventListeners = new Map<string, number>();
     const row = {
       instance_id: 'health-test', name: 'Health Test', loader: 'fabric',
       loader_version: '0.16', minecraft_version: '1.21', is_locked: false,

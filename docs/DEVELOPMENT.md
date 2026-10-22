@@ -142,9 +142,11 @@ cargo test -p agora-cli
 cargo check -p agora-desktop
 ```
 
-Desktop frontend (from `desktop/`): `npm run build && npm run test:unit`. `npm run build` runs the
-boundary checks, `tsc` and `vite build`. End-to-end tests (`npx playwright test`) are slower; run
-them when touching UI flows.
+Desktop frontend (from `desktop/`): `npm run build && npm run typecheck:e2e && npm run test:unit`.
+`npm run build` runs the boundary checks, `tsc` and `vite build`. `typecheck:e2e` checks the
+Playwright specs against `e2e/tsconfig.json`: the main `tsc` covers `src/` only, and Playwright
+strips types without checking them. End-to-end tests (`npx playwright test`) are slower; run them
+when touching UI flows.
 
 Compiler (from `compiler/`, in a venv with `requirements.txt`):
 `python compile.py --skip-sign --no-governance-write --governance-mode off --out ../registry.db && python ../scripts/verify_db.py`.

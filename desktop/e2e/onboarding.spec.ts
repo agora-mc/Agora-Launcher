@@ -143,7 +143,6 @@ test('persisted service choices survive Back and Continue', async ({ page }) => 
 });
 
 test('Java step checked invokes ensure_java_runtime with onboarding operationId', async ({ page }) => {
-  const ensureJavaCalls: string[] = [];
   await page.addInitScript(() => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     let callbackId = 0;
@@ -207,7 +206,6 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
 });
 
 test('Java step unchecked does not invoke ensure_java_runtime', async ({ page }) => {
-  const ensureJavaCalls: string[] = [];
   await page.addInitScript(() => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     let callbackId = 0;
@@ -268,7 +266,6 @@ test('Java step unchecked does not invoke ensure_java_runtime', async ({ page })
 });
 
 test('onboarding Java step cancel allows continue without Java', async ({ page }) => {
-  let ensureJavaReject: ((reason: unknown) => void) | null = null;
   await page.addInitScript(() => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     let callbackId = 0;

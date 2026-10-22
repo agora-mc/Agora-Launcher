@@ -27,15 +27,6 @@ const REGISTRY_ITEM: Record<string, unknown> = {
   modrinth_id: null,
 };
 
-const CURATED_ANNOTATION: Record<string, unknown> = {
-  id: 'test-mod',
-  name: 'Test Mod',
-  curator_note: 'A well-maintained mod.',
-  net_score: 8,
-  is_immune: false,
-  base_categories: ['performance'],
-};
-
 const GOV_CONFIG: Record<string, unknown> = {
   repository: 'Agora/registry',
   environment: 'production',

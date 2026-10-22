@@ -170,6 +170,9 @@ jobs:
       - name: TypeScript type check
         working-directory: desktop
         run: npx tsc --noEmit
+      - name: E2E spec type check
+        working-directory: desktop
+        run: npx tsc --noEmit -p e2e
       - name: Vite production build
         working-directory: desktop
         run: npx vite build
