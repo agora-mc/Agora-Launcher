@@ -27,7 +27,8 @@ import {
   type InstanceRow,
 } from '../lib/tauri';
 import { takeOfferedBrowseContext } from '../lib/browseContextHandoff';
-import { contentTypeUnavailableReason, loaderFilterApplies } from '../lib/browseFilters';
+import { contentTypeUnavailableReason, hiddenResultsSentence, loaderFilterApplies } from '../lib/browseFilters';
+import type { BrowsePage } from '../lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
 import { loadPreference } from '../features/interactive/live/presentationPreference';
 import { RegistryStatusView } from '../components/registry-status-view';
@@ -544,6 +545,9 @@ function BrowseContent({
   const [modrinthProvider, setModrinthProvider] = useState<ProviderDescriptor | null>(null);
   // Sources that failed this query. Browse still shows everyone else.
   const [providerFailures, setProviderFailures] = useState<ProviderFailure[]>([]);
+  // Matches the instance's version or loader filter hid, when that filter left
+  // the list empty. Lets the empty state say so instead of looking like a dead end.
+  const [hiddenByFilters, setHiddenByFilters] = useState<BrowsePage['hiddenByFilters']>(null);
   const [loadMoreLoading, setLoadMoreLoading] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   // Tracks the 0-indexed page displayed. Starts at 0; incremented after each
@@ -855,6 +859,15 @@ function BrowseContent({
   }, [activeInstance]);
 
   const hasActiveFilters = category !== null || contentType !== null || mcVersion !== null || loader !== null || query.trim() !== '';
+  const hiddenSentence = hiddenByFilters
+    ? hiddenResultsSentence(hiddenByFilters, mcVersion, loader)
+    : null;
+  // Drops the instance's version and loader filters for this search, so the
+  // matches that were hidden show. Clear Filters puts them back.
+  const showHiddenResults = () => {
+    setMcVersion(null);
+    setLoader(null);
+  };
 
   const contextFor = (item: BrowseItem): ItemContext | null => {
     if (!activeInstance) return null;
@@ -1100,6 +1113,7 @@ function BrowseContent({
       setItems(restored.items);
       setHasMore(restored.hasMore);
       setCurrentPage(restored.currentPage);
+      setHiddenByFilters(null);
       setResultsKey(queryKey);
       // A snapshot taken in High Interaction must not drag the Bazaar back into
       // Simple mode after the preference changed underneath it.
@@ -1122,6 +1136,7 @@ function BrowseContent({
     setLoadMoreLoading(false);
     setLoadMoreError(null);
     setCurrentPage(0);
+    setHiddenByFilters(null);
     inFlightLoadMoreRef.current = null;
 
     let cancelled = false;
@@ -1159,6 +1174,7 @@ function BrowseContent({
             setResultsKey(queryKey);
             setHasMore(page.hasMore);
             setProviderFailures(page.providerFailures ?? []);
+            setHiddenByFilters(page.hiddenByFilters ?? null);
           }
         }
       } catch (e) {
@@ -1737,7 +1753,20 @@ function BrowseContent({
         </div>
       ) : items.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center">
-          <p className="text-muted-foreground">No items to display.</p>
+          {hiddenSentence ? (
+            <>
+              <p className="text-muted-foreground" data-testid="browse-hidden-by-filters">{hiddenSentence}</p>
+              <button
+                type="button"
+                onClick={showHiddenResults}
+                className="mt-2 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+              >
+                Show them
+              </button>
+            </>
+          ) : (
+            <p className="text-muted-foreground">No items to display.</p>
+          )}
           {contentTypeUnavailableReason(contentType) && (
             <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
               {contentTypeUnavailableReason(contentType)}

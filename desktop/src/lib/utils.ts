@@ -16,6 +16,20 @@ export function formatDate(value: string | null | undefined): string {
   }).format(date);
 }
 
+/**
+ * A stored UTC timestamp as the user's local date and time. Raw values such as
+ * `2026-10-22T18:15:58.781044+00:00` read as machine output, not as a time.
+ */
+export function formatDateTime(value: string | null | undefined): string {
+  if (!value) return 'Unknown';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
 interface VersionParts {
   core: number[];
   pre: string | null;

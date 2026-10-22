@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { compareVersionsDescending, sortLoaderVersionsLatestFirst } from './utils';
+import { compareVersionsDescending, formatDateTime, sortLoaderVersionsLatestFirst } from './utils';
 
 describe('compareVersionsDescending', () => {
   it('orders plain dotted versions newest-first', () => {
@@ -47,5 +47,23 @@ describe('sortLoaderVersionsLatestFirst', () => {
     const sorted = sortLoaderVersionsLatestFirst(input);
     expect(sorted.map((entry) => entry.loader_version)).toEqual(['0.16.10', '0.16.9', '0.15.11']);
     expect(input.map((entry) => entry.loader_version)).toEqual(['0.15.11', '0.16.9', '0.16.10']);
+  });
+});
+
+describe('formatDateTime', () => {
+  it('reads a microsecond UTC timestamp as a local date and time', () => {
+    const text = formatDateTime('2026-10-22T18:15:58.781044+00:00');
+    expect(text).not.toContain('T');
+    expect(text).not.toContain('.781044');
+    expect(text).not.toContain('+00:00');
+    expect(text).toContain(String(new Date('2026-10-22T18:15:58.781Z').getFullYear()));
+  });
+
+  it('is stable for hostile input', () => {
+    expect(formatDateTime(null)).toBe('Unknown');
+    expect(formatDateTime(undefined)).toBe('Unknown');
+    expect(formatDateTime('')).toBe('Unknown');
+    expect(formatDateTime('   ')).toBe('Unknown');
+    expect(formatDateTime('not a date')).toBe('Unknown');
   });
 });
