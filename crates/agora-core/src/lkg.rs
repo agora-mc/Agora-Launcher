@@ -301,9 +301,6 @@ pub struct RetentionPolicy {
     pub keep_non_lkg_count: u32,
     /// Number of pre-restore snapshots to keep.
     pub keep_pre_restore_count: u32,
-    /// Number of user-created and migration snapshots to keep (most recent).
-    /// Automatic snapshots never count against this and never evict them.
-    pub keep_preserved_count: u32,
     /// Maximum total snapshot storage per instance in bytes.
     pub size_cap_bytes: u64,
 }
@@ -336,7 +333,6 @@ impl Default for RetentionPolicy {
             keep_lkg_count: 3,
             keep_non_lkg_count: KEEP_AUTOMATIC_SNAPSHOTS,
             keep_pre_restore_count: 1,
-            keep_preserved_count: 10,
             size_cap_bytes: 2_000_000_000, // 2 GB
         }
     }
@@ -387,7 +383,6 @@ pub fn retention_plan_with_sizes(
     let mut kept_lkg = usize::from(!keep.is_empty());
     let mut kept_non_lkg = 0usize;
     let mut kept_pre_restore = 0usize;
-    let mut kept_preserved = 0usize;
     for entry in entries_newest_first {
         if entry.is_protected {
             keep.insert(entry.id.clone());
@@ -402,10 +397,9 @@ pub fn retention_plan_with_sizes(
                 kept_lkg += 1;
             }
         } else if entry.is_preserved {
-            if kept_preserved < policy.keep_preserved_count as usize {
-                keep.insert(entry.id.clone());
-                kept_preserved += 1;
-            }
+            // User-created and migration snapshots have no count cap: they
+            // are removed only by the person who made them.
+            keep.insert(entry.id.clone());
         } else if entry.is_pre_restore {
             if kept_pre_restore < policy.keep_pre_restore_count as usize {
                 keep.insert(entry.id.clone());
@@ -823,7 +817,6 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 1,
-            keep_preserved_count: 10,
             size_cap_bytes: 2_000_000_000,
         };
         let evict = retention_plan(&ids, &lkg, &[], &policy);
@@ -847,7 +840,6 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 2,
             keep_pre_restore_count: 2,
-            keep_preserved_count: 10,
             size_cap_bytes: 1_000,
         };
         assert!(retention_plan_with_sizes(&entries, &policy).is_empty());
@@ -865,7 +857,6 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 1,
-            keep_preserved_count: 10,
             size_cap_bytes: 90,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -885,7 +876,6 @@ mod tests {
             keep_lkg_count: 1,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 0,
-            keep_preserved_count: 10,
             size_cap_bytes: 100,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -903,7 +893,6 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 0,
             keep_pre_restore_count: 1,
-            keep_preserved_count: 10,
             size_cap_bytes: 80,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -946,7 +935,6 @@ mod tests {
             keep_lkg_count: 0,
             keep_non_lkg_count: 0,
             keep_pre_restore_count: 0,
-            keep_preserved_count: 10,
             size_cap_bytes: 1,
         };
 
@@ -1048,6 +1036,27 @@ mod tests {
     }
 
     #[test]
+    fn fifteen_manual_snapshots_are_all_kept_by_retention() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let manual: Vec<String> = (0..15)
+            .map(|i| {
+                create_test_snapshot_as(
+                    dir,
+                    &format!("my save {i}"),
+                    crate::snapshot::SnapshotOrigin::User,
+                )
+            })
+            .collect();
+        run_retention(dir).unwrap();
+        let remaining = remaining_ids(dir);
+        assert_eq!(remaining.len(), 15, "retention removed a manual snapshot");
+        for id in &manual {
+            assert!(remaining.contains(id), "manual snapshot {id} was deleted");
+        }
+    }
+
+    #[test]
     fn manual_snapshots_never_count_toward_the_automatic_five() {
         let temp = TempDir::new().unwrap();
         let dir = temp.path();
@@ -1108,18 +1117,21 @@ mod tests {
     }
 
     #[test]
-    fn preserved_snapshots_are_capped_by_count_and_evicted_last_under_the_size_cap() {
+    fn preserved_snapshots_have_no_count_cap_and_are_evicted_last_under_the_size_cap() {
         let preserved = |id: &str, size: u64| RetentionEntry {
             is_preserved: true,
             ..retention(id, size, false, false, false)
         };
-        let mut entries: Vec<RetentionEntry> = (0..12)
+        let mut entries: Vec<RetentionEntry> = (0..40)
             .map(|i| preserved(&format!("user-{i}"), 1))
             .collect();
         entries.insert(0, retention("auto", 1, false, false, false));
         let policy = RetentionPolicy::default();
         let evicted = retention_plan_with_sizes(&entries, &policy);
-        assert_eq!(evicted, vec!["user-10".to_string(), "user-11".to_string()]);
+        assert!(
+            evicted.is_empty(),
+            "manual snapshots were evicted: {evicted:?}"
+        );
 
         let entries = vec![
             preserved("user", 60),
