@@ -2603,6 +2603,49 @@ mod tests {
             .sum()
     }
 
+    // REVIEW: expected to FAIL on this branch. Shared blobs live in one
+    // app-wide object store. delete_snapshot treats an unreadable sibling
+    // manifest as "does not reference this blob" and removes the blob.
+    #[test]
+    fn review_delete_keeps_shared_blob_when_another_manifest_is_unreadable() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("inst-a");
+        let b = tmp.path().join("inst-b");
+        for dir in [&a, &b] {
+            fs::create_dir_all(dir.join("mods")).unwrap();
+            fs::write(dir.join("mods").join("shared.jar"), b"same bytes in both").unwrap();
+        }
+        let snap_a = create_snapshot(&a, Some("a")).unwrap();
+        let snap_b = create_snapshot(&b, Some("b")).unwrap();
+
+        let manifest_a =
+            read_manifest_file(&snapshot_manifest_path(&a, &snap_a.id), &snap_a.id).unwrap();
+        let hash = manifest_a
+            .files
+            .iter()
+            .filter_map(|file| file.blob_sha256.as_deref().or(file.sha256.as_deref()))
+            .next()
+            .expect("snapshot a records a blob hash")
+            .to_string();
+        let blob = snapshot_blob_path(&a, &hash);
+        assert!(
+            blob.is_file(),
+            "setup: shared blob should exist before delete"
+        );
+
+        // Snapshot b still needs the blob, but its manifest cannot be read
+        // right now (a sharing violation or a half-written file looks the same).
+        fs::write(snapshot_manifest_path(&b, &snap_b.id), b"{ not json").unwrap();
+
+        delete_snapshot(&a, &snap_a.id).unwrap();
+
+        assert!(
+            blob.is_file(),
+            "shared blob {hash} was removed while snapshot {} may still need it",
+            snap_b.id
+        );
+    }
+
     #[test]
     fn create_and_list_snapshot() {
         let tmp = TempDir::new().unwrap();

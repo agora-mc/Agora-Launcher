@@ -1165,4 +1165,43 @@ mod tests {
         assert!(remaining.contains(&evicted));
         assert_eq!(remaining.len(), 3, "protected + both ordinary automatic");
     }
+
+    // REVIEW: the next two tests are expected to FAIL on this branch.
+
+    #[test]
+    fn manual_snapshot_named_pre_restore_is_not_evicted_as_an_undo_point() {
+        // Labels are free text in the UI, so a person can type a pre-restore-
+        // prefix. Pre-restore bucketing is by label only, so the manual
+        // snapshot competes for the single undo slot and is evicted.
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let manual = create_test_snapshot_as(
+            dir,
+            "pre-restore-my-world-backup",
+            crate::snapshot::SnapshotOrigin::User,
+        );
+        create_test_snapshot(dir, "pre-restore-20260101-000000");
+
+        run_retention(dir).unwrap();
+
+        assert!(remaining_ids(dir).contains(&manual));
+    }
+
+    #[test]
+    fn manual_snapshot_over_size_cap_survives_its_own_retention_pass() {
+        // SnapshotService::create runs retention right after capture. A manual
+        // snapshot that alone exceeds the 2 GB cap is the newest entry and is
+        // not the current LKG, so the cap evicts it on the spot.
+        let manual = RetentionEntry {
+            is_preserved: true,
+            ..retention("manual", 3_000_000_000, false, false, false)
+        };
+
+        let evicted = retention_plan_with_sizes(&[manual], &RetentionPolicy::default());
+
+        assert!(
+            evicted.is_empty(),
+            "just-taken manual snapshot was evicted: {evicted:?}"
+        );
+    }
 }
