@@ -40,11 +40,36 @@ fn sha1_and_sha512(path: &Path) -> Option<(String, String)> {
     Some((hex::encode(sha1.finalize()), hex::encode(sha512.finalize())))
 }
 
-/// Export an instance as a shareable pack file.
+/// The file name an export of `instance_id` gets by default, for `format`.
 ///
-/// - `format == "json"`: a custom `.agora-pack.json` manifest.
-/// - `format == "mrpack"`: a `.mrpack` (zip) containing `modrinth.index.json`
-///   plus bundled jar files.
+/// Unknown formats are rejected here, so the desktop can refuse before it asks
+/// the user where to save.
+pub fn default_export_file_name(instance_id: &str, format: &str) -> LauncherResult<String> {
+    let safe_id = crate::paths::sanitize_id(instance_id);
+    if safe_id.is_empty() {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_INSTANCE".into(),
+            message: "The instance ID is invalid.".into(),
+        });
+    }
+    match format {
+        "json" => Ok(format!("{}.agora-pack.json", safe_id)),
+        "mrpack" => Ok(format!("{}.mrpack", safe_id)),
+        other => Err(invalid_format_error(other)),
+    }
+}
+
+fn invalid_format_error(format: &str) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_INVALID_FORMAT".into(),
+        message: format!(
+            "Unknown export format '{}'. Use 'json' or 'mrpack'.",
+            format
+        ),
+    }
+}
+
+/// Export an instance into `exports_dir` under its default file name.
 ///
 /// Returns the absolute path to the written export file.
 pub async fn export_instance_pack(
@@ -54,8 +79,26 @@ pub async fn export_instance_pack(
     format: &str,
 ) -> LauncherResult<String> {
     std::fs::create_dir_all(exports_dir).map_err(|_| LauncherError::InstanceCreateFailed)?;
-    let safe_id = crate::paths::sanitize_id(&manifest.instance_id);
+    let file_name = default_export_file_name(&manifest.instance_id, format)?;
+    export_instance_pack_to(instance_dir, manifest, &exports_dir.join(file_name), format).await
+}
 
+/// Export an instance to `out_path`, the file the user chose to save to.
+///
+/// - `format == "json"`: a custom `.agora-pack.json` manifest.
+/// - `format == "mrpack"`: a `.mrpack` (zip) containing `modrinth.index.json`
+///   plus bundled jar files.
+///
+/// The bytes go to a sibling `.tmp` file that is renamed into place, so a failed
+/// export never leaves a half-written pack at `out_path`.
+///
+/// Returns the absolute path to the written export file.
+pub async fn export_instance_pack_to(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    out_path: &Path,
+    format: &str,
+) -> LauncherResult<String> {
     match format {
         "json" => {
             let pack = serde_json::json!({
@@ -76,18 +119,16 @@ pub async fn export_instance_pack(
                     "sha256": m.sha256,
                 })).collect::<Vec<_>>(),
             });
-            let out_path = exports_dir.join(format!("{}.agora-pack.json", safe_id));
             let tmp_path = out_path.with_extension("json.tmp");
             let text = serde_json::to_string_pretty(&pack)
                 .map_err(|_| LauncherError::InstanceCreateFailed)?;
             std::fs::write(&tmp_path, text).map_err(|_| LauncherError::InstanceCreateFailed)?;
-            std::fs::rename(&tmp_path, &out_path)
+            std::fs::rename(&tmp_path, out_path)
                 .map_err(|_| LauncherError::InstanceCreateFailed)?;
             Ok(out_path.to_string_lossy().to_string())
         }
         "mrpack" => {
             let mods_dir = instance_dir.join("mods");
-            let out_path = exports_dir.join(format!("{}.mrpack", safe_id));
             let tmp_path = out_path.with_extension("mrpack.tmp");
 
             {
@@ -222,14 +263,11 @@ pub async fn export_instance_pack(
                     .map_err(|_| LauncherError::InstanceCreateFailed)?;
             }
 
-            std::fs::rename(&tmp_path, &out_path)
+            std::fs::rename(&tmp_path, out_path)
                 .map_err(|_| LauncherError::InstanceCreateFailed)?;
             Ok(out_path.to_string_lossy().to_string())
         }
-        other => Err(LauncherError::Generic {
-            code: "ERR_INVALID_FORMAT".into(),
-            message: format!("Unknown export format '{}'. Use 'json' or 'mrpack'.", other),
-        }),
+        other => Err(invalid_format_error(other)),
     }
 }
 
@@ -351,6 +389,111 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), "ERR_INVALID_FORMAT");
+    }
+
+    fn empty_manifest(instance_id: &str) -> InstanceManifest {
+        InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: instance_id.into(),
+            name: "Test".into(),
+            created_from_pack: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        }
+    }
+
+    #[tokio::test]
+    async fn export_to_chosen_path_writes_exactly_there_and_leaves_no_tmp() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        let chosen = tmp.path().join("my loadout.json");
+
+        let result = export_instance_pack_to(
+            &instance_dir,
+            &empty_manifest("test-chosen"),
+            &chosen,
+            "json",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(std::path::Path::new(&result), chosen.as_path());
+        assert!(chosen.is_file());
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "tmp files left behind: {leftovers:?}");
+    }
+
+    #[tokio::test]
+    async fn export_to_existing_path_replaces_the_old_file() {
+        // The save dialog has already asked the user to confirm the overwrite;
+        // the export itself must then replace the file, not fail on it.
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        let chosen = tmp.path().join("pack.agora-pack.json");
+        std::fs::write(&chosen, b"old contents").unwrap();
+
+        export_instance_pack_to(
+            &instance_dir,
+            &empty_manifest("test-replace"),
+            &chosen,
+            "json",
+        )
+        .await
+        .unwrap();
+
+        let text = std::fs::read_to_string(&chosen).unwrap();
+        assert!(
+            text.contains("agora-pack/v1"),
+            "old file was not replaced: {text}"
+        );
+    }
+
+    #[test]
+    fn default_export_file_names_follow_the_format() {
+        assert_eq!(
+            default_export_file_name("my-pack", "json").unwrap(),
+            "my-pack.agora-pack.json"
+        );
+        assert_eq!(
+            default_export_file_name("my-pack", "mrpack").unwrap(),
+            "my-pack.mrpack"
+        );
+        let err = default_export_file_name("my-pack", "zip").unwrap_err();
+        assert_eq!(err.code(), "ERR_INVALID_FORMAT");
+    }
+
+    #[test]
+    fn default_export_file_name_cannot_escape_the_folder() {
+        for hostile in ["../../escape", "a/b", "a\\b", "C:evil", "   "] {
+            let name = default_export_file_name(hostile, "json").unwrap();
+            assert!(
+                !name.contains('/') && !name.contains('\\'),
+                "{hostile:?} -> {name:?}"
+            );
+            assert!(
+                !name.contains(':') && !name.starts_with('.'),
+                "{hostile:?} -> {name:?}"
+            );
+        }
+        // An empty id must fail rather than name a bare ".agora-pack.json".
+        let err = default_export_file_name("", "json").unwrap_err();
+        assert_eq!(err.code(), "ERR_INVALID_INSTANCE");
     }
 
     /// Read `modrinth.index.json` back out of an exported `.mrpack`.

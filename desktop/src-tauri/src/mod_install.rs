@@ -305,11 +305,12 @@ pub async fn add_manual_mod(
     })?
 }
 
-/// Export pack via core ExportService.
+/// Export pack via core ExportService, to the file the user chose in the save dialog.
 pub async fn export_instance_pack(
     app: &tauri::AppHandle,
     instance_id: &str,
     format: &str,
+    out_path: &Path,
 ) -> LauncherResult<String> {
     let ctx = crate::core_context(app)?;
     let manifest_path = paths::instance_manifest_path(app, instance_id)
@@ -326,8 +327,7 @@ pub async fn export_instance_pack(
         serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?
     };
     let instance_dir = ctx.paths.instance_dir(instance_id)?;
-    let exports_dir = ctx.paths.root().join("exports");
-    agora_core::export_service::export_instance_pack(&instance_dir, &manifest, &exports_dir, format)
+    agora_core::export_service::export_instance_pack_to(&instance_dir, &manifest, out_path, format)
         .await
 }
 

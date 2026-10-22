@@ -473,5 +473,5 @@ test('export feedback reaches a user who exported from a scrolled page', async (
   });
   await page.getByRole('button', { name: 'Export .mrpack' }).click();
   // The banner at the top of the page is out of sight; a toast carries the news.
-  await expect(page.getByRole('alert').filter({ hasText: 'Exported .mrpack to: C:/exports/test.mrpack' })).toBeVisible();
+  await expect(page.getByRole('alert').filter({ hasText: 'Modrinth pack saved to: C:/exports/test.mrpack' })).toBeVisible();
 });

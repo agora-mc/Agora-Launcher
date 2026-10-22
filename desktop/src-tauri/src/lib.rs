@@ -241,6 +241,7 @@ pub fn run() {
             commands::clear_cached_instance_updates,
             commands::get_lkg_marker,
             commands::export_lockfile,
+            commands::save_lockfile_export,
             commands::import_lockfile,
             commands::detect_drift,
             commands::verify_lockfile,
