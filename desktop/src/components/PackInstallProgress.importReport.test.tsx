@@ -20,7 +20,7 @@ const installed = (filename: string): PackEntryOutcome => ({
 });
 const xaeroEntry = entry('xaero.jar', null);
 const waiting: PackEntryOutcome = {
-  name: 'xaero.jar', status: 'needs_action', verified_against_pack: false, action: 'enable_modrinth',
+  name: 'xaero.jar', status: 'needs_action', verified_against_pack: false, action: 'enable_modrinth', display_name: 'Xaero Minimap',
   reason: 'Needs Modrinth, which is off. Turning it on sends requests for this mod to Modrinth.',
   entry: xaeroEntry,
 };
@@ -56,6 +56,8 @@ describe('pack import report', () => {
 
     expect(await screen.findByText('4 of 5 mods installed.')).toBeTruthy();
     expect(screen.getByText(/Needs Modrinth, which is off/)).toBeTruthy();
+    // The catalog name is shown when known.
+    expect(screen.getByText('Xaero Minimap')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Turn on Modrinth for this' }));
 

@@ -370,6 +370,13 @@ async fn import_agora_json(
     source_path: &str,
 ) -> LauncherResult<PackImportOutcome> {
     let ctx = crate::core_context(app)?;
+    // Refuse an oversized file before reading it into memory.
+    let too_big = std::fs::metadata(source_path)
+        .map(|m| m.len() > agora_core::agora_pack_import::MAX_PACK_FILE_BYTES)
+        .unwrap_or(false);
+    if too_big {
+        return Err(agora_core::agora_pack_import::pack_too_big_error());
+    }
     let text = std::fs::read_to_string(source_path).map_err(|_| LauncherError::Generic {
         code: "ERR_PACK_READ".into(),
         message: format!("Cannot read pack file: {source_path}"),

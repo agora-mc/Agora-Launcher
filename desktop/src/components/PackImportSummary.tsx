@@ -55,23 +55,23 @@ export function PackImportSummary({
       <p role="status" className="mt-1 text-sm">{importHeadline(report)}</p>
 
       <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto text-xs">
-        {waiting.map((outcome) => (
-          <li key={`wait-${outcome.name}`}>
-            <span className="font-medium">{outcome.name}</span> needs action. {outcome.reason}
+        {waiting.map((outcome, index) => (
+          <li key={`wait-${index}-${outcome.name}`}>
+            <span className="font-medium" title={outcome.name}>{outcome.display_name || outcome.name}</span> needs action. {outcome.reason}
           </li>
         ))}
-        {failed.map((outcome) => (
-          <li key={`fail-${outcome.name}`} className="text-destructive">
-            <span className="font-medium">{outcome.name}</span> was not installed. {outcome.reason}
+        {failed.map((outcome, index) => (
+          <li key={`fail-${index}-${outcome.name}`} className="text-destructive">
+            <span className="font-medium" title={outcome.name}>{outcome.display_name || outcome.name}</span> was not installed. {outcome.reason}
           </li>
         ))}
-        {unchecked.map((outcome) => (
-          <li key={`unchecked-${outcome.name}`} className="text-muted-foreground">
-            <span className="font-medium">{outcome.name}</span>: {outcome.reason}
+        {unchecked.map((outcome, index) => (
+          <li key={`unchecked-${index}-${outcome.name}`} className="text-muted-foreground">
+            <span className="font-medium" title={outcome.name}>{outcome.display_name || outcome.name}</span>: {outcome.reason}
           </li>
         ))}
-        {report.warnings.map((warning) => (
-          <li key={warning} className="text-muted-foreground">{warning}</li>
+        {report.warnings.map((warning, index) => (
+          <li key={`${index}-${warning}`} className="text-muted-foreground">{warning}</li>
         ))}
       </ul>
 

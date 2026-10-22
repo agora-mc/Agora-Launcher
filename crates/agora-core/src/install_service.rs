@@ -356,6 +356,7 @@ impl InstallService {
             expected_sha1,
             expected_sha256,
             None,
+            None,
         )
         .await
     }
@@ -381,6 +382,7 @@ impl InstallService {
         expected_sha1: Option<&str>,
         expected_sha256: Option<&str>,
         required_sha256: Option<&str>,
+        expected_sha512: Option<&str>,
     ) -> LauncherResult<InstalledMod> {
         self.check_not_locked(instance_id)?;
 
@@ -402,6 +404,7 @@ impl InstallService {
             expected_sha1,
             expected_sha256,
             required_sha256,
+            expected_sha512,
             bytes,
         )
     }
@@ -422,8 +425,17 @@ impl InstallService {
         expected_sha1: Option<&str>,
         expected_sha256: Option<&str>,
         required_sha256: Option<&str>,
+        expected_sha512: Option<&str>,
         bytes: Vec<u8>,
     ) -> LauncherResult<InstalledMod> {
+        // The name becomes a path under the instance: it must be one portable
+        // file name, whatever the source or the pack claims.
+        if !crate::app_paths::is_safe_file_name(filename) {
+            return Err(LauncherError::Generic {
+                code: "ERR_INVALID_FILENAME".into(),
+                message: format!("'{filename}' is not a safe file name; nothing was installed."),
+            });
+        }
         let dir = self.ctx.paths.instance_dir(instance_id)?;
 
         // Verification is mandatory and fails closed, matching the install
@@ -450,6 +462,16 @@ impl InstallService {
                     "{filename} cannot be installed: its source published no SHA-1 or SHA-256                      for this version, so Agora cannot verify the download."
                 ),
             });
+        }
+        // The strongest hash the source published is checked as well as the
+        // SHA-1, so a SHA-1 collision cannot stand in for the real file.
+        if let Some(published) = expected_sha512
+            .map(|h| h.trim().to_lowercase())
+            .filter(|h| !h.is_empty())
+        {
+            if crate::download::sha512_hex(&bytes) != published {
+                return Err(LauncherError::HashMismatch);
+            }
         }
         if let Some(required) = required_sha256 {
             let required = required.trim().to_lowercase();

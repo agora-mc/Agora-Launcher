@@ -1510,6 +1510,7 @@ impl ModrinthService {
             Some(&expected_sha1),
             None,
             required_sha256,
+            candidate.sha512.as_deref(),
         )
         .await
     }

@@ -86,6 +86,17 @@ pub struct ParsedAgoraPack {
     pub mods: Vec<PackEntryParse>,
 }
 
+/// Largest pack file Agora will read, and most mod entries it will import from
+/// one. Real packs are far below both; the cap keeps a hostile or broken file
+/// from making the importer read or loop without end.
+pub const MAX_PACK_FILE_BYTES: u64 = 5 * 1024 * 1024;
+pub const MAX_PACK_ENTRIES: usize = 5_000;
+
+/// The refusal for a pack file over [`MAX_PACK_FILE_BYTES`].
+pub fn pack_too_big_error() -> LauncherError {
+    parse_error("This pack file is larger than 5 MB, which is more than Agora will import.")
+}
+
 fn parse_error(message: &str) -> LauncherError {
     LauncherError::Generic {
         code: "ERR_PACK_PARSE".into(),
@@ -96,6 +107,9 @@ fn parse_error(message: &str) -> LauncherError {
 /// Parse a `.agora-pack.json` document. The instance block must be complete;
 /// each mod entry is parsed on its own so one bad entry cannot hide the rest.
 pub fn parse_agora_pack(text: &str) -> LauncherResult<ParsedAgoraPack> {
+    if text.len() as u64 > MAX_PACK_FILE_BYTES {
+        return Err(pack_too_big_error());
+    }
     let pack: serde_json::Value =
         serde_json::from_str(text).map_err(|_| parse_error("Failed to parse agora-pack JSON."))?;
     let inst = pack
@@ -119,6 +133,13 @@ pub fn parse_agora_pack(text: &str) -> LauncherResult<ParsedAgoraPack> {
 
     let mods = match pack.get("mods") {
         None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(entries)) if entries.len() > MAX_PACK_ENTRIES => {
+            return Err(parse_error(&format!(
+                "This pack lists {} mods; Agora imports at most {MAX_PACK_ENTRIES} from one \
+                 pack file.",
+                entries.len()
+            )))
+        }
         Some(serde_json::Value::Array(entries)) => entries
             .iter()
             .enumerate()
@@ -167,6 +188,9 @@ pub struct PackEntryOutcome {
     /// Why it failed or what it needs; for an unverified install, the caveat.
     pub reason: Option<String>,
     pub action: Option<PackNeedsAction>,
+    /// The catalog's name for the mod when known; `name` (the filename) otherwise.
+    #[serde(default)]
+    pub display_name: Option<String>,
     /// The original entry, handed back to retry a needs-action one.
     pub entry: AgoraPackEntry,
 }
@@ -217,6 +241,8 @@ pub struct PackCandidate {
     pub filename: String,
     pub download_url: String,
     pub sha1: Option<String>,
+    /// SHA-512 the source published (Modrinth does); checked as well as SHA-1.
+    pub sha512: Option<String>,
     /// The SHA-256 the *source's own rules* expect (see
     /// [`expected_sha256_for_candidate`]); `None` when it published none.
     pub expected_sha256: Option<String>,
@@ -238,6 +264,10 @@ pub enum BackendError {
 pub trait PackBackend: Send + Sync {
     /// Filenames already in the instance, so a retry installs only what is missing.
     fn installed_filenames(&self, instance_id: &str) -> Vec<String>;
+    /// SHA-256 of a file already in the instance, `None` if it cannot be read.
+    fn installed_sha256(&self, instance_id: &str, filename: &str) -> Option<String>;
+    /// The catalog's name for a registry id, when it is known.
+    fn display_name(&self, registry_id: &str) -> Option<String>;
     async fn registry_versions(
         &self,
         instance_id: &str,
@@ -258,18 +288,11 @@ pub trait PackBackend: Send + Sync {
     ) -> Result<(), String>;
 }
 
-fn is_plain_filename(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains(['/', '\\', '\0', ':'])
-        && !name.contains("..")
-}
-
 /// A pack-pinned SHA-256: absent, or exactly 64 hex digits. Anything else is a
 /// corrupt pin, and a corrupt pin must not be read as "no pin".
 fn normalize_pin(raw: &Option<String>) -> Result<Option<String>, String> {
-    let Some(value) = raw.as_deref().map(str::trim).filter(|v| !v.is_empty()) else {
+    // Absent means no pin. A blank pin is a damaged one and fails closed.
+    let Some(value) = raw.as_deref().map(str::trim) else {
         return Ok(None);
     };
     if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -311,6 +334,7 @@ fn outcome(
         verified_against_pack: false,
         reason,
         action,
+        display_name: None,
         entry: entry.clone(),
     }
 }
@@ -372,7 +396,7 @@ async fn install_one(
             ),
         );
     };
-    if !is_plain_filename(&candidate.filename) {
+    if !crate::app_paths::is_safe_file_name(&candidate.filename) {
         return failed(
             entry,
             "The source offers a file with an unsafe name; it was not installed.",
@@ -408,8 +432,10 @@ pub async fn install_pack_entries(
     instance_id: &str,
     entries: Vec<PackEntryParse>,
 ) -> Vec<PackEntryOutcome> {
-    let present = backend.installed_filenames(instance_id);
-    let mut outcomes = Vec::with_capacity(entries.len());
+    let mut outcomes: Vec<PackEntryOutcome> = Vec::with_capacity(entries.len());
+    // The same entry listed twice is fetched and installed once; every listing
+    // still gets its outcome.
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for parsed in entries {
         match parsed {
             PackEntryParse::Invalid { name, reason } => outcomes.push(PackEntryOutcome {
@@ -418,21 +444,74 @@ pub async fn install_pack_entries(
                 verified_against_pack: false,
                 reason: Some(reason),
                 action: None,
+                display_name: None,
                 entry: AgoraPackEntry::default(),
             }),
             PackEntryParse::Entry(entry) => {
-                let filename = entry.filename.trim();
-                if !filename.is_empty() && present.iter().any(|f| f == filename) {
-                    let mut done = outcome(&entry, PackEntryStatus::Installed, None, None);
-                    done.reason = Some("Already installed.".into());
-                    outcomes.push(done);
-                } else {
-                    outcomes.push(install_one(backend, instance_id, &entry).await);
+                let key = serde_json::to_string(&entry).unwrap_or_default();
+                if let Some(&first) = seen.get(&key) {
+                    let copy = outcomes[first].clone();
+                    outcomes.push(copy);
+                    continue;
                 }
+                let mut done = settle_entry(backend, instance_id, &entry).await;
+                done.display_name =
+                    non_empty(&entry.registry_id).and_then(|id| backend.display_name(id));
+                seen.insert(key, outcomes.len());
+                outcomes.push(done);
             }
         }
     }
     outcomes
+}
+
+/// Reason on an entry that was already in the instance with nothing to check
+/// it against. Such a file is the user's, not the pack's.
+const PRESENT_UNPINNED: &str = "Already installed.";
+
+async fn settle_entry(
+    backend: &dyn PackBackend,
+    instance_id: &str,
+    entry: &AgoraPackEntry,
+) -> PackEntryOutcome {
+    let filename = entry.filename.trim();
+    let present = !filename.is_empty()
+        && backend
+            .installed_filenames(instance_id)
+            .iter()
+            .any(|f| f == filename);
+    if !present {
+        return install_one(backend, instance_id, entry).await;
+    }
+    let pin = match normalize_pin(&entry.sha256) {
+        Ok(pin) => pin,
+        Err(reason) => return failed(entry, reason),
+    };
+    let mut done = outcome(entry, PackEntryStatus::Installed, None, None);
+    match pin {
+        None => done.reason = Some(PRESENT_UNPINNED.into()),
+        Some(pin) => match backend.installed_sha256(instance_id, filename) {
+            Some(actual) if actual == pin => {
+                done.verified_against_pack = true;
+                done.reason = Some("Already installed (verified against the pack).".into());
+            }
+            Some(_) => {
+                return failed(
+                    entry,
+                    "A file with this name is already in the instance but is not the file the \
+                     pack pinned (its SHA-256 differs). It was left as it is.",
+                )
+            }
+            None => {
+                done.reason = Some(
+                    "Already installed, but it could not be read to be checked against the \
+                     pack SHA-256."
+                        .into(),
+                )
+            }
+        },
+    }
+    done
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +578,26 @@ impl PackBackend for CoreBackend {
         all_entries(&manifest).map(|e| e.filename.clone()).collect()
     }
 
+    fn installed_sha256(&self, instance_id: &str, filename: &str) -> Option<String> {
+        let manifest_path = self.ctx.paths.instance_manifest(instance_id).ok()?;
+        let manifest = crate::helpers::read_manifest(&manifest_path).ok()?;
+        let entry = all_entries(&manifest).find(|e| e.filename == filename)?;
+        let dir = self.ctx.paths.instance_dir(instance_id).ok()?;
+        let path = dir
+            .join(crate::helpers::content_subdir(&entry.content_type))
+            .join(filename);
+        crate::helpers::hash_file_sha256(&path).ok()
+    }
+
+    fn display_name(&self, registry_id: &str) -> Option<String> {
+        crate::registry::RegistryService::new(self.ctx.clone())
+            .get_item_by_id(registry_id)
+            .ok()
+            .flatten()
+            .map(|item| item.name)
+            .filter(|name| !name.trim().is_empty())
+    }
+
     async fn registry_versions(
         &self,
         instance_id: &str,
@@ -535,6 +634,7 @@ impl PackBackend for CoreBackend {
                 filename: c.filename.clone(),
                 download_url: c.download_url.clone(),
                 sha1: c.sha1.clone(),
+                sha512: c.sha512.clone(),
                 expected_sha256: expected_sha256_for_candidate(&item, c),
                 content_type: content_type.clone(),
                 registry_id: Some(item.id.clone()),
@@ -574,6 +674,7 @@ impl PackBackend for CoreBackend {
                 filename: v.filename,
                 download_url: v.download_url,
                 sha1: v.sha1,
+                sha512: v.sha512,
                 expected_sha256: None,
                 content_type: "mod".into(),
                 registry_id: None,
@@ -602,7 +703,7 @@ impl PackBackend for CoreBackend {
                 filename: candidate.filename.clone(),
                 download_url: candidate.download_url.clone(),
                 sha1: candidate.sha1.clone(),
-                sha512: None,
+                sha512: candidate.sha512.clone(),
                 size: None,
                 dependencies: Vec::new(),
                 mc_versions: Vec::new(),
@@ -638,6 +739,7 @@ impl PackBackend for CoreBackend {
                 candidate.sha1.as_deref(),
                 expected_sha256,
                 required_sha256,
+                candidate.sha512.as_deref(),
             )
             .await
             .map(|_| ())
@@ -752,6 +854,16 @@ fn pack_filenames(outcomes: &[PackEntryOutcome]) -> Vec<String> {
     outcomes
         .iter()
         .filter(|o| o.status == PackEntryStatus::Installed)
+        // A same-name file that was already there and not proven to be the
+        // pack's is the user's; only fresh installs and hash-verified files
+        // count as the pack's.
+        .filter(|o| {
+            o.verified_against_pack
+                || !o
+                    .reason
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with("Already installed"))
+        })
         // `name` is the installed filename for an installed entry.
         .map(|o| o.name.clone())
         .collect()
@@ -853,6 +965,7 @@ mod tests {
             filename: filename.into(),
             download_url: format!("https://cdn.modrinth.com/{filename}"),
             sha1: Some("abc".into()),
+            sha512: None,
             expected_sha256: None,
             content_type: "mod".into(),
             registry_id: None,
@@ -868,6 +981,8 @@ mod tests {
         /// Filenames whose install fails with this message.
         install_error: Option<(String, String)>,
         present: Vec<String>,
+        present_sha256: Option<String>,
+        names: Vec<(String, String)>,
         installs: Mutex<Vec<(String, Option<String>)>>,
         modrinth_lookups: Mutex<u32>,
     }
@@ -887,6 +1002,8 @@ mod tests {
                 modrinth: Vec::new(),
                 install_error: None,
                 present: Vec::new(),
+                present_sha256: None,
+                names: Vec::new(),
                 installs: Mutex::new(Vec::new()),
                 modrinth_lookups: Mutex::new(0),
             }
@@ -896,7 +1013,18 @@ mod tests {
     #[async_trait]
     impl PackBackend for Fake {
         fn installed_filenames(&self, _: &str) -> Vec<String> {
-            self.present.clone()
+            let mut all = self.present.clone();
+            all.extend(self.installs.lock().unwrap().iter().map(|i| i.0.clone()));
+            all
+        }
+        fn installed_sha256(&self, _: &str, _: &str) -> Option<String> {
+            self.present_sha256.clone()
+        }
+        fn display_name(&self, registry_id: &str) -> Option<String> {
+            self.names
+                .iter()
+                .find(|(id, _)| id == registry_id)
+                .map(|(_, name)| name.clone())
         }
         async fn registry_versions(
             &self,
@@ -1238,6 +1366,16 @@ mod tests {
         sha1: &str,
         required: Option<&str>,
     ) -> LauncherResult<crate::models::InstalledMod> {
+        commit_with_sha512(ctx, bytes, sha1, required, None)
+    }
+
+    fn commit_with_sha512(
+        ctx: &Ctx,
+        bytes: &[u8],
+        sha1: &str,
+        required: Option<&str>,
+        sha512: Option<&str>,
+    ) -> LauncherResult<crate::models::InstalledMod> {
         crate::install_service::InstallService::new(ctx.clone()).commit_verified_artifact(
             "inst",
             "m.jar",
@@ -1250,6 +1388,7 @@ mod tests {
             Some(sha1),
             None,
             required,
+            sha512,
             bytes.to_vec(),
         )
     }
@@ -1403,5 +1542,77 @@ mod tests {
             "a pinned file never hashed against the pin must say so, got {:?}",
             out[0]
         );
+    }
+
+    #[test]
+    fn matching_sha1_with_wrong_sha512_installs_nothing() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let sha1 = crate::download::sha1_hex(bytes);
+        let wrong = crate::download::sha512_hex(b"other bytes");
+        let err = commit_with_sha512(&ctx, bytes, &sha1, None, Some(&wrong)).unwrap_err();
+        assert_eq!(err.code(), "ERR_HASH_MISMATCH");
+        assert!(!ctx
+            .paths
+            .instance_dir("inst")
+            .unwrap()
+            .join("mods")
+            .join("m.jar")
+            .exists());
+        let right = crate::download::sha512_hex(bytes);
+        commit_with_sha512(&ctx, bytes, &sha1, None, Some(&right)).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn present_pinned_file_is_hashed_and_a_mismatch_is_reported() {
+        let mut backend = fake();
+        backend.present = vec!["have.jar".into()];
+        backend.present_sha256 = Some(GOOD_PIN.into());
+        let ok = run(&backend, vec![entry("have.jar", "1", Some(GOOD_PIN))]);
+        assert!(ok[0].verified_against_pack);
+        backend.present_sha256 = Some("b".repeat(64));
+        let bad = run(&backend, vec![entry("have.jar", "1", Some(GOOD_PIN))]);
+        assert_eq!(bad[0].status, PackEntryStatus::Failed);
+    }
+
+    #[test]
+    fn retry_does_not_stamp_a_users_same_name_file_as_the_packs() {
+        let mut backend = fake();
+        backend.present = vec!["mine.jar".into()];
+        backend.present_sha256 = None;
+        let out = run(&backend, vec![entry("mine.jar", "1", Some(GOOD_PIN))]);
+        assert!(
+            pack_filenames(&out).is_empty(),
+            "unproven file must not be stamped"
+        );
+        backend.present_sha256 = Some(GOOD_PIN.into());
+        let out = run(&backend, vec![entry("mine.jar", "1", Some(GOOD_PIN))]);
+        assert_eq!(pack_filenames(&out), vec!["mine.jar".to_string()]);
+    }
+
+    #[test]
+    fn oversized_packs_are_refused() {
+        let big = " ".repeat(MAX_PACK_FILE_BYTES as usize + 1);
+        assert!(parse_agora_pack(&big).is_err());
+        let mods = vec!["{\"filename\":\"a.jar\"}"; MAX_PACK_ENTRIES + 1].join(",");
+        let text = format!(
+            "{{\"instance\":{{\"loader\":\"f\",\"loader_version\":\"1\",\"minecraft_version\":\"1\"}},\"mods\":[{mods}]}}"
+        );
+        assert!(parse_agora_pack(&text).is_err());
+    }
+
+    #[test]
+    fn outcomes_carry_the_catalog_name_when_known() {
+        let mut backend = fake();
+        backend.names = vec![("sodium".into(), "Sodium".into())];
+        backend.registry = Err(BackendError::Failed("x".into()));
+        let e = PackEntryParse::Entry(AgoraPackEntry {
+            filename: "sodium.jar".into(),
+            registry_id: Some("sodium".into()),
+            ..Default::default()
+        });
+        let out = run(&backend, vec![e]);
+        assert_eq!(out[0].display_name.as_deref(), Some("Sodium"));
     }
 }

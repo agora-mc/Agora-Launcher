@@ -1486,6 +1486,8 @@ export interface PackEntryOutcome {
   /** Why it failed or what it needs; for an unverified install, the caveat. */
   reason: string | null;
   action: PackNeedsAction | null;
+  /** The catalog name when known; `name` (the filename) otherwise. */
+  display_name?: string | null;
   /** Handed back to retry a needs-action entry. */
   entry: AgoraPackEntry;
 }
