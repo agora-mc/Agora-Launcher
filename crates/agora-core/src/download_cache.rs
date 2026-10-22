@@ -719,4 +719,105 @@ mod tests {
             .collect();
         assert_eq!(left, vec![crate::download::sha256_hex(b"new jar")]);
     }
+
+    /// Directory link: a junction on Windows (needs no admin rights), a
+    /// symlink elsewhere.
+    #[cfg(windows)]
+    fn link_dir(link: &Path, target: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed");
+    }
+
+    #[cfg(unix)]
+    fn link_dir(link: &Path, target: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn eviction_never_deletes_outside_the_cache_through_a_junction() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("c");
+        let cache = ModCache::new(root.clone());
+        let bytes = b"victim bytes";
+        let sha = crate::download::sha256_hex(bytes);
+        // A folder outside the cache that looks exactly like an entry.
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(outside.join(&sha)).unwrap();
+        std::fs::write(outside.join(&sha).join("file.jar"), bytes).unwrap();
+        // The cache's own prefix folder is a junction to that outside folder.
+        std::fs::create_dir_all(&root).unwrap();
+        link_dir(&root.join(&sha[..2]), &outside);
+
+        cache.evict(&policy(0), later(7200), &|_| false);
+
+        assert!(
+            outside.join(&sha).join("file.jar").exists(),
+            "eviction deleted a folder outside the cache"
+        );
+    }
+
+    #[test]
+    fn eviction_still_enforces_the_bound_when_the_clock_has_gone_backwards() {
+        let tmp = TempDir::new().unwrap();
+        let cache = ModCache::new(tmp.path().join("c"));
+        put(&cache, &[1u8; 100]);
+        put(&cache, &[2u8; 100]);
+        put(&cache, &[3u8; 100]);
+        // The clock was set back a day, so every entry's last use now lies in
+        // the future. Those must not become immortal.
+        let report = cache.evict(
+            &policy(150),
+            SystemTime::now() - Duration::from_secs(86_400),
+            &|_| false,
+        );
+        let total: u64 = cache.entries().iter().map(|e| e.size_bytes).sum();
+        assert!(
+            total <= 150,
+            "bound not enforced: {total} bytes left, report {report:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mismatched_index_entry_cannot_delete_a_file_outside_the_cache() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("dc");
+        let cache = DownloadCache::new(root.clone());
+        // A genuine entry for some other jar, so the index has something real to point at.
+        let other = b"some other jar";
+        let other_key = crate::download::sha256_hex(other);
+        let other_src = Source::new(other);
+        cache
+            .get_or_fetch(&sha256_spec(other), "o.jar", || other_src.fetch())
+            .await
+            .unwrap();
+
+        // The index folder for sha1 is a junction to a folder outside the cache
+        // that holds a file named like the wanted jar's sha1 index entry.
+        let wanted = b"wanted jar";
+        let wanted_sha1 = crate::download::sha1_hex(wanted);
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join(&wanted_sha1), &other_key).unwrap();
+        std::fs::create_dir_all(root.join("index")).unwrap();
+        link_dir(&root.join("index").join("sha1"), &outside);
+
+        // The index points at the wrong jar, so verification fails and the
+        // cache forgets the index entry. The download then fails, so nothing
+        // is written back: only the forget step touches the outside file.
+        let _ = cache
+            .get_or_fetch(&sha1_spec(wanted), "w.jar", || async {
+                Err::<Vec<u8>, String>("offline".into())
+            })
+            .await;
+
+        assert!(
+            outside.join(&wanted_sha1).exists(),
+            "forgetting an index entry deleted a file outside the cache"
+        );
+    }
 }
