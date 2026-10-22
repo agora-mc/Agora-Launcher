@@ -103,6 +103,12 @@
 .bazaar-stall:hover { transform: translateY(-2px); border-color: hsl(var(--primary)); }
 .bazaar-stall.on { border-color: hsl(var(--primary)); box-shadow: 0 0 0 1px hsl(var(--primary)) inset; color: hsl(var(--foreground)); background: hsl(var(--primary) / 0.16); }
 
+.bazaar-stall-note {
+  margin: 0;
+  font-size: calc(12.5px * var(--font-scale));
+  color: hsl(var(--muted-foreground));
+}
+
 /* gacha + vibes */
 .bazaar-row {
   display: flex;
