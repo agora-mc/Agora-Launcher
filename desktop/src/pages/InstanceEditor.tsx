@@ -44,6 +44,7 @@ import {
   importInstance,
   previewImportName,
   exportLockfile,
+  saveLockfileExport,
   verifyLockfile,
   repairLockfile,
   importLockfile,
@@ -285,6 +286,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const errorBannerRef = useRef<HTMLDivElement>(null);
   const statusBannerRef = useRef<HTMLDivElement>(null);
   const [exportBusy, setExportBusy] = useState(false);
+  // The file the last pack or lockfile was saved to, for "Show in folder".
+  const [savedExportPath, setSavedExportPath] = useState<string | null>(null);
   const [instanceCustomIcon, setInstanceCustomIcon] = useState<string | null>(null);
   const [modCustomIcons, setModCustomIcons] = useState<Record<string, string>>({});
 
@@ -326,7 +329,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   } | null>(null);
   const [launcherImportOpen, setLauncherImportOpen] = useState(false);
   const [lockfileText, setLockfileText] = useState('');
-  const [lockfileBusy, setLockfileBusy] = useState<'export' | 'verify' | 'repair' | 'clone' | 'copy' | null>(null);
+  const [lockfileBusy, setLockfileBusy] = useState<'export' | 'save' | 'verify' | 'repair' | 'clone' | 'copy' | null>(null);
   const [lockfileReport, setLockfileReport] = useState<LockfileDriftReport | null>(null);
   const [lockfileNotice, setLockfileNotice] = useState<string | null>(null);
 
@@ -416,6 +419,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   useEffect(() => {
     setStatus(null);
     setError(null);
+    setSavedExportPath(null);
   }, [instanceId]);
 
   // The banners sit at the top of the page, so feedback for something done far
@@ -1261,7 +1265,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const handleImportPack = async () => {
     setError(null);
     setStatus(null);
-    const path = await pickOpenFile('Import Pack', ['mrpack', 'agora-pack.json', 'json']);
+    const path = await pickOpenFile('Import pack as new instance', ['mrpack', 'agora-pack.json', 'json']);
     if (path === null) return;
     if (path.toLowerCase().endsWith('.mrpack')) {
       // Same name review as the Import tab, so a name clash can be renamed.
@@ -1338,9 +1342,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setError(null);
     setStatus(null);
     try {
+      // null means the user cancelled the save dialog: say nothing.
       const path = await exportInstancePack(instanceId, format);
-      setStatus(`Exported ${format === 'json' ? 'pack' : '.mrpack'} to: ${path}`);
-      await revealPath(path);
+      if (path) {
+        setSavedExportPath(path);
+        setStatus(`${format === 'json' ? 'Agora pack' : 'Modrinth pack'} saved to: ${path}`);
+      }
     } catch (e) {
       setError(formatError(e));
     } finally {
@@ -1372,6 +1379,26 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           ? 'Canonical lockfile exported. It contains hashes and settings, never private config contents.'
           : `Lockfile exported with ${unresolved} unreproducible artifact${unresolved === 1 ? '' : 's'} clearly marked. Verification still works, but clone and repair will refuse substitution.`,
       );
+    } catch (cause) {
+      setError(formatError(cause));
+    } finally {
+      setLockfileBusy(null);
+    }
+  };
+
+  const handleSaveLockfile = async () => {
+    const text = requireLockfileText();
+    if (!text) return;
+    setLockfileBusy('save');
+    setError(null);
+    setLockfileNotice(null);
+    try {
+      // null means the user cancelled the save dialog: say nothing.
+      const path = await saveLockfileExport(instanceId, text);
+      if (path) {
+        setSavedExportPath(path);
+        setLockfileNotice('Lockfile saved.');
+      }
     } catch (cause) {
       setError(formatError(cause));
     } finally {
@@ -1984,7 +2011,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 disabled={recoveryBlocked}
                 className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
               >
-                📥 Import Pack
+                📥 Import pack as new instance
               </button>
               <button
                 onClick={() => openInstanceFolder(instanceId)}
@@ -2092,8 +2119,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
           )}
           {status && (
-            <div ref={statusBannerRef} className="mt-4 rounded-lg bg-accent text-accent-foreground p-3 text-sm">
-              {status}
+            <div ref={statusBannerRef} className="mt-4 flex items-start justify-between gap-3 rounded-lg bg-accent text-accent-foreground p-3 text-sm">
+              <span className="min-w-0">{status}</span>
+              <button
+                type="button"
+                onClick={() => setStatus(null)}
+                aria-label="Dismiss message"
+                className="shrink-0 rounded px-1 text-base leading-none hover:opacity-70"
+              >
+                ×
+              </button>
             </div>
           )}
         </section>
@@ -2370,7 +2405,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Snapshots without a badge are yours and are kept (up to 10), as are those badged Migration. Those badged Automatic, taken around launches, installs and templates, rotate so only the latest is kept.
+            A snapshot is a restore point. It copies your mods, configs, resource packs, shader packs, data packs and options.txt. Worlds are included in full snapshots, but not in the quick ones taken before each launch. Logs, screenshots and other files are not included.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Agora takes an automatic snapshot before changes such as launches, installs and templates, and keeps the last 5 of those. Snapshots you create yourself, and ones from version moves, are kept (up to 10).
           </p>
           {snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -2384,19 +2422,19 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     <span className="font-medium flex items-center gap-2">
                       <span>{snap.label}</span>
                       {snap.effective_origin === 'automatic' && (
-                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground" title="Taken by Agora; rotates, so only the latest is kept">Automatic</span>
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground" title="Taken by Agora before a change; only the last 5 are kept">Automatic</span>
                       )}
                       {snap.effective_origin === 'migration' && (
-                        <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>
+                        <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>
                       )}
                       {snap.is_current_lkg && (
-                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] text-green-700 dark:text-green-300">Current LKG</span>
+                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-700 dark:text-green-300">Current LKG</span>
                       )}
                       {!snap.is_current_lkg && snap.is_lkg && (
-                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">Known good</span>
+                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">Known good</span>
                       )}
                       {snap.is_pre_restore && (
-                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700 dark:text-amber-300">Undo restore</span>
+                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">Undo restore</span>
                       )}
                     </span>
                     <span className="text-xs text-muted-foreground">
@@ -2805,18 +2843,35 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </p>
           </div>
 
+          {savedExportPath && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg bg-accent/20 p-3 text-xs text-muted-foreground">
+              <span className="min-w-0 break-all">Saved to {savedExportPath}</span>
+              <button
+                onClick={() => void revealPath(savedExportPath)}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+              >
+                Show in folder
+              </button>
+            </div>
+          )}
+
           {/* Card 1: mrpack (Recommended) */}
           <div className="rounded-xl border border-border bg-card p-4 space-y-3">
             <div className="flex items-start justify-between gap-2">
               <h4 className="font-semibold text-sm">Export as Modrinth Pack (.mrpack)</h4>
-              <span className="rounded-full bg-primary/10 text-primary text-[10px] font-semibold px-2 py-0.5 shrink-0">
+              <span className="rounded-full bg-primary/10 text-primary text-xs font-semibold px-2 py-0.5 shrink-0">
                 Recommended
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
               The industry-standard format for sharing Minecraft modpacks. Compatible with
-              Modrinth, Prism Launcher, and other launchers. Contains mod references, config
-              files, and overrides — not the mod files themselves.
+              Modrinth, Prism Launcher, and other launchers. Lists your mods with download
+              links and checksums; a mod Agora can't find on Modrinth is bundled in the file.
+              If one of those mods can't be read, the export stops and names it.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Not included:</span> configs,
+              keybinds, and other settings.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Best for:</span> sharing your
@@ -2835,13 +2890,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           <div className="rounded-xl border border-border bg-card p-4 space-y-3">
             <div className="flex items-start justify-between gap-2">
               <h4 className="font-semibold text-sm">Export as Agora Pack (.json)</h4>
-              <span className="rounded-full bg-muted text-muted-foreground text-[10px] font-semibold px-2 py-0.5 shrink-0">
+              <span className="rounded-full bg-muted text-muted-foreground text-xs font-semibold px-2 py-0.5 shrink-0">
                 Agora native
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
               Agora's native pack format. Contains the full mod list with exact versions and
               source references. Reimport into any Agora instance to recreate this loadout.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Not included:</span> configs,
+              keybinds, and other settings.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Best for:</span> backing up your
@@ -2860,7 +2919,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           <div className="rounded-xl border border-border bg-card p-4 space-y-3">
             <div className="flex items-start justify-between gap-2">
               <h4 className="font-semibold text-sm">Export Reproduction Lockfile</h4>
-              <span className="rounded-full bg-muted text-muted-foreground text-[10px] font-semibold px-2 py-0.5 shrink-0">
+              <span className="rounded-full bg-muted text-muted-foreground text-xs font-semibold px-2 py-0.5 shrink-0">
                 Advanced
               </span>
             </div>
@@ -2884,6 +2943,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               </button>
               {lockfileText.trim() && (
                 <>
+                  <button
+                    onClick={() => void handleSaveLockfile()}
+                    disabled={lockfileBusy !== null}
+                    className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+                  >
+                    {lockfileBusy === 'save' ? 'Saving…' : 'Save to file…'}
+                  </button>
                   <button
                     onClick={() => void handleCopyLockfile()}
                     disabled={lockfileBusy !== null}

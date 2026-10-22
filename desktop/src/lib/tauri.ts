@@ -831,6 +831,10 @@ export const getLkgMarker = (instanceId: string) =>
 export const exportLockfile = (instanceId: string) =>
   invoke<Record<string, unknown>>('export_lockfile', { instanceId });
 
+/** Opens a save dialog and writes the lockfile text there. Resolves to the saved path, or null if cancelled. */
+export const saveLockfileExport = (instanceId: string, contents: string) =>
+  invoke<string | null>('save_lockfile_export', { instanceId, contents });
+
 export interface SnapshotDiffEntry {
   path: string;
   oldSha256: string | null;
@@ -1326,8 +1330,9 @@ export const listInstanceWorlds = (instanceId: string) =>
 export const syncInstanceDatapacks = (instanceId: string) =>
   invoke<DatapackSyncReport>('sync_instance_datapacks', { instanceId });
 
+/** Opens a save dialog for the pack. Resolves to the saved path, or null if cancelled. */
 export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack') =>
-  invoke<string>('export_instance_pack', { instanceId, format });
+  invoke<string | null>('export_instance_pack', { instanceId, format });
 
 export const pickOpenFile = (title: string, extensions: string[]) =>
   invoke<string | null>('pick_open_file', { title, extensions });

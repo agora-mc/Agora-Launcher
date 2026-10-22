@@ -2190,15 +2190,42 @@ pub async fn execute_launcher_imports(
         .await
 }
 
-/// Export an instance as a shareable pack file (Â§6.5c).
+/// Export an instance as a shareable pack file (Â§6.5c). The user picks where the
+/// file goes in a save dialog; `None` means they cancelled.
 #[tauri::command]
 pub async fn export_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     format: String,
-) -> LauncherResult<String> {
-    mod_install::export_instance_pack(&app, &instance_id, &format).await
+) -> LauncherResult<Option<String>> {
+    let file_name = agora_core::export_service::default_export_file_name(&instance_id, &format)?;
+    let (filter_name, extension) = if format == "json" {
+        ("Agora pack", "json")
+    } else {
+        ("Modrinth pack", "mrpack")
+    };
+    let exports_dir = exports_folder(&app)?;
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Export pack")
+        .set_directory(&exports_dir)
+        .set_file_name(&file_name)
+        .add_filter(filter_name, &[extension])
+        .save_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    mod_install::export_instance_pack(&app, &instance_id, &format, handle.path())
+        .await
+        .map(Some)
+}
+
+/// The folder exports are offered in by default. Created first so the save dialog can open there.
+fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> {
+    let dir = crate::core_context(app)?.paths.root().join("exports");
+    std::fs::create_dir_all(&dir).map_err(|_| LauncherError::InstanceCreateFailed)?;
+    Ok(dir)
 }
 
 /// Import an instance from a pack file (.mrpack or .agora-pack.json).
@@ -5829,6 +5856,87 @@ pub async fn export_lockfile(
     tokio::task::spawn_blocking(move || export_lockfile_sync(&app, &sanitized))
         .await
         .map_err(|error| lockfile_error("ERR_LOCKFILE_TASK", error.to_string()))?
+}
+
+/// Save the lockfile text the user is looking at to a file they pick. `None` means they cancelled.
+#[tauri::command]
+pub async fn save_lockfile_export(
+    app: tauri::AppHandle,
+    instance_id: String,
+    contents: String,
+) -> LauncherResult<Option<String>> {
+    let sanitized = crate::paths::sanitize_id(&instance_id);
+    if sanitized.is_empty() || sanitized != instance_id {
+        return Err(lockfile_error(
+            "ERR_INVALID_INSTANCE",
+            "The instance ID is invalid.",
+        ));
+    }
+    validate_lockfile_text(&contents)?;
+    let exports_dir = exports_folder(&app)?;
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Save lockfile")
+        .set_directory(&exports_dir)
+        .set_file_name(format!("{sanitized}.lockfile.json"))
+        .add_filter("Lockfile", &["json"])
+        .save_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    // Write beside the target and rename into place, so a failed save never
+    // truncates a file the user agreed to replace.
+    let tmp_path = agora_core::export_service::tmp_sibling_path(&path);
+    let written = std::fs::write(&tmp_path, contents.as_bytes()).map_err(|error| {
+        lockfile_error(
+            "ERR_LOCKFILE_SAVE",
+            format!("Could not save the lockfile: {error}"),
+        )
+    });
+    agora_core::export_service::commit_tmp_file(&tmp_path, &path, written)?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// The text must parse as a JSON object before it reaches disk, so an edit that
+/// broke the lockfile cannot be saved as one.
+fn validate_lockfile_text(contents: &str) -> LauncherResult<()> {
+    match serde_json::from_str::<serde_json::Value>(contents) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        _ => Err(lockfile_error(
+            "ERR_LOCKFILE_INVALID",
+            "The lockfile text is not valid. Fix it or export it again, then save.",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod lockfile_save_tests {
+    use super::validate_lockfile_text;
+
+    #[test]
+    fn accepts_a_json_object() {
+        assert!(validate_lockfile_text(r#"{"formatVersion":1}"#).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_whitespace_and_non_object_json() {
+        for hostile in [
+            "",
+            "   \n",
+            "[]",
+            "null",
+            "\"text\"",
+            "42",
+            "{",
+            "{\"a\":1} trailing",
+        ] {
+            assert!(
+                validate_lockfile_text(hostile).is_err(),
+                "accepted {hostile:?}"
+            );
+        }
+    }
 }
 
 fn export_lockfile_sync(

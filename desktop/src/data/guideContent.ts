@@ -934,7 +934,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Import a pack',
-          body: 'Open an instance with Edit, then use the Import tab (Select File & Import, for a .mrpack or Prism .zip) or Import Pack on the Mods tab (.mrpack or Agora pack file). A .mrpack opens a short review where you can rename the new instance before it is created. Agora prepares the loader and required content before promoting the new instance.',
+          body: 'Open an instance with Edit, then use the Import tab (Select File & Import, for a .mrpack or Prism .zip) or "Import pack as new instance" on the Mods tab (.mrpack or Agora pack file). A .mrpack opens a short review where you can rename the new instance before it is created. Agora prepares the loader and required content before promoting the new instance.',
           steps: [
             'Choose the pack file from a trusted source.',
             'Check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
@@ -960,7 +960,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Choose an export',
-          body: 'The editor labels the formats Export as Modrinth Pack (.mrpack) and Export as Agora Pack (.json). The Agora-native file is written as .agora-pack.json. The exported file location opens in your system file manager after a successful export.',
+          body: 'The editor labels the formats Export as Modrinth Pack (.mrpack) and Export as Agora Pack (.json). The Agora-native file is written as .agora-pack.json. You pick where the file is saved in a save dialog. After a successful export, the editor shows the saved location with a Show in folder button.',
         },
         {
           title: 'Share responsibly',
