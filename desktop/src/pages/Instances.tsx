@@ -103,19 +103,19 @@ export function Instances({
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<InstanceRow | null>(null);
-  const { getTaskForInstance, revision: packInstallRevision, startPackFile } = usePackInstall();
-  const [packImportNotice, setPackImportNotice] = useState<string | null>(null);
+  const { tasks: packTasks, getTaskForInstance, revision: packInstallRevision, startPackFile } = usePackInstall();
+  // Shown only while an import is running; the finished import reports its own
+  // result (see PackImportReports), so the notice must not outlive it.
+  const packImportRunning = packTasks.some((task) => task.kind === 'pack-file' && task.status === 'running');
 
   // Always creates a new instance from the file; merging into an existing one
   // is a different action inside the instance editor.
   const handleImportPackFile = async () => {
-    setPackImportNotice(null);
     setError(null);
     try {
       const path = await pickOpenFile('Import a pack file', ['mrpack', 'agora-pack.json', 'json']);
       if (path === null) return;
       startPackFile(path, path.split(/[\/]/).pop() ?? 'Pack import');
-      setPackImportNotice('Importing the pack as a new instance. It will appear here when it is ready.');
     } catch (cause) {
       setError(formatError(cause));
     }
@@ -293,9 +293,9 @@ export function Instances({
           {error}
         </div>
       )}
-      {packImportNotice && (
+      {packImportRunning && (
         <div role="status" className="rounded-lg border border-border bg-card p-3 text-sm text-muted-foreground">
-          {packImportNotice}
+          Importing the pack as a new instance. It will appear here when it is ready.
         </div>
       )}
 

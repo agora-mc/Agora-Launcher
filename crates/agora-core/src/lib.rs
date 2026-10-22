@@ -7,6 +7,7 @@
 //! out of the desktop crate in Phase 1A.
 #![warn(clippy::large_futures)]
 
+pub mod agora_pack_import;
 pub mod app_paths;
 pub mod artifact_receipt;
 pub mod auth;

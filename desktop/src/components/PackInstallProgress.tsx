@@ -6,7 +6,12 @@ import {
   importModrinthPackByUrl,
   describeRestoreCoverage,
   restoreSnapshot,
+  retryPackImportEntries,
+  setContentProviderEnabled,
+  type PackImportReport,
 } from '../lib/tauri';
+import { PackImportSummary } from './PackImportSummary';
+import { importHasIssues, importHeadline, mergeRetry, needsActionOutcomes } from '../lib/packImport';
 import { applyInstallPlan, describePlanAction, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
 
 export type PackInstallTask = {
@@ -50,6 +55,8 @@ type PackInstallProgressEvent = {
 type PackInstallContextValue = {
   revision: number;
   tasks: PackInstallTask[];
+  /** Per-mod results of Agora pack imports that still need the user's eyes, by instance id. */
+  importReports: Record<string, PackImportReport>;
   getTaskForInstance: (instanceId: string) => PackInstallTask | null;
   startPlan: (plan: ResolvedInstallPlan, label: string, instanceName?: string, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => void;
   startModrinthPack: (downloadUrl: string, label: string, packIconUrl?: string | null) => void;
@@ -146,6 +153,7 @@ function phaseLabel(phase: string): string {
 export function PackInstallProvider({ children }: { children: ReactNode }) {
   const [taskMap, setTaskMap] = useState<Record<string, PackInstallTask>>({});
   const [revision, setRevision] = useState(0);
+  const [importReports, setImportReports] = useState<Record<string, PackImportReport>>({});
 
   useEffect(() => {
     const unlistenPlan = listen<ProgressEvent>('install:progress', (event) => {
@@ -259,13 +267,24 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     }, 8000);
   };
 
-  const completeImportedTask = (id: string, instanceId: string, label: string) => {
+  const completeImportedTask = (
+    id: string,
+    instanceId: string,
+    label: string,
+    report: PackImportReport | null = null,
+  ) => {
+    // A pack whose mods did not all install, or could not all be checked, is
+    // not "installed successfully": say what happened and keep the details.
+    const issues = report !== null && importHasIssues(report);
+    if (report !== null && issues) {
+      setImportReports((current) => ({ ...current, [instanceId]: report }));
+    }
     setTaskMap((current) => updateTask(current, id, {
       instanceId,
       instanceName: label,
       status: 'completed',
       phase: 'done',
-      message: 'Pack installed successfully.',
+      message: report !== null && issues ? `Imported. ${importHeadline(report)}` : 'Pack installed successfully.',
       progress: 1,
     }));
     setRevision((value) => value + 1);
@@ -356,7 +375,7 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       [id]: initialTask(id, label, 'pack-file', null, label),
     }));
     void importInstancePack(sourcePath)
-      .then((instanceId) => completeImportedTask(id, instanceId, label))
+      .then((outcome) => completeImportedTask(id, outcome.instance_id, label, outcome.report))
       .catch((cause) => failTask(id, formatError(cause)));
   };
 
@@ -365,6 +384,7 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     return {
       revision,
       tasks,
+      importReports,
       getTaskForInstance: (instanceId) =>
         tasks.find((task) => task.instanceId === instanceId) ?? null,
       startPlan,
@@ -373,11 +393,20 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       startResolvingPlan,
       dismissTask,
     };
-  }, [revision, taskMap]);
+  }, [revision, taskMap, importReports]);
 
   return (
     <PackInstallContext.Provider value={value}>
       {children}
+      <PackImportReports
+        reports={importReports}
+        update={(instanceId, report) => setImportReports((current) => {
+          const next = { ...current };
+          if (report !== null) next[instanceId] = report;
+          else delete next[instanceId];
+          return next;
+        })}
+      />
       <PackInstallIndicator tasks={value.tasks} />
     </PackInstallContext.Provider>
   );
@@ -455,6 +484,51 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
       </div>
       {task.error && <p className="text-xs text-destructive">{task.error}</p>}
     </div>
+  );
+}
+
+/**
+ * Results of Agora pack imports that did not end clean, kept until dismissed.
+ * Global because imports start from more than one page. Enabling Modrinth here
+ * is the same setting as Settings > Services, and the retry installs only the
+ * entries that were waiting, in the instance the import already made.
+ */
+function PackImportReports({
+  reports,
+  update,
+}: {
+  reports: Record<string, PackImportReport>;
+  update: (instanceId: string, report: PackImportReport | null) => void;
+}) {
+  const entries = Object.values(reports);
+  if (entries.length === 0) return null;
+  const retry = async (report: PackImportReport) => {
+    const waiting = needsActionOutcomes(report);
+    const retried = await retryPackImportEntries(
+      report.instance_id,
+      waiting.map((outcome) => outcome.entry),
+    );
+    update(report.instance_id, mergeRetry(report, retried));
+  };
+  return (
+    <aside
+      aria-label="Pack import results"
+      className="pointer-events-none fixed bottom-4 left-4 z-60 w-[min(26rem,calc(100vw-2rem))] space-y-2"
+    >
+      {entries.map((report) => (
+        <PackImportSummary
+          key={report.instance_id}
+          report={report}
+          onEnableModrinth={async () => {
+            await setContentProviderEnabled('modrinth', true);
+            await retry(report);
+          }}
+          onRetry={() => retry(report)}
+          onOpenSettings={() => window.dispatchEvent(new CustomEvent('agora-navigate', { detail: 'settings' }))}
+          onDismiss={() => update(report.instance_id, null)}
+        />
+      ))}
+    </aside>
   );
 }
 

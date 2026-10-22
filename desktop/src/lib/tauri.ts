@@ -1464,8 +1464,52 @@ export const planLauncherImports = (selections: ImportSelection[]) =>
 export const executeLauncherImports = (plan: LauncherImportPlan) =>
   invoke<LauncherImportBatchResult>('execute_launcher_imports', { plan });
 
+/** One mod entry of an Agora pack file, as the pack recorded it. */
+export interface AgoraPackEntry {
+  filename: string;
+  version: string | null;
+  registry_id: string | null;
+  modrinth_id: string | null;
+  sha256: string | null;
+  source: string | null;
+}
+
+export type PackEntryStatus = 'installed' | 'failed' | 'needs_action';
+export type PackNeedsAction = 'enable_modrinth' | 'open_settings';
+
+/** How one pack entry ended. Every entry gets exactly one. */
+export interface PackEntryOutcome {
+  name: string;
+  status: PackEntryStatus;
+  /** Installed only: the bytes matched the SHA-256 the pack pinned. */
+  verified_against_pack: boolean;
+  /** Why it failed or what it needs; for an unverified install, the caveat. */
+  reason: string | null;
+  action: PackNeedsAction | null;
+  /** Handed back to retry a needs-action entry. */
+  entry: AgoraPackEntry;
+}
+
+export interface PackImportReport {
+  instance_id: string;
+  instance_name: string;
+  total: number;
+  installed: number;
+  outcomes: PackEntryOutcome[];
+  warnings: string[];
+}
+
+/** `report` is null for formats without a per-mod report (.mrpack). */
+export interface PackImportOutcome {
+  instance_id: string;
+  report: PackImportReport | null;
+}
+
 export const importInstancePack = (sourcePath: string) =>
-  invoke<string>('import_instance_pack', { sourcePath });
+  invoke<PackImportOutcome>('import_instance_pack', { sourcePath });
+/** Try needs-action entries again on the instance the import created. */
+export const retryPackImportEntries = (instanceId: string, entries: AgoraPackEntry[]) =>
+  invoke<PackImportReport>('retry_pack_import_entries', { instanceId, entries });
 export const importModrinthPackByUrl = (downloadUrl: string, packIconUrl?: string | null) =>
   invoke<string>('import_modrinth_pack_by_url', {
     downloadUrl,

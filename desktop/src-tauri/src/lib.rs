@@ -331,6 +331,7 @@ pub fn run() {
             commands::execute_launcher_imports,
             commands::export_instance_pack,
             commands::import_instance_pack,
+            commands::retry_pack_import_entries,
             commands::is_modrinth_enabled,
             commands::search_modrinth,
             commands::list_modrinth_categories,

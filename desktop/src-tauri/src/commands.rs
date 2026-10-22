@@ -2234,8 +2234,20 @@ pub async fn import_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     source_path: String,
-) -> LauncherResult<String> {
+) -> LauncherResult<mod_install::PackImportOutcome> {
     mod_install::import_instance_pack(&app, &source_path).await
+}
+
+/// Retry the entries of an Agora pack import that needed an action (Modrinth
+/// off, say) on the instance it created. Entries already installed are skipped.
+#[tauri::command]
+pub async fn retry_pack_import_entries(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    entries: Vec<agora_core::agora_pack_import::AgoraPackEntry>,
+) -> LauncherResult<agora_core::agora_pack_import::PackImportReport> {
+    mod_install::retry_pack_import_entries(&app, &instance_id, entries).await
 }
 
 /// Whether the Modrinth integration is currently enabled (Â§6.3 toggle).

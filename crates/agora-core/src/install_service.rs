@@ -344,6 +344,44 @@ impl InstallService {
         expected_sha1: Option<&str>,
         expected_sha256: Option<&str>,
     ) -> LauncherResult<InstalledMod> {
+        self.install_artifact_pinned(
+            instance_id,
+            filename,
+            content_type,
+            download_url,
+            registry_id,
+            modrinth_id,
+            source,
+            version,
+            expected_sha1,
+            expected_sha256,
+            None,
+        )
+        .await
+    }
+
+    /// [`install_artifact`](Self::install_artifact) plus a SHA-256 the caller
+    /// *requires* the bytes to have, on top of whatever the source published.
+    ///
+    /// `install_artifact` checks the SHA-1 when there is one and only falls
+    /// back to the SHA-256, so a hash pinned by someone else (a shared pack file)
+    /// would be skipped for any source that publishes a SHA-1. A required hash is
+    /// checked unconditionally, before anything is written.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn install_artifact_pinned(
+        &self,
+        instance_id: &str,
+        filename: &str,
+        content_type: &str,
+        download_url: &str,
+        registry_id: Option<&str>,
+        modrinth_id: Option<&str>,
+        source: &str,
+        version: Option<&str>,
+        expected_sha1: Option<&str>,
+        expected_sha256: Option<&str>,
+        required_sha256: Option<&str>,
+    ) -> LauncherResult<InstalledMod> {
         self.check_not_locked(instance_id)?;
 
         let dir = self.ctx.paths.instance_dir(instance_id)?;
@@ -351,6 +389,42 @@ impl InstallService {
 
         let bytes =
             crate::download::download_mod_bytes(&self.ctx.http_clients, download_url).await?;
+
+        self.commit_verified_artifact(
+            instance_id,
+            filename,
+            content_type,
+            download_url,
+            registry_id,
+            modrinth_id,
+            source,
+            version,
+            expected_sha1,
+            expected_sha256,
+            required_sha256,
+            bytes,
+        )
+    }
+
+    /// Verify downloaded bytes and, only if every check passes, write them into
+    /// the instance and record them in its manifest.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_verified_artifact(
+        &self,
+        instance_id: &str,
+        filename: &str,
+        content_type: &str,
+        download_url: &str,
+        registry_id: Option<&str>,
+        modrinth_id: Option<&str>,
+        source: &str,
+        version: Option<&str>,
+        expected_sha1: Option<&str>,
+        expected_sha256: Option<&str>,
+        required_sha256: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> LauncherResult<InstalledMod> {
+        let dir = self.ctx.paths.instance_dir(instance_id)?;
 
         // Verification is mandatory and fails closed, matching the install
         // pipeline's `verify_bytes`. A candidate whose source published no
@@ -373,10 +447,15 @@ impl InstallService {
             return Err(LauncherError::Generic {
                 code: "ERR_NO_PUBLISHED_HASH".into(),
                 message: format!(
-                    "{filename} cannot be installed: its source published no SHA-1 or SHA-256 \
-                     for this version, so Agora cannot verify the download."
+                    "{filename} cannot be installed: its source published no SHA-1 or SHA-256                      for this version, so Agora cannot verify the download."
                 ),
             });
+        }
+        if let Some(required) = required_sha256 {
+            let required = required.trim().to_lowercase();
+            if required.is_empty() || crate::download::sha256_hex(&bytes) != required {
+                return Err(LauncherError::HashMismatch);
+            }
         }
 
         let installed_sha256 = crate::download::sha256_hex(&bytes);
