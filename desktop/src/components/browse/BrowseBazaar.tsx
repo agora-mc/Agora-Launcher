@@ -527,25 +527,27 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onOpenMod, onEx
     <div className="bazaar" data-testid="browse-bazaar">
 
       <div className="bazaar-scroll">
-        <header className="bazaar-header agora-hero compact">
-          <h1>The Bazaar</h1>
-          <span className="bazaar-sub">Wander. Poke things. Take what you like.</span>
-          <div className="bazaar-header-right">
-            <button type="button" className="bazaar-back" onClick={onExit} data-testid="bazaar-exit">
-              ← Back to Browse
-            </button>
-            <button
-              type="button"
-              className="bazaar-pack"
-              title="See what you've picked"
-              onClick={() => { setBagOpen(true); blip(560, 0.09); }}
-              data-testid="bazaar-open-bag"
-            >
-              <span style={{ fontSize: 17 }}>🎒</span>
-              <b>{bagCount}</b>
-              <span className="bazaar-sub">in your bag</span>
-            </button>
+        <header className="agora-hero compact">
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <h2 className="text-2xl font-bold">The Bazaar</h2>
+            <div className="bazaar-header-right">
+              <button type="button" className="bazaar-back" onClick={onExit} data-testid="bazaar-exit">
+                ← Back to Browse
+              </button>
+              <button
+                type="button"
+                className="bazaar-pack"
+                title="See what you've picked"
+                onClick={() => { setBagOpen(true); blip(560, 0.09); }}
+                data-testid="bazaar-open-bag"
+              >
+                <span style={{ fontSize: 17 }}>🎒</span>
+                <b>{bagCount}</b>
+                <span className="bazaar-sub">in your bag</span>
+              </button>
+            </div>
           </div>
+          <p className="text-muted-foreground">Wander. Poke things. Take what you like.</p>
         </header>
 
         <div className="bazaar-stalls" role="tablist" aria-label="Market stalls">

@@ -12,23 +12,11 @@
 .bazaar-scroll {
   position: relative;
   z-index: 2;
-  max-width: 1140px;
-  margin: 0 auto;
-  padding: 16px 20px 80px;
+  /* The page already gets its padding from <main>, like every other page;
+     no extra inset or width cap here, and the same 1.5rem rhythm as Browse. */
+  padding-bottom: 80px;
   display: grid;
-  gap: 14px;
-}
-
-.bazaar-header {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.bazaar-header h1 {
-  font-size: calc(22px * var(--font-scale));
-  margin: 0;
+  gap: 1.5rem;
 }
 
 .bazaar-sub {
