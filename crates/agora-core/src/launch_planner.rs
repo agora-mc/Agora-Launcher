@@ -980,7 +980,7 @@ pub async fn resolve(request: ResolveRequest) -> LauncherResult<ResolvedLaunchPl
 /// Every download is gated by the policy embedded in `resolved.network_policy`.
 /// Cache hits are validated and returned without network access.
 pub async fn materialize(resolved: ResolvedLaunchPlan) -> LauncherResult<MaterializedLaunchPlan> {
-    materialize_with_progress(resolved, None).await
+    Box::pin(materialize_with_progress(resolved, None)).await
 }
 
 /// [`materialize`] that reports verified-file counts for the client JAR,
@@ -2025,7 +2025,10 @@ pub async fn wait_and_classify(
     game_dir: &Path,
     secrets: &[&str],
 ) -> LauncherResult<crate::lkg::LaunchOutcome> {
-    wait_and_classify_with_progress(child, game_dir, secrets, None).await
+    Box::pin(wait_and_classify_with_progress(
+        child, game_dir, secrets, None,
+    ))
+    .await
 }
 
 /// Bounded line count retained for crash-triage after streaming.

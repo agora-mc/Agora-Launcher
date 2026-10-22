@@ -714,8 +714,11 @@ impl LaunchService {
                 progress.files(&update);
             }
         };
-        let materialized =
-            crate::launch_planner::materialize_with_progress(resolved, Some(&on_files)).await?;
+        let materialized = Box::pin(crate::launch_planner::materialize_with_progress(
+            resolved,
+            Some(&on_files),
+        ))
+        .await?;
         progress.phase_completed("materializing", materialize_started.elapsed().as_millis());
         let java_path = materialized.resolved.java.path.clone();
         let gc_args = crate::gc::compute_gc(
@@ -840,12 +843,12 @@ impl LaunchService {
                 progress.phase("ready", "Minecraft has finished loading");
             }
         };
-        let outcome = crate::launch_planner::wait_and_classify_with_progress(
+        let outcome = Box::pin(crate::launch_planner::wait_and_classify_with_progress(
             child,
             &request.game_dir,
             &[secret],
             Some(&output_progress),
-        )
+        ))
         .await
         .inspect_err(|_| {
             self.ctx.process_session_manager.remove(session_id);
