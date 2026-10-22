@@ -100,14 +100,13 @@ async function installHomeMock(page: Page, opts: HomeMockOptions = {}) {
       snapshots: Record<string, unknown>[];
       driftResult: Record<string, unknown>;
       registryStatus: Record<string, unknown>;
-      recommendations: Record<string, unknown>[];
       updatesResult: Record<string, unknown>[];
       launchMode: string;
       forYouItems: Record<string, unknown>[];
     }) => {
       const {
         instances, crashResult, lkgMarker, snapshots, driftResult,
-        registryStatus, recommendations, updatesResult, launchMode, forYouItems,
+        registryStatus, updatesResult, launchMode, forYouItems,
       } = params;
 
       const callbacks = new Map<number, (...args: unknown[]) => void>();
@@ -176,7 +175,7 @@ async function installHomeMock(page: Page, opts: HomeMockOptions = {}) {
     },
     {
       instances, crashResult, lkgMarker, snapshots, driftResult,
-      registryStatus, recommendations, updatesResult, launchMode,
+      registryStatus, updatesResult, launchMode,
       forYouItems: effectiveForYou,
     },
   );

@@ -106,9 +106,6 @@ function makeInstanceDetail(isLocked: boolean): Record<string, unknown> {
   };
 }
 
-const UNLOCKED_DETAIL = makeInstanceDetail(false);
-const LOCKED_DETAIL = makeInstanceDetail(true);
-
 // ---------------------------------------------------------------------------
 // Mock installer
 // ---------------------------------------------------------------------------
