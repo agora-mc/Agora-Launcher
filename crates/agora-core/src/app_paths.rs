@@ -758,6 +758,19 @@ mod tests {
     }
 
     #[test]
+    fn review_validate_rejects_windows_device_names() {
+        // A pack's instance id reaches this check unchanged (sanitize_id keeps
+        // letters). On Windows "CON" names the console device: mkdir reports
+        // success and nothing persists.
+        for name in ["CON", "nul", "COM1", "lpt9.txt", "AUX.json", "prn"] {
+            assert!(
+                validate_path_component(name).is_err(),
+                "{name} must be refused"
+            );
+        }
+    }
+
+    #[test]
     fn test_validate_rejects_too_long() {
         assert!(validate_path_component(&"a".repeat(257)).is_err());
     }

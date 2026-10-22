@@ -1316,4 +1316,92 @@ mod tests {
         assert_eq!(manifest.pack_origin.unwrap().pack_name, "Pack");
         let _ = std::fs::remove_dir_all(root);
     }
+
+    // ---- review: adversarial probes (each expected to FAIL on df7b81b)
+
+    #[test]
+    fn review_duplicate_entries_in_one_pack_are_fetched_once() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("2.0", "mod-2.0.jar")];
+        let dup = || entry("mod-2.0.jar", "2.0", Some(GOOD_PIN));
+        let out = run(&backend, vec![dup(), dup(), dup()]);
+        assert_eq!(out.len(), 3, "every entry gets an outcome");
+        assert_eq!(
+            *backend.modrinth_lookups.lock().unwrap(),
+            1,
+            "one lookup per distinct file"
+        );
+        assert_eq!(
+            backend.installs.lock().unwrap().len(),
+            1,
+            "one install per distinct file"
+        );
+    }
+
+    #[test]
+    fn review_whitespace_only_pin_fails_closed_instead_of_meaning_no_pin() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("2.0", "mod-2.0.jar")];
+        let out = run(&backend, vec![entry("mod-2.0.jar", "2.0", Some("   "))]);
+        assert_eq!(out[0].status, PackEntryStatus::Failed);
+        assert!(backend.installs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn review_windows_device_names_are_refused_as_filenames() {
+        for name in ["NUL.jar", "con.jar", "COM1.txt", "lpt9.jar", "aux", "nul"] {
+            let mut backend = fake();
+            backend.modrinth = vec![candidate("2.0", name)];
+            let out = run(&backend, vec![entry("x.jar", "2.0", Some(GOOD_PIN))]);
+            assert_eq!(
+                out[0].status,
+                PackEntryStatus::Failed,
+                "{name} must not install"
+            );
+            assert!(
+                backend.installs.lock().unwrap().is_empty(),
+                "{name} written"
+            );
+        }
+    }
+
+    #[test]
+    fn review_trailing_dot_or_space_filenames_are_refused() {
+        // Windows strips trailing dots and spaces, so "sodium.jar." lands on
+        // "sodium.jar" and overwrites it.
+        for name in ["sodium.jar.", "sodium.jar ", "sodium.jar. "] {
+            let mut backend = fake();
+            backend.modrinth = vec![candidate("2.0", name)];
+            let out = run(&backend, vec![entry("x.jar", "2.0", Some(GOOD_PIN))]);
+            assert_eq!(
+                out[0].status,
+                PackEntryStatus::Failed,
+                "{name:?} must not install"
+            );
+            assert!(
+                backend.installs.lock().unwrap().is_empty(),
+                "{name:?} written"
+            );
+        }
+    }
+
+    #[test]
+    fn review_present_file_with_a_pin_is_not_reported_as_a_plain_install() {
+        // The bytes already on disk are never hashed against the pack's pin, and
+        // the outcome says only "Already installed." with verified_against_pack
+        // false, which the struct documents as "the pack pinned no SHA-256".
+        let mut backend = fake();
+        backend.present = vec!["have.jar".into()];
+        let out = run(&backend, vec![entry("have.jar", "1.0", Some(GOOD_PIN))]);
+        assert_eq!(out[0].status, PackEntryStatus::Installed);
+        assert!(
+            out[0].verified_against_pack
+                || out[0]
+                    .reason
+                    .as_deref()
+                    .is_some_and(|r| r.contains("checked")),
+            "a pinned file never hashed against the pin must say so, got {:?}",
+            out[0]
+        );
+    }
 }
