@@ -51,6 +51,11 @@ export interface PlanOverrides {
    * leaves the `loader-change` pending choice unresolved.
    */
   approveLoaderVersion?: string;
+  /**
+   * Explicit approval to install although a mod's own jar requires something
+   * Agora could not find. Without it the plan is blocked (`ERR_MISSING_DEPENDENCY`).
+   */
+  allowMissingDependencies?: boolean;
 }
 
 export interface InstallIntent {
@@ -135,6 +140,7 @@ export function planNeedsUserReview(
     || plan.filesToDisable.length > 0
     || plan.dependencies.some((dependency) =>
       dependency.disposition.type === 'unresolved'
+      || dependency.disposition.type === 'unchecked'
       || (!options.ignoreDependencies && dependency.disposition.type === 'install-candidate'),
     );
 }
@@ -184,7 +190,9 @@ export type DepDisposition =
   | { type: 'install-candidate'; artifact: ResolvedArtifact }
   | { type: 'included-in-batch'; targetFilename: string }
   | { type: 'excluded' }
-  | { type: 'unresolved'; reason: string };
+  | { type: 'unresolved'; reason: string }
+  /** The mod's own jar could not be read, so what it requires is unchecked. */
+  | { type: 'unchecked'; reason: string };
 
 export interface DepConflict {
   conflictId: string;

@@ -284,6 +284,9 @@ pub enum DepDisposition {
     Excluded,
     /// Could not be resolved — kept for diagnostics.
     Unresolved { reason: String },
+    /// The mod's own jar could not be read, so what it requires is unchecked.
+    /// Blocks until the user installs anyway, like an unresolved requirement.
+    Unchecked { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -557,6 +560,11 @@ pub struct PlanOverrides {
     /// leaves the `PendingChoice::LoaderChange` unresolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approve_loader_version: Option<String>,
+    /// Explicit approval to install although a mod's own jar requires a
+    /// dependency that could not be found for this instance. Without it the
+    /// plan is blocked with `ERR_MISSING_DEPENDENCY`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_missing_dependencies: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -961,13 +969,60 @@ impl InstallPipeline {
                 .as_deref()
                 .unwrap_or(&dependency.mod_jar_id);
             if dependency.requirement == Requirement::Required {
+                if let DepDisposition::Unchecked { reason } = &dependency.disposition {
+                    let needed_by = if dependency.requested_by.is_empty() {
+                        "A selected mod".to_string()
+                    } else {
+                        dependency.requested_by.join(", ")
+                    };
+                    if intent.overrides.allow_missing_dependencies {
+                        warnings.push(PlanWarning {
+                            code: "WARN_UNCHECKED_REQUIREMENTS".into(),
+                            message: format!(
+                                "Couldn't check what {dependency_name} needs ({reason}). Installing anyway, as you chose."
+                            ),
+                        });
+                    } else {
+                        blocking_errors.push(PlanError {
+                            code: "ERR_UNCHECKED_REQUIREMENTS".into(),
+                            message: format!(
+                                "Couldn't check what {dependency_name} needs ({reason}). {needed_by} may need something Agora can't verify. Install Anyway continues without that check."
+                            ),
+                        });
+                    }
+                }
                 if let DepDisposition::Unresolved { reason } = &dependency.disposition {
-                    blocking_errors.push(PlanError {
-                        code: "ERR_REQUIRED_DEPENDENCY".into(),
-                        message: format!(
-                            "Required dependency {dependency_name} could not be resolved: {reason}"
-                        ),
-                    });
+                    if dependency.source == DepSource::Jar {
+                        // Named by the mod's own jar, so the user can see who
+                        // needs it. Blocks until the user explicitly installs anyway.
+                        let needed_by = if dependency.requested_by.is_empty() {
+                            "A selected mod".to_string()
+                        } else {
+                            dependency.requested_by.join(", ")
+                        };
+                        if intent.overrides.allow_missing_dependencies {
+                            warnings.push(PlanWarning {
+                                code: "WARN_MISSING_DEPENDENCY".into(),
+                                message: format!(
+                                    "{dependency_name} is missing. {needed_by} needs it and may not start without it. Installing anyway, as you chose."
+                                ),
+                            });
+                        } else {
+                            blocking_errors.push(PlanError {
+                                code: "ERR_MISSING_DEPENDENCY".into(),
+                                message: format!(
+                                    "{needed_by} needs {dependency_name}, which Agora could not find for this instance ({reason}). Install it separately, or use Install Anyway."
+                                ),
+                            });
+                        }
+                    } else {
+                        blocking_errors.push(PlanError {
+                            code: "ERR_REQUIRED_DEPENDENCY".into(),
+                            message: format!(
+                                "Required dependency {dependency_name} could not be resolved: {reason}"
+                            ),
+                        });
+                    }
                 }
             } else if matches!(&intent.optional_deps, OptionalDepsPolicy::Include { .. }) {
                 if let DepDisposition::Unresolved { reason } = &dependency.disposition {
@@ -1209,6 +1264,15 @@ impl InstallPipeline {
         }
 
         for dependency in &dependencies {
+            // Under the prompt policy an optional candidate is only offered: it
+            // sits in the pending optional-dependencies choice until the user
+            // picks it, and its file is planned on the follow-up plan. Adding
+            // it here would show files the user has not chosen (and count them).
+            if dependency.requirement == Requirement::Optional
+                && matches!(intent.optional_deps, OptionalDepsPolicy::Prompt)
+            {
+                continue;
+            }
             if let DepDisposition::InstallCandidate { artifact } = &dependency.disposition {
                 plan_artifact_change(
                     artifact,
@@ -3009,39 +3073,7 @@ async fn stage_plan_artifacts(
         validate_filename(&file.staging_filename)?;
         let contents = match &file.artifact {
             ResolvedArtifact::Download(download) => match &download.source {
-                ArtifactSource::Download { url } if download.metadata.provider.is_some() => {
-                    stage_provider_download(url, download)
-                        .await
-                        .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
-                }
-                ArtifactSource::Download { url } => {
-                    let strategy = download
-                        .metadata
-                        .download_strategy
-                        .as_deref()
-                        .unwrap_or_default();
-                    // Hand-pinned strategies are SHA-256-pinned in the signed
-                    // registry, so the curator-reviewed host from that manifest
-                    // row authorizes the request. `technic_pack` additionally
-                    // permits plain HTTP: the hash is out-of-band, so transport
-                    // is not the trust anchor.
-                    if matches!(strategy, "direct_hash" | "technic_pack") {
-                        let pinned_host =
-                            download.metadata.pinned_host.as_deref().ok_or_else(|| {
-                                format!(
-                                    "{} uses {strategy} but carries no pinned host",
-                                    download.item_id
-                                )
-                            })?;
-                        crate::download::download_pinned_bytes_standalone(url, pinned_host)
-                            .await
-                            .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
-                    } else {
-                        crate::download::download_mod_bytes_standalone(url)
-                            .await
-                            .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
-                    }
-                }
+                ArtifactSource::Download { url } => fetch_download_bytes(download, url).await?,
                 ArtifactSource::LocalFile { path } => std::fs::read(path).map_err(|e| {
                     format!("failed to read local artifact {}: {e}", download.item_id)
                 })?,
@@ -3092,6 +3124,46 @@ async fn stage_plan_artifacts(
     Ok(())
 }
 
+/// Fetch the bytes of a planned download under the host policy staging uses.
+///
+/// Shared with the plan-time read of a jar's requirements, so the review reads
+/// the same bytes the install would write.
+pub(crate) async fn fetch_download_bytes(
+    download: &ResolvedDownload,
+    url: &str,
+) -> Result<Vec<u8>, String> {
+    if download.metadata.provider.is_some() {
+        return stage_provider_download(url, download)
+            .await
+            .map_err(|e| format!("failed to download {}: {e}", download.item_id));
+    }
+    let strategy = download
+        .metadata
+        .download_strategy
+        .as_deref()
+        .unwrap_or_default();
+    // Hand-pinned strategies are SHA-256-pinned in the signed
+    // registry, so the curator-reviewed host from that manifest
+    // row authorizes the request. `technic_pack` additionally
+    // permits plain HTTP: the hash is out-of-band, so transport
+    // is not the trust anchor.
+    if matches!(strategy, "direct_hash" | "technic_pack") {
+        let pinned_host = download.metadata.pinned_host.as_deref().ok_or_else(|| {
+            format!(
+                "{} uses {strategy} but carries no pinned host",
+                download.item_id
+            )
+        })?;
+        crate::download::download_pinned_bytes_standalone(url, pinned_host)
+            .await
+            .map_err(|e| format!("failed to download {}: {e}", download.item_id))
+    } else {
+        crate::download::download_mod_bytes_standalone(url)
+            .await
+            .map_err(|e| format!("failed to download {}: {e}", download.item_id))
+    }
+}
+
 /// Fetch a provider-planned artifact under the provider's download scope.
 ///
 /// In scope: HTTPS to a declared host, redirects held to the same list.
@@ -3139,7 +3211,7 @@ fn verify_file_add(contents: &[u8], add: &FileAdd) -> Result<(), String> {
     verify_bytes(contents, &add.hashes)
 }
 
-fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
+pub(crate) fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
     use sha1::Digest as _;
 
     if hashes.values.is_empty() {
@@ -4095,6 +4167,342 @@ mod tests {
             plan.pending_choices.as_slice(),
             [PendingChoice::OptionalDependencies { options, .. }] if options.len() == 1
         ));
+    }
+
+    #[test]
+    fn prompted_optional_dependencies_are_not_added_until_chosen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let required_path = tmp.path().join("required.jar");
+        let optional_path = tmp.path().join("optional.jar");
+        std::fs::write(&required_path, b"required").unwrap();
+        std::fs::write(&optional_path, b"optional").unwrap();
+        let build_prepared = || PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "root",
+                    "root.jar",
+                    "a".repeat(64),
+                    ArtifactSource::Download {
+                        url: "https://example.com/root.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![
+                ResolvedDep {
+                    requested_by: Vec::new(),
+                    pinned_version: None,
+                    mod_jar_id: "required-dep".into(),
+                    requirement: Requirement::Required,
+                    source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
+                    disposition: DepDisposition::InstallCandidate {
+                        artifact: Box::new(test_artifact(
+                            "required-dep",
+                            "required.jar",
+                            crate::download::sha256_hex(b"required"),
+                            ArtifactSource::LocalFile {
+                                path: required_path.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        )),
+                    },
+                },
+                ResolvedDep {
+                    requested_by: Vec::new(),
+                    pinned_version: None,
+                    mod_jar_id: "optional-dep".into(),
+                    requirement: Requirement::Optional,
+                    source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
+                    disposition: DepDisposition::InstallCandidate {
+                        artifact: Box::new(test_artifact(
+                            "optional-dep",
+                            "optional.jar",
+                            crate::download::sha256_hex(b"optional"),
+                            ArtifactSource::LocalFile {
+                                path: optional_path.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        )),
+                    },
+                },
+            ],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let file_names = |plan: &ResolvedInstallPlan| {
+            plan.files_to_add
+                .iter()
+                .map(|file| file.target_filename.clone())
+                .collect::<Vec<_>>()
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        // Prompt: the required file is planned, the unchosen optional one is
+        // only offered as a pending choice.
+        let mut prompt_intent = local_intent("root");
+        prompt_intent.optional_deps = OptionalDepsPolicy::Prompt;
+        let prompted = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                prompt_intent,
+                &instance_dir,
+                build_prepared(),
+                &NoopReporter,
+            ))
+            .unwrap();
+        assert_eq!(file_names(&prompted), vec!["required.jar", "root.jar"]);
+        assert!(matches!(
+            prompted.pending_choices.as_slice(),
+            [PendingChoice::OptionalDependencies { .. }]
+        ));
+
+        // Once the user picks it, the follow-up plan adds its file too.
+        let mut chosen_intent = local_intent("root");
+        chosen_intent.optional_deps = OptionalDepsPolicy::Include {
+            deps: vec!["optional-dep".into()],
+        };
+        let chosen = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                chosen_intent,
+                &instance_dir,
+                build_prepared(),
+                &NoopReporter,
+            ))
+            .unwrap();
+        assert_eq!(
+            file_names(&chosen),
+            vec!["optional.jar", "required.jar", "root.jar"]
+        );
+    }
+
+    /// A plan for installing `root` whose only dependency is a requirement the
+    /// root's own jar declared (`source: Jar`).
+    fn jar_requirement_prepared(disposition: DepDisposition) -> PreparedPlan {
+        PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "xaeros-minimap",
+                    "xaeros.jar",
+                    "a".repeat(64),
+                    ArtifactSource::Download {
+                        url: "https://example.com/xaeros.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![ResolvedDep {
+                requested_by: vec!["xaeros-minimap".into()],
+                pinned_version: None,
+                mod_jar_id: "fabric-api".into(),
+                requirement: Requirement::Required,
+                source: DepSource::Jar,
+                display_name: Some("Fabric API".into()),
+                page_url: None,
+                disposition,
+            }],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        }
+    }
+
+    /// Fabric API as a found, downloadable file.
+    fn found_fabric_api(tmp: &tempfile::TempDir) -> DepDisposition {
+        let path = tmp.path().join("fabric-api.jar");
+        std::fs::write(&path, b"fabric-api").unwrap();
+        DepDisposition::InstallCandidate {
+            artifact: Box::new(test_artifact(
+                "fabric-api",
+                "fabric-api.jar",
+                crate::download::sha256_hex(b"fabric-api"),
+                ArtifactSource::LocalFile {
+                    path: path.to_string_lossy().into_owned(),
+                },
+                SourceType::Curated,
+            )),
+        }
+    }
+
+    fn resolve_with_overrides(
+        tmp: &tempfile::TempDir,
+        disposition: DepDisposition,
+        allow_missing: bool,
+    ) -> ResolvedInstallPlan {
+        let instance_dir = make_instance(tmp);
+        let mut intent = local_intent("xaeros-minimap");
+        intent.overrides.allow_missing_dependencies = allow_missing;
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(
+                intent,
+                &instance_dir,
+                jar_requirement_prepared(disposition),
+                &NoopReporter,
+            ))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_jar_requirement_found_for_the_instance_is_added_to_the_plan() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = resolve_with_overrides(&tmp, found_fabric_api(&tmp), false);
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        assert!(!plan
+            .warnings
+            .iter()
+            .any(|w| w.code == "WARN_MISSING_DEPENDENCY"));
+        let names: Vec<_> = plan
+            .files_to_add
+            .iter()
+            .map(|f| f.target_filename.as_str())
+            .collect();
+        assert!(names.contains(&"fabric-api.jar"), "{names:?}");
+        assert!(plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn a_jar_requirement_that_cannot_be_found_blocks_and_names_who_needs_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = resolve_with_overrides(
+            &tmp,
+            DepDisposition::Unresolved {
+                reason: "it is not in the Agora catalog".into(),
+            },
+            false,
+        );
+        let blocking = plan
+            .blocking_errors
+            .iter()
+            .find(|e| e.code == "ERR_MISSING_DEPENDENCY")
+            .expect("missing dependency must block");
+        assert!(
+            blocking.message.contains("xaeros-minimap needs Fabric API"),
+            "{}",
+            blocking.message
+        );
+        assert!(blocking.message.contains("Install Anyway"));
+        assert!(!plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn installing_anyway_turns_the_missing_jar_requirement_into_a_named_warning() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = resolve_with_overrides(
+            &tmp,
+            DepDisposition::Unresolved {
+                reason: "it is not in the Agora catalog".into(),
+            },
+            true,
+        );
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|w| w.code == "WARN_MISSING_DEPENDENCY")
+            .expect("installing anyway must still say what is missing");
+        assert!(
+            warning.message.contains("Fabric API is missing"),
+            "{}",
+            warning.message
+        );
+        assert!(plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn the_install_anyway_override_does_not_unblock_a_registry_dependency() {
+        // Only requirements the jar declares get the override; a registry
+        // dependency that cannot be resolved still blocks as before.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let mut prepared = jar_requirement_prepared(DepDisposition::Unresolved {
+            reason: "no build".into(),
+        });
+        prepared.dependencies[0].source = DepSource::Manifest;
+        let mut intent = local_intent("xaeros-minimap");
+        intent.overrides.allow_missing_dependencies = true;
+        let plan = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(intent, &instance_dir, prepared, &NoopReporter))
+            .unwrap();
+        assert!(plan
+            .blocking_errors
+            .iter()
+            .any(|e| e.code == "ERR_REQUIRED_DEPENDENCY"));
+    }
+
+    #[test]
+    fn an_unreadable_jar_blocks_until_installed_anyway_and_says_so() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let run = |allow: bool| {
+            let mut intent = local_intent("xaeros-minimap");
+            intent.overrides.allow_missing_dependencies = allow;
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(InstallPipeline.resolve_plan(
+                    intent,
+                    &instance_dir,
+                    jar_requirement_prepared(DepDisposition::Unchecked {
+                        reason: "the jar is not a valid archive".into(),
+                    }),
+                    &NoopReporter,
+                ))
+                .unwrap()
+        };
+
+        let blocked = run(false);
+        let error = blocked
+            .blocking_errors
+            .iter()
+            .find(|e| e.code == "ERR_UNCHECKED_REQUIREMENTS")
+            .expect("unchecked requirements must block until the user decides");
+        assert!(
+            error
+                .message
+                .contains("Couldn't check what Fabric API needs"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("Install Anyway"));
+        assert!(!blocked.is_fully_resolved());
+
+        let anyway = run(true);
+        assert!(
+            anyway.blocking_errors.is_empty(),
+            "{:?}",
+            anyway.blocking_errors
+        );
+        assert!(anyway
+            .warnings
+            .iter()
+            .any(|w| w.code == "WARN_UNCHECKED_REQUIREMENTS"));
+        assert!(anyway.is_fully_resolved());
+    }
+
+    #[test]
+    fn a_download_is_only_accepted_when_it_matches_a_published_hash() {
+        let hashes = |algorithm, value: &str| HashSpec {
+            values: vec![HashedValue {
+                algorithm,
+                value: value.into(),
+            }],
+        };
+        let good = crate::download::sha256_hex(b"jar bytes");
+        assert!(verify_bytes(b"jar bytes", &hashes(HashAlgorithm::Sha256, &good)).is_ok());
+        assert!(verify_bytes(b"other bytes", &hashes(HashAlgorithm::Sha256, &good)).is_err());
+        // Nothing to check against must not pass as "verified".
+        assert!(verify_bytes(b"jar bytes", &HashSpec { values: vec![] }).is_err());
     }
 
     #[test]
