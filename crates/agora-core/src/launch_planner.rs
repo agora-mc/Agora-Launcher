@@ -6370,9 +6370,14 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line))
-            .await
-            .unwrap();
+        let _outcome = Box::pin(wait_and_classify_with_progress(
+            child,
+            tmp.path(),
+            &[],
+            Some(&on_line),
+        ))
+        .await
+        .unwrap();
 
         let collected = lines.lock().unwrap();
         assert!(
@@ -6393,12 +6398,12 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(
+        let _outcome = Box::pin(wait_and_classify_with_progress(
             child,
             tmp.path(),
             &["super-sensitive-value"],
             Some(&on_line),
-        )
+        ))
         .await
         .unwrap();
 
@@ -6436,7 +6441,12 @@ $output.Write($after, 0, $after.Length)
 
         tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line)),
+            Box::pin(wait_and_classify_with_progress(
+                child,
+                tmp.path(),
+                &[],
+                Some(&on_line),
+            )),
         )
         .await
         .expect("non-UTF-8 output must not stop draining the child pipe")
@@ -6474,9 +6484,14 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line))
-            .await
-            .unwrap();
+        let _outcome = Box::pin(wait_and_classify_with_progress(
+            child,
+            tmp.path(),
+            &[],
+            Some(&on_line),
+        ))
+        .await
+        .unwrap();
 
         let collected = lines.lock().unwrap();
         assert!(

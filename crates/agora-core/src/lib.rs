@@ -5,6 +5,7 @@
 //! or any MCP-protocol crate. Every operation takes a `&Ctx` (introduced
 //! later). For now this crate only hosts the pure data/error modules moved
 //! out of the desktop crate in Phase 1A.
+#![warn(clippy::large_futures)]
 
 pub mod app_paths;
 pub mod artifact_receipt;
