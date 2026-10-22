@@ -175,7 +175,13 @@ impl ModCache {
         let dir = cache_path
             .parent()
             .ok_or_else(|| "Invalid cache path".to_string())?;
+        if !plain_path_under(&self.cache_dir, dir) {
+            return Err("cache path passes through a link".into());
+        }
         fs::create_dir_all(dir).map_err(|e| format!("failed to create cache dir: {e}"))?;
+        if !plain_path_under(&self.cache_dir, dir) {
+            return Err("cache path passes through a link".into());
+        }
 
         let tmp = dir.join(format!(
             "file.jar.{}.{}.tmp",
@@ -225,6 +231,9 @@ impl ModCache {
         if !is_sha256_hex(sha256) {
             return Err("not a SHA-256 key".into());
         }
+        if !plain_path_under(&self.cache_dir, &self.cache_path_for(sha256)) {
+            return Err("cache path passes through a link".into());
+        }
         let bytes =
             fs::read(self.cache_path_for(sha256)).map_err(|e| format!("cache read failed: {e}"))?;
         if crate::download::sha256_hex(&bytes) != sha256 {
@@ -236,6 +245,9 @@ impl ModCache {
     /// Record a use of an entry, so eviction treats it as recently needed.
     pub fn mark_used(&self, sha256: &str) {
         if let Some(dir) = self.entry_dir(sha256) {
+            if !plain_path_under(&self.cache_dir, &dir) {
+                return;
+            }
             let _ = fs::write(dir.join("used"), b"");
         }
     }
@@ -249,6 +261,11 @@ impl ModCache {
         let dir = self
             .entry_dir(sha256)
             .ok_or_else(|| "not a SHA-256 key".to_string())?;
+        // Every component between the cache root and the entry must be a real
+        // directory; a link at the prefix folder would aim the delete elsewhere.
+        if !plain_path_under(&self.cache_dir, &dir) {
+            return Err("refusing to remove through a link".into());
+        }
         match fs::symlink_metadata(&dir) {
             Ok(meta) if meta.file_type().is_dir() && !is_link_like(&meta) => {
                 fs::remove_dir_all(&dir).map_err(|e| format!("failed to remove entry: {e}"))
@@ -271,7 +288,10 @@ impl ModCache {
             let Some(prefix_name) = prefix.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if prefix_name.len() != 2 || !is_lower_hex(&prefix_name) {
+            if prefix_name.len() != 2
+                || !is_lower_hex(&prefix_name)
+                || !plain_path_under(&self.cache_dir, &prefix.path())
+            {
                 continue;
             }
             let Ok(hashes) = fs::read_dir(prefix.path()) else {
@@ -281,7 +301,10 @@ impl ModCache {
                 let Some(name) = hash.file_name().to_str().map(str::to_owned) else {
                     continue;
                 };
-                if !is_sha256_hex(&name) || !name.starts_with(&prefix_name) {
+                if !is_sha256_hex(&name)
+                    || !name.starts_with(&prefix_name)
+                    || !plain_path_under(&self.cache_dir, &hash.path())
+                {
                     continue;
                 }
                 let Ok(jar_meta) = fs::metadata(hash.path().join("file.jar")) else {
@@ -316,10 +339,16 @@ impl ModCache {
         // Oldest first.
         entries.sort_by_key(|e| e.last_used);
         let age = |e: &CacheEntryInfo| match e.last_used {
-            // No readable timestamp, or one in the future: treat as fresh.
-            Some(t) => now.duration_since(t).unwrap_or_default(),
-            None => std::time::Duration::ZERO,
+            Some(t) => match now.duration_since(t) {
+                Ok(age) => age,
+                // A last use in the future means the clock moved; the stamp is
+                // untrustworthy. Count it as just past the grace period: the
+                // size bound applies, but it is not aged out wholesale.
+                Err(_) => policy.grace,
+            },
+            None => policy.grace,
         };
+        self.sweep_leftovers(policy, now, &mut report, is_protected);
         let mut total: u64 = entries.iter().map(|e| e.size_bytes).sum();
         for entry in &entries {
             let evictable = !is_protected(&entry.sha256) && age(entry) >= policy.grace;
@@ -342,6 +371,86 @@ impl ModCache {
             }
         }
         report
+    }
+
+    /// Clean what a crash leaves behind: temporary files and entry folders
+    /// with no jar, once older than the grace period. Only well-formed entry
+    /// folders reached without crossing a link are looked at.
+    fn sweep_leftovers(
+        &self,
+        policy: &EvictionPolicy,
+        now: std::time::SystemTime,
+        report: &mut EvictionReport,
+        is_protected: &dyn Fn(&str) -> bool,
+    ) {
+        let old_enough = |p: &Path| {
+            fs::symlink_metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .is_some_and(|t| now.duration_since(t).map_or(true, |a| a >= policy.grace))
+        };
+        let Ok(prefixes) = fs::read_dir(&self.cache_dir) else {
+            return;
+        };
+        for prefix in prefixes.flatten() {
+            let Some(pname) = prefix.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if pname.len() != 2
+                || !is_lower_hex(&pname)
+                || !plain_path_under(&self.cache_dir, &prefix.path())
+            {
+                continue;
+            }
+            let Ok(hashes) = fs::read_dir(prefix.path()) else {
+                continue;
+            };
+            for hash in hashes.flatten() {
+                let Some(name) = hash.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let dir = hash.path();
+                if !is_sha256_hex(&name)
+                    || !name.starts_with(&pname)
+                    || is_protected(&name)
+                    || !plain_path_under(&self.cache_dir, &dir)
+                {
+                    continue;
+                }
+                let Ok(files) = fs::read_dir(&dir) else {
+                    continue;
+                };
+                let (mut has_jar, mut other) = (false, false);
+                for file in files.flatten() {
+                    let fname = file.file_name().to_string_lossy().into_owned();
+                    let path = file.path();
+                    let is_file = fs::symlink_metadata(&path)
+                        .map(|m| m.file_type().is_file())
+                        .unwrap_or(false);
+                    if fname == "file.jar" {
+                        has_jar = true;
+                    } else if fname.starts_with("file.jar.") && fname.ends_with(".tmp") && is_file {
+                        if old_enough(&path) && fs::remove_file(&path).is_ok() {
+                            report.tmp_removed += 1;
+                        } else {
+                            other = true;
+                        }
+                    } else if fname != "metadata.json" && fname != "used" {
+                        other = true;
+                    }
+                }
+                // A folder with no jar and nothing unexpected in it is not an
+                // entry. `remove_dir` only succeeds when it is empty.
+                if !has_jar && !other && old_enough(&dir) {
+                    for leftover in ["metadata.json", "used"] {
+                        let _ = fs::remove_file(dir.join(leftover));
+                    }
+                    if fs::remove_dir(&dir).is_ok() {
+                        report.empty_dirs_removed += 1;
+                    }
+                }
+            }
+        }
     }
 
     fn entry_dir(&self, sha256: &str) -> Option<PathBuf> {
@@ -393,6 +502,10 @@ pub struct EvictionReport {
     pub bytes_freed: u64,
     pub kept_in_use: usize,
     pub failed: usize,
+    /// Crash-left temporary files removed.
+    pub tmp_removed: usize,
+    /// Entry folders with no jar removed.
+    pub empty_dirs_removed: usize,
 }
 
 fn is_lower_hex(s: &str) -> bool {
@@ -405,7 +518,32 @@ pub fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && is_lower_hex(s)
 }
 
-fn is_link_like(meta: &fs::Metadata) -> bool {
+/// True only if every existing component of `target` below `root` is a real
+/// file or directory: no symlink, junction or other reparse point. Any doubt
+/// (cannot inspect, not under root) is false. `root` itself may be a link,
+/// since that is the user's own choice of location.
+pub(crate) fn plain_path_under(root: &Path, target: &Path) -> bool {
+    let Ok(relative) = target.strip_prefix(root) else {
+        return false;
+    };
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => current.push(part),
+            _ => return false,
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if is_link_like(&meta) => return false,
+            Ok(_) => {}
+            // Not there yet: nothing further down can be a link.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+pub(crate) fn is_link_like(meta: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;

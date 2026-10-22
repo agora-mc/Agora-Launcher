@@ -191,7 +191,11 @@ impl DownloadCache {
     }
 
     fn read_index(&self, algorithm: &HashAlgorithm, value: &str) -> Option<String> {
-        std::fs::read_to_string(self.index_path(algorithm, value))
+        let path = self.index_path(algorithm, value);
+        if !crate::mod_cache::plain_path_under(&self.root, &path) {
+            return None;
+        }
+        std::fs::read_to_string(path)
             .ok()
             .map(|s| s.trim().to_string())
     }
@@ -199,7 +203,12 @@ impl DownloadCache {
     fn write_index(&self, algorithm: &HashAlgorithm, value: &str, key: &str) {
         let path = self.index_path(algorithm, value);
         let Some(parent) = path.parent() else { return };
-        if std::fs::create_dir_all(parent).is_err() {
+        if !crate::mod_cache::plain_path_under(&self.root, parent) {
+            return;
+        }
+        if std::fs::create_dir_all(parent).is_err()
+            || !crate::mod_cache::plain_path_under(&self.root, parent)
+        {
             return;
         }
         let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -216,8 +225,12 @@ impl DownloadCache {
     fn forget_index(&self, hashes: &HashSpec) {
         for published in &hashes.values {
             let value = published.value.trim().to_ascii_lowercase();
-            if published.algorithm != HashAlgorithm::Sha256 && is_plain_hex(&value) {
-                let _ = std::fs::remove_file(self.index_path(&published.algorithm, &value));
+            let path = self.index_path(&published.algorithm, &value);
+            if published.algorithm != HashAlgorithm::Sha256
+                && is_plain_hex(&value)
+                && crate::mod_cache::plain_path_under(&self.root, &path)
+            {
+                let _ = std::fs::remove_file(path);
             }
         }
     }
@@ -687,6 +700,53 @@ mod tests {
     }
 
     use crate::mod_cache::EvictionReport;
+
+    #[tokio::test]
+    async fn writing_an_index_entry_cannot_overwrite_a_file_outside_the_cache() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("dc");
+        let cache = DownloadCache::new(root.clone());
+        let wanted = b"wanted jar";
+        let sha1 = crate::download::sha1_hex(wanted);
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join(&sha1), b"precious").unwrap();
+        std::fs::create_dir_all(root.join("index")).unwrap();
+        link_dir(&root.join("index").join("sha1"), &outside);
+
+        let src = Source::new(wanted);
+        cache
+            .get_or_fetch(&sha1_spec(wanted), "w.jar", || src.fetch())
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(outside.join(&sha1)).unwrap(), b"precious");
+        assert_eq!(
+            std::fs::read_dir(&outside).unwrap().count(),
+            1,
+            "nothing may be written outside the cache"
+        );
+    }
+
+    #[test]
+    fn eviction_cleans_crash_leftovers_but_not_fresh_ones() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("c");
+        let cache = ModCache::new(root.clone());
+        let sha = crate::download::sha256_hex(b"ghost");
+        let dir = root.join(&sha[..2]).join(&sha);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file.jar.1.0.tmp"), b"half").unwrap();
+
+        let fresh = cache.evict(&policy(u64::MAX), later(60), &|_| false);
+        assert_eq!(fresh.tmp_removed, 0);
+        assert!(dir.join("file.jar.1.0.tmp").exists());
+
+        let old = cache.evict(&policy(u64::MAX), later(7200), &|_| false);
+        assert_eq!(old.tmp_removed, 1);
+        assert_eq!(old.empty_dirs_removed, 1);
+        assert!(!dir.exists());
+    }
 
     #[tokio::test]
     async fn a_store_evicts_old_entries_but_keeps_the_one_it_just_wrote() {
