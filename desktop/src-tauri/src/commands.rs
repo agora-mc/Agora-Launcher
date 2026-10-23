@@ -2184,7 +2184,13 @@ pub async fn execute_launcher_imports(
     app: tauri::AppHandle,
     plan: agora_core::launcher_import_service::LauncherImportPlan,
 ) -> LauncherResult<agora_core::launcher_import_service::LauncherImportBatchResult> {
-    let ctx = crate::core_context(&app)?;
+    // The wizard listens for "operation-progress"; without a sink the copy runs
+    // silently for minutes behind one spinner.
+    let ctx =
+        crate::core_context(&app)?.with_progress_sink(std::sync::Arc::new(TauriCoreProgressSink {
+            app,
+            event_name: "operation-progress",
+        }));
     agora_core::launcher_import_service::LauncherImportService::new(ctx)
         .execute(plan)
         .await

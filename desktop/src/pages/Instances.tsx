@@ -3,6 +3,7 @@ import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } f
 import { listen } from '@tauri-apps/api/event';
 import { requestEditorTab } from '../lib/editorDeepLink';
 import { useExternalInstanceChanges } from '../lib/externalChanges';
+import { importSourceLabel } from '../lib/importDisplay';
 import {
   cancelJavaRuntime,
   cloneInstance,
@@ -667,6 +668,8 @@ function InstanceCard({
   };
 
   const createdLabel = formatCreatedDate(instance.created_at);
+  // "CurseForge", "Modrinth" or "Prism Launcher" for imported instances; null otherwise.
+  const importedFrom = importSourceLabel(instance.import_source);
 
   const issueDef = controllerRecoverableIssue
     ? PROFILE_ISSUE_MESSAGES[controllerRecoverableIssue.kind]
@@ -686,9 +689,7 @@ function InstanceCard({
             <h3 className="wrap-break-word font-semibold">{instance.name}</h3>
             {instance.import_source && (
               <span className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                Imported from {instance.import_source === 'curse_forge' || instance.import_source === 'curseforge'
-                  ? 'CurseForge'
-                  : instance.import_source === 'prism' ? 'Prism Launcher' : 'Modrinth App'}
+                Imported from {importedFrom ?? 'another launcher'}
               </span>
             )}
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -718,7 +719,11 @@ function InstanceCard({
                 'Never launched'
               )}
             </p>
-            {createdLabel && (
+            {importedFrom ? (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Imported{createdLabel ? ` ${createdLabel}` : ''} from {importedFrom}
+              </p>
+            ) : createdLabel && (
               <p className="text-xs text-muted-foreground mt-0.5">Created {createdLabel}</p>
             )}
           </div>
@@ -1028,6 +1033,26 @@ function InstanceCard({
             <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
             Kill
           </button>
+        ) : healthBlocked && healthReport ? (
+          // Not ready: the main action is to see the problems. Launch stays
+          // reachable as the secondary action (the health dialog asks first).
+          <>
+            <button
+              onClick={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
+              disabled={effectiveBusy || recoveryBlocked}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              See what&apos;s wrong
+            </button>
+            <button
+              onClick={onLaunch}
+              disabled={effectiveBusy || recoveryBlocked}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
+            >
+              <Play className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
+              {startingThis && !repairing ? 'Starting…' : 'Launch anyway'}
+            </button>
+          </>
         ) : (
           <button
             onClick={onLaunch}

@@ -56,6 +56,9 @@ pub struct LauncherImportDiscovery {
     pub prism: LauncherDiscovery,
     pub curseforge: LauncherDiscovery,
     pub modrinth: LauncherDiscovery,
+    /// Folder that imported copies are written into. Display only: execution
+    /// derives its own paths from the app data root.
+    pub instances_root: String,
 }
 
 impl LauncherImportDiscovery {
@@ -528,6 +531,14 @@ fn inventory_directory(
 
         let fname = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
+        // Iris settings sidecars (`<pack>.zip.txt`) sit beside shader zips and
+        // are not shaders, so they are neither listed nor counted.
+        if content_type == "shader"
+            && ft.is_file()
+            && !crate::launcher_import::is_shader_pack_entry(&fname, false)
+        {
+            continue;
+        }
         let sha = match hash_content_entry(&path) {
             Ok(value) => value,
             Err(_) => continue,
@@ -963,6 +974,7 @@ impl LauncherImportService {
             prism: launcher_import::discover_prism_launcher(custom),
             curseforge: launcher_import::discover_curseforge_launcher(custom),
             modrinth: launcher_import::discover_modrinth_launcher(custom),
+            instances_root: self.ctx.paths.instances_root().display().to_string(),
         }
     }
 
@@ -1282,6 +1294,19 @@ impl LauncherImportService {
 
         let mut outcomes: Vec<PerItemOutcome> = Vec::new();
 
+        // One byte bar covers the whole run: only the items this run will copy
+        // count, so skipped items do not hold the bar back.
+        let runnable: Vec<&PerItemPlan> = plan
+            .items
+            .iter()
+            .filter(|item| {
+                item.blockers.is_empty() && !matches!(item.action, ItemAction::Unchanged)
+            })
+            .collect();
+        let batch_bytes_total: u64 = runnable.iter().map(|item| item.total_bytes).sum();
+        let mut batch_bytes_done: u64 = 0;
+        let mut runnable_index: usize = 0;
+
         for (index, item) in plan.items.iter().enumerate() {
             if cancellation.is_cancelled() {
                 outcomes.extend(
@@ -1307,18 +1332,30 @@ impl LauncherImportService {
                 continue;
             }
 
+            runnable_index += 1;
+            let batch = BatchProgress {
+                index: runnable_index,
+                count: runnable.len(),
+                bytes_before: batch_bytes_done,
+                bytes_total: batch_bytes_total,
+            };
             self.ctx.progress_sink.report(
                 ProgressEvent::new(
                     operation_id.clone(),
                     ProgressPhase::Staging,
-                    format!("Importing {}", item.destination_name),
+                    format!(
+                        "Importing {} ({} of {})",
+                        item.destination_name, batch.index, batch.count
+                    ),
                 )
-                .with_progress(index as f64 / plan.items.len().max(1) as f64)
-                .with_sub_label(item.destination_name.clone()),
+                .with_progress(batch.fraction())
+                .with_sub_label(item.destination_name.clone())
+                .with_bytes(batch.bytes_before, batch.bytes_total.max(1)),
             );
             let result = self
-                .execute_item(item, &policy, &cancellation, &operation_id)
+                .execute_item(item, &policy, &cancellation, &operation_id, batch)
                 .await;
+            batch_bytes_done = batch_bytes_done.saturating_add(item.total_bytes);
 
             match result {
                 Ok(outcome) => outcomes.push(outcome),
@@ -1353,6 +1390,7 @@ impl LauncherImportService {
         policy: &NetworkPolicy,
         cancellation: &CancellationToken,
         operation_id: &crate::event_sink::OperationId,
+        batch: BatchProgress,
     ) -> LauncherResult<PerItemOutcome> {
         check_cancelled(cancellation)?;
         let source_path = PathBuf::from(&item.source_path);
@@ -1502,14 +1540,21 @@ impl LauncherImportService {
                 || copied_bytes >= item.total_bytes
             {
                 last_reported = copied_bytes;
+                // Bytes are reported for the whole run, so the bar moves across
+                // instances instead of restarting at each one.
+                let run_bytes = batch.bytes_before.saturating_add(copied_bytes);
                 self.ctx.progress_sink.report(
                     ProgressEvent::new(
                         operation_id.clone(),
                         ProgressPhase::Staging,
-                        format!("Copying {}", item.destination_name),
+                        format!(
+                            "Copying {} ({} of {})",
+                            item.destination_name, batch.index, batch.count
+                        ),
                     )
+                    .with_progress((run_bytes as f64 / batch.bytes_total.max(1) as f64).min(1.0))
                     .with_sub_label(item.destination_name.clone())
-                    .with_bytes(copied_bytes, item.total_bytes.max(1)),
+                    .with_bytes(run_bytes, batch.bytes_total.max(1)),
                 );
             }
         };
@@ -1632,7 +1677,7 @@ impl LauncherImportService {
             shaders,
             datapacks,
             worlds,
-            user_preferences: serde_json::json!({}),
+            user_preferences: copied_memory_preferences(item, source_label),
         };
 
         let manifest_json =
@@ -2184,6 +2229,42 @@ impl LauncherImportService {
     }
 }
 
+/// Record that an imported instance's memory was copied from its source launcher.
+///
+/// The editor shows this as "Copied from <launcher>" so the number is not
+/// presented as a choice made in Agora. Empty when no memory was copied.
+fn copied_memory_preferences(item: &PerItemPlan, source_label: &str) -> serde_json::Value {
+    match item.sanitized_settings.memory_mb {
+        Some(memory_mb) if item.preserve_settings => serde_json::json!({
+            "memory_copied": { "launcher": source_label, "mb": memory_mb }
+        }),
+        _ => serde_json::json!({}),
+    }
+}
+
+/// Where one instance sits in the import run, for progress events.
+#[derive(Debug, Clone, Copy)]
+struct BatchProgress {
+    /// 1-based position among the instances this run will copy.
+    index: usize,
+    /// How many instances this run will copy.
+    count: usize,
+    /// Bytes of earlier instances in this run that are already handled.
+    bytes_before: u64,
+    /// Bytes this whole run will copy.
+    bytes_total: u64,
+}
+
+impl BatchProgress {
+    /// Fraction of the run's bytes handled before this instance starts (0.0 to 1.0).
+    fn fraction(&self) -> f64 {
+        if self.bytes_total == 0 {
+            return (self.index.saturating_sub(1)) as f64 / self.count.max(1) as f64;
+        }
+        self.bytes_before as f64 / self.bytes_total as f64
+    }
+}
+
 fn check_cancelled(cancellation: &CancellationToken) -> LauncherResult<()> {
     if cancellation.is_cancelled() {
         Err(LauncherError::Generic {
@@ -2551,6 +2632,10 @@ mod tests {
                 has_shaderpacks: false,
                 has_datapacks: false,
                 has_saves: false,
+                mod_count: None,
+                resourcepack_count: None,
+                shaderpack_count: None,
+                world_count: None,
             },
             loader_tuple: None,
             last_played: None,
@@ -3114,6 +3199,181 @@ name=Dup Instance
         assert!(import.is_some());
     }
 
+    /// One runnable plan item whose payload is `src_root`, with exact byte totals.
+    fn runnable_plan_item(
+        src_root: &Path,
+        destination_id: &str,
+        total_bytes: u64,
+        preserve_settings: bool,
+        memory_mb: Option<i64>,
+    ) -> PerItemPlan {
+        PerItemPlan {
+            fingerprint: plan_fingerprint(
+                destination_id,
+                LauncherKind::Prism,
+                destination_id,
+                &ItemAction::New,
+                preserve_settings,
+            ),
+            destination_id: destination_id.to_string(),
+            destination_name: format!("Name {destination_id}"),
+            action: ItemAction::New,
+            source_key: destination_id.to_string(),
+            launcher_kind: LauncherKind::Prism,
+            installation_key: "prism:test".to_string(),
+            source_path: src_root.to_string_lossy().to_string(),
+            loader_tuple: Some(LoaderTuple {
+                loader: "vanilla".to_string(),
+                loader_version: String::new(),
+                minecraft_version: "1.20.1".to_string(),
+            }),
+            total_bytes,
+            total_files: 1,
+            preserve_settings,
+            sanitized_settings: LaunchSettingsPreview {
+                memory_mb,
+                java_path: None,
+                jvm_args: Vec::new(),
+            },
+            existing_import: None,
+            blockers: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn plan_of(items: Vec<PerItemPlan>) -> LauncherImportPlan {
+        let fingerprints: Vec<String> = items.iter().map(|i| i.fingerprint.clone()).collect();
+        LauncherImportPlan {
+            batch_fingerprint: batch_fingerprint(&fingerprints),
+            peak_bytes: items.iter().map(|i| i.total_bytes).sum(),
+            total_files: items.iter().map(|i| i.total_files).sum(),
+            items,
+            batch_blockers: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_reports_byte_progress_across_the_whole_run() {
+        let sink = std::sync::Arc::new(crate::event_sink::CollectingProgressSink::new());
+        let ctx = test_ctx().with_progress_sink(sink.clone());
+        let svc = LauncherImportService::new(ctx);
+
+        let first = test_tmp("progress-first");
+        let second = test_tmp("progress-second");
+        for root in [&first, &second] {
+            std::fs::create_dir_all(root.join("mods")).unwrap();
+            std::fs::write(root.join("mods").join("a.jar"), b"0123456789").unwrap();
+        }
+        let plan = plan_of(vec![
+            runnable_plan_item(&first, "progress-one", 10, false, None),
+            runnable_plan_item(&second, "progress-two", 10, false, None),
+        ]);
+
+        let result = svc.execute(plan).await.unwrap();
+        assert_eq!(result.outcomes.len(), 2);
+
+        let events = sink.events();
+        let find = |message: &str| {
+            events
+                .iter()
+                .find(|e| e.message == message)
+                .unwrap_or_else(|| panic!("no event {message:?} in {events:?}"))
+        };
+        // The second instance's bar starts where the first one ended.
+        let start_two = find("Importing Name progress-two (2 of 2)");
+        assert_eq!(start_two.bytes_downloaded, Some(10));
+        assert_eq!(start_two.bytes_total, Some(20));
+        let copy_two = find("Copying Name progress-two (2 of 2)");
+        assert_eq!(copy_two.bytes_downloaded, Some(20));
+        assert_eq!(copy_two.bytes_total, Some(20));
+        assert_eq!(copy_two.progress, Some(1.0));
+        let copy_one = find("Copying Name progress-one (1 of 2)");
+        assert_eq!(copy_one.bytes_downloaded, Some(10));
+    }
+
+    #[tokio::test]
+    async fn test_execute_records_copied_memory_in_manifest() {
+        let ctx = test_ctx();
+        let svc = LauncherImportService::new(ctx.clone());
+        let src_root = test_tmp("memory-copy-src");
+        std::fs::create_dir_all(src_root.join("mods")).unwrap();
+        std::fs::write(src_root.join("mods").join("a.jar"), b"0123456789").unwrap();
+
+        let item = runnable_plan_item(&src_root, "memory-copied", 10, true, Some(12064));
+        let result = svc.execute(plan_of(vec![item])).await.unwrap();
+        assert!(matches!(
+            result.outcomes[0],
+            PerItemOutcome::Imported { .. }
+        ));
+
+        let instance_dir = ctx.paths.instances_root().join("memory-copied");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest["user_preferences"]["memory_copied"]["mb"],
+            serde_json::json!(12064)
+        );
+        assert_eq!(
+            manifest["user_preferences"]["memory_copied"]["launcher"],
+            serde_json::json!("prism")
+        );
+
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        let row = crate::db::get_instance(&conn, "memory-copied")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.jvm_memory_mb, 12064);
+        assert_eq!(row.jvm_memory_mode, "manual");
+    }
+
+    #[tokio::test]
+    async fn test_execute_without_copied_memory_records_no_memory_source() {
+        let ctx = test_ctx();
+        let svc = LauncherImportService::new(ctx.clone());
+        let src_root = test_tmp("memory-none-src");
+        std::fs::create_dir_all(src_root.join("mods")).unwrap();
+        std::fs::write(src_root.join("mods").join("a.jar"), b"0123456789").unwrap();
+
+        // Settings not preserved, and a preserved item with no memory, both copy nothing.
+        let dropped = runnable_plan_item(&src_root, "memory-dropped", 10, false, Some(12064));
+        let absent = runnable_plan_item(&src_root, "memory-absent", 10, true, None);
+        svc.execute(plan_of(vec![dropped, absent])).await.unwrap();
+
+        for id in ["memory-dropped", "memory-absent"] {
+            let manifest: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(
+                    ctx.paths
+                        .instances_root()
+                        .join(id)
+                        .join("instance_manifest.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest["user_preferences"], serde_json::json!({}), "{id}");
+        }
+    }
+
+    #[test]
+    fn test_batch_progress_fraction_is_safe_for_empty_runs() {
+        let empty = BatchProgress {
+            index: 1,
+            count: 0,
+            bytes_before: 0,
+            bytes_total: 0,
+        };
+        assert_eq!(empty.fraction(), 0.0);
+        let halfway = BatchProgress {
+            index: 2,
+            count: 2,
+            bytes_before: 50,
+            bytes_total: 100,
+        };
+        assert_eq!(halfway.fraction(), 0.5);
+    }
+
     #[tokio::test]
     async fn test_execute_update_unchanged() {
         let ctx = test_ctx();
@@ -3373,6 +3633,32 @@ name=Dup Instance
     }
 
     #[test]
+    fn test_inventory_directory_skips_iris_settings_sidecar() {
+        let dir = test_tmp("inv-shader-sidecar");
+        std::fs::create_dir_all(dir.join("shaderpacks").join("Folder Shaders")).unwrap();
+        std::fs::write(
+            dir.join("shaderpacks")
+                .join("ComplementaryUnbound_r5.6.1.zip"),
+            b"zip",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("shaderpacks")
+                .join("ComplementaryUnbound_r5.6.1.zip.txt"),
+            b"iris settings",
+        )
+        .unwrap();
+
+        let items = inventory_directory(&dir, "shaderpacks", "shader", "prism", "fabric").unwrap();
+        let mut names: Vec<&str> = items.iter().map(|m| m.filename.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["ComplementaryUnbound_r5.6.1.zip", "Folder Shaders"]
+        );
+    }
+
+    #[test]
     fn test_inventory_directory_empty() {
         let dir = test_tmp("inv-empty");
         std::fs::create_dir_all(dir.join("mods")).unwrap();
@@ -3390,6 +3676,7 @@ name=Dup Instance
             prism: LauncherDiscovery::empty(),
             curseforge: LauncherDiscovery::empty(),
             modrinth: LauncherDiscovery::empty(),
+            instances_root: String::new(),
         };
         assert!(empty.ready_candidates().is_empty());
         assert!(empty.all_candidates().is_empty());

@@ -110,6 +110,7 @@ import {
 import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { useConfirm } from '@/components/ui/confirm';
 import { formatDateTime } from '@/lib/utils';
+import { copiedMemoryNote, formatMemoryMb, readCopiedMemory } from '@/lib/importDisplay';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
 import { DatapackWorldsDialog } from '../components/DatapackWorldsDialog';
@@ -1601,6 +1602,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     ? healthReport.blockers.length + healthReport.warnings.length
     : 0;
   const healthBlocked = (healthReport?.blockers.length ?? 0) > 0;
+  // Where the memory number came from, when an import copied it. Shown only while that
+  // copied number is the one in use; otherwise the user has chosen a different one.
+  const copiedMemoryLabel = copiedMemoryNote(
+    readCopiedMemory(manifest?.user_preferences),
+    instanceJvmMemory,
+    instanceMemoryMode,
+  );
   const readiness = row ? instanceReadiness({
     minecraftVersion: row.minecraft_version,
     loader: manifest?.loader ?? row.loader,
@@ -3186,9 +3194,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <span className="tabular-nums text-primary">
                     {instanceMemoryMode === 'auto'
                       ? `Auto - ${((memoryRecommendation?.recommended_mb ?? instanceJvmMemory) / 1024).toFixed(1)} GB`
-                      : instanceJvmMemory >= 1024
-                        ? `${(instanceJvmMemory / 1024).toFixed(instanceJvmMemory % 1024 === 0 ? 0 : 1)} GB`
-                        : `${instanceJvmMemory} MB`}
+                      : formatMemoryMb(instanceJvmMemory)}
                   </span>
                 </span>
                 <span className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-xs">
@@ -3204,12 +3210,29 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     onChange={(event) => setInstanceMemoryMode(event.target.checked ? 'auto' : 'manual')}
                   />
                 </span>
+                {copiedMemoryLabel && (
+                  <span className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted px-3 py-2 text-xs">
+                    <span>
+                      {copiedMemoryLabel}, when the instance was imported.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setInstanceMemoryMode('auto')}
+                      disabled={recoveryBlocked}
+                      className="rounded-md border border-border px-2 py-1 font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                      Switch to automatic
+                    </button>
+                  </span>
+                )}
+                {/* One MB per step, so the thumb sits on the exact value a copied import
+                    brought in (12064 MB stays 12064 rather than snapping to 12288). */}
                 <input
                   aria-label="Memory allocation"
                   type="range"
                   min={2048}
                   max={32768}
-                  step={512}
+                  step={1}
                   value={instanceJvmMemory}
                   disabled={recoveryBlocked || instanceMemoryMode === 'auto'}
                   onChange={(e) => setInstanceJvmMemory(Number(e.target.value))}
