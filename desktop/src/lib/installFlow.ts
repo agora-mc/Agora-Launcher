@@ -218,6 +218,14 @@ export interface DiskSpaceEstimate { downloadBytes: number; snapshotBytes: numbe
 export interface PlanWarning { code: string; message: string; }
 export interface PlanError { code: string; message: string; }
 
+/** Plan-warning code for a curator's install warning on an item the plan writes. Set by core. */
+export const CURATOR_WARNING_CODE = 'WARN_CURATOR_WARNING';
+
+/** True for the curator's own caution about an item, which the review shows up front. */
+export function isCuratorWarning(warning: PlanWarning): boolean {
+  return warning.code === CURATOR_WARNING_CODE;
+}
+
 export type PendingChoice =
   | { type: 'optional-dependencies'; choiceId: string; options: OptionalDepOption[] }
   | { type: 'conflict'; choiceId: string; conflictId: string; options: ConflictResolutionOption[] }

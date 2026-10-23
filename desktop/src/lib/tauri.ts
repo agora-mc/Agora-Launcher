@@ -1705,6 +1705,8 @@ export interface CuratedAnnotation {
   id: string;
   name: string;
   curator_note: string | null;
+  /** The curator's plain-text install warning. Null when the item has none. */
+  curator_warning: string | null;
   net_score: number | null;
   is_immune: boolean;
   base_categories: string[];

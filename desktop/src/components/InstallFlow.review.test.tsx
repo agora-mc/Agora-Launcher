@@ -250,6 +250,62 @@ describe('install review: a required mod the jar declares', () => {
   });
 });
 
+describe('install review: curator warnings', () => {
+  const xaeros = "Curator warning for Xaero's Minimap: Do not use XaeroPlus with this mod.";
+
+  async function renderPlan(planned: ResolvedInstallPlan) {
+    installFlowMocks.resolveInstallPlan.mockResolvedValueOnce(planned);
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    return waitFor(() => {
+      const found = panel();
+      expect(found).toHaveAttribute('aria-modal', 'true');
+      return found;
+    });
+  }
+
+  it('shows a curator warning under its own heading, before anything is written', async () => {
+    const planned = planWith([]);
+    planned.warnings = [{ code: 'WARN_CURATOR_WARNING', message: xaeros }];
+    const review = await renderPlan(planned);
+
+    expect(within(review).getByRole('heading', { name: 'Curator warnings' })).toBeInTheDocument();
+    expect(within(review).getByText(xaeros)).toBeInTheDocument();
+    expect(within(review).queryByText('Worth knowing')).toBeNull();
+  });
+
+  it('keeps other plan warnings under Worth knowing, with curator warnings separate', async () => {
+    const planned = planWith([]);
+    planned.warnings = [
+      { code: 'WARN_CURATOR_WARNING', message: xaeros },
+      { code: 'WARN_MISSING_DEPENDENCY', message: 'Fabric API is missing. Installing anyway, as you chose.' },
+    ];
+    const review = await renderPlan(planned);
+
+    expect(within(review).getByText(xaeros)).toBeInTheDocument();
+    expect(within(review).getByText('Worth knowing')).toBeInTheDocument();
+    expect(within(review).getByText(/Fabric API is missing/)).toBeInTheDocument();
+  });
+
+  it('shows no curator heading when no planned item carries a warning', async () => {
+    const planned = planWith([]);
+    planned.warnings = [{ code: 'WARN_MISSING_DEPENDENCY', message: 'Fabric API is missing.' }];
+    const review = await renderPlan(planned);
+
+    expect(within(review).queryByRole('heading', { name: 'Curator warnings' })).toBeNull();
+    expect(within(review).getByText('Fabric API is missing.')).toBeInTheDocument();
+  });
+
+  it('renders the warning text literally, never as markup', async () => {
+    const hostile = 'Curator warning for X: <img src=x onerror=alert(1)> do not use.';
+    const planned = planWith([]);
+    planned.warnings = [{ code: 'WARN_CURATOR_WARNING', message: hostile }];
+    const review = await renderPlan(planned);
+
+    expect(within(review).getByText(hostile)).toBeInTheDocument();
+    expect(review.querySelector('img')).toBeNull();
+  });
+});
+
 describe('install review: a jar that cannot be read', () => {
   it('shows what could not be checked and offers Install Anyway', async () => {
     const unchecked = dep('xaeros-minimap', { type: 'unchecked', reason: 'the jar is not a valid archive' }, {

@@ -72,6 +72,7 @@ interface ModDetailMockOptions {
   authenticated?: boolean;
   itemVoteState?: { vote: 'upvote' | 'downvote' | null; conflicted: boolean };
   voteError?: string | null;
+  curatorWarning?: string | null;
 }
 
 async function installModDetailMock(
@@ -86,6 +87,7 @@ async function installModDetailMock(
     authenticated = true,
     itemVoteState = { vote: null, conflicted: false },
     voteError = null,
+    curatorWarning = null,
   } = opts;
 
   const summary = showQuarantine
@@ -98,7 +100,7 @@ async function installModDetailMock(
   await page.addInitScript(
     (params: Record<string, unknown>) => {
       const {
-        config, summary, registryItem, initDest, authenticated, itemVoteState, voteError,
+        config, summary, registryItem, initDest, authenticated, itemVoteState, voteError, curatorWarning,
       } = params as unknown as {
         config: Record<string, unknown> | null;
         summary: Record<string, unknown>;
@@ -107,6 +109,7 @@ async function installModDetailMock(
         authenticated: boolean;
         itemVoteState: { vote: 'upvote' | 'downvote' | null; conflicted: boolean };
         voteError: string | null;
+        curatorWarning: string | null;
       };
 
       // Seed the history state so useDestination restores mod-detail on boot
@@ -166,6 +169,7 @@ async function installModDetailMock(
               id: 'test-mod',
               name: 'Test Mod',
               curator_note: 'A well-maintained mod.',
+              curator_warning: curatorWarning,
               net_score: 8,
               is_immune: false,
               base_categories: ['performance'],
@@ -214,11 +218,28 @@ async function installModDetailMock(
         __voteCalls: voteCalls,
       });
     },
-    { config, summary, registryItem, initDest, authenticated, itemVoteState, voteError },
+    { config, summary, registryItem, initDest, authenticated, itemVoteState, voteError, curatorWarning },
   );
 }
 
 test.describe('ModDetail Governance / Agora tab', () => {
+
+  test('shows a curator warning on the page without opening the Agora tab', async ({ page }) => {
+    const warning = 'Do not use XaeroPlus with this mod. The author says XaeroPlus is not affiliated with them.';
+    await installModDetailMock(page, { curatorWarning: warning });
+    await page.goto('/');
+
+    const note = page.getByRole('note', { name: 'Curator warning' });
+    await expect(note).toBeVisible();
+    await expect(note).toContainText(warning);
+  });
+
+  test('shows no curator warning when the item has none', async ({ page }) => {
+    await installModDetailMock(page);
+    await page.goto('/');
+
+    await expect(page.getByRole('note', { name: 'Curator warning' })).toHaveCount(0);
+  });
 
   test('has no Flag button in reviews', async ({ page }) => {
     await installModDetailMock(page);

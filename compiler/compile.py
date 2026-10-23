@@ -1780,6 +1780,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
             item_id TEXT PRIMARY KEY,
             curator_note TEXT,
             top_reviews_json TEXT,
+            curator_warning TEXT,
             FOREIGN KEY (item_id) REFERENCES registry_items(id)
         )
     """)
@@ -2215,6 +2216,45 @@ def validate_pinned_source(
             raise SystemExit(1)
 
 
+# A curator warning is a banner, not documentation. Longer text belongs in
+# curator_note. Counted after trimming surrounding whitespace.
+CURATOR_WARNING_MAX_CHARS = 300
+
+
+def normalize_curator_warning(item: dict[str, Any]) -> str | None:
+    """Return the curator's install warning for *item*, or None when it has none.
+
+    ``curator_warning`` is optional plain text of at most
+    ``CURATOR_WARNING_MAX_CHARS`` characters. It informs the user before an
+    install and never blocks one. Absent, null, empty and whitespace-only values
+    all mean "no warning". Anything that is not a string, or is too long, is a
+    manifest error: the build stops rather than publishing a warning the
+    launcher cannot show as written.
+    """
+    raw = item.get("curator_warning")
+    if raw is None:
+        return None
+    item_id = item.get("id", "<unknown>")
+    if not isinstance(raw, str):
+        logger.error(
+            "curator_warning must be a string in %s, got %s",
+            item_id,
+            type(raw).__name__,
+        )
+        raise SystemExit(1)
+    text = raw.strip()
+    if len(text) > CURATOR_WARNING_MAX_CHARS:
+        logger.error(
+            "curator_warning in %s is %d characters; the limit is %d. "
+            "Shorten it to a one-line caution and move the detail into curator_note.",
+            item_id,
+            len(text),
+            CURATOR_WARNING_MAX_CHARS,
+        )
+        raise SystemExit(1)
+    return text or None
+
+
 def normalize_download_sources(item: dict[str, Any]) -> list[dict[str, str]]:
     """Resolve *item* to its ordered list of download sources, best first.
 
@@ -2542,10 +2582,15 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
         scrubbed_reviews = social.scrubbed_reviews
     cursor.execute(
         """
-        INSERT INTO curator_reviews (item_id, curator_note, top_reviews_json)
-        VALUES (?, ?, ?)
+        INSERT INTO curator_reviews (item_id, curator_note, top_reviews_json, curator_warning)
+        VALUES (?, ?, ?, ?)
         """,
-        (item_id, item.get("curator_note", ""), json.dumps(scrubbed_reviews, separators=(",", ":"))),
+        (
+            item_id,
+            item.get("curator_note", ""),
+            json.dumps(scrubbed_reviews, separators=(",", ":")),
+            normalize_curator_warning(item),
+        ),
     )
 
     # Categories.
@@ -4158,9 +4203,13 @@ def emit_web_json(db_path: Path, web_path: Path, skip_sign: bool = False) -> Non
 
         # Load curator reviews for curator_notes and top_reviews.
         curator_notes: dict[str, str] = {}
+        curator_warnings: dict[str, str | None] = {}
         top_reviews: dict[str, list[dict[str, Any]]] = {}
-        for r in conn.execute("SELECT item_id, curator_note, top_reviews_json FROM curator_reviews").fetchall():
+        for r in conn.execute(
+            "SELECT item_id, curator_note, curator_warning, top_reviews_json FROM curator_reviews"
+        ).fetchall():
             curator_notes[r["item_id"]] = r["curator_note"]
+            curator_warnings[r["item_id"]] = r["curator_warning"]
             reviews_raw = r["top_reviews_json"]
             if reviews_raw:
                 try:
@@ -4226,6 +4275,7 @@ def emit_web_json(db_path: Path, web_path: Path, skip_sign: bool = False) -> Non
                 "author": row["author"],
                 "content_type": row["content_type"],
                 "curator_note": curator_notes.get(item_id, ""),
+                "curator_warning": curator_warnings.get(item_id),
                 "description": row["description"],
                 "body_markdown": row["body_markdown"],
                 "status": row["status"],
