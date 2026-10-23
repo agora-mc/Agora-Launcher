@@ -108,7 +108,7 @@ export function Home({
               instanceId: inst.instance_id,
               instanceName: inst.name,
               id: snapshotId,
-              label: snapshot?.label ?? 'Last known good',
+              label: snapshot?.label ?? 'Last setup that launched fine',
               promotedAt: typeof marker?.lastPromotedAt === 'string' ? marker.lastPromotedAt : null,
               added: addedEntries.length - disabled,
               removed: removedEntries.length - disabled,
@@ -337,7 +337,7 @@ export function Home({
         </section>
 
         {/* Support Agora */}
-        <section className="flex h-full flex-col rounded-xl border border-pink-500 bg-pink-500/50 p-6">
+        <section className="flex h-full flex-col rounded-xl border border-pink-500/40 bg-pink-500/10 p-6">
           <div className="flex items-center gap-2 mb-3">
             <HeartHandshake className="h-5 w-5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
             <h3 className="text-lg font-semibold">Support Agora’s future</h3>
@@ -368,9 +368,9 @@ export function Home({
       )}
       {knownGoodChecked && instances.length > 0 && knownGood.length === 0 && (
         <div className="rounded-xl border border-dashed border-border bg-card p-4">
-          <h4 className="text-sm font-semibold">No last-known-good state yet</h4>
+          <h4 className="text-sm font-semibold">No setup that launched fine yet</h4>
           <p className="mt-1 text-xs text-muted-foreground">
-            Play an instance successfully for at least 60 seconds. Agora will then promote its exact pre-launch snapshot for one-click recovery.
+            Play an instance without a crash for at least 60 seconds. Agora will then keep a copy of its mods and settings from just before that launch, so you can restore it in one click.
           </p>
         </div>
       )}
@@ -492,7 +492,7 @@ function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill
             disabled={buttonDisabled}
             className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isLaunching ? 'Starting…' : isStopping ? 'Stopping…' : isDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : 'Continue Playing'}
+            {isLaunching ? 'Starting…' : isStopping ? 'Stopping…' : isDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : `Play ${instance.name}`}
           </button>
         )}
       </div>
@@ -556,7 +556,7 @@ function KnownGoodCard({
 }) {
   return (
     <div className="rounded-xl border border-border bg-card p-4 space-y-2">
-      <h4 className="font-semibold text-sm">Last Known Good</h4>
+      <h4 className="font-semibold text-sm">Last setup that launched fine</h4>
       <div className="space-y-1">
         {snapshots.slice(0, 3).map((s) => (
           <div key={s.id} className="flex items-center justify-between text-xs">

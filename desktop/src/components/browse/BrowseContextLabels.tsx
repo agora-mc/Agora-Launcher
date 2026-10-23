@@ -22,14 +22,15 @@ export function BrowseContextLabels({ context }: { context: BrowseItemContext | 
 export function BrowseStats({ item }: { item: BrowseItem }) {
   if (item.source === 'curated' && item.netScore !== null) {
     // Read-only. The vote arrows are on the mod's page, so the numbers here are
-    // plain text: no arrow glyphs that look like buttons.
+    // plain text: no arrow glyphs that look like buttons. The net score (ups
+    // minus downs) lives in the tooltip rather than the card face.
     return (
       <p
         className="browse-stats"
-        title="Votes are cast on the mod's page"
-        aria-label={`${item.upvotes ?? 0} upvotes, ${item.downvotes ?? 0} downvotes, score ${item.netScore}`}
+        title={`Net score ${item.netScore}: upvotes minus downvotes. Votes are cast on the mod's page.`}
+        aria-label={`${item.upvotes ?? 0} upvotes, ${item.downvotes ?? 0} downvotes, net score ${item.netScore}`}
       >
-        <span>{item.upvotes ?? 0} up</span> · <span>{item.downvotes ?? 0} down</span> · <span>Score {item.netScore}</span>
+        <span>{item.upvotes ?? 0} up</span> · <span>{item.downvotes ?? 0} down</span>
       </p>
     );
   }

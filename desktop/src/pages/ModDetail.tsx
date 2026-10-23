@@ -947,8 +947,10 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     }
   })();
   const showIcon = item.icon_url != null && item.icon_url.startsWith('https://');
-  const velocityLabel =
-    item.velocity > 0 ? `▲ ${item.velocity.toFixed(1)}` : item.velocity < 0 ? `▼ ${item.velocity.toFixed(1)}` : '0.0';
+  // Plain words for the recent vote direction; the raw velocity number means
+  // little to a player, so it is not shown.
+  const trendPhrase =
+    item.velocity > 0 ? 'votes trending up' : item.velocity < 0 ? 'votes trending down' : 'votes steady';
 
   const handleTechnicInstall = async () => {
     if (!technicDetail) return;
@@ -1412,9 +1414,6 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                 ))}
               </div>
             )}
-            <p className="text-xs text-muted-foreground mt-1 break-all">
-              {modrinthProject ? item.id : item.source_identifier}
-            </p>
             {modrinthProject?.description && (
               <p className="text-sm text-foreground mt-2">{modrinthProject.description}</p>
             )}
@@ -1487,7 +1486,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                   </button>
                   </div>
                   <span className="text-muted-foreground">
-                    net {item.net_score} · velocity {velocityLabel}
+                    Net score {item.net_score} · {trendPhrase}
                   </span>
                 </div>
                 <p className="text-[11px] text-muted-foreground" role="status">
@@ -1510,7 +1509,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
               // rather than silently rendering a dead score line.
               <div className="mt-3 space-y-1">
                 <p className="text-xs text-muted-foreground">
-                  ↑ {item.upvotes} · ↓ {item.downvotes} · net {item.net_score} · velocity {velocityLabel}
+                  {item.upvotes} up · {item.downvotes} down · net score {item.net_score} · {trendPhrase}
                 </p>
                 {!item.is_immune && (
                   <p className="text-xs text-muted-foreground">
@@ -2612,7 +2611,10 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           <div>
             <h3 className="font-semibold text-sm mb-2">Curated Score</h3>
             <p className="text-xs text-muted-foreground">
-              Upvotes: {item.upvotes} &middot; Downvotes: {item.downvotes} &middot; Net: {item.net_score} &middot; Velocity: {velocityLabel}
+              Upvotes: {item.upvotes} &middot; Downvotes: {item.downvotes} &middot; Net score: {item.net_score} &middot; Recent {trendPhrase}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Net score is upvotes minus downvotes. Recent votes show which way the score has been moving lately.
             </p>
           </div>
 

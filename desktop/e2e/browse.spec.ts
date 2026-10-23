@@ -1559,7 +1559,8 @@ test('the card score line is plain text, not vote buttons', async ({ page }) => 
   });
 
   // A list card renders the stats twice (inline and in its side column).
-  const stats = page.locator('.browse-stats', { hasText: 'Score 5' }).first();
-  await expect(stats).toHaveText('7 up · 2 down · Score 5');
+  const stats = page.locator('.browse-stats', { hasText: '7 up' }).first();
+  await expect(stats).toHaveText('7 up · 2 down');
+  await expect(stats).toHaveAttribute('title', /Net score 5/);
   await expect(stats.locator('button, a, svg')).toHaveCount(0);
 });

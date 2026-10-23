@@ -394,12 +394,15 @@ function AppearanceStep({
               onClick={() => setPreferences(preset.preferences)}
               className={`relative rounded-lg border-2 p-3 text-left transition-colors ${
                 active
-                  ? 'border-primary bg-primary/10 shadow-xs'
+                  ? 'border-primary bg-primary/15 ring-2 ring-primary shadow-xs'
                   : 'border-border bg-card hover:border-primary/40 hover:bg-accent'
               }`}
             >
               {active && (
-                <Check aria-hidden="true" className="absolute right-2 top-2 h-4 w-4 text-primary" />
+                <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
+                  <Check aria-hidden="true" className="h-3 w-3" />
+                  Selected
+                </span>
               )}
               <span className="flex gap-1">
                 <span className="h-3 w-3 rounded-full ring-1 ring-black/10" style={{ backgroundColor: swatches.bg }} />
@@ -447,12 +450,20 @@ function AppearanceStep({
             <option value="high-interaction">High Interaction</option>
           </select>
           <span className="block text-xs text-muted-foreground">
-            Standard is the full launcher. High Interaction turns an instance into a visual workbench
-            and Browse into the Bazaar. Simple is the quiet version of that workbench — the same big
-            Play button, shelf and pre-flight check with the decoration, scores and surprises removed,
-            plain Browse sorted by Best, and reduced motion. Reviews and content changes always open
-            the Standard screens, which remain the only place a change is applied. You can change this
-            at any time in Settings → Appearance.
+            Standard: the full launcher, with every detail shown.
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            High Interaction: a visual, playful view. Your instance becomes a picture you can explore,
+            and Browse becomes The Bazaar, a browse-by-stalls view.
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            Simple: a calmer High Interaction. It keeps the big Play button and readiness check, drops
+            the decoration, scores and surprises, shows Browse as a plain list sorted by Best, and uses
+            less motion.
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            Reviews and content changes always open the Standard screens, the only place a change is
+            applied. You can change this any time in Settings → Appearance.
           </span>
         </label>
       </div>

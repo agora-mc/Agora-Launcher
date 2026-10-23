@@ -1457,8 +1457,12 @@ function BrowseContent({
         </div>
         <p className="text-muted-foreground">
           Curated mods, packs, shaders, resource packs, and more.
-          {simpleBrowse ? '' : ' High Interaction fans can wander The Bazaar instead.'}
         </p>
+        {simpleBrowse ? null : (
+          <p className="text-sm text-muted-foreground mt-1">
+            The Bazaar is a playful, browse-by-stalls view of the same catalog.
+          </p>
+        )}
       </section>
 
       {/* Catalog offline banner */}

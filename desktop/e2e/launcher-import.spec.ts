@@ -807,13 +807,13 @@ test.describe('Launcher Import — onboarding Bring Your Instances step', () => 
     await expect(page.getByRole('button', { name: "I'll do this later" })).toHaveCount(0);
     await page.getByRole('button', { name: 'Continue' }).click();
 
-    // Registry step — mock returns ready, so Finish should be available
+    // Registry step — mock returns ready, so Continue should be available
     await expect(page.getByRole('heading', { name: 'Download Catalog' })).toBeVisible({ timeout: 5000 });
 
-    // Click Finish on Registry step (button label when registry is ready)
-    const registryFinish = page.getByRole('button', { name: 'Finish' });
-    await expect(registryFinish).toBeVisible();
-    await registryFinish.click();
+    // Click Continue on Registry step (button label when registry is ready)
+    const registryContinue = page.getByRole('button', { name: 'Continue', exact: true });
+    await expect(registryContinue).toBeVisible();
+    await registryContinue.click();
 
     // Import step — Bring Your Instances
     await expect(page.getByRole('heading', { name: 'Bring Your Instances' })).toBeVisible({ timeout: 5000 });

@@ -142,7 +142,7 @@ function FullscreenView({
                 onClick={onContinue}
                 className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
-                {continueLabel ?? 'Finish'}
+                {continueLabel ?? 'Continue'}
               </button>
             </div>
           )}
