@@ -1393,6 +1393,11 @@ export interface ContentInventory {
   has_shaderpacks: boolean;
   has_datapacks: boolean;
   has_saves: boolean;
+  /** Counts of what the import copies; null when that folder could not be read. */
+  mod_count: number | null;
+  resourcepack_count: number | null;
+  shaderpack_count: number | null;
+  world_count: number | null;
 }
 
 export interface LauncherImportCandidate {
@@ -1430,6 +1435,8 @@ export interface LauncherImportDiscovery {
   prism: LauncherDiscovery;
   curseforge: LauncherDiscovery;
   modrinth: LauncherDiscovery;
+  /** Folder that imported copies are written into. */
+  instances_root: string;
 }
 
 export interface ImportSelection {

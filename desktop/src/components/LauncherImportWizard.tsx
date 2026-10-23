@@ -10,6 +10,13 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import {
+  contentCountsLabel,
+  formatMemoryMb,
+  importProgressPercent,
+  importSourceLabel,
+  outcomeDisplayName,
+} from '@/lib/importDisplay';
+import {
   discoverLauncherImports,
   planLauncherImports,
   executeLauncherImports,
@@ -58,14 +65,16 @@ interface LauncherGroup {
   candidates: LauncherImportCandidate[];
 }
 
+/** Mirrors `ProgressEvent`; the optional numbers arrive as null when the backend has none. */
 interface OperationProgressPayload {
   operationId: string;
   phase: string;
   message: string;
-  progress: number;
-  subLabel: string;
-  bytesDownloaded: number;
-  bytesTotal: number;
+  /** Fraction 0.0 to 1.0. */
+  progress: number | null;
+  subLabel: string | null;
+  bytesDownloaded: number | null;
+  bytesTotal: number | null;
 }
 
 type CancellableOutcome =
@@ -169,6 +178,7 @@ function mergeDiscovery(
     prism: mergeDisc(current.prism, incoming.prism),
     curseforge: mergeDisc(current.curseforge, incoming.curseforge),
     modrinth: mergeDisc(current.modrinth, incoming.modrinth),
+    instances_root: current.instances_root || incoming.instances_root,
   };
 }
 
@@ -705,7 +715,7 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
                             <Input
                               value={destinationNames[key] ?? candidate.display_name}
                               onChange={e => handleDestinationNameChange(key, e.target.value)}
-                              className="h-7 text-xs max-w-xs"
+                              className="max-w-xs"
                               aria-label={`Destination name for ${candidate.display_name}`}
                             />
                           </div>
@@ -773,6 +783,20 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
       {/* Plan content */}
       {plan && (
         <>
+          {/* What the import does to the originals, and where the copies go */}
+          <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-1">
+            <p className="text-sm font-medium">Your originals are not changed.</p>
+            <p className="text-xs text-muted-foreground">
+              Agora copies each selected instance. The launcher&apos;s own files are only read.
+              {discovery?.instances_root && (
+                <>
+                  {' '}Copies go to{' '}
+                  <span className="font-mono break-all text-foreground">{discovery.instances_root}</span>.
+                </>
+              )}
+            </p>
+          </div>
+
           {/* Batch blockers */}
           {plan.batch_blockers.length > 0 && (
             <div className="rounded-lg bg-destructive/10 p-3 space-y-1">
@@ -816,12 +840,35 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
                   </p>
                 )}
 
+                {/* Contents of the source instance, as the copy will bring them */}
+                {(() => {
+                  const source = candidateMap.get(candidateCompositeKey({
+                    launcher: item.launcher_kind,
+                    launcher_installation_key: item.installation_key,
+                    source_key: item.source_key,
+                  }));
+                  return source ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      {contentCountsLabel(source.inventory)}
+                    </p>
+                  ) : null;
+                })()}
+
                 {/* Settings preview */}
+                <div className="text-[11px] text-muted-foreground space-y-0.5">
+                  {item.preserve_settings && item.sanitized_settings.memory_mb != null ? (
+                    <p>
+                      Memory: {formatMemoryMb(item.sanitized_settings.memory_mb)}, copied from{' '}
+                      {importSourceLabel(item.launcher_kind) ?? 'the source launcher'}
+                    </p>
+                  ) : item.action === 'update' && !item.preserve_settings ? (
+                    <p>Memory: kept as it is in your Agora copy</p>
+                  ) : (
+                    <p>Memory: estimated from pack size</p>
+                  )}
+                </div>
                 {item.preserve_settings && (
                   <div className="text-[11px] text-muted-foreground space-y-0.5">
-                    {item.sanitized_settings.memory_mb != null && (
-                      <p>Memory: {item.sanitized_settings.memory_mb} MB</p>
-                    )}
                     {item.sanitized_settings.java_path && (
                       <p className="truncate" title={item.sanitized_settings.java_path}>Java: {item.sanitized_settings.java_path}</p>
                     )}
@@ -891,9 +938,9 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
   // ── Importing stage ─────────────────────────────────
   const renderImporting = () => {
     const p = progress;
-    const pct = p ? Math.min(p.progress, 100) : 0;
-    const showProgress = p && (p.bytesTotal > 0 || p.progress > 0);
-    const phaseLabel = p?.phase ? p.phase.charAt(0).toUpperCase() + p.phase.slice(1) : 'Working';
+    const pct = importProgressPercent(p);
+    // A byte total from the backend means one bar for the whole run.
+    const showBar = !!p && p.bytesTotal != null && p.bytesTotal > 0;
 
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-4">
@@ -905,17 +952,19 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
 
         <div className="text-center space-y-1">
           <p className="text-sm font-medium">
-            {cancelling ? 'Cancelling…' : phaseLabel}
+            {cancelling ? 'Cancelling…' : 'Importing instances'}
           </p>
-          {p?.message && (
-            <p className="text-xs text-muted-foreground max-w-sm">{p.message}</p>
-          )}
-          {p?.subLabel && (
-            <p className="text-xs text-muted-foreground/70">{p.subLabel}</p>
+          <p className="text-xs text-muted-foreground max-w-sm">
+            {p?.message || 'Preparing the copy…'}
+          </p>
+          {!cancelling && (
+            <p className="text-xs text-muted-foreground/70 max-w-sm">
+              Your originals are only read. Agora writes copies and never changes the launcher&apos;s files.
+            </p>
           )}
         </div>
 
-        {showProgress && !cancelling && (
+        {showBar && !cancelling && (
           <div className="w-full max-w-sm space-y-1.5">
             <div className="h-2 rounded-full bg-muted overflow-hidden">
               <div
@@ -925,9 +974,7 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
             </div>
             <div className="flex justify-between text-[10px] text-muted-foreground">
               <span>{pct}%</span>
-              {p.bytesTotal > 0 && (
-                <span>{formatBytes(p.bytesDownloaded)} / {formatBytes(p.bytesTotal)}</span>
-              )}
+              <span>{formatBytes(p?.bytesDownloaded ?? 0)} of {formatBytes(p?.bytesTotal ?? 0)}</span>
             </div>
           </div>
         )}
@@ -983,11 +1030,10 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
                     {outcome.status === 'failed' && 'Failed'}
                     {isCancelled && 'Cancelled'}
                   </span>
-                  {outcome.status === 'imported' && 'instance_id' in outcome && (
-                    <span className="text-xs text-muted-foreground truncate">{outcome.instance_id}</span>
-                  )}
-                  {outcome.status === 'updated' && 'instance_id' in outcome && (
-                    <span className="text-xs text-muted-foreground truncate">{outcome.instance_id}</span>
+                  {(outcome.status === 'imported' || outcome.status === 'updated') && (
+                    <span className="text-xs text-muted-foreground truncate" title={outcome.instance_id}>
+                      {outcomeDisplayName(outcome.instance_id, plan?.items ?? [])}
+                    </span>
                   )}
                 </div>
 

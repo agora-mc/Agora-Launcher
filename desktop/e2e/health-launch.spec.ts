@@ -227,6 +227,9 @@ test('periodic all-instance health scan alerts the card and reuses repair dialog
   await page.getByRole('button', { name: 'My Instances' }).click();
 
   await expect(page.getByRole('alert', { name: '1 mod problem to fix' })).toBeVisible();
+  // Not ready: the card's main action is to see what is wrong; Launch stays reachable.
+  await expect(page.getByRole('button', { name: "See what's wrong" })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Launch anyway' })).toBeVisible();
   await page.getByRole('button', { name: 'Review & repair' }).click();
 
   await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
