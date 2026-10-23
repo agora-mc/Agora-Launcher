@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { healthCounts, healthHeadline, healthLaunchNote } from '@/lib/healthSummary';
+import { healthCounts } from '@/lib/healthSummary';
 import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { requestEditorTab } from '../lib/editorDeepLink';
@@ -45,6 +45,7 @@ import { formatInstalledDate } from '../components/installed-content/contentTabl
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { RecentlyDeleted, deleteDialogBody } from '../components/RecentlyDeleted';
 import { LaunchFailedBanner } from '../components/LaunchFailedBanner';
+import { HealthNotice, ReviewBeforeLaunchButtons } from '../components/HealthLaunchControls';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
 import { useConfirm } from '@/components/ui/confirm';
 import {
@@ -570,9 +571,7 @@ function InstanceCard({
   const displayError = error ?? controllerError;
   const effectiveBusy = launchBusy || repairBusy || repairing || cancellingJava;
   const recoveryBlocked = recoveryPending || recoveryFailed || packInstall?.status === 'running';
-  const counts = healthCounts(healthReport);
-  const healthIssueCount = counts.problems + counts.warnings;
-  const healthBlocked = counts.problems > 0;
+  const healthBlocked = healthCounts(healthReport).problems > 0;
 
   const handleCancelJavaProvisioning = async () => {
     if (!runtimeProgress) return;
@@ -740,32 +739,11 @@ function InstanceCard({
 
       {packInstall && <PackInstallProgressBar task={packInstall} compact />}
 
-      {healthReport && healthIssueCount > 0 && (
-        <div
-          className={`mt-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${
-            healthBlocked
-              ? 'border-destructive/60 bg-destructive/10'
-              : 'border-amber-500/60 bg-amber-500/10'
-          }`}
-          role="alert"
-          aria-label={healthHeadline(counts)}
-        >
-          <div className="min-w-0">
-            <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
-              {healthHeadline(counts)}
-            </p>
-            <p className="truncate text-muted-foreground">
-              {healthLaunchNote(counts)}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
-            className="shrink-0 rounded-sm border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
-          >
-            Review & repair
-          </button>
-        </div>
+      {healthReport && (
+        <HealthNotice
+          report={healthReport}
+          onReview={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
+        />
       )}
 
       {healthError && (
@@ -1037,23 +1015,12 @@ function InstanceCard({
         ) : healthBlocked && healthReport ? (
           // Not ready: the main action is to see the problems. Launch stays
           // reachable as the secondary action (the health dialog asks first).
-          <>
-            <button
-              onClick={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
-              disabled={effectiveBusy || recoveryBlocked}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              See what&apos;s wrong
-            </button>
-            <button
-              onClick={onLaunch}
-              disabled={effectiveBusy || recoveryBlocked}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
-            >
-              <Play className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
-              {startingThis && !repairing ? 'Starting…' : 'Launch anyway'}
-            </button>
-          </>
+          <ReviewBeforeLaunchButtons
+            onReview={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
+            onLaunch={onLaunch}
+            disabled={effectiveBusy || recoveryBlocked}
+            launchLabel={startingThis && !repairing ? 'Starting…' : 'Launch anyway'}
+          />
         ) : (
           <button
             onClick={onLaunch}
