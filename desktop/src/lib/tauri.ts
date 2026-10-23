@@ -768,6 +768,12 @@ export interface UpdateInfo {
   latest_version: string;
   target_version: string;
   source: string;
+  /** Set when only a newer build for another Minecraft version exists (a note, not an update). */
+  needs_minecraft?: string | null;
+  /** True when nothing shows the version is newer: listed for manual choice, never an update. */
+  uncertain?: boolean;
+  /** Release date of latest_version, if the source published one. */
+  latest_released?: string | null;
 }
 
 export const checkInstanceUpdates = (instanceId: string) =>

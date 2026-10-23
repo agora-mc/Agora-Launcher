@@ -3309,6 +3309,19 @@ fn prepare_manifest(
         manifest.loader_version = change.to_version.clone();
     }
 
+    // Snapshot before any removal: replacing a file removes its old entry
+    // first, and the new entry must still inherit what the user and the pack
+    // had decided about it.
+    let previous_entries: Vec<crate::models::InstalledMod> = manifest
+        .mods
+        .iter()
+        .chain(manifest.resourcepacks.iter())
+        .chain(manifest.shaders.iter())
+        .chain(manifest.datapacks.iter())
+        .chain(manifest.worlds.iter())
+        .cloned()
+        .collect();
+
     for remove in &plan.files_to_remove {
         remove_manifest_entry(
             &mut manifest,
@@ -3402,6 +3415,8 @@ fn prepare_manifest(
                 .map(|pm| pm.mod_id.clone())
                 .collect(),
         };
+        let mut installed = installed;
+        carry_forward_ownership(&previous_entries, &mut installed);
         remove_manifest_identity(&mut manifest, &installed);
         content_entries_mut(&mut manifest, &installed.content_type).push(installed);
     }
@@ -3677,6 +3692,29 @@ fn promote_manifest_entry(
                 entry.installed_as_dependency = false;
             }
         }
+    }
+}
+
+/// An update replaces a manifest entry with a fresh one. Pack ownership
+/// (`pack_managed`, shown as the "Pack" tag) and the user's update pin belong
+/// to the mod, not to the file, so they carry over from the entry being
+/// replaced; a brand-new install keeps the defaults.
+fn carry_forward_ownership(
+    previous: &[crate::models::InstalledMod],
+    incoming: &mut crate::models::InstalledMod,
+) {
+    let identity = installed_identity(incoming);
+    let replaced = previous.iter().find(|item| {
+        item.filename == incoming.filename
+            || identity
+                .as_ref()
+                .zip(installed_identity(item).as_ref())
+                .map(|(a, b)| a.eq_ignore_ascii_case(b))
+                .unwrap_or(false)
+    });
+    if let Some(old) = replaced {
+        incoming.pack_managed |= old.pack_managed;
+        incoming.update_pinned |= old.update_pinned;
     }
 }
 
@@ -5362,6 +5400,94 @@ mod tests {
         );
         assert!(!instance_dir.join("mods/alpha-2.jar").exists());
         assert!(!instance_dir.join("mods/beta-2.jar").exists());
+    }
+
+    #[test]
+    fn test_update_keeps_pack_ownership_and_pin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        seed_installed_mod(&instance_dir, "alpha", "alpha-1.jar", "1.0", b"alpha old");
+        seed_installed_mod(&instance_dir, "beta", "beta-1.jar", "1.0", b"beta old");
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        // allow-raw-instance-manifest
+        let mut seeded: crate::models::InstanceManifest =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        seeded.mods[0].pack_managed = true;
+        seeded.mods[0].update_pinned = true;
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&seeded).unwrap()).unwrap();
+        let alpha_source = tmp.path().join("alpha-2.jar");
+        let beta_source = tmp.path().join("beta-2.jar");
+        std::fs::write(&alpha_source, b"alpha new").unwrap();
+        std::fs::write(&beta_source, b"beta new").unwrap();
+        let operation =
+            |id: &str, file: &str, src: &Path, bytes: &[u8]| ResolvedOperation::Update {
+                old_version_id: "1.0".into(),
+                new_artifact: test_artifact_with_version(
+                    id,
+                    file,
+                    "2.0",
+                    crate::download::sha256_hex(bytes),
+                    ArtifactSource::LocalFile {
+                        path: src.to_string_lossy().into_owned(),
+                    },
+                    SourceType::Curated,
+                ),
+            };
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchUpdate {
+                operations: vec![
+                    operation("alpha", "alpha-2.jar", &alpha_source, b"alpha new"),
+                    operation("beta", "beta-2.jar", &beta_source, b"beta new"),
+                ],
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                batch_update_intent(),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+        let outcome = runtime.block_on(InstallPipeline.execute_plan(
+            &plan,
+            &instance_dir,
+            "registry-rev",
+            &NoopReporter,
+            &CancellationToken::new(),
+        ));
+        assert!(
+            matches!(outcome, InstallOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        let after = crate::helpers::read_manifest(&manifest_path).unwrap();
+        let alpha = after
+            .mods
+            .iter()
+            .find(|m| m.filename == "alpha-2.jar")
+            .unwrap();
+        let beta = after
+            .mods
+            .iter()
+            .find(|m| m.filename == "beta-2.jar")
+            .unwrap();
+        assert!(
+            alpha.pack_managed,
+            "an updated pack mod must stay pack-owned"
+        );
+        assert!(
+            alpha.update_pinned,
+            "an updated pinned mod must stay pinned"
+        );
+        assert!(
+            !beta.pack_managed,
+            "a user-added mod must not become pack-owned"
+        );
+        assert!(!beta.update_pinned);
     }
 
     #[test]
