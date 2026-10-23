@@ -513,6 +513,13 @@ impl InstanceService {
                 message: error.to_string(),
             }
         })?;
+        // The manifest carries the name too (exports and pack identity read it);
+        // keep it in step so a rename is never visible in only one place.
+        let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+        if let Some(mut manifest) = read_manifest(&manifest_path)? {
+            manifest.name = name.trim().to_string();
+            crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        }
         self.record_change(&instance_id, "rename");
         Ok(())
     }
@@ -2052,6 +2059,11 @@ mod tests {
         assert!(locked_detail.manifest.unwrap().is_locked);
         service.rename("test", "Renamed").unwrap();
         assert_eq!(service.list().unwrap()[0].name, "Renamed");
+        assert_eq!(
+            service.get("test").unwrap().unwrap().manifest.unwrap().name,
+            "Renamed",
+            "rename must reach the manifest too"
+        );
         service.unlock("test").unwrap();
         let unlocked_detail = service.get("test").unwrap().unwrap();
         assert!(!unlocked_detail.row.is_locked);

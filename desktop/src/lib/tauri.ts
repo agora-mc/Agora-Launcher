@@ -1379,6 +1379,13 @@ export const syncInstanceDatapacks = (instanceId: string) =>
 export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack') =>
   invoke<string | null>('export_instance_pack', { instanceId, format });
 
+/**
+ * Mods an export in this format could not carry to a friend: no catalog or Modrinth
+ * source, and the format only lists mods. Empty for `.mrpack`, which bundles them.
+ */
+export const exportSourcelessMods = (instanceId: string, format: 'json' | 'mrpack') =>
+  invoke<string[] | null>('export_sourceless_mods', { instanceId, format });
+
 export const pickOpenFile = (title: string, extensions: string[]) =>
   invoke<string | null>('pick_open_file', { title, extensions });
 export const setCustomInstanceIcon = (instanceId: string, sourcePath: string) =>
@@ -1524,6 +1531,8 @@ export interface AgoraPackEntry {
   modrinth_id: string | null;
   sha256: string | null;
   source: string | null;
+  /** Absent means enabled. `false` installs the mod switched off. */
+  enabled?: boolean | null;
 }
 
 export type PackEntryStatus = 'installed' | 'failed' | 'needs_action';
@@ -1584,6 +1593,8 @@ export interface PlannedPackEntry {
   /** What needs action, or why the entry will not install. Null when it is ready. */
   reason: string | null;
   action: PackNeedsAction | null;
+  /** The pack marks this mod disabled, so it will be installed switched off. */
+  arrives_disabled?: boolean;
 }
 
 export interface PackImportPlan {

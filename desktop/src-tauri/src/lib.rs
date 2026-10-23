@@ -334,6 +334,7 @@ pub fn run() {
             commands::plan_launcher_imports,
             commands::execute_launcher_imports,
             commands::export_instance_pack,
+            commands::export_sourceless_mods,
             commands::import_instance_pack,
             commands::plan_pack_import,
             commands::retry_pack_import_entries,

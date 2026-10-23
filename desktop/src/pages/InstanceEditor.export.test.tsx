@@ -7,6 +7,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { InstanceEditor } from './InstanceEditor';
 import { PackInstallProvider } from '../components/PackInstallProgress';
+import { ConfirmProvider } from '../components/ui/confirm';
 
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -37,11 +38,14 @@ const LOCKFILE = { formatVersion: 1, instanceId: 'alpha', artifacts: [] };
 // Per-test answers for the two save commands: a path, or null for "cancelled".
 let packAnswer: string | null = null;
 let lockfileAnswer: string | null = null;
+// Mods the Agora-pack export would leave without a source.
+let sourceless: string[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
   packAnswer = null;
   lockfileAnswer = null;
+  sourceless = [];
   invokeMock.mockImplementation(async (command: string, args: { instanceId?: string } = {}) => {
     switch (command) {
       case 'get_instance_detail': return detail(args.instanceId ?? 'alpha');
@@ -54,6 +58,7 @@ beforeEach(() => {
       case 'list_capturable_template_files':
         return [];
       case 'get_mod_groups': return {};
+      case 'export_sourceless_mods': return sourceless;
       case 'export_instance_pack': return packAnswer;
       case 'export_lockfile': return LOCKFILE;
       case 'save_lockfile_export': return lockfileAnswer;
@@ -63,7 +68,7 @@ beforeEach(() => {
 });
 
 function editor(instanceId: string) {
-  return <PackInstallProvider><InstanceEditor instanceId={instanceId} onBack={() => undefined} /></PackInstallProvider>;
+  return <ConfirmProvider><PackInstallProvider><InstanceEditor instanceId={instanceId} onBack={() => undefined} /></PackInstallProvider></ConfirmProvider>;
 }
 
 async function openExportTab(instanceId = 'alpha') {
@@ -138,6 +143,39 @@ describe('pack export', () => {
       expect(className, badge).toContain('text-xs');
       expect(className, badge).not.toContain('text-[10px]');
     }
+  });
+});
+
+describe('export of mods with no download source', () => {
+  it('names the mods and points to .mrpack before saving, and cancelling saves nothing', async () => {
+    sourceless = ['iris-1.8.jar', 'homebrew.jar'];
+    packAnswer = 'D:/data/exports/alpha.json';
+    await openExportTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Export agora-pack.json' }));
+
+    expect(await screen.findByText(/iris-1\.8\.jar, homebrew\.jar/)).toBeTruthy();
+    expect(screen.getByText(/\.mrpack\) includes the files/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Export agora-pack.json' })).toBeTruthy());
+    expect(invokeMock).not.toHaveBeenCalledWith('export_instance_pack', expect.anything());
+  });
+
+  it('still exports when the user chooses to', async () => {
+    sourceless = ['homebrew.jar'];
+    packAnswer = 'D:/data/exports/alpha.json';
+    await openExportTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Export agora-pack.json' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Export anyway' }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('export_instance_pack', { instanceId: 'alpha', format: 'json' }));
+  });
+
+  it('says nothing when every mod has a source', async () => {
+    packAnswer = 'D:/data/exports/alpha.json';
+    await openExportTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Export agora-pack.json' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('export_instance_pack', { instanceId: 'alpha', format: 'json' }));
+    expect(screen.queryByRole('button', { name: 'Export anyway' })).toBeNull();
   });
 });
 

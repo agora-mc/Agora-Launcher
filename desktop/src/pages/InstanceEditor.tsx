@@ -36,6 +36,7 @@ import {
   setModUpdatePinned,
   getCachedInstanceUpdates,
   exportInstancePack,
+  exportSourcelessMods,
   formatError,
   inspectJavaExecutable,
   pickOpenFile,
@@ -1371,6 +1372,23 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setError(null);
     setStatus(null);
     try {
+      // The Agora pack only lists mods. Say which ones a friend could not get
+      // before saving, and point at the format that bundles them.
+      const unsourced = (await exportSourcelessMods(instanceId, format)) ?? [];
+      if (unsourced.length > 0) {
+        const shown = unsourced.slice(0, 8).join(', ');
+        const more = unsourced.length > 8 ? ` and ${unsourced.length - 8} more` : '';
+        const go = await confirm({
+          title: `${unsourced.length} mod${unsourced.length === 1 ? '' : 's'} can't be installed from this pack`,
+          body: `Agora could not find where to download: ${shown}${more}.
+
+`
+            + 'The Agora pack only lists mods, so a friend importing it would be told these are missing. '
+            + 'A Modrinth pack (.mrpack) includes the files themselves and works for everything.',
+          confirmLabel: 'Export anyway',
+        });
+        if (!go) return;
+      }
       // null means the user cancelled the save dialog: say nothing.
       const path = await exportInstancePack(instanceId, format);
       if (path) {
@@ -2961,6 +2979,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             <p className="text-xs text-muted-foreground">
               Agora's native pack format. Contains the full mod list with exact versions and
               source references. Reimport into any Agora instance to recreate this loadout.
+              It lists mods but does not include the files, so a mod Agora can't find a download
+              for can't be installed from it; Agora tells you which before saving.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Not included:</span> configs,

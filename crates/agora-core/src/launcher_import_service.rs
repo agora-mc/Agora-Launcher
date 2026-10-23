@@ -1600,8 +1600,17 @@ impl LauncherImportService {
             .as_ref()
             .map(|tuple| tuple.loader.as_str())
             .unwrap_or("vanilla");
-        let (mods, resourcepacks, shaders, datapacks, worlds) =
+        let (mut mods, resourcepacks, shaders, datapacks, worlds) =
             build_manifest_arrays(&staging, source_label, manifest_loader)?;
+        // Copied jars carry no download source. Where the user allows Modrinth,
+        // ask it (one batched hash lookup) so a pack made from this setup can
+        // be installed elsewhere. This never fails the import.
+        if crate::modrinth::ModrinthService::new(self.ctx.clone())
+            .check_enabled()
+            .is_ok()
+        {
+            crate::source_identify::identify_mods_on_modrinth(&staging, &mut mods).await;
+        }
 
         let (loader_name, loader_version, mc_version) = item
             .loader_tuple

@@ -115,6 +115,7 @@ pub mod settings;
 pub mod shared_folder;
 pub mod snapshot;
 pub mod snapshot_service;
+pub mod source_identify;
 pub mod state;
 pub mod task_scheduler;
 pub mod technic;

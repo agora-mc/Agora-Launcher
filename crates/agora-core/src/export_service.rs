@@ -164,6 +164,7 @@ fn write_json_pack(manifest: &InstanceManifest, tmp_path: &Path) -> LauncherResu
             "source": m.source,
             "version": m.version,
             "sha256": m.sha256,
+            "enabled": m.enabled,
         })).collect::<Vec<_>>(),
     });
     let text =
@@ -195,12 +196,16 @@ async fn write_mrpack_pack(
     let mut files_meta: Vec<serde_json::Value> = Vec::new();
 
     for m in &manifest.mods {
+        // A disabled mod sits on disk as `<name>.disabled`. The pack keeps it
+        // disabled the way Modrinth's own app does: the `.disabled` suffix stays
+        // on the file's path in the pack, so it installs switched off.
+        let disabled_suffix = if m.enabled { "" } else { ".disabled" };
         if let Some(mid) = m.modrinth_id.as_deref().filter(|s| !s.trim().is_empty()) {
             if let Some(meta) =
                 crate::modrinth::resolve_modrinth_file_metadata(mid, &m.filename).await
             {
                 files_meta.push(serde_json::json!({
-                    "path": format!("mods/{}", m.filename),
+                    "path": format!("mods/{}{}", m.filename, disabled_suffix),
                     "hashes": { "sha1": meta.sha1, "sha512": meta.sha512 },
                     "downloads": [meta.url],
                     "fileSize": meta.size,
@@ -211,7 +216,13 @@ async fn write_mrpack_pack(
         let entry_name = safe_zip_entry_name(&m.filename).ok_or_else(|| {
             unbundleable_mod(&m.filename, "its file name cannot be stored in a pack")
         })?;
-        let p = mods_dir.join(&m.filename);
+        let (p, on_disk_disabled) = crate::source_identify::mod_file_on_disk(&mods_dir, m)
+            .ok_or_else(|| unbundleable_mod(&m.filename, "it is missing from the mods folder"))?;
+        let entry_name = if on_disk_disabled {
+            format!("{entry_name}.disabled")
+        } else {
+            entry_name
+        };
         let metadata = std::fs::symlink_metadata(&p)
             .map_err(|_| unbundleable_mod(&m.filename, "it is missing from the mods folder"))?;
         if metadata.file_type().is_symlink() {
@@ -638,6 +649,60 @@ mod tests {
         assert!(err.to_string().contains("gone.jar"), "{err}");
         assert!(!out.exists(), "a failed export must not leave a pack");
         assert!(!folder_has_tmp_files(tmp.path()));
+    }
+
+    #[tokio::test]
+    async fn agora_pack_round_trip_keeps_a_disabled_mod_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        let mut manifest = empty_manifest("test-json-disabled");
+        let mut off = mod_named("off.jar");
+        off.enabled = false;
+        manifest.mods.push(off);
+        manifest.mods.push(mod_named("on.jar"));
+        let out = tmp.path().join("pack.agora-pack.json");
+
+        export_instance_pack_to(&instance_dir, &manifest, &out, "json")
+            .await
+            .unwrap();
+
+        let parsed =
+            crate::agora_pack_import::parse_agora_pack(&std::fs::read_to_string(&out).unwrap())
+                .unwrap();
+        let enabled: Vec<bool> = parsed
+            .mods
+            .iter()
+            .map(|m| match m {
+                crate::agora_pack_import::PackEntryParse::Entry(e) => e.arrives_enabled(),
+                _ => panic!("unreadable entry"),
+            })
+            .collect();
+        assert_eq!(enabled, vec![false, true]);
+    }
+
+    #[tokio::test]
+    async fn a_disabled_mod_is_exported_and_stays_disabled_in_the_pack() {
+        // The manifest names `iris.jar`; the file on disk is `iris.jar.disabled`.
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        std::fs::write(instance_dir.join("mods").join("iris.jar.disabled"), b"jar").unwrap();
+        let mut manifest = empty_manifest("test-disabled");
+        let mut iris = mod_named("iris.jar");
+        iris.enabled = false;
+        manifest.mods.push(iris);
+        let out = tmp.path().join("pack.mrpack");
+
+        export_instance_pack_to(&instance_dir, &manifest, &out, "mrpack")
+            .await
+            .unwrap();
+
+        let index = read_exported_index(out.to_str().unwrap());
+        assert_eq!(index["files"][0]["path"], "mods/iris.jar.disabled");
+        let file = std::fs::File::open(&out).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("mods/iris.jar.disabled").is_ok());
     }
 
     #[tokio::test]

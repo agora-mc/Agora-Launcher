@@ -44,9 +44,18 @@ pub struct AgoraPackEntry {
     pub sha256: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    /// Absent means enabled, so packs written before this field still import
+    /// as they always did. `false` installs the mod switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 impl AgoraPackEntry {
+    /// Whether the mod should arrive enabled (the default when the pack is silent).
+    pub fn arrives_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
     fn display_name(&self) -> String {
         let name = self.filename.trim();
         if !name.is_empty() {
@@ -198,6 +207,9 @@ pub struct PlannedEntry {
     pub reason: Option<String>,
     /// Set when a user action (turning Modrinth on, Settings) would unblock it.
     pub action: Option<PackNeedsAction>,
+    /// The pack marks this mod disabled, so it will be installed switched off.
+    #[serde(default)]
+    pub arrives_disabled: bool,
 }
 
 /// What importing a pack would do, shown to the user before anything is written.
@@ -426,6 +438,8 @@ pub trait PackBackend: Send + Sync {
         candidate: &PackCandidate,
         required_sha256: Option<&str>,
     ) -> Result<(), BackendError>;
+    /// Switch an installed mod off (`<name>.jar` becomes `<name>.jar.disabled`).
+    fn disable(&self, instance_id: &str, filename: &str) -> Result<(), String>;
 }
 
 /// A pack-pinned SHA-256: absent, or exactly 64 hex digits. Anything else is a
@@ -557,6 +571,22 @@ async fn install_one(
         Ok(()) => {
             let mut done = outcome(entry, PackEntryStatus::Installed, None, None);
             done.name = candidate.filename.clone();
+            let disable_note = if entry.arrives_enabled() {
+                None
+            } else {
+                backend
+                    .disable(instance_id, &candidate.filename)
+                    .err()
+                    .map(|error| {
+                        format!(
+                            "Installed, but could not be switched off as the pack asked: {error}"
+                        )
+                    })
+            };
+            if let Some(note) = disable_note {
+                done.reason = Some(note);
+                return done;
+            }
             if pin.is_some() {
                 done.verified_against_pack = true;
             } else {
@@ -785,6 +815,12 @@ impl PackBackend for CoreBackend {
             }
             other => BackendError::Failed(other.to_string()),
         })
+    }
+
+    fn disable(&self, instance_id: &str, filename: &str) -> Result<(), String> {
+        crate::crash_service::CrashService::new(self.ctx.clone())
+            .disable_mod(instance_id, filename)
+            .map_err(|e| e.to_string())
     }
 
     async fn registry_versions(
@@ -1203,6 +1239,7 @@ pub fn plan_agora_pack(backend: &dyn PackBackend, pack: &ParsedAgoraPack) -> Pac
                 checkable: false,
                 reason: Some(reason.clone()),
                 action: None,
+                arrives_disabled: false,
             },
             PackEntryParse::Entry(entry) => plan_entry(backend, entry, &refusal),
         })
@@ -1283,6 +1320,7 @@ fn plan_entry(
         checkable,
         reason,
         action,
+        arrives_disabled: !entry.arrives_enabled(),
     }
 }
 
@@ -1388,6 +1426,7 @@ mod tests {
         /// When set, the catalog cannot be read.
         catalog_error: Option<String>,
         installs: Mutex<Vec<(String, Option<String>)>>,
+        disabled: Mutex<Vec<String>>,
         modrinth_lookups: Mutex<u32>,
     }
 
@@ -1412,6 +1451,7 @@ mod tests {
                 known: Vec::new(),
                 catalog_error: None,
                 installs: Mutex::new(Vec::new()),
+                disabled: Mutex::new(Vec::new()),
                 modrinth_lookups: Mutex::new(0),
             }
         }
@@ -1448,6 +1488,10 @@ mod tests {
                     MODRINTH_OFF_NOTE.into(),
                 ))
             }
+        }
+        fn disable(&self, _: &str, filename: &str) -> Result<(), String> {
+            self.disabled.lock().unwrap().push(filename.to_string());
+            Ok(())
         }
         async fn registry_versions(
             &self,
@@ -1500,6 +1544,7 @@ mod tests {
             modrinth_id: Some("proj".into()),
             sha256: sha.map(str::to_string),
             source: Some("modrinth_raw".into()),
+            enabled: None,
         })
     }
 
@@ -1509,6 +1554,39 @@ mod tests {
             .build()
             .unwrap()
             .block_on(install_pack_entries(backend, "inst", entries))
+    }
+
+    const MIXED_PACK: &str = r#"{"format":"agora-pack/v1",
+        "instance":{"name":"P","minecraft_version":"1.21","loader":"fabric","loader_version":"0.16"},
+        "mods":[
+          {"filename":"on.jar","modrinth_id":"proj","version":"1","sha256":null},
+          {"filename":"off.jar","modrinth_id":"proj","version":"1","enabled":false},
+          {"filename":"old.jar","modrinth_id":"proj","version":"1"}]}"#;
+
+    #[test]
+    fn a_disabled_mod_in_a_pack_installs_disabled_and_old_entries_stay_enabled() {
+        let parsed = parse_agora_pack(MIXED_PACK).unwrap();
+        let backend = fake();
+        let plan = plan_of(&backend, parsed.mods.clone());
+        let flags: Vec<bool> = plan.entries.iter().map(|e| e.arrives_disabled).collect();
+        assert_eq!(
+            flags,
+            vec![false, true, false],
+            "the review shows which arrive off"
+        );
+
+        let mut backend = fake();
+        backend.modrinth = vec![
+            candidate("1", "on.jar"),
+            candidate("1", "off.jar"),
+            candidate("1", "old.jar"),
+        ];
+        let out = run(&backend, parsed.mods);
+        assert!(out.iter().all(|o| o.status == PackEntryStatus::Installed));
+        assert_eq!(
+            *backend.disabled.lock().unwrap(),
+            vec!["off.jar".to_string()]
+        );
     }
 
     #[test]
@@ -2080,6 +2158,7 @@ mod tests {
             modrinth_id: None,
             sha256: sha.map(str::to_string),
             source: Some("registry".into()),
+            enabled: None,
         })
     }
 
@@ -2091,6 +2170,7 @@ mod tests {
             modrinth_id: Some(project.into()),
             sha256: sha.map(str::to_string),
             source: Some("modrinth_raw".into()),
+            enabled: None,
         })
     }
 
