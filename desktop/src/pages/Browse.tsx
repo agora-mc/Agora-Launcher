@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CategoryChips } from '@/components/browse/CategoryChips';
 import { Check, ChevronDown, Download, Leaf, List, LayoutGrid, Search } from 'lucide-react';
 import {
   browseSearch,
@@ -1660,40 +1661,18 @@ function BrowseContent({
               dropdown above picks the same categories from one control instead
               of dozens of chips competing with the results underneath. */}
           {simpleBrowse ? null : (
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setCategory(null)}
-              className={[
-                'px-3 py-1 rounded-full text-sm border transition-colors',
-                category === null
-                  ? 'bg-primary text-primary-foreground border-primary'
-                  : 'border-border hover:bg-accent',
-              ].join(' ')}
-            >
-              All
-            </button>
-            {visibleProviderCategories.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                onClick={() => setCategory(item.id)}
-                className={[
-                  'px-3 py-1 rounded-full text-sm border transition-colors',
-                  category === item.id
-                    ? 'bg-primary text-primary-foreground border-primary'
-                    : 'border-border hover:bg-accent',
-                ].join(' ')}
-              >
-                {item.label}
-              </button>
-            ))}
+          <CategoryChips
+            label="Source categories"
+            chips={visibleProviderCategories}
+            selected={category}
+            onSelect={setCategory}
+          >
             {!metaLoading && visibleProviderCategories.length === 0 && (
               <span className="self-center text-xs text-muted-foreground">
                 {contentTypeUnavailableReason(contentType) ? 'Categories are not available for this content type.' : 'No source categories are available for this content type.'}
               </span>
             )}
-          </div>
+          </CategoryChips>
           )}
         </div>
       )}

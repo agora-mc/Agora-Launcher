@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { isTextEntryTarget } from '@/lib/keyboardTargets';
 import { listen } from '@tauri-apps/api/event';
 import { Sidebar } from './components/Sidebar';
 import { CommandPalette } from './components/command-palette';
@@ -475,11 +476,7 @@ function AppContent() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        const target = e.target instanceof HTMLElement ? e.target : null;
-        const tag = target?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable || target?.getAttribute('role') === 'textbox') {
-          return;
-        }
+        if (isTextEntryTarget(e.target)) return;
         e.preventDefault();
         setCommandPaletteOpen((prev) => !prev);
       }

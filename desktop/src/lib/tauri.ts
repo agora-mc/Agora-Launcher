@@ -1022,6 +1022,8 @@ export interface HealthReport {
   warnings: HealthWarning[];
   blockers: HealthBlocker[];
   recommendations: HealthRecommendation[];
+  /** Enabled mod filenames the manifest tracks but mods/ lacks (Rust: missing_files). */
+  missing_files?: string[];
   scan_token: string;
 }
 

@@ -126,7 +126,8 @@ export function formatInstalledDate(value: string): string {
   }).format(date);
 }
 
-export const defaultColumns: ContentColumn[] = ['name', 'author', 'source', 'size', 'installed', 'enabled', 'update_status', 'actions'];
+// The switch and the update status are what people act on, so they come first.
+export const defaultColumns: ContentColumn[] = ['enabled', 'update_status', 'name', 'author', 'source', 'size', 'installed', 'actions'];
 
 /**
  * Split rows into display groups.

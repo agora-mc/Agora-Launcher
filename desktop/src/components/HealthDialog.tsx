@@ -3,10 +3,22 @@ import { describeRequirement } from '@/lib/healthSummary';
 import {
   checkInstanceHealth,
   disableModForTest,
+  formatError,
+  getInstanceDetail,
+  listRawModrinthVersions,
   type HealthReport,
+  type InstalledMod,
   type LoaderCompatibilityIssue,
   type RequirementVerdict,
 } from '@/lib/tauri';
+import type { InstallIntent } from '@/lib/installFlow';
+import {
+  reinstallIntent,
+  reinstallSourceFor,
+  searchQueryForFile,
+  type ReinstallSource,
+} from '@/lib/missingFileReinstall';
+import { InstallFlow } from './InstallFlow';
 import {
   activeHealthWarnings,
   healthWarningKey,
@@ -296,6 +308,12 @@ export function HealthDialog({
   const [fixing, setFixing] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
   const [confirmingBlockers, setConfirmingBlockers] = useState(false);
+  // Reinstalling a missing file runs the normal install review. `manifestMods`
+  // tells us where each missing file came from: 'loading' until the manifest
+  // is read, 'failed' if it could not be read (no reinstall offered).
+  const [manifestMods, setManifestMods] = useState<InstalledMod[] | 'loading' | 'failed'>('loading');
+  const [reinstallBusy, setReinstallBusy] = useState<string | null>(null);
+  const [reinstall, setReinstall] = useState<InstallIntent | null>(null);
 
   // Scroll container ref — reset to top whenever the report changes so a long
   // list of findings always starts at the top instead of clipping out of view.
@@ -339,6 +357,55 @@ export function HealthDialog({
       setFixing(null);
     }
   }, [reviewOnly, instanceId, replaceReport]);
+
+  const missingFiles = report.missing_files ?? [];
+
+  useEffect(() => {
+    if (missingFiles.length === 0) return;
+    let cancelled = false;
+    setManifestMods('loading');
+    (async () => {
+      try {
+        const detail = await getInstanceDetail(instanceId);
+        if (!cancelled) setManifestMods(detail?.manifest?.mods ?? []);
+      } catch {
+        if (!cancelled) setManifestMods('failed');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [instanceId, report.missing_files]);
+
+  const startReinstall = async (entry: InstalledMod, source: ReinstallSource) => {
+    setReinstallBusy(entry.filename);
+    setError(null);
+    try {
+      if (source.kind === 'curated') {
+        setReinstall(reinstallIntent(instanceId, 'curated', source.itemId, source.version));
+        return;
+      }
+      // Modrinth installs are keyed by version id, which the manifest does not
+      // keep. Find the recorded version number among the project's versions.
+      const versions = await listRawModrinthVersions(instanceId, source.projectId, 'mod');
+      const match = versions.find((candidate) => candidate.version === source.version);
+      if (!match) {
+        setError(`Modrinth no longer lists version ${source.version} of ${entry.filename}. Find it in Browse instead.`);
+        return;
+      }
+      setReinstall(reinstallIntent(instanceId, 'modrinth', source.projectId, match.version_id));
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setReinstallBusy(null);
+    }
+  };
+
+  const refreshAfterReinstall = async () => {
+    try {
+      replaceReport(await checkInstanceHealth(instanceId));
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
 
   const handleSilence = useCallback(async (key: string, isMuted: boolean) => {
     const muted = new Set(preferences.mutedWarnings);
@@ -407,7 +474,7 @@ export function HealthDialog({
 
   return (
     <>
-      <Dialog open onOpenChange={(open) => { if (!open && !launching) onCancel(); }}>
+      <Dialog open={reinstall === null} onOpenChange={(open) => { if (!open && !launching) onCancel(); }}>
         <DialogContent className="max-w-lg max-h-[85vh] flex flex-col gap-3">
         <DialogTitle>Health Check</DialogTitle>
         <DialogDescription>
@@ -532,6 +599,45 @@ export function HealthDialog({
                         {w.suggested_action && !isSilenced && (
                           <p className="text-xs text-muted-foreground">{w.suggested_action}</p>
                         )}
+                        {w.kind === 'manifest_drift' && missingFiles.length > 0 && !isSilenced && (
+                          <ul className="space-y-2 rounded-sm border border-border bg-background/60 p-2">
+                            {missingFiles.map((filename) => {
+                              const entry = Array.isArray(manifestMods)
+                                ? manifestMods.find((mod) => mod.filename === filename) ?? null
+                                : null;
+                              const source = entry ? reinstallSourceFor(entry) : null;
+                              return (
+                                <li key={filename} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                                  <span className="break-all font-mono">{filename}</span>
+                                  {manifestMods === 'loading' ? (
+                                    <span className="text-muted-foreground">Checking where it came from…</span>
+                                  ) : entry && source ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={reinstallBusy !== null}
+                                      title="Review a reinstall of this version"
+                                      onClick={() => void startReinstall(entry, source)}
+                                    >
+                                      {reinstallBusy === entry.filename ? 'Preparing…' : 'Reinstall'}
+                                    </Button>
+                                  ) : onFindMod ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      title="Search for this mod in Browse"
+                                      onClick={() => onFindMod(searchQueryForFile(filename))}
+                                    >
+                                      Find in Browse
+                                    </Button>
+                                  ) : (
+                                    <span className="text-muted-foreground">Find it in Browse.</span>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex shrink-0 items-center gap-2 text-xs">
                             <Switch
@@ -617,6 +723,18 @@ export function HealthDialog({
         </div>
         </DialogContent>
       </Dialog>
+
+      {reinstall && (
+        <InstallFlow
+          open
+          intent={reinstall}
+          instanceName={instanceName}
+          onClose={() => {
+            setReinstall(null);
+            void refreshAfterReinstall();
+          }}
+        />
+      )}
 
       <Dialog open={confirmingBlockers} onOpenChange={setConfirmingBlockers}>
         <DialogContent className="z-60 max-w-md gap-4">

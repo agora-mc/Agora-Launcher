@@ -18,6 +18,7 @@ import {
   getCuratedAnnotation,
   getGovernanceSummary,
   getGovernanceConfig,
+  checkInstanceHealth,
   getInstanceDetail,
   getGithubProfile,
   getItemVote,
@@ -219,6 +220,22 @@ function acknowledgeVoteExplainer() {
   }
 }
 
+/**
+ * Whether a manifest entry's file is absent from mods/, by the same check the
+ * Health Check reports (`missing_files`), so Browse and Health agree.
+ *
+ * If the check itself fails, the file is not claimed missing: the manifest
+ * still records the entry, and the Health Check stays the authority.
+ */
+async function installedFileIsMissing(instanceId: string, entry: InstalledMod): Promise<boolean> {
+  try {
+    const report = await checkInstanceHealth(instanceId);
+    return (report.missing_files ?? []).includes(entry.filename);
+  } catch {
+    return false;
+  }
+}
+
 export function ModDetail({ itemId, initialInstanceId, requestedContentType, onBack, onOpenInstanceEditor }: { itemId: string; initialInstanceId?: string; requestedContentType?: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
   const [item, setItem] = useState<RegistryItem | null>(null);
   // Which format of a multi-format project the user is after. Seeded from the
@@ -299,6 +316,11 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   const [installRefresh, setInstallRefresh] = useState(0);
   const [flowInstalledEntry, setFlowInstalledEntry] = useState<InstalledMod | null>(null);
   const [versionsTabInstalledEntry, setVersionsTabInstalledEntry] = useState<InstalledMod | null>(null);
+  // The entry is in the manifest but its file is gone from mods/ (Health Check
+  // `missing_files`). Each tracker has its own flag, set alongside its entry.
+  const [contextFileMissing, setContextFileMissing] = useState(false);
+  const [flowFileMissing, setFlowFileMissing] = useState(false);
+  const [versionsTabFileMissing, setVersionsTabFileMissing] = useState(false);
 
   // Whether versions should be sorted purely by date (ignoring stable vs prerelease)
   const [versionSortByDate, setVersionSortByDate] = useState(false);
@@ -783,15 +805,26 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   useEffect(() => {
     if (!contextInstanceId) {
       setContextInstalledEntry(null);
+      setContextFileMissing(false);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
         const detail = await getInstanceDetail(contextInstanceId);
-        if (!cancelled) setContextInstalledEntry(findInstalledEntry(detail));
+        const entry = findInstalledEntry(detail);
+        if (cancelled) return;
+        setContextInstalledEntry(entry);
+        setContextFileMissing(false);
+        if (entry) {
+          const missing = await installedFileIsMissing(contextInstanceId, entry);
+          if (!cancelled) setContextFileMissing(missing);
+        }
       } catch {
-        if (!cancelled) setContextInstalledEntry(null);
+        if (!cancelled) {
+          setContextInstalledEntry(null);
+          setContextFileMissing(false);
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -801,15 +834,26 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   useEffect(() => {
     if (!versionsTabInstanceId) {
       setVersionsTabInstalledEntry(null);
+      setVersionsTabFileMissing(false);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
         const detail = await getInstanceDetail(versionsTabInstanceId);
-        if (!cancelled) setVersionsTabInstalledEntry(findInstalledEntry(detail));
+        const entry = findInstalledEntry(detail);
+        if (cancelled) return;
+        setVersionsTabInstalledEntry(entry);
+        setVersionsTabFileMissing(false);
+        if (entry) {
+          const missing = await installedFileIsMissing(versionsTabInstanceId, entry);
+          if (!cancelled) setVersionsTabFileMissing(missing);
+        }
       } catch {
-        if (!cancelled) setVersionsTabInstalledEntry(null);
+        if (!cancelled) {
+          setVersionsTabInstalledEntry(null);
+          setVersionsTabFileMissing(false);
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -1012,6 +1056,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     setSelectedCandidate(null);
     setInstances([]);
     setFlowInstalledEntry(null);
+    setFlowFileMissing(false);
     setInstancesLoading(true);
     try {
       const all = await listInstances();
@@ -1042,7 +1087,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     setLoadingMoreVersions(false);
     try {
       const detail = await getInstanceDetail(selectedInstanceId).catch(() => null);
-      setFlowInstalledEntry(findInstalledEntry(detail));
+      const flowEntry = findInstalledEntry(detail);
+      setFlowInstalledEntry(flowEntry);
+      setFlowFileMissing(flowEntry ? await installedFileIsMissing(selectedInstanceId, flowEntry) : false);
       if (isModrinthInstall) {
         const vers = await listRawModrinthVersions(selectedInstanceId, item.modrinth_id!, installType);
         setModrinthCandidates(vers);
@@ -1117,6 +1164,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     setSelectedCandidate(null);
     setSelectedModrinthCandidate(null);
     setFlowInstalledEntry(null);
+    setFlowFileMissing(false);
   };
 
   // Inline create: submit handler
@@ -1288,7 +1336,19 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
         </div>
       )}
 
-      {contextInstalledEntry && (
+      {contextInstalledEntry && contextFileMissing && (
+        <div role="alert" className="rounded-lg border border-amber-500 bg-amber-500/10 px-4 py-3 text-sm">
+          <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-300">
+            <span aria-hidden>!</span>
+            <span>Missing file in {versionsTabInstances.find((instance) => instance.instance_id === contextInstanceId)?.name ?? contextInstanceId}</span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Version {contextInstalledEntry.version ?? 'unknown'} is listed as installed, but {contextInstalledEntry.filename} is
+            not in the mods folder, so the game will not load it. Reinstalling puts the file back.
+          </p>
+        </div>
+      )}
+      {contextInstalledEntry && !contextFileMissing && (
         <div className="rounded-lg border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
           <div className="flex items-center gap-2 font-semibold">
             <span aria-hidden>✓</span>
@@ -1560,7 +1620,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
               data-tour="mod-detail-install"
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              {contextInstalledEntry ? 'Installed ✓ · Change version' : 'Install to Instance'}
+              {contextInstalledEntry
+                ? (contextFileMissing ? 'Missing file · Reinstall' : 'Installed ✓ · Change version')
+                : 'Install to Instance'}
             </button>
           )}
         </div>
@@ -1700,7 +1762,13 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
             {/* Step 2: Version picker */}
             {selectedInstanceId && phase !== 'idle' && phase !== 'installing' && phase !== 'done' && (
               <div>
-                {flowInstalledEntry && (
+                {flowInstalledEntry && flowFileMissing && (
+                  <div role="alert" className="mb-2 rounded-lg border border-amber-500 bg-amber-500/10 px-3 py-2 text-xs">
+                    <strong>Missing file:</strong> version {flowInstalledEntry.version ?? 'unknown'} is listed, but {flowInstalledEntry.filename}
+                    {' '}is not in the mods folder. Installing it again puts the file back.
+                  </div>
+                )}
+                {flowInstalledEntry && !flowFileMissing && (
                   <div className="mb-2 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
                     <strong>Already installed:</strong> version {flowInstalledEntry.version ?? 'unknown'} ({flowInstalledEntry.filename}
                     {flowInstalledEntry.enabled === false ? ', disabled' : ''}). Installing a different
@@ -1715,7 +1783,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                     data-tour="install-confirm"
                     className="mb-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
-                    {flowInstalledEntry ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
+                    {flowInstalledEntry && !flowFileMissing ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
                   </button>
                 )}
                 {phase === 'loadingVersions' ? (
@@ -2135,16 +2203,18 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                               <span className="inline-flex items-center gap-1.5">
                                 {v.name || v.version}
                                 {candidateIsPrerelease(v) && (
-                                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                  <span className="whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
                                 )}
                               </span>
                               {versionsTabInstalledEntry?.version === v.version && (
-                                <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                                versionsTabFileMissing
+                                  ? <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">missing file</span>
+                                  : <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
                               )}
                             </td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.mc_versions.join(', ') || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.loaders.join(', ') || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.mc_versions.join(', ') || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.loaders.join(', ') || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
                           </tr>
                         );
                       });
@@ -2307,16 +2377,18 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                               <span className="inline-flex items-center gap-1.5">
                                 {v.version}
                                 {candidateIsPrerelease(v) && (
-                                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                  <span className="whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
                                 )}
                               </span>
                               {versionsTabInstalledEntry?.version === v.version && (
-                                <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                                versionsTabFileMissing
+                                  ? <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">missing file</span>
+                                  : <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
                               )}
                             </td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.mc_version || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.loader || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.mc_version || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.loader || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
                           </tr>
                         );
                       });
