@@ -1013,11 +1013,11 @@ pub fn explain_presence_with_aliases(
 ) -> Option<PresenceExplanation> {
     let target = installed.iter().find(|m| m.filename == filename)?;
 
-    let dependents = target
-        .mod_jar_id
-        .as_deref()
-        .map(|id| find_dependents_with_aliases(installed, id, aliases))
-        .unwrap_or_default();
+    // Match every ID this jar supplies, not only its primary one: a mod that
+    // declares a module Fabric API provides (`fabric-api-base`) depends on
+    // Fabric API. The removal and disable plans already work this way.
+    let dependents =
+        find_dependents_for_ids(installed, &installed_mod_ids(target, aliases), aliases);
 
     // Reverse adjacency over the same edges the graph view draws, so the two
     // features can never disagree about what depends on what.
@@ -1944,6 +1944,41 @@ mod tests {
     fn presence_of_an_unknown_filename_is_none_rather_than_an_empty_answer() {
         let mods = vec![installed("sodium.jar", Some("sodium"), &[], &[])];
         assert!(explain_presence(&mods, "ghost.jar").is_none());
+    }
+
+    #[test]
+    fn presence_counts_a_dependency_on_a_module_the_jar_provides() {
+        // Fabric API's jar supplies module ids such as `fabric-api-base`, and
+        // Sodium declares that id. Sodium needs Fabric API even though no
+        // declaration names `fabric-api` itself.
+        let mut fabric_api = installed("fabric-api.jar", Some("fabric-api"), &[], &[]);
+        fabric_api.provided_mod_ids = vec!["fabric-api-base".to_string()];
+        let mods = vec![
+            installed("sodium.jar", Some("sodium"), &["fabric-api-base"], &[]),
+            fabric_api,
+        ];
+        let why = explain_presence(&mods, "fabric-api.jar").expect("target is installed");
+        assert_eq!(why.dependents.len(), 1);
+        assert_eq!(why.dependents[0].filename, "sodium.jar");
+    }
+
+    #[test]
+    fn presence_provided_module_dependency_counts_for_optional_too() {
+        let mut fabric_api = installed("fabric-api.jar", Some("fabric-api"), &[], &[]);
+        fabric_api.provided_mod_ids = vec!["fabric-rendering-data-attachment-v1".to_string()];
+        let mods = vec![
+            installed(
+                "iris.jar",
+                Some("iris"),
+                &[],
+                &["fabric-rendering-data-attachment-v1"],
+            ),
+            fabric_api,
+        ];
+        let why = explain_presence(&mods, "fabric-api.jar").expect("target is installed");
+        assert_eq!(why.dependents.len(), 1);
+        assert_eq!(why.dependents[0].filename, "iris.jar");
+        assert_eq!(why.dependents[0].requirement, Requirement::Optional);
     }
 
     #[test]
