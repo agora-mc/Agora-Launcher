@@ -970,7 +970,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'note',
             title: 'The Agora pack (.json) is lighter but needs sources',
-            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along. The pack carries the instance name you see in Agora.',
+            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along. Disabled mods stay disabled on the other side, and the import review marks them. The pack carries the instance name you see in Agora.',
           },
         },
         {

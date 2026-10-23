@@ -1531,6 +1531,8 @@ export interface AgoraPackEntry {
   modrinth_id: string | null;
   sha256: string | null;
   source: string | null;
+  /** Absent means enabled. `false` installs the mod switched off. */
+  enabled?: boolean | null;
 }
 
 export type PackEntryStatus = 'installed' | 'failed' | 'needs_action';
@@ -1591,6 +1593,8 @@ export interface PlannedPackEntry {
   /** What needs action, or why the entry will not install. Null when it is ready. */
   reason: string | null;
   action: PackNeedsAction | null;
+  /** The pack marks this mod disabled, so it will be installed switched off. */
+  arrives_disabled?: boolean;
 }
 
 export interface PackImportPlan {

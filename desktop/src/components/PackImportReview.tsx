@@ -97,6 +97,7 @@ export function PackImportReview({
                     <span className="font-medium" title={entry.name}>{entry.display_name || entry.name}</span>
                     <span className="text-muted-foreground"> · {SOURCE_LABEL[entry.source]}</span>
                     <span className="text-muted-foreground"> · {entry.checkable ? 'checked against the pack' : 'not checked against the pack'}</span>
+                    {entry.arrives_disabled && <span className="text-muted-foreground"> · arrives disabled</span>}
                   </p>
                   {entry.reason && (
                     <p className={entry.action ? 'text-muted-foreground' : 'text-destructive'}>

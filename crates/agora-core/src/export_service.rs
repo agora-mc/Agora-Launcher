@@ -164,6 +164,7 @@ fn write_json_pack(manifest: &InstanceManifest, tmp_path: &Path) -> LauncherResu
             "source": m.source,
             "version": m.version,
             "sha256": m.sha256,
+            "enabled": m.enabled,
         })).collect::<Vec<_>>(),
     });
     let text =
@@ -648,6 +649,36 @@ mod tests {
         assert!(err.to_string().contains("gone.jar"), "{err}");
         assert!(!out.exists(), "a failed export must not leave a pack");
         assert!(!folder_has_tmp_files(tmp.path()));
+    }
+
+    #[tokio::test]
+    async fn agora_pack_round_trip_keeps_a_disabled_mod_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        let mut manifest = empty_manifest("test-json-disabled");
+        let mut off = mod_named("off.jar");
+        off.enabled = false;
+        manifest.mods.push(off);
+        manifest.mods.push(mod_named("on.jar"));
+        let out = tmp.path().join("pack.agora-pack.json");
+
+        export_instance_pack_to(&instance_dir, &manifest, &out, "json")
+            .await
+            .unwrap();
+
+        let parsed =
+            crate::agora_pack_import::parse_agora_pack(&std::fs::read_to_string(&out).unwrap())
+                .unwrap();
+        let enabled: Vec<bool> = parsed
+            .mods
+            .iter()
+            .map(|m| match m {
+                crate::agora_pack_import::PackEntryParse::Entry(e) => e.arrives_enabled(),
+                _ => panic!("unreadable entry"),
+            })
+            .collect();
+        assert_eq!(enabled, vec![false, true]);
     }
 
     #[tokio::test]
