@@ -93,6 +93,39 @@ describe('InstalledContentPanel Update All', () => {
     });
   });
 
+  it('keeps Update All in its own group, apart from the add button', () => {
+    render(
+      <InstalledContentPanel
+        {...baseProps}
+        rows={[row({ filename: 'sodium.jar' })]}
+        initialUpdates={[update('sodium.jar')]}
+        onCheckUpdates={async () => []}
+        onUpdateAll={vi.fn()}
+      />,
+    );
+    const group = screen.getByTestId('update-all-group');
+    expect(group.textContent).toMatch(/Update All/);
+    expect(group.textContent).not.toMatch(/Add/);
+    expect(group.className).toMatch(/border-r/);
+  });
+
+  it('shows a newer-Minecraft note instead of an update, and never counts it', async () => {
+    render(
+      <InstalledContentPanel
+        {...baseProps}
+        rows={[row({ filename: 'lithium.jar', registry_id: 'lithium' })]}
+        onCheckUpdates={async () => [{ ...update('lithium.jar'), latest_version: '', target_version: '', needs_minecraft: '1.21.1' }]}
+        onUpdateAll={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Check for updates/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Newer versions need Minecraft 1\.21\.1/)).toBeTruthy();
+    });
+    expect(screen.queryByRole('button', { name: /Update all/i })).toBeNull();
+    expect(screen.queryByText('Update available')).toBeNull();
+  });
+
   // The backend returns updates for the WHOLE instance, so a mods panel must
   // never offer to update a shader that it does not render.
   it('only counts and submits updates belonging to this panel', async () => {

@@ -304,11 +304,18 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     }
   };
 
-  const updateForRow = (row: InstalledContentRow) =>
-    (row.update_pinned ? undefined : updatesByFilename[row.filename]);
+  // A row with `needs_minecraft` is a note ("newer builds need Minecraft X"),
+  // not an update: it is never offered, counted or applied.
+  const updateForRow = (row: InstalledContentRow) => {
+    const update = row.update_pinned ? undefined : updatesByFilename[row.filename];
+    return update?.needs_minecraft ? undefined : update;
+  };
+  const minecraftNoteForRow = (row: InstalledContentRow) =>
+    (row.update_pinned ? undefined : updatesByFilename[row.filename]?.needs_minecraft ?? undefined);
   const updateStatusForRow = (row: InstalledContentRow) => {
     if (row.update_pinned) return 'pinned';
     if (updateForRow(row)) return 'available';
+    if (minecraftNoteForRow(row)) return 'needs_minecraft';
     if (!updatesChecked) return 'unchecked';
     return row.registry_id || row.modrinth_id ? 'current' : 'unavailable';
   };
@@ -452,6 +459,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
         const status = updateStatusForRow(row);
         return <td key={column} className="px-3 py-2 text-sm whitespace-nowrap">
           {status === 'available' && update ? <button type="button" disabled={props.locked} onClick={() => props.onApplyUpdate?.(row, update)} className="rounded-full bg-primary/10 px-2 py-1 text-primary hover:bg-primary/20 disabled:opacity-50" title={`Update to ${update.latest_version}`}>Update available</button> : null}
+          {status === 'needs_minecraft' ? <span className="text-muted-foreground" title="A newer version exists, but it is built for a different Minecraft version than this instance.">Newer versions need Minecraft {minecraftNoteForRow(row)}</span> : null}
           {status === 'current' ? <span className="text-muted-foreground">Up to date</span> : null}
           {status === 'unavailable' ? <span className="text-muted-foreground">Unavailable</span> : null}
           {status === 'unchecked' ? <span className="text-muted-foreground">Not checked</span> : null}
@@ -465,7 +473,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
   return <section className="rounded-xl border border-border bg-card p-4" onDragOver={props.onDrop ? (event) => { event.preventDefault(); } : undefined} onDrop={props.onDrop}>
     <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
       <div><h3 className="font-semibold text-sm">{titleForType[props.contentType]} ({props.rows.length})</h3><p className="mt-1 text-xs text-muted-foreground">Manage installed {contentLabel.toLowerCase()} without changing their safe removal workflow.</p>{props.contentType === 'datapack' ? <p className="mt-1 max-w-2xl text-xs text-muted-foreground">{DATAPACK_SYNC_EXPLAINER}{props.onSyncWorlds ? <> <button type="button" onClick={props.onSyncWorlds} disabled={props.locked} className="font-medium text-primary hover:underline disabled:opacity-50">Sync now</button></> : null}</p> : null}</div>
-      <div className="flex flex-wrap items-center gap-2">{props.onUpdateAll && availableUpdates.length > 0 ? <button type="button" onClick={handleUpdateAll} disabled={props.locked} className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? props.lockedReason ?? `Unlock the instance to update ${contentLabel.toLowerCase()}.` : `Review one plan updating ${availableUpdates.length} ${contentLabel.toLowerCase()}`} aria-label={`Update all ${availableUpdates.length} ${contentLabel.toLowerCase()}`}><ArrowUpCircle className="h-4 w-4" aria-hidden="true" />Update All ({availableUpdates.length})</button> : null}<button type="button" onClick={props.onAdd} disabled={props.locked} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? props.lockedReason ?? `Unlock the instance to add ${contentLabel.toLowerCase()}.` : undefined}>{props.locked ? (props.lockedReason ? 'Unavailable' : 'Locked') : props.addLabel}</button>{props.extraActions}</div>
+      <div className="flex flex-wrap items-center gap-2">{props.onUpdateAll && availableUpdates.length > 0 ? <div data-testid="update-all-group" className="mr-3 flex items-center border-r border-border pr-5"><button type="button" onClick={handleUpdateAll} disabled={props.locked} className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? props.lockedReason ?? `Unlock the instance to update ${contentLabel.toLowerCase()}.` : `Review one plan updating ${availableUpdates.length} ${contentLabel.toLowerCase()}`} aria-label={`Update all ${availableUpdates.length} ${contentLabel.toLowerCase()}`}><ArrowUpCircle className="h-4 w-4" aria-hidden="true" />Update All ({availableUpdates.length})</button></div> : null}<button type="button" onClick={props.onAdd} disabled={props.locked} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? props.lockedReason ?? `Unlock the instance to add ${contentLabel.toLowerCase()}.` : undefined}>{props.locked ? (props.lockedReason ? 'Unavailable' : 'Locked') : props.addLabel}</button>{props.extraActions}</div>
     </div>
     {props.locked && props.lockedReason ? <p className="mb-3 rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs text-foreground" role="status">{props.lockedReason}</p> : null}
     {selectedRows.length > 0 ? <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2 text-xs"><span className="font-medium">{selectedRows.length} selected</span><button type="button" onClick={() => void handleBulkToggle(true)} disabled={props.locked || bulkBusy} className="rounded-sm border border-input bg-background px-2 py-1 hover:bg-accent disabled:opacity-50">Enable selected</button><button type="button" onClick={() => void handleBulkToggle(false)} disabled={props.locked || bulkBusy} className="rounded-sm border border-input bg-background px-2 py-1 hover:bg-accent disabled:opacity-50">Disable selected</button><button type="button" onClick={handleBulkRemove} disabled={props.locked || bulkBusy} className="rounded-sm border border-destructive/40 bg-background px-2 py-1 text-destructive hover:bg-destructive/10 disabled:opacity-50">Remove selected</button><button type="button" onClick={() => setSelectedKeys(new Set())} className="ml-auto text-primary hover:underline">Clear selection</button></div> : null}
