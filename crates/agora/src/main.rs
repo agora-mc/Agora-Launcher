@@ -3664,6 +3664,7 @@ async fn run_settings_command(
 async fn run_loadout_command(
     action: LoadoutCmd,
     data_dir: &Path,
+    ctx: &agora_core::ctx::Ctx,
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
@@ -3712,8 +3713,10 @@ async fn run_loadout_command(
             if !instance_dir.exists() {
                 anyhow::bail!("Instance '{}' not found", instance);
             }
-            agora_core::loadout::apply_profile_with_undo(&instance_dir, &name)
-                .map_err(|e| anyhow::anyhow!("Failed to apply loadout: {e}"))?;
+            // Same core service the desktop uses: the lock, the running-game
+            // check and the undo point are not things a second front end skips.
+            agora_core::loadout_service::LoadoutService::new(ctx.clone())
+                .apply(&instance, &name)?;
             if json {
                 println!(
                     "{}",
@@ -4292,7 +4295,7 @@ async fn run_command(
             }
         }
         Commands::Loadout { action } => {
-            Box::pin(run_loadout_command(action, data_dir, output_fmt)).await?
+            Box::pin(run_loadout_command(action, data_dir, ctx, output_fmt)).await?
         }
         Commands::Lockfile { action } => match action {
             LockfileCmd::Export {
