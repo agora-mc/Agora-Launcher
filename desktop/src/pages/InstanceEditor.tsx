@@ -1629,9 +1629,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     javaPath: row.java_path,
     javaMode: javaRuntimeMode,
     javaMajor: previewJavaMajor(row.minecraft_version),
-    health: healthReport
-      ? { blockers: healthReport.blockers.length, warnings: healthReport.warnings.length }
-      : null,
+    health: healthReport ? healthCounts(healthReport) : null,
     packGaps: detail ? detail.pack_gaps.length : null,
     busy: operationHeld,
   }) : null;

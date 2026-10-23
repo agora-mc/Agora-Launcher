@@ -8,7 +8,7 @@
  * path reads the real requirement from the game's version file.
  */
 
-import { problemsText, warningsText } from '@/lib/healthSummary';
+import { problemsText, warningsText, type HealthCounts } from '@/lib/healthSummary';
 
 export type ReadinessLevel = 'ready' | 'check' | 'blocked';
 
@@ -25,7 +25,7 @@ export interface ReadinessInput {
   /** Estimated Java major for this Minecraft version. */
   javaMajor: number;
   /** Health counts, or null when no health check has run for this instance yet. */
-  health: { blockers: number; warnings: number } | null;
+  health: HealthCounts | null;
   /**
    * Pack entries the instance still lacks (failed, or waiting on a user action),
    * or null while the instance's record has not loaded.
@@ -48,6 +48,10 @@ const LOADER_NAMES: Record<string, string> = {
   neoforge: 'NeoForge',
   quilt: 'Quilt',
 };
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
 
 export function instanceReadiness(input: ReadinessInput): Readiness {
   const minecraft = input.minecraftVersion.trim();
@@ -91,9 +95,9 @@ export function instanceReadiness(input: ReadinessInput): Readiness {
   if (input.health === null) {
     check ??= 'mods not checked yet';
     details.push('Mods not checked yet');
-  } else if (input.health.blockers > 0) {
-    blocker ??= problemsText(input.health.blockers);
-    details.push(problemsText(input.health.blockers));
+  } else if (input.health.problems > 0) {
+    blocker ??= problemsText(input.health.problems);
+    details.push(problemsText(input.health.problems));
   } else if (input.health.warnings > 0) {
     check ??= warningsText(input.health.warnings);
     details.push(warningsText(input.health.warnings));

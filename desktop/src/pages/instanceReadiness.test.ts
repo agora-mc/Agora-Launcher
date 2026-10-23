@@ -8,7 +8,7 @@ const base: ReadinessInput = {
   javaPath: null,
   javaMode: 'automatic',
   javaMajor: 21,
-  health: { blockers: 0, warnings: 0 },
+  health: { problems: 0, warnings: 0 },
   packGaps: 0,
   busy: false,
 };
@@ -24,19 +24,19 @@ describe('instanceReadiness', () => {
   });
 
   it('blocks on mod problems and counts them plainly', () => {
-    const r = instanceReadiness({ ...base, health: { blockers: 2, warnings: 1 } });
+    const r = instanceReadiness({ ...base, health: { problems: 2, warnings: 1 } });
     expect(r.level).toBe('blocked');
     expect(r.headline).toBe('Not ready: 2 mod problems to fix');
     expect(r.details).toContain('2 mod problems to fix');
   });
 
   it('uses the singular for one problem', () => {
-    const r = instanceReadiness({ ...base, health: { blockers: 1, warnings: 0 } });
+    const r = instanceReadiness({ ...base, health: { problems: 1, warnings: 0 } });
     expect(r.headline).toBe('Not ready: 1 mod problem to fix');
   });
 
   it('is almost ready with warnings to review, not ready', () => {
-    const r = instanceReadiness({ ...base, health: { blockers: 0, warnings: 1 } });
+    const r = instanceReadiness({ ...base, health: { problems: 0, warnings: 1 } });
     expect(r.level).toBe('check');
     expect(r.headline).toBe('Almost ready: 1 warning to review');
   });
@@ -49,7 +49,7 @@ describe('instanceReadiness', () => {
   });
 
   it('reports blocked, not almost ready, when busy even with warnings present', () => {
-    const r = instanceReadiness({ ...base, busy: true, health: { blockers: 0, warnings: 3 } });
+    const r = instanceReadiness({ ...base, busy: true, health: { problems: 0, warnings: 3 } });
     expect(r.level).toBe('blocked');
     expect(r.headline).toBe('Not ready: something is still running on this instance');
   });
