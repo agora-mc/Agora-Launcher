@@ -652,7 +652,7 @@ The Rust backend communicates errors to the React UI using standardized error co
 
 | Error Code | Severity | User-Facing Message | Recommended Action |
 |---|---|---|---|
-| `ERR_NETWORK_OFFLINE` | Info | *"You're offline. Using cached data."* | Continue with cached DB; show Degraded Mode banner |
+| `ERR_NETWORK_OFFLINE` | Info | *"No internet connection: Agora couldn't reach the server."* (or *"Couldn't download X: no internet connection."*) | Continue with cached DB when one exists and say so; otherwise name what failed. Connection status comes from recent request outcomes, not `navigator.onLine` |
 | `ERR_REGISTRY_DOWNLOAD_FAILED` | Warning | *"Could not download the latest registry. Using cached version."* | Retry later; check network |
 | `ERR_REGISTRY_SIGNATURE_INVALID` | Critical | *"Registry signature check failed. The database may be compromised."* | Block DB load; use last known-good cached DB; notify curators |
 | `ERR_SCHEMA_TOO_NEW` | Critical | *"This registry requires a newer launcher version. Please update the app."* | Open GitHub Releases page for app update |

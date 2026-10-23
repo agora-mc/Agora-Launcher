@@ -2799,7 +2799,8 @@ async fn download_sha1_atomic(
         .get(url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(|_| crate::http_client::transport_failure())?;
+    crate::connectivity::record_reachable();
     if !response.status().is_success() {
         return Err(LauncherError::Generic {
             code: "ERR_DOWNLOAD_HTTP".into(),
@@ -2812,7 +2813,7 @@ async fn download_sha1_atomic(
     let bytes = response
         .bytes()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?
+        .map_err(|_| crate::http_client::transport_failure())?
         .to_vec();
     if !artifact_matches(&bytes, Some(&resolved_sha1), expected_size) {
         return Err(LauncherError::HashMismatch);
@@ -2862,7 +2863,8 @@ async fn resolve_sidecar_sha1(
         .get(&sidecar_url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(|_| crate::http_client::transport_failure())?;
+    crate::connectivity::record_reachable();
     let final_url = response.url().as_str();
     ensure_artifact_url_for_category(final_url, category)?;
     if !response.status().is_success() {
@@ -2877,7 +2879,7 @@ async fn resolve_sidecar_sha1(
     let text = response
         .text()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(|_| crate::http_client::transport_failure())?;
     let hash = parse_sha1_sidecar(&text).ok_or_else(|| LauncherError::Generic {
         code: "ERR_ARTIFACT_HASH_INVALID".into(),
         message: format!("Artifact SHA-1 sidecar is invalid: {sidecar_url}"),
@@ -3855,8 +3857,12 @@ pub(crate) async fn load_json_cache_first<T: serde::de::DeserializeOwned>(
     // Phase 3: Fetch fresh data from the network. Transport errors fall back
     // to the stale cache; integrity/parse errors never do.
     let response = match client.get(url).send().await {
-        Ok(r) => r,
+        Ok(r) => {
+            crate::connectivity::record_reachable();
+            r
+        }
         Err(_) => {
+            crate::connectivity::record_unreachable();
             if let Some(parsed) = stale_parsed {
                 return Ok(parsed);
             }
@@ -3877,7 +3883,7 @@ pub(crate) async fn load_json_cache_first<T: serde::de::DeserializeOwned>(
             if let Some(parsed) = stale_parsed {
                 return Ok(parsed);
             }
-            return Err(LauncherError::NetworkOffline);
+            return Err(crate::http_client::transport_failure());
         }
     };
 
@@ -4115,7 +4121,8 @@ async fn download_verified_inner(
         .get(url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(|_| crate::http_client::transport_failure())?;
+    crate::connectivity::record_reachable();
     // Defense-in-depth: verify the final response URL is category-safe.
     let final_url = response.url().as_str();
     ensure_artifact_url_for_category(final_url, category)?;
@@ -4129,7 +4136,7 @@ async fn download_verified_inner(
         .bytes()
         .await
         .map(|b| b.to_vec())
-        .map_err(|_| LauncherError::NetworkOffline)
+        .map_err(|_| crate::http_client::transport_failure())
 }
 
 #[cfg(test)]

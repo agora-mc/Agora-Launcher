@@ -1230,7 +1230,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         {
           title: 'Prepare for offline play',
           steps: [
-            'Update the Agora catalog.',
+            'Update the Agora catalog while you are online. If it never downloaded (the first run had no internet), Browse and the Home banner say so: connect, then use Download Catalog or Retry. Until it has downloaded once, there is no catalog to browse offline.',
             'Launch each required instance once so game and loader files are present.',
             'Confirm the selected Java runtime is installed.',
             'Download planned mods and packs before disconnecting.',
@@ -1259,7 +1259,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Audit degraded behavior',
-          body: 'When a feature fails, compare its service consent with its endpoint permission and the live Online/Offline indicator. Individual endpoint preferences are persisted and enforced by the Rust backend; Lockdown Mode is a global backend block that overrides them.'
+          body: 'When a feature fails, compare its service consent with its endpoint permission and the connection status on the Privacy page, which reports whether Agora\'s last request reached its server. Individual endpoint preferences are persisted and enforced by the Rust backend; Lockdown Mode is a global backend block that overrides them.'
         },
         {
           title: 'Protect shared diagnostics',

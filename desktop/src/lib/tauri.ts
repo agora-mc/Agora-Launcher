@@ -1154,6 +1154,14 @@ export const listAuditLog = (limit?: number) =>
 export const checkRegistryUpdate = (force?: boolean) =>
   invoke<RegistryStatus>('check_registry_update', { force });
 export const getRegistryStatus = () => invoke<RegistryStatus>('get_registry_status');
+export type ConnectivityState = 'unknown' | 'reachable' | 'unreachable';
+export interface ConnectivitySnapshot {
+  state: ConnectivityState;
+  /** Unix seconds when the request that set `state` finished. */
+  last_outcome_at: number | null;
+}
+export const getConnectivityStatus = () =>
+  invoke<ConnectivitySnapshot>('get_connectivity_status');
 export const extractOverrides = (zipPath: string, instanceId: string) =>
   invoke<ExtractionResult>('extract_overrides', { zipPath, instanceId });
 

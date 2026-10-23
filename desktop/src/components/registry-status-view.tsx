@@ -86,7 +86,9 @@ function BannerView({ state, status, error, actions }: BannerProps) {
   return (
     <div className="flex items-center justify-between gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs">
       <span className="text-amber-700 dark:text-amber-300">
-        {state === 'missing'
+        {state === 'missing' && error
+          ? `${error} Browse and recommendations need the catalog; retry once you're online.`
+          : state === 'missing'
           ? 'Catalog not downloaded yet. Download it to enable updates, recommendations, and governance.'
           : error && state === 'offline'
             ? 'Using cached catalog. Updates unavailable.'
@@ -180,6 +182,11 @@ function FullscreenView({
         <>
           <p className="text-sm">No catalog found.</p>
           {error && <p className="text-xs text-destructive mt-1">{error}</p>}
+          <p className="text-xs text-muted-foreground mt-1">
+            {error
+              ? 'Retry downloads it again once you are online. Browse stays empty until then; your installed instances and local files are not affected.'
+              : 'Retry downloads it. The catalog needs an internet connection the first time.'}
+          </p>
           {missingWarning && (
             <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
               {missingWarning}

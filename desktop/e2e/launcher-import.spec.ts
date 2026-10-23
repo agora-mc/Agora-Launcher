@@ -556,7 +556,7 @@ test.describe('Launcher Import — My Instances entry', () => {
     await expect(page.getByRole('heading', { name: 'Review Import Plan' })).toBeVisible({ timeout: 3000 });
 
     // Click Back
-    await page.getByRole('button', { name: 'Back to selection' }).click();
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Import from Other Launchers' })).toBeVisible();
   });
 });

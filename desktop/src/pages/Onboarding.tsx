@@ -602,7 +602,7 @@ function ServicesStep({
       <div className="space-y-4">
         <ServiceToggle
           title="Modrinth live browsing"
-          description="Enable live Modrinth search and category browsing when permitted by Privacy settings. Curated Modrinth-sourced catalog entries are always visible — this only controls live third-party browsing."
+          description="Enable live Modrinth search and category browsing when permitted by Privacy settings (Settings > General > Advanced mode shows them). Curated Modrinth-sourced catalog entries are always visible — this only controls live third-party browsing."
           checked={values.modrinth}
           onChange={(modrinth) => {
             onChange({ ...values, modrinth });

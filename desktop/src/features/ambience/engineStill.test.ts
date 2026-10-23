@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AmbienceEngine, coversControl } from './engine/engine';
+import { AmbienceEngine, buddyFootprint, coversContent } from './engine/engine';
 
 type EnginePrivate = { paintStill: () => void; buddy: { on: boolean } };
 
@@ -187,7 +187,7 @@ describe('AmbienceEngine companion over controls', () => {
   });
 });
 
-describe('coversControl', () => {
+describe('coversContent', () => {
   it('is true for buttons, links, fields and anything inside them', () => {
     const button = document.createElement('button');
     const label = document.createElement('span');
@@ -200,18 +200,52 @@ describe('coversControl', () => {
     const tab = document.createElement('div');
     tab.setAttribute('role', 'tab');
     [button, link, input, editable, tab].forEach((el) => document.body.appendChild(el));
-    expect(coversControl(button)).toBe(true);
-    expect(coversControl(label)).toBe(true);
-    expect(coversControl(link)).toBe(true);
-    expect(coversControl(input)).toBe(true);
-    expect(coversControl(editable)).toBe(true);
-    expect(coversControl(tab)).toBe(true);
+    expect(coversContent(button)).toBe(true);
+    expect(coversContent(label)).toBe(true);
+    expect(coversContent(link)).toBe(true);
+    expect(coversContent(input)).toBe(true);
+    expect(coversContent(editable)).toBe(true);
+    expect(coversContent(tab)).toBe(true);
     [button, link, input, editable, tab].forEach((el) => el.remove());
   });
 
-  it('is false for plain content, the canvas and nothing at all', () => {
-    expect(coversControl(document.createElement('div'))).toBe(false);
-    expect(coversControl(document.createElement('canvas'))).toBe(false);
-    expect(coversControl(null)).toBe(false);
+  it('is true for readable text that is not a control (the Import Instances label)', () => {
+    const heading = document.createElement('h2');
+    heading.textContent = 'Import Instances';
+    const caption = document.createElement('span');
+    caption.textContent = 'Create Instance';
+    document.body.append(heading, caption);
+    expect(coversContent(heading)).toBe(true);
+    expect(coversContent(caption)).toBe(true);
+    heading.remove();
+    caption.remove();
+  });
+
+  it('is false for empty or whitespace-only text, plain containers, the canvas and nothing at all', () => {
+    const blank = document.createElement('div');
+    blank.textContent = '   \n\t ';
+    const container = document.createElement('div');
+    container.appendChild(document.createElement('span'));
+    expect(coversContent(blank)).toBe(false);
+    expect(coversContent(container)).toBe(false);
+    expect(coversContent(document.createElement('div'))).toBe(false);
+    expect(coversContent(document.createElement('canvas'))).toBe(false);
+    expect(coversContent(null)).toBe(false);
+  });
+});
+
+describe('buddyFootprint', () => {
+  it('covers the whole companion body, not just its top-left corner', () => {
+    const points = buddyFootprint(100, 200);
+    // The far corner is 26 px right and 22 px down: a check at (100, 200) alone missed it.
+    expect(points).toContainEqual([126, 222]);
+    expect(points).toContainEqual([126, 200]);
+    expect(points).toContainEqual([100, 222]);
+    expect(points).toHaveLength(5);
+  });
+
+  it('stays on the origin for a zero position (no NaN or negative drift)', () => {
+    expect(buddyFootprint(0, 0)).toContainEqual([0, 0]);
+    expect(buddyFootprint(0, 0).every(([x, y]) => Number.isFinite(x) && Number.isFinite(y))).toBe(true);
   });
 });

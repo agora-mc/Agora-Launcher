@@ -1328,7 +1328,7 @@ impl LauncherImportService {
                     });
                 }
                 Err(e) => outcomes.push(PerItemOutcome::Failed {
-                    error: e.to_string(),
+                    error: import_failure_message(&item.destination_name, &e),
                     warnings: item.warnings.clone(),
                 }),
             }
@@ -3506,5 +3506,66 @@ name=Dup Instance
 
         copy_dir_recursive(&src, &dst).unwrap();
         assert!(dst.join("real.txt").exists());
+    }
+}
+
+/// What the user reads when one instance in a batch import fails.
+///
+/// A network failure says what could not be reached and that nothing was
+/// changed, so the user knows the import can simply be run again. The rollback
+/// in `execute_item` makes "nothing was changed" true on both the new and the
+/// update path.
+fn import_failure_message(name: &str, error: &LauncherError) -> String {
+    match error {
+        LauncherError::NetworkOffline => format!(
+            "{} Nothing was changed for this instance; retry the import once you're online.",
+            error.clone().while_attempting(format!("import \"{name}\""))
+        ),
+        LauncherError::NetworkUnavailable { .. } => format!(
+            "{error} Nothing was changed for this instance; retry the import once you're online."
+        ),
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod import_failure_message_tests {
+    use super::import_failure_message;
+    use crate::error::LauncherError;
+
+    #[test]
+    fn offline_failure_names_the_instance_and_says_nothing_changed() {
+        let text = import_failure_message("spiff", &LauncherError::NetworkOffline);
+        assert!(
+            text.starts_with("Couldn't import \"spiff\": no internet connection."),
+            "{text}"
+        );
+        assert!(text.contains("Nothing was changed"), "{text}");
+        assert!(text.contains("retry"), "{text}");
+        assert!(!text.contains("cached"), "{text}");
+    }
+
+    #[test]
+    fn a_specific_network_failure_keeps_its_own_wording() {
+        let err = LauncherError::NetworkUnavailable {
+            action: "download Fabric 0.20.1".into(),
+        };
+        let text = import_failure_message("spiff", &err);
+        assert!(
+            text.starts_with("Couldn't download Fabric 0.20.1: no internet connection."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn other_errors_are_reported_as_they_were() {
+        let text = import_failure_message("spiff", &LauncherError::HashMismatch);
+        assert_eq!(text, LauncherError::HashMismatch.to_string());
+    }
+
+    #[test]
+    fn an_empty_name_still_produces_a_readable_sentence() {
+        let text = import_failure_message("", &LauncherError::NetworkOffline);
+        assert!(text.contains("no internet connection"), "{text}");
     }
 }

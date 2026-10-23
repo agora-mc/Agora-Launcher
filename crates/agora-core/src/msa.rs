@@ -472,7 +472,7 @@ pub(crate) trait DeviceTokenPoller: Send + Sync {
 /// rather than hammering an endpoint the user has switched off.
 fn is_transient_poll_error(error: &LauncherError) -> bool {
     match error {
-        LauncherError::NetworkOffline => true,
+        LauncherError::NetworkOffline | LauncherError::NetworkUnavailable { .. } => true,
         LauncherError::Generic { code, .. } => code == "ERR_NETWORK",
         _ => false,
     }
@@ -1955,5 +1955,26 @@ mod tests {
             .await
             .expect_err("legacy credentials must not be refreshed");
         assert!(format!("{error:?}").contains("ERR_MSA_LEGACY_CREDENTIALS"));
+    }
+}
+
+#[cfg(test)]
+mod transient_poll_error_tests {
+    use super::is_transient_poll_error;
+    use crate::error::LauncherError;
+
+    #[test]
+    fn any_network_failure_keeps_the_device_code_poll_going() {
+        assert!(is_transient_poll_error(&LauncherError::NetworkOffline));
+        assert!(is_transient_poll_error(
+            &LauncherError::NetworkUnavailable {
+                action: "sign in to Microsoft".into(),
+            }
+        ));
+    }
+
+    #[test]
+    fn a_refusal_stops_the_poll() {
+        assert!(!is_transient_poll_error(&LauncherError::AuthExpired));
     }
 }

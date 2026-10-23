@@ -217,6 +217,7 @@ pub fn run() {
             commands::list_audit_log,
             commands::check_registry_update,
             commands::get_registry_status,
+            commands::get_connectivity_status,
             commands::extract_overrides,
             commands::list_instances,
             commands::get_instance_detail,

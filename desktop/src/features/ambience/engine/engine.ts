@@ -14,7 +14,7 @@
  *  - `off`: no canvas, no rAF (AmbienceCanvas does not mount).
  */
 
-import { BUDDY_OFFSET, buddyStep, createBuddy, drawBuddy, buddySnap, buddyTarget, buddyVisible, type BuddyState } from './buddy';
+import { BUDDY_OFFSET, BUDDY_SIZE, buddyStep, createBuddy, drawBuddy, buddySnap, buddyTarget, buddyVisible, type BuddyState } from './buddy';
 import { advanceClock, createClock, setWeather as clockSetWeather, type ClockState } from './clock';
 import { viewToCanvas, worldViewport } from './terrain';
 import { checkAchievements, journalData, loadJournalState, saveJournalState } from './eggs';
@@ -71,18 +71,45 @@ export interface AmbienceReady {
   journal: ReturnType<typeof journalData>;
 }
 
+/** How often a still cursor's companion re-checks what is under it. */
+const COVER_CHECK_MS = 200;
+
 const INTERACTIVE_SELECTOR = [
   'button', 'a', 'input', 'select', 'textarea',
   '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="tab"]', '[role="checkbox"]',
   '[role="switch"]', '[role="option"]', '[role="radio"]', '[contenteditable]', '[data-radix-dialog-content]',
 ].join(',');
 
+/** Whether the element carries readable text of its own (a label, a heading). */
+function carriesText(el: Element): boolean {
+  return Array.from(el.childNodes).some(
+    (node) => node.nodeType === Node.TEXT_NODE && (node.textContent ?? '').trim() !== '',
+  );
+}
+
 /**
- * Whether the element under a point is (or sits inside) a control. The
- * companion is hidden over these so it never covers a label or button.
+ * Whether the element under a point is a control, sits inside one, or is text
+ * the user reads. The companion steps aside over these so it never covers a
+ * label, a heading or a button.
  */
-export function coversControl(el: Element | null): boolean {
-  return el !== null && el.closest(INTERACTIVE_SELECTOR) !== null;
+export function coversContent(el: Element | null): boolean {
+  return el !== null && (el.closest(INTERACTIVE_SELECTOR) !== null || carriesText(el));
+}
+
+/**
+ * Points, in client px, across the companion's whole body if it were drawn with
+ * its top-left at `(x, y)`: the corners and the middle. The companion is 26 px
+ * across, and checking only its top-left corner let it cover the text beside it.
+ */
+export function buddyFootprint(x: number, y: number): Array<[number, number]> {
+  const { w, h } = BUDDY_SIZE;
+  return [
+    [x, y],
+    [x + w, y],
+    [x, y + h],
+    [x + w, y + h],
+    [x + w / 2, y + h / 2],
+  ];
 }
 
 /**
@@ -194,8 +221,12 @@ export class AmbienceEngine {
 
   /** Whether the profile or the caller wants the companion shown. */
   private buddyRequested = true;
-  /** Set while the companion would sit on a control, so it is not drawn over it. */
+  /** Set while the companion would sit on content, so it is not drawn over it. */
   private buddyHidden = false;
+  /** Last pointer position, in both viewport and host px. Null until the pointer moves. */
+  private pointer: { clientX: number; clientY: number; x: number; y: number } | null = null;
+  /** When the companion's cover was last re-checked, in frame time. */
+  private coverCheckAt = 0;
   /** Pending repaint of a still world (0 = none queued). */
   private stillRaf = 0;
 
@@ -379,6 +410,23 @@ export class AmbienceEngine {
   /** The id of the piece currently playing, or null during silence. */
   currentTrackId(): string | null {
     return music.currentTrackId();
+  }
+
+  /**
+   * Hide the companion while its body would sit on a control or readable text,
+   * and show it again once it is clear. Runs on pointer moves and, because the
+   * page can change under a still cursor (a list loads, a dialog opens), on a
+   * short timer from the frame loop too.
+   */
+  private refreshBuddyCover(): void {
+    const pointer = this.pointer;
+    if (!pointer) return;
+    const covered = buddyFootprint(pointer.clientX + BUDDY_OFFSET, pointer.clientY + BUDDY_OFFSET)
+      .some(([px, py]) => coversContent(elementAt(px, py)));
+    if (covered === this.buddyHidden) return;
+    this.buddyHidden = covered;
+    this.applyBuddy();
+    if (!covered) buddySnap(this.buddy, pointer.x, pointer.y);
   }
 
   /** Toggle the cursor companion (buddy) on/off. */
@@ -759,14 +807,10 @@ export class AmbienceEngine {
       }
       this.particles.pointerMoved(x, y);
       buddyTarget(this.buddy, x, y);
+      this.pointer = { clientX: e.clientX, clientY: e.clientY, x, y };
       // The companion trails the cursor, so where it lands is where it would
-      // cover things. Over a control it steps aside instead of hiding a label.
-      const onControl = coversControl(elementAt(e.clientX + BUDDY_OFFSET, e.clientY + BUDDY_OFFSET));
-      if (onControl !== this.buddyHidden) {
-        this.buddyHidden = onControl;
-        this.applyBuddy();
-        if (!onControl) buddySnap(this.buddy, x, y);
-      }
+      // cover things. Over content it steps aside instead of hiding it.
+      this.refreshBuddyCover();
       {
         const p = this.toCanvas(x, y);
         state.pcx = p.x;
@@ -883,6 +927,10 @@ export class AmbienceEngine {
 
     // buddy (drawn on the fx canvas, moved by the same loop)
     buddyStep(this.buddy, ts);
+    if (ts - this.coverCheckAt >= COVER_CHECK_MS) {
+      this.coverCheckAt = ts;
+      this.refreshBuddyCover();
+    }
     if (this.buddy.on && !state.reduce) {
       drawBuddy(this.fxCtx, this.buddy, ts < this.blinkUntil);
     }
