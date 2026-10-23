@@ -13,6 +13,7 @@ import {
   restoreSnapshot,
   forYouItems,
   setSetting,
+  type HealthReport,
   type InstanceRow,
   type RegistryItem,
 } from '../lib/tauri';
@@ -23,6 +24,8 @@ import { ArrowRight, BookOpen, GraduationCap, HeartHandshake, MessagesSquare } f
 import { agoraDiscordUrl, agoraSponsorsUrl } from '../lib/brandConfig';
 import { useConfirm } from '@/components/ui/confirm';
 import { GUIDE_TOPICS } from '../data/guideContent';
+import { healthCounts } from '@/lib/healthSummary';
+import { HealthNotice, ReviewBeforeLaunchButtons } from '../components/HealthLaunchControls';
 
 // ---------------------------------------------------------------------------
 // D1: Action-oriented Home
@@ -36,6 +39,8 @@ export function Home({
   onLaunch,
   processState,
   onKillProcess,
+  healthReports,
+  onReviewHealth,
 }: {
   onNavigateTab: (tab: Tab) => void;
   onOpenInstance: (instanceId: string) => void;
@@ -43,6 +48,9 @@ export function Home({
   onLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
   processState: ProcessState;
   onKillProcess: () => Promise<void>;
+  /** Health reports from the app-level monitor (the same data My Instances reads). */
+  healthReports: Record<string, HealthReport>;
+  onReviewHealth: (instanceId: string, instanceName: string, report: HealthReport) => void;
 }) {
   const { confirm } = useConfirm();
   const { state, status, error, hasCachedDb, actions } = useRegistryState();
@@ -302,10 +310,14 @@ export function Home({
         instance={heroInstance}
         loading={instancesLoading}
         processState={processState}
+        healthReport={heroInstance ? healthReports[heroInstance.instance_id] ?? null : null}
         onLaunch={() => {
           if (heroInstance) {
             void handleContinuePlaying();
           }
+        }}
+        onReviewHealth={(report) => {
+          if (heroInstance) onReviewHealth(heroInstance.instance_id, heroInstance.name, report);
         }}
         onKill={() => { void onKillProcess(); }}
         onBrowsePacks={() => onNavigateTab('browse')}
@@ -430,11 +442,14 @@ function CrashAlert({ instanceName, crashFilename, canRestore, onRestore }: {
   );
 }
 
-function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill, onBrowsePacks }: {
+function ContinuePlayingCard({ instance, loading, processState, healthReport, onLaunch, onReviewHealth, onKill, onBrowsePacks }: {
   instance: InstanceRow | null;
   loading: boolean;
   processState: ProcessState;
+  /** The instance's latest health report, or null when no check has run yet. */
+  healthReport: HealthReport | null;
   onLaunch: () => void;
+  onReviewHealth: (report: HealthReport) => void;
   onKill: () => void;
   onBrowsePacks: () => void;
 }) {
@@ -473,6 +488,8 @@ function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill
     && ['launching', 'running', 'stopping', 'delegated'].includes(processState.phase)
     && !isCurrent;
   const buttonDisabled = isLaunching || isStopping || isDelegated || anotherProcessActive;
+  // Same rule as My Instances: a blocker means "not ready", so the main action is to review it.
+  const blockedByHealth = healthReport !== null && healthCounts(healthReport).problems > 0;
 
   return (
     <div className="rounded-xl border border-border bg-card p-6">
@@ -481,6 +498,9 @@ function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill
         {instance.loader} {instance.loader_version} · MC {instance.minecraft_version}
       </p>
       <p className="text-xs text-muted-foreground mb-4">{timeAgo}</p>
+      {healthReport && (
+        <HealthNotice className="mb-4" report={healthReport} onReview={() => onReviewHealth(healthReport)} />
+      )}
       <div className="flex gap-2">
         {isRunning ? (
           <button
@@ -489,6 +509,13 @@ function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill
           >
             Kill
           </button>
+        ) : blockedByHealth && healthReport ? (
+          <ReviewBeforeLaunchButtons
+            onReview={() => onReviewHealth(healthReport)}
+            onLaunch={onLaunch}
+            disabled={buttonDisabled}
+            launchLabel={isLaunching ? 'Starting…' : 'Launch anyway'}
+          />
         ) : (
           <button
             onClick={onLaunch}

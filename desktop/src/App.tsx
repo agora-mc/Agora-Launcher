@@ -1012,6 +1012,8 @@ function AppContent() {
                         onLaunch={launchWithControlify}
                         processState={processState}
                         onKillProcess={killProcess}
+                        healthReports={healthMonitor.reports}
+                        onReviewHealth={openHealthReview}
                       />
                     }
                   />
