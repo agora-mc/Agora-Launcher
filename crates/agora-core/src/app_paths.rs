@@ -182,6 +182,12 @@ impl AppPaths {
         self.root.join("instances")
     }
 
+    /// Content-addressed cache of verified downloads shared by plan-time and
+    /// staging reads (see `download_cache`). Nothing else lives here.
+    pub fn download_cache_dir(&self) -> PathBuf {
+        self.root.join("download-cache")
+    }
+
     /// Root directory for the Agora-owned Minecraft runtime (`minecraft-runtime/`).
     pub fn minecraft_runtime_root(&self) -> PathBuf {
         self.root.join("minecraft-runtime")

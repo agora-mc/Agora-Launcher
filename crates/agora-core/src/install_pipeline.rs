@@ -51,6 +51,9 @@ pub struct InstallExecutionResources<'a> {
     /// Production callers supply the core loader service so an approved loader
     /// switch installs its signed profile before the manifest commit point.
     pub loader_service: Option<&'a crate::loader_service::LoaderService>,
+    /// Verified downloads kept from plan time, so staging does not fetch the
+    /// same file twice. `None` downloads everything, as before.
+    pub download_cache: Option<&'a crate::download_cache::DownloadCache>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1442,6 +1445,7 @@ impl InstallPipeline {
         let scheduler = resources.scheduler;
         let registry_db_path = resources.registry_db_path;
         let loader_service = resources.loader_service;
+        let download_cache = resources.download_cache;
         let fail = |error: String, snapshot_id: Option<String>, rollback_performed: bool| {
             InstallOutcome::Failed {
                 error,
@@ -1542,7 +1546,9 @@ impl InstallPipeline {
             bytes_total: plan.disk_estimate.download_bytes,
             message: "Downloading and verifying every artifact…".into(),
         });
-        if let Err(error) = stage_plan_artifacts(plan, &staging_dir, reporter, cancel).await {
+        if let Err(error) =
+            stage_plan_artifacts(plan, &staging_dir, reporter, cancel, download_cache).await
+        {
             cleanup_staging_dir(scheduler, &staging_dir).await;
             if cancel.is_cancelled() {
                 return InstallOutcome::Cancelled {
@@ -3072,6 +3078,7 @@ async fn stage_plan_artifacts(
     staging_dir: &Path,
     reporter: &dyn ProgressReporter,
     cancel: &CancellationToken,
+    download_cache: Option<&crate::download_cache::DownloadCache>,
 ) -> Result<(), String> {
     if staging_dir.exists() {
         std::fs::remove_dir_all(staging_dir)
@@ -3089,7 +3096,9 @@ async fn stage_plan_artifacts(
         validate_filename(&file.staging_filename)?;
         let contents = match &file.artifact {
             ResolvedArtifact::Download(download) => match &download.source {
-                ArtifactSource::Download { url } => fetch_download_bytes(download, url).await?,
+                ArtifactSource::Download { url } => {
+                    fetch_download_bytes_cached(download_cache, download, url).await?
+                }
                 ArtifactSource::LocalFile { path } => std::fs::read(path).map_err(|e| {
                     format!("failed to read local artifact {}: {e}", download.item_id)
                 })?,
@@ -3138,6 +3147,26 @@ async fn stage_plan_artifacts(
         });
     }
     Ok(())
+}
+
+/// [`fetch_download_bytes`], reusing a copy already verified against the same
+/// published hashes when the cache has one. The result is not trusted either
+/// way: callers verify it, and a cached copy was re-verified on the way out.
+pub(crate) async fn fetch_download_bytes_cached(
+    cache: Option<&crate::download_cache::DownloadCache>,
+    download: &ResolvedDownload,
+    url: &str,
+) -> Result<Vec<u8>, String> {
+    match cache {
+        Some(cache) => {
+            cache
+                .get_or_fetch(&download.hashes, &download.filename, || {
+                    fetch_download_bytes(download, url)
+                })
+                .await
+        }
+        None => fetch_download_bytes(download, url).await,
+    }
 }
 
 /// Fetch the bytes of a planned download under the host policy staging uses.
