@@ -126,8 +126,8 @@ export function formatInstalledDate(value: string): string {
   }).format(date);
 }
 
-// The enable switch comes first: it is pinned to the left edge, so it stays
-// clickable at any width. Pinned right is the actions column.
+// The enable switch comes first and is pinned left (see InstalledContentPanel),
+// so it stays on screen and clickable at any width. Actions is pinned right.
 export const defaultColumns: ContentColumn[] = ['enabled', 'name', 'author', 'source', 'size', 'installed', 'update_status', 'actions'];
 
 /**

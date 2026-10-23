@@ -391,7 +391,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
       case 'name': {
         const icon = props.iconForRow?.(row) ?? row.icon_url;
         const detailAvailable = Boolean(row.registry_id || row.modrinth_id || row.mod_jar_id);
-        return <td key={column} className="min-w-[280px] max-w-[520px] px-3 py-2">
+        return <td key={column} className="min-w-[280px] max-w-[380px] px-3 py-2">
           <div className="flex items-start gap-2">
             {icon ? <img src={icon} alt="" className="h-8 w-8 shrink-0 rounded-sm border border-border object-cover" /> : null}
             <button type="button" disabled={!detailAvailable} onClick={() => props.onOpenDetails?.(row)} className="min-w-0 text-left disabled:cursor-default enabled:cursor-pointer">
