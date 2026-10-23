@@ -233,6 +233,13 @@ impl AppPaths {
         self.root.join("staging")
     }
 
+    /// Agora-managed holding area for deleted instances (`recently-deleted/`).
+    /// Lives inside the data root so moving an instance in or out is an atomic
+    /// same-volume rename.
+    pub fn recently_deleted_root(&self) -> PathBuf {
+        self.root.join("recently-deleted")
+    }
+
     /// Root directory for reusable instance templates (`templates/`).
     pub fn templates_root(&self) -> PathBuf {
         crate::template_service::templates_root(&self.root)

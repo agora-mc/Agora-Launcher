@@ -698,13 +698,14 @@ impl InstanceService {
         )
     }
 
-    /// Delete an instance with a filesystem quarantine so a database failure
-    /// can restore the original directory before the operation returns.
+    /// Delete an instance by moving it into Agora's "Recently deleted" area
+    /// (`recently_deleted.rs`), from where it can be restored for
+    /// [`crate::recently_deleted::RETENTION_DAYS`] days.
     ///
-    /// When `trash_fn` is provided, the quarantined directory is moved to the
-    /// OS trash instead of being hard-removed. This is the narrow adapter
-    /// boundary — core never depends on the `trash` crate.
-    pub fn delete(&self, instance_id: &str, trash_fn: Option<TrashFn>) -> LauncherResult<()> {
+    /// Fails closed: any error leaves the instance exactly where it was.
+    /// A pack-locked instance is refused (unlock it first), and so is one
+    /// whose lock is held by another operation such as a launch.
+    pub fn delete(&self, instance_id: &str) -> LauncherResult<()> {
         let instance_id = self.validate_id(instance_id)?;
         let op = self
             .ctx
@@ -752,52 +753,28 @@ impl InstanceService {
             });
         }
         let dir = self.ctx.paths.instance_dir(&instance_id)?;
-        let quarantine = self.ctx.paths.staging_dir(&format!(
-            "delete-{}-{}",
-            instance_id,
-            uuid::Uuid::new_v4()
-        ))?;
-        let moved = dir.exists();
-        if moved {
-            if let Some(parent) = quarantine.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| LauncherError::Generic {
-                    code: "ERR_INSTANCE_DELETE".into(),
+        let result = if std::fs::symlink_metadata(&dir).is_ok() {
+            crate::recently_deleted::stash_instance(
+                &self.ctx.paths.recently_deleted_root(),
+                &conn,
+                &row,
+                &dir,
+                chrono::DateTime::<chrono::Utc>::from(self.ctx.clock.now()),
+            )
+            .map(|_| ())
+        } else {
+            // A row whose folder is already gone: nothing to recover, just
+            // drop the row (as before).
+            crate::db::delete_instance(&conn, &instance_id).map_err(|error| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
                     message: error.to_string(),
-                })?;
-            }
-            std::fs::rename(&dir, &quarantine).map_err(|error| LauncherError::Generic {
-                code: "ERR_INSTANCE_DELETE".into(),
-                message: error.to_string(),
-            })?;
-        }
-        if let Err(error) = crate::db::delete_instance(&conn, &instance_id) {
-            if moved {
-                let _ = std::fs::rename(&quarantine, &dir);
-            }
-            op.fail(error.to_string());
-            return Err(LauncherError::Generic {
-                code: "ERR_LOCAL_STATE_FAILED".into(),
-                message: error.to_string(),
-            });
-        }
-        let moved_to_trash = trash_fn.is_some();
-        if moved && quarantine.exists() {
-            if let Some(trash) = trash_fn {
-                if let Err(error) = trash(&quarantine) {
-                    let _ = crate::db::upsert_instance(&conn, &row);
-                    let _ = std::fs::rename(&quarantine, &dir);
-                    op.fail(error.to_string());
-                    return Err(error);
                 }
-            } else {
-                std::fs::remove_dir_all(&quarantine).map_err(|error| LauncherError::Generic {
-                    code: "ERR_INSTANCE_DELETE".into(),
-                    message: error.to_string(),
-                })?;
-            }
-        }
-        if !moved_to_trash {
-            let _ = crate::snapshot::prune_unreferenced_objects(&dir);
+            })
+        };
+        if let Err(error) = result {
+            op.fail(error.to_string());
+            return Err(error);
         }
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
             let profile_id = crate::launcher_profiles::profile_id_for(&instance_id);
@@ -826,6 +803,100 @@ impl InstanceService {
         }
         op.complete();
         Ok(())
+    }
+
+    /// Entries in "Recently deleted", newest first.
+    pub fn list_recently_deleted(
+        &self,
+    ) -> LauncherResult<Vec<crate::recently_deleted::RecentlyDeletedEntry>> {
+        Ok(crate::recently_deleted::list_entries(
+            &self.ctx.paths.recently_deleted_root(),
+        ))
+    }
+
+    /// Restore a deleted instance: files and database rows (import provenance,
+    /// pack inventory, launch history). If its id has been taken since, it
+    /// comes back under a free id and the outcome says so.
+    pub fn restore_deleted(
+        &self,
+        entry_id: &str,
+    ) -> LauncherResult<crate::recently_deleted::RestoreOutcome> {
+        let root = self.ctx.paths.recently_deleted_root();
+        let entry = crate::recently_deleted::list_entries(&root)
+            .into_iter()
+            .find(|e| e.entry_id == entry_id)
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_INSTANCE_RESTORE".into(),
+                message: "That deleted instance is no longer available.".into(),
+            })?;
+        let original = self.validate_id(&entry.instance_id)?;
+        let op = self
+            .ctx
+            .operation_manager
+            .register_for_instance("Restore instance", &original);
+        let _lock = match self.ctx.lock_manager.acquire(
+            crate::lock_manager::LockResource::Instance(original.clone()),
+            "restore",
+        ) {
+            Ok(l) => l,
+            Err(e) => {
+                op.fail(e.to_string());
+                return Err(e);
+            }
+        };
+        let (mut conn, probe) = match (self.connection(), self.connection()) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => {
+                op.fail(e.to_string());
+                return Err(e);
+            }
+        };
+        let paths = &self.ctx.paths;
+        let free = |candidate: &str| {
+            paths
+                .instance_dir(candidate)
+                .map(|dir| std::fs::symlink_metadata(dir).is_err())
+                .unwrap_or(false)
+                && matches!(crate::db::get_instance(&probe, candidate), Ok(None))
+        };
+        match crate::recently_deleted::restore_entry(
+            &root,
+            entry_id,
+            &mut conn,
+            &paths.instances_root(),
+            &free,
+        ) {
+            Ok(outcome) => {
+                op.complete();
+                Ok(outcome)
+            }
+            Err(error) => {
+                op.fail(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    /// Send one deleted instance to the OS trash now ("Delete now").
+    pub fn purge_deleted(&self, entry_id: &str, trash: &TrashFn) -> LauncherResult<()> {
+        crate::recently_deleted::purge_entry(
+            &self.ctx.paths.recently_deleted_root(),
+            entry_id,
+            trash,
+        )
+    }
+
+    /// Cleanup pass: entries past their window or over the size budget go to
+    /// the OS trash; failures leave the entry in place.
+    pub fn cleanup_recently_deleted(
+        &self,
+        trash: &TrashFn,
+    ) -> crate::recently_deleted::CleanupSummary {
+        crate::recently_deleted::cleanup(
+            &self.ctx.paths.recently_deleted_root(),
+            chrono::DateTime::<chrono::Utc>::from(self.ctx.clock.now()),
+            trash,
+        )
     }
 
     /// Clone an existing instance: copy directory contents per prefs, create a
@@ -1108,6 +1179,28 @@ impl InstanceService {
                 code: "ERR_LOCAL_STATE_FAILED".into(),
                 message: error.to_string(),
             });
+        }
+
+        // A clone of an import is still "from CurseForge" (or Prism, ...):
+        // carry the provenance so the badge survives. The clone gets its own
+        // record under a distinct source key, so re-importing the original
+        // never matches (and never updates) the clone, and it has no tracked
+        // source files of its own.
+        if let Ok(Some(source_import)) = crate::db::get_instance_import(&conn, &source_id) {
+            let record = crate::db::InstanceImportRecord {
+                instance_id: new_id.clone(),
+                installation_key: "clone".into(),
+                source_instance_key: format!("clone-of:{source_id}"),
+                source_path: String::new(),
+                source_metadata_json: serde_json::json!({ "cloned_from": source_id }).to_string(),
+                imported_settings_json: "{}".into(),
+                source_fingerprint: String::new(),
+                imported_at: chrono::Utc::now().to_rfc3339(),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+                last_result: "cloned".into(),
+                launcher_kind: source_import.launcher_kind,
+            };
+            let _ = crate::db::replace_instance_import(&conn, &record, &[]);
         }
 
         // Persist pack file inventory for the clone — recomputed from the
@@ -1947,7 +2040,7 @@ mod tests {
         assert!(crate::install_service::InstallService::new(ctx)
             .check_not_locked("test")
             .is_ok());
-        service.delete("test", None).unwrap();
+        service.delete("test").unwrap();
         assert!(service.list().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2312,7 +2405,7 @@ mod tests {
         }
         write_ui_state_selecting(&official_root, "agora-doomed");
 
-        InstanceService::new(ctx).delete("doomed", None).unwrap();
+        InstanceService::new(ctx).delete("doomed").unwrap();
 
         let profiles: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&profiles_path).unwrap()).unwrap();
@@ -2399,7 +2492,7 @@ $#
         let service = InstanceService::new(ctx);
         assert_eq!(op_mgr.active_count(), 0);
 
-        service.delete("delop", None).unwrap();
+        service.delete("delop").unwrap();
 
         let all = op_mgr.list_all();
         let del_ops: Vec<_> = all
@@ -2594,6 +2687,505 @@ $#
         assert_eq!(db_files, live_files);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    mod recently_deleted_tests {
+        use super::*;
+        use crate::instance_service::TrashFn;
+        use std::sync::Mutex;
+
+        fn request(id: &str) -> CreateInstanceRequest {
+            CreateInstanceRequest {
+                name: format!("Name {id}"),
+                instance_id: id.into(),
+                minecraft_version: "1.21".into(),
+                loader: "vanilla".into(),
+                loader_version: "".into(),
+                jvm_memory_mb: None,
+                jvm_memory_mode: None,
+                jvm_gc: None,
+                jvm_custom_args: None,
+                jvm_always_pre_touch: None,
+                is_modpack: None,
+                pack_icon_url: None,
+                template_id: None,
+            }
+        }
+
+        /// An instance with files, pack inventory, import provenance and launch history.
+        fn seed(ctx: &Ctx, id: &str) {
+            let req = request(id);
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            crate::db::upsert_instance(&conn, &prepare_row(id, &req)).unwrap();
+            let dir = ctx.paths.instance_dir(id).unwrap();
+            std::fs::create_dir_all(dir.join("mods")).unwrap();
+            std::fs::create_dir_all(dir.join("snapshots")).unwrap();
+            std::fs::write(dir.join("mods").join("a.jar"), b"jar-bytes").unwrap();
+            std::fs::write(dir.join("snapshots").join("s1"), b"snapshot").unwrap();
+            std::fs::write(
+                ctx.paths.instance_manifest(id).unwrap(),
+                serde_json::to_vec(&manifest_from_request(id, &req)).unwrap(),
+            )
+            .unwrap();
+            crate::db::replace_instance_pack_files(
+                &conn,
+                id,
+                &[crate::db::InstancePackFile {
+                    relative_path: "mods/a.jar".into(),
+                    sha256: "ab".repeat(32),
+                    size: 9,
+                }],
+            )
+            .unwrap();
+            let record = crate::db::InstanceImportRecord {
+                instance_id: id.into(),
+                launcher_kind: "curseforge".into(),
+                installation_key: "cf:test".into(),
+                source_instance_key: "src-key".into(),
+                source_path: "C:/cf/test".into(),
+                source_metadata_json: "{}".into(),
+                imported_settings_json: "{}".into(),
+                source_fingerprint: "fp".into(),
+                imported_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                last_result: "imported".into(),
+            };
+            let files = [crate::db::InstanceImportFileRecord {
+                relative_path: "mods/a.jar".into(),
+                sha256: "cd".repeat(32),
+                size: 9,
+                source_modified_ns: Some(5),
+            }];
+            crate::db::replace_instance_import(&conn, &record, &files).unwrap();
+            crate::launch_history::begin_launch(
+                &conn,
+                id,
+                "2026-01-02T00:00:00Z",
+                3,
+                "1.21",
+                "vanilla",
+            )
+            .unwrap();
+        }
+
+        fn db_state(ctx: &Ctx, id: &str) -> String {
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            serde_json::to_string(&crate::recently_deleted::capture_db_state(&conn, id).unwrap())
+                .unwrap()
+        }
+
+        fn files_of(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+            let mut out = Vec::new();
+            let mut stack = vec![dir.to_path_buf()];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(&d).unwrap() {
+                    let p = e.unwrap().path();
+                    let m = std::fs::symlink_metadata(&p).unwrap();
+                    if m.file_type().is_symlink() {
+                        out.push((
+                            format!("LINK:{}", p.strip_prefix(dir).unwrap().display()),
+                            Vec::new(),
+                        ));
+                    } else if m.is_dir() {
+                        stack.push(p);
+                    } else {
+                        out.push((
+                            p.strip_prefix(dir).unwrap().display().to_string(),
+                            std::fs::read(&p).unwrap(),
+                        ));
+                    }
+                }
+            }
+            out.sort();
+            out
+        }
+
+        /// A stand-in for the OS trash: moves the folder aside and remembers it.
+        fn fake_trash(bin: std::path::PathBuf) -> (TrashFn, Arc<Mutex<Vec<std::path::PathBuf>>>) {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let seen2 = seen.clone();
+            std::fs::create_dir_all(&bin).unwrap();
+            let f: TrashFn = Arc::new(move |path: &Path| {
+                let dest = bin.join(path.file_name().unwrap());
+                std::fs::rename(path, &dest).map_err(|e| LauncherError::Generic {
+                    code: "ERR_TEST".into(),
+                    message: e.to_string(),
+                })?;
+                seen2.lock().unwrap().push(dest);
+                Ok(())
+            });
+            (f, seen)
+        }
+
+        fn failing_trash() -> TrashFn {
+            Arc::new(|_: &Path| {
+                Err(LauncherError::Generic {
+                    code: "ERR_TEST".into(),
+                    message: "trash unavailable".into(),
+                })
+            })
+        }
+
+        #[cfg(windows)]
+        fn make_link(target: &Path, link: &Path) {
+            junction::create(target, link).unwrap();
+        }
+        #[cfg(unix)]
+        fn make_link(target: &Path, link: &Path) {
+            std::os::unix::fs::symlink(target, link).unwrap();
+        }
+
+        #[test]
+        fn delete_lists_then_restore_is_identical() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let dir = ctx.paths.instance_dir("pack").unwrap();
+            let files_before = files_of(&dir);
+            let db_before = db_state(&ctx, "pack");
+            assert!(db_before.contains("curseforge") && db_before.contains("mods/a.jar"));
+            let service = InstanceService::new(ctx.clone());
+
+            service.delete("pack").unwrap();
+            assert!(service.list().unwrap().is_empty());
+            assert!(!dir.exists());
+            let entries = service.list_recently_deleted().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].instance_id, "pack");
+            assert_eq!(entries[0].name, "Name pack");
+            assert_eq!(entries[0].import_source.as_deref(), Some("curseforge"));
+            assert!(entries[0].size_bytes > 0);
+            // The cascade really removed the rows while it was deleted.
+            assert!(!db_state(&ctx, "pack").contains("curseforge"));
+
+            let outcome = service.restore_deleted(&entries[0].entry_id).unwrap();
+            assert_eq!(outcome.instance_id, "pack");
+            assert!(!outcome.renamed);
+            assert_eq!(files_of(&dir), files_before);
+            assert_eq!(db_state(&ctx, "pack"), db_before);
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            assert_eq!(service.list().unwrap()[0].name, "Name pack");
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn restore_when_id_is_taken_uses_a_free_name_and_says_so() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            seed(&ctx, "pack"); // a new instance took the id
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+
+            let outcome = service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(outcome.renamed);
+            assert_eq!(outcome.original_instance_id, "pack");
+            assert_eq!(outcome.instance_id, "pack-restored");
+            let rows = service.list().unwrap();
+            assert_eq!(rows.len(), 2);
+            let restored = rows
+                .iter()
+                .find(|r| r.instance_id == "pack-restored")
+                .unwrap();
+            assert_eq!(restored.name, "Name pack (restored)");
+            assert_eq!(restored.import_source.as_deref(), Some("curseforge"));
+            let manifest = read_manifest(&ctx.paths.instance_manifest("pack-restored").unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(manifest.instance_id, "pack-restored");
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            assert_eq!(
+                crate::db::list_instance_pack_files(&conn, "pack-restored")
+                    .unwrap()
+                    .len(),
+                1
+            );
+            // The live one is untouched.
+            assert_eq!(
+                crate::db::list_instance_pack_files(&conn, "pack")
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn cleanup_purges_only_after_the_window() {
+            let (ctx, root) = context();
+            let clock = crate::ctx::TestClock::new(std::time::SystemTime::now());
+            let ctx = ctx.with_clock(Arc::new(clock.clone()));
+            seed(&ctx, "old");
+            seed(&ctx, "fresh");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("old").unwrap();
+            clock.advance(std::time::Duration::from_secs(20 * 24 * 3600));
+            service.delete("fresh").unwrap();
+            let (trash, seen) = fake_trash(root.join("bin"));
+
+            // Day 20: nothing is old enough.
+            let summary = service.cleanup_recently_deleted(&trash);
+            assert_eq!((summary.purged, summary.failed, summary.kept), (0, 0, 2));
+
+            // Day 31: "old" is past 30 days, "fresh" (11 days) is not.
+            clock.advance(std::time::Duration::from_secs(11 * 24 * 3600));
+            let summary = service.cleanup_recently_deleted(&trash);
+            assert_eq!((summary.purged, summary.failed, summary.kept), (1, 0, 1));
+            assert_eq!(seen.lock().unwrap().len(), 1);
+            let left = service.list_recently_deleted().unwrap();
+            assert_eq!(left.len(), 1);
+            assert_eq!(left[0].instance_id, "fresh");
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn purge_failure_leaves_the_entry_restorable() {
+            let (ctx, root) = context();
+            let clock = crate::ctx::TestClock::new(std::time::SystemTime::now());
+            let ctx = ctx.with_clock(Arc::new(clock.clone()));
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            clock.advance(std::time::Duration::from_secs(40 * 24 * 3600));
+
+            let summary = service.cleanup_recently_deleted(&failing_trash());
+            assert_eq!((summary.purged, summary.failed), (0, 1));
+            assert!(service
+                .purge_deleted(&entry.entry_id, &failing_trash())
+                .is_err());
+            assert_eq!(service.list_recently_deleted().unwrap().len(), 1);
+            service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(ctx
+                .paths
+                .instance_dir("pack")
+                .unwrap()
+                .join("mods/a.jar")
+                .is_file());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_link_inside_the_instance_is_never_followed() {
+            let (ctx, root) = context();
+            seed(&ctx, "linked");
+            let outside = root.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("precious.txt"), b"keep me").unwrap();
+            std::fs::write(outside.join("big.bin"), vec![0u8; 2_000_000]).unwrap();
+            let dir = ctx.paths.instance_dir("linked").unwrap();
+            make_link(&outside, &dir.join("shared"));
+            let service = InstanceService::new(ctx.clone());
+
+            service.delete("linked").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            // The size counted the instance's own files, not the link target.
+            assert!(entry.size_bytes < 1_000_000);
+            assert_eq!(
+                std::fs::read(outside.join("precious.txt")).unwrap(),
+                b"keep me"
+            );
+
+            // Restoring brings the link back as a link.
+            service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(std::fs::symlink_metadata(dir.join("shared"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+
+            // Purging detaches the link before the (fake) trash sees the tree.
+            service.delete("linked").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let (trash, seen) = fake_trash(root.join("bin"));
+            service.purge_deleted(&entry.entry_id, &trash).unwrap();
+            let moved = seen.lock().unwrap()[0].clone();
+            assert!(files_of(&moved)
+                .iter()
+                .all(|(name, _)| !name.starts_with("LINK:")));
+            assert!(std::fs::symlink_metadata(moved.join("instance").join("shared")).is_err());
+            assert_eq!(
+                std::fs::read(outside.join("precious.txt")).unwrap(),
+                b"keep me"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn size_budget_purges_oldest_first_and_only_as_much_as_needed() {
+            let (ctx, root) = context();
+            let clock = crate::ctx::TestClock::new(std::time::SystemTime::now());
+            let ctx = ctx.with_clock(Arc::new(clock.clone()));
+            for id in ["first", "second", "third"] {
+                seed(&ctx, id);
+                std::fs::write(
+                    ctx.paths.instance_dir(id).unwrap().join("big.bin"),
+                    vec![1u8; 1000],
+                )
+                .unwrap();
+            }
+            let service = InstanceService::new(ctx.clone());
+            for id in ["first", "second", "third"] {
+                service.delete(id).unwrap();
+                clock.advance(std::time::Duration::from_secs(60));
+            }
+            let entries = service.list_recently_deleted().unwrap();
+            let each = entries[0].size_bytes;
+            let (trash, seen) = fake_trash(root.join("bin"));
+            // Room for two of the three: only the oldest goes.
+            let summary = crate::recently_deleted::cleanup_with_budget(
+                &ctx.paths.recently_deleted_root(),
+                chrono::DateTime::<chrono::Utc>::from(ctx.clock.now()),
+                &trash,
+                each * 2 + 10,
+            );
+            assert_eq!((summary.purged, summary.kept), (1, 2));
+            assert_eq!(seen.lock().unwrap().len(), 1);
+            let left: Vec<_> = service
+                .list_recently_deleted()
+                .unwrap()
+                .into_iter()
+                .map(|e| e.instance_id)
+                .collect();
+            assert!(left.contains(&"second".to_string()) && left.contains(&"third".to_string()));
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn locked_instance_is_refused_and_untouched() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.lock("pack").unwrap();
+            let before = files_of(&ctx.paths.instance_dir("pack").unwrap());
+            let error = service.delete("pack").unwrap_err();
+            assert!(error.to_string().contains("locked"));
+            assert_eq!(files_of(&ctx.paths.instance_dir("pack").unwrap()), before);
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            assert_eq!(service.list().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn instance_held_by_another_operation_is_refused_and_untouched() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let _held = ctx
+                .lock_manager
+                .acquire(
+                    crate::lock_manager::LockResource::Instance("pack".into()),
+                    "launch",
+                )
+                .unwrap();
+            let service = InstanceService::new(ctx.clone());
+            assert!(service.delete("pack").is_err());
+            assert!(ctx
+                .paths
+                .instance_dir("pack")
+                .unwrap()
+                .join("mods/a.jar")
+                .is_file());
+            assert_eq!(service.list().unwrap().len(), 1);
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn delete_fails_closed_when_recently_deleted_cannot_be_used() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            // A file where the holding area should be makes every move fail.
+            std::fs::write(ctx.paths.recently_deleted_root(), b"in the way").unwrap();
+            let service = InstanceService::new(ctx.clone());
+            let before = db_state(&ctx, "pack");
+            assert!(service.delete("pack").is_err());
+            assert!(ctx
+                .paths
+                .instance_dir("pack")
+                .unwrap()
+                .join("mods/a.jar")
+                .is_file());
+            assert_eq!(db_state(&ctx, "pack"), before);
+            assert_eq!(service.list().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn restore_rejects_unknown_and_hostile_entry_ids() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            for bad in ["", "..", "../instances", "nope", "a/b", "a\\b"] {
+                assert!(service.restore_deleted(bad).is_err(), "{bad:?}");
+                assert!(
+                    service.purge_deleted(bad, &failing_trash()).is_err(),
+                    "{bad:?}"
+                );
+            }
+            assert_eq!(service.list_recently_deleted().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn corrupt_entry_is_not_listed_and_not_restored() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let json = ctx
+                .paths
+                .recently_deleted_root()
+                .join(&entry.entry_id)
+                .join("entry.json");
+            std::fs::write(&json, b"{ not json").unwrap();
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Cleanup must not destroy what it cannot read.
+            let (trash, seen) = fake_trash(root.join("bin"));
+            service.cleanup_recently_deleted(&trash);
+            assert!(seen.lock().unwrap().is_empty());
+            assert!(ctx
+                .paths
+                .recently_deleted_root()
+                .join(&entry.entry_id)
+                .join("instance")
+                .is_dir());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn clone_of_an_import_keeps_its_source_badge() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let clone = rt
+                .block_on(service.clone(CloneRequest {
+                    source_instance_id: "pack".into(),
+                    new_name: "Copy".into(),
+                    prefs: ClonePrefs::default(),
+                }))
+                .unwrap();
+            let row = service
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.instance_id == clone.instance_id)
+                .unwrap();
+            assert_eq!(row.import_source.as_deref(), Some("curseforge"));
+            // Re-importing the original must never resolve to the clone.
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            let found = crate::db::find_instance_import_by_source(
+                &conn,
+                "curseforge",
+                "cf:test",
+                "src-key",
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(found.instance_id, "pack");
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 }
 

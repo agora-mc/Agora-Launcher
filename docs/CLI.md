@@ -54,7 +54,7 @@ Keep these rules in mind:
 - Use `--dry-run` on install, remove, and update operations before executing a complex plan.
 - Create a snapshot before manual or high-risk changes.
 - Use disposable instances when learning destructive commands.
-- `instance delete`, `snapshots restore`, `snapshots delete`, `lockfile import`, and some install conflict choices can replace or remove files.
+- `instance delete` moves the instance to Recently deleted, where the desktop app can restore it for 30 days (the CLI cannot yet); then it goes to the OS trash. `snapshots restore`, `snapshots delete`, `lockfile import`, and some install conflict choices can replace or remove files.
 - Never place access tokens or account codes in command history, log files, or bug reports.
 - `--data-dir` isolates files under the Agora data root, but Microsoft credentials use the operating-system credential store. `auth status`, `auth login`, and `auth logout` therefore inspect or change the same credential entry used by the desktop app. The exception is a portable copy (a `portable.txt` beside the executable, with no `AGORA_DATA_DIR` override), which never uses the operating-system store and keeps its credentials encrypted in its own data folder.
 

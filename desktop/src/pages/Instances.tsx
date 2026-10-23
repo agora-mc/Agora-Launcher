@@ -43,6 +43,7 @@ import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
+import { RecentlyDeleted, deleteDialogBody } from '../components/RecentlyDeleted';
 import { LaunchFailedBanner } from '../components/LaunchFailedBanner';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
 import { useConfirm } from '@/components/ui/confirm';
@@ -442,6 +443,8 @@ export function Instances({
         />
       )}
 
+      <RecentlyDeleted refreshKey={instances} onRestored={() => void refresh({ silent: true })} />
+
       <LauncherImportWizard
         open={showImport}
         onClose={() => setShowImport(false)}
@@ -605,7 +608,7 @@ function InstanceCard({
   const remove = async () => {
     if (!await confirm({
       title: `Delete instance "${instance.name}"?`,
-      body: 'This moves the folder to trash.',
+      body: deleteDialogBody(instance),
       confirmLabel: 'Delete',
       tone: 'danger',
     })) return;
