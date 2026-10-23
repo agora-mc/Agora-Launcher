@@ -366,6 +366,7 @@ const CONTEXT_INSTANCE: Record<string, unknown> = {
 
 const CONTEXT_DETAIL: Record<string, unknown> = {
   row: CONTEXT_INSTANCE,
+  pack_gaps: [],
   manifest: {
     instance_id: 'fabric-121',
     name: 'My Fabric World',
@@ -1450,7 +1451,7 @@ test('an empty search under the instance filter says what it hid, and Show them 
   await installBrowseMock(page);
   await overrideCommands(page, {
     list_instances: [RECENT_INSTANCE],
-    get_instance_detail: { row: RECENT_INSTANCE, manifest: null },
+    get_instance_detail: { row: RECENT_INSTANCE, manifest: null, pack_gaps: [] },
     for_you_items: [],
   });
   const initial = await openBrowse(page);
@@ -1522,7 +1523,7 @@ test('Browse opens on the most recently launched instance, and "No instance cont
   await installBrowseMock(page);
   await overrideCommands(page, {
     list_instances: [OLDER_INSTANCE, RECENT_INSTANCE],
-    get_instance_detail: { row: RECENT_INSTANCE, manifest: null },
+    get_instance_detail: { row: RECENT_INSTANCE, manifest: null, pack_gaps: [] },
     // Home shows recommendations once an instance exists; an empty list keeps it rendering.
     for_you_items: [],
   });

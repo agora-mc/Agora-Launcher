@@ -85,6 +85,7 @@ function makeInstanceDetail(isLocked: boolean): Record<string, unknown> {
       jvm_custom_args: '',
       created_at: '2026-06-01T00:00:00Z',
     },
+    pack_gaps: [],
     manifest: {
       instance_id: INSTANCE_ID,
       name: 'Test Instance',

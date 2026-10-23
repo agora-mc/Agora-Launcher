@@ -11,6 +11,7 @@ const INSTANCES = [
 ];
 const DETAIL = {
   row: { ...INSTANCES[0], is_modpack: false, jvm_memory_mb: 4096, jvm_gc: 'G1GC', jvm_custom_args: '', created_at: '2026-06-01T00:00:00Z' },
+  pack_gaps: [],
   manifest: {
     instance_id: 'a', name: 'Test Instance', created_from_pack: null, minecraft_version: '1.21', loader: 'fabric',
     loader_version: '0.16.9', is_locked: false, mods: [], resourcepacks: [], shaders: [], datapacks: [], worlds: [],
@@ -252,6 +253,53 @@ for (const [w, h] of [[1024, 700], [1280, 800]] as const) {
     expect(overlaps).toBe(0);
   });
 }
+
+const ALL_MOD_COLUMNS = ['name', 'author', 'source', 'size', 'installed', 'enabled', 'update_status', 'actions', 'version', 'categories', 'curation', 'agora_score', 'modrinth_downloads', 'loader_mod_id'];
+
+/** Where the named column headers sit inside the table's own scroll box, without scrolling it. */
+async function headerPlacement(page: Page, names: string[]) {
+  return page.getByRole('table').first().evaluate((table, wanted) => {
+    const scroller = table.parentElement!;
+    const s = scroller.getBoundingClientRect();
+    const headers = [...table.querySelectorAll('th')];
+    return wanted.map((name) => {
+      const th = headers.find((h) => h.textContent?.trim() === name);
+      const r = th?.getBoundingClientRect();
+      return { name, found: !!th, visible: !!r && r.left >= s.left - 1 && r.right <= s.right + 1 };
+    });
+  }, names);
+}
+
+test('mod table: Enabled switch clicks and Enabled + Update status start in view (1280x800, 150%)', async ({ page }) => {
+  await bootEditor(page, 1280, 800);
+  const sw = page.getByRole('switch', { name: 'Disable Sodium' });
+  await sw.scrollIntoViewIfNeeded();
+  // Fails with "element click intercepted" while the table covers the switch.
+  await sw.click({ timeout: 5_000 });
+  // Column priority: the two columns people act on are visible without scrolling the table.
+  const placed = await headerPlacement(page, ['Enabled', 'Update status']);
+  expect(placed).toEqual([
+    { name: 'Enabled', found: true, visible: true },
+    { name: 'Update status', found: true, visible: true },
+  ]);
+});
+
+test('mod table with every column: the box scrolls sideways and the far columns come into view', async ({ page }) => {
+  await page.addInitScript((saved) => {
+    localStorage.setItem('agora.installed-content.v2.mod', JSON.stringify({ version: 2, columns: saved, sort: { column: 'name', direction: 'asc' } }));
+  }, ALL_MOD_COLUMNS);
+  await bootEditor(page, 1280, 800);
+  const scrollable = await page.getByRole('table').first().evaluate((table) => {
+    const scroller = table.parentElement!;
+    return scroller.scrollWidth > scroller.clientWidth;
+  });
+  expect(scrollable).toBe(true);
+  await page.getByRole('table').first().evaluate((table) => {
+    table.parentElement!.scrollLeft = table.parentElement!.scrollWidth;
+  });
+  const placed = await headerPlacement(page, ['Loader mod ID']);
+  expect(placed[0]).toEqual({ name: 'Loader mod ID', found: true, visible: true });
+});
 
 // ---------------------------------------------------------------------------
 // Footers that must stay reachable at 150% text size

@@ -81,7 +81,7 @@ async function installLauncherImportMock(page: Page, opts: ImportFlowMockOptions
           if (command === 'check_instance_updates') return Promise.resolve([]);
           if (command === 'batch_check_compat') return Promise.resolve({});
           if (command === 'get_instance_detail') {
-            return Promise.resolve({ row: null, manifest: null });
+            return Promise.resolve({ row: null, manifest: null, pack_gaps: [] });
           }
           if (command === 'list_snapshots') return Promise.resolve([]);
           if (command === 'list_loadout_profiles') return Promise.resolve([]);
@@ -333,7 +333,7 @@ async function installOnboardingMockWithImport(page: Page) {
         if (command === 'check_instance_crash') return Promise.resolve(null);
         if (command === 'check_instance_updates') return Promise.resolve([]);
         if (command === 'batch_check_compat') return Promise.resolve({});
-        if (command === 'get_instance_detail') return Promise.resolve({ row: null, manifest: null });
+        if (command === 'get_instance_detail') return Promise.resolve({ row: null, manifest: null, pack_gaps: [] });
         if (command === 'list_snapshots') return Promise.resolve([]);
         if (command === 'list_loadout_profiles') return Promise.resolve([]);
         if (command === 'restore_snapshot') return Promise.resolve(null);
