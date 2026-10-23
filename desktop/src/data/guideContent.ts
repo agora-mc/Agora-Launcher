@@ -854,11 +854,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     description: 'Create restore points and switch between groups of enabled mods.',
     keywords: ['snapshot', 'last known good', 'last setup that launched fine', 'loadout', 'profile', 'diff', 'restore'],
     basic: {
-      summary: 'Snapshots restore files to an earlier state. Loadout profiles remember which installed mods are enabled. They solve different problems and work well together.',
+      summary: 'Snapshots restore files to an earlier state. Loadout profiles remember which mods, resource packs, shader packs, data packs and worlds are switched on. They solve different problems and work well together.',
       outcomes: [
         'Create, compare, restore, and delete snapshots.',
         'Understand how the last setup that launched fine (Last Known Good) is saved automatically.',
-        'Save and apply an enabled-mod loadout.',
+        'Save and apply a loadout profile, and know what it covers.',
       ],
       sections: [
         {
@@ -876,7 +876,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Create a loadout profile',
-          body: 'Open Loadout Profiles, name the current enabled-mod arrangement, and save it. Apply another profile to switch enabled states without removing files. Relaunch Minecraft after applying a profile.',
+          body: 'Open Loadout Profiles, name the profile, and save it. A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off, and its entry says how many of each it covers. Apply sets every item the profile records to that state. A mod it does not list is switched off; packs and worlds it does not list, such as ones added since it was saved, keep their state. Applying first saves an undo point under Snapshots, labelled before-loadout (only the newest is kept). Configs, versions and the loader are not part of a profile. Relaunch Minecraft after applying a profile.',
         },
         {
           title: 'Export and import a backup',
