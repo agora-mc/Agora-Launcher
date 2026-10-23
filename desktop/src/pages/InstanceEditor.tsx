@@ -265,6 +265,26 @@ function wrapperCommandOf(detail: InstanceDetail): string {
 /** What the Lock control does, shown as a tooltip on Lock, Unlock and the status. */
 const LOCK_HELP = 'Locking stops mod changes (installing, updating, removing, or turning mods on and off) until you unlock. Launching still works. Locking also takes a lock snapshot, which Revert returns to.';
 
+function countOf(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** Plain-words summary of what a loadout profile switches on, from the counts saved with it. */
+function describeLoadoutCoverage(prof: LoadoutProfile): string {
+  const covers = prof.covers;
+  if (!covers) {
+    return `Saved before counts were recorded: ${countOf(prof.enabled_mods.length, 'item', 'items')} switched on. Mods it does not list are switched off; other items it does not list are left alone.`;
+  }
+  const parts = [
+    countOf(covers.mods, 'mod', 'mods'),
+    countOf(covers.resourcepacks, 'resource pack', 'resource packs'),
+    countOf(covers.shaders, 'shader pack', 'shader packs'),
+    countOf(covers.datapacks, 'data pack', 'data packs'),
+    countOf(covers.worlds, 'world', 'worlds'),
+  ];
+  return `Switches on: ${parts.join(', ')}. Mods it does not list are switched off; other items it does not list are left alone.`;
+}
+
 function previewJavaMajor(version: string | undefined): number {
   const parts = (version ?? '').split('.');
   const first = Number(parts[0]);
@@ -2689,9 +2709,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               />
               <button
                 onClick={async () => {
+                  const name = profileNameInput.trim();
+                  if (!name) return;
                   setError(null);
                   try {
-                    const name = profileNameInput.trim() || `Current Setup ${new Date().toLocaleString()}`;
                     await createLoadoutProfile(instanceId, name);
                     const result = await listLoadoutProfiles(instanceId);
                     setProfiles(result);
@@ -2701,13 +2722,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     setError(formatError(e));
                   }
                 }}
-                disabled={recoveryBlocked}
+                disabled={recoveryBlocked || !profileNameInput.trim()}
                 className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 whitespace-nowrap"
               >
                 Create Profile
               </button>
             </div>
           </div>
+
+          <p className="text-xs text-muted-foreground">
+            A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off. Apply sets each item it records to that state. A mod it does not list is switched off. Packs and worlds it does not list, such as ones added since it was saved, are left as they are. Configs, versions and the loader are not part of a profile.
+          </p>
 
           {profiles.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -2719,7 +2744,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 <div key={prof.name} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm">
                   <div className="min-w-0 flex-1">
                     <span className="font-medium block">{prof.name}</span>
-                    <span className="text-xs text-muted-foreground">{prof.enabled_mods.length} mod{prof.enabled_mods.length !== 1 ? 's' : ''}</span>
+                    <span className="text-xs text-muted-foreground block">{describeLoadoutCoverage(prof)}</span>
                   </div>
                   <div className="flex gap-2 ml-3">
                     <button
@@ -2729,7 +2754,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                         try {
                           await applyLoadoutProfile(instanceId, prof.name);
                           await reloadInstance();
-                          setStatus(`Profile "${prof.name}" applied.`);
+                          setStatus(`Profile "${prof.name}" applied. Before switching, Agora saved an undo point under Snapshots, labelled before-loadout (only the newest is kept).`);
                         } catch (e) {
                           setError(formatError(e));
                         } finally {

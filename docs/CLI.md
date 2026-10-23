@@ -284,7 +284,7 @@ agora loadout apply <INSTANCE> <NAME>
 agora loadout delete <INSTANCE> <NAME>
 ```
 
-A loadout records enabled state. It does not revert mod versions or configuration files.
+A loadout records the on/off state of mods, resource packs, shader packs, data packs and worlds. Applying one sets each item it records to that state. Mods it does not list are switched off; packs and worlds it does not list are left as they are. Apply refuses a locked instance, and an instance whose game is running or starting, and changes nothing in either case. Before switching, apply saves an undo point labelled `before-loadout` (only the newest is kept). A loadout does not revert mod versions or configuration files.
 
 ### Reproduction lockfiles
 

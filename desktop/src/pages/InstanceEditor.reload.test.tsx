@@ -149,7 +149,7 @@ describe('InstanceEditor reload after mutations', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Loadout Profiles' }));
     const contentBefore = calls('list_instance_content');
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
-    await screen.findByText('Profile "Fast" applied.');
+    await screen.findByText(/Profile "Fast" applied\./);
     expect(calls('list_instance_content')).toBeGreaterThan(contentBefore);
     expect(calls('get_instance_detail')).toBeGreaterThan(1);
   });

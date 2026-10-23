@@ -4956,35 +4956,12 @@ pub async fn apply_loadout_profile(
     instance_id: String,
     profile_name: String,
 ) -> LauncherResult<()> {
-    check_not_locked(&app, &instance_id)?;
+    // Core checks the lock and the running game, takes the undo point, and
+    // rolls back on failure. The desktop only hands over the request.
+    let ctx = crate::core_context(&app)?;
     let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     tokio::task::spawn_blocking(move || {
-        let snapshot = agora_core::snapshot::create_snapshot(&instance_dir, Some("before-loadout"))
-            .map_err(|error| LauncherError::Generic {
-                code: "ERR_SNAPSHOT_REQUIRED".into(),
-                message: format!("Could not create the required recovery snapshot: {error}"),
-            })?;
-        if let Err(error) = agora_core::loadout::apply_profile(&instance_dir, &profile_name) {
-            let restored = agora_core::snapshot::restore_snapshot(&instance_dir, &snapshot.id);
-            return Err(LauncherError::Generic {
-                code: "ERR_LOADOUT".into(),
-                message: match restored {
-                    Ok(_) => format!("Loadout application failed and was rolled back: {error}"),
-                    Err(restore_error) => format!(
-                        "Loadout application failed and rollback also failed: {error}; {restore_error}"
-                    ),
-                },
-            });
-        }
-        agora_core::lkg::run_retention(&instance_dir).map_err(|error| LauncherError::Generic {
-            code: "ERR_RETENTION".into(),
-            message: error,
-        })
+        agora_core::loadout_service::LoadoutService::new(ctx).apply(&sanitized, &profile_name)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?

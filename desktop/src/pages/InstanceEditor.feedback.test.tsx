@@ -218,9 +218,9 @@ describe('instance banners', () => {
     const view = render(editor('alpha'));
     fireEvent.click(await screen.findByRole('button', { name: 'Loadout Profiles' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
-    await screen.findByText('Profile "Fast" applied.');
+    await screen.findByText(/Profile "Fast" applied\./);
 
     view.rerender(editor('beta'));
-    await waitFor(() => expect(screen.queryByText('Profile "Fast" applied.')).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Profile "Fast" applied\./)).toBeNull());
   });
 });

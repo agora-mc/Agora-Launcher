@@ -2275,6 +2275,91 @@ fn loadout_apply_json_output() {
 }
 
 #[test]
+fn loadout_apply_saves_an_undo_point_the_snapshot_list_shows() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_minimal_instance(&data_dir, "loadout-undo");
+    run_agora(&data_dir, &["loadout", "create", "loadout-undo", "full"]);
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-undo", "full"]);
+    assert!(
+        output.status.success(),
+        "loadout apply should succeed:
+{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("before-loadout"),
+        "stdout should name the undo point:
+{stdout}"
+    );
+
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-undo"]);
+    let parsed = assert_json_stdout(&list);
+    let snapshots: Vec<serde_json::Value> = serde_json::from_value(parsed).unwrap();
+    assert!(
+        snapshots.iter().any(|s| s["label"] == "before-loadout"),
+        "apply from the CLI must save an undo point: {snapshots:?}"
+    );
+}
+
+#[test]
+fn loadout_apply_refuses_a_locked_instance_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_minimal_instance(&data_dir, "loadout-locked");
+    run_agora(&data_dir, &["loadout", "create", "loadout-locked", "all"]);
+
+    // After the profile was saved, lithium was switched off and the instance locked.
+    let instance_dir = data_dir.join("instances").join("loadout-locked");
+    std::fs::rename(
+        instance_dir.join("mods").join("lithium.jar"),
+        instance_dir.join("mods").join("lithium.jar.disabled"),
+    )
+    .unwrap();
+    let path = instance_dir.join("instance_manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    manifest["is_locked"] = serde_json::json!(true);
+    for entry in manifest["mods"].as_array_mut().unwrap() {
+        if entry["filename"] == "lithium.jar" {
+            entry["enabled"] = serde_json::json!(false);
+        }
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    let manifest_before = std::fs::read_to_string(&path).unwrap();
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-locked", "all"]);
+    assert!(
+        !output.status.success(),
+        "apply to a locked instance must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("This instance is locked"),
+        "stderr should carry the core lock message:
+{stderr}"
+    );
+
+    assert!(
+        instance_dir
+            .join("mods")
+            .join("lithium.jar.disabled")
+            .exists(),
+        "lithium must stay off"
+    );
+    assert!(!instance_dir.join("mods").join("lithium.jar").exists());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        manifest_before,
+        "the manifest must not change"
+    );
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-locked"]);
+    let snapshots: Vec<serde_json::Value> =
+        serde_json::from_value(assert_json_stdout(&list)).unwrap();
+    assert!(snapshots.is_empty(), "a refused apply takes no undo point");
+}
+
+#[test]
 fn loadout_delete_succeeds() {
     let (_tmp, data_dir) = temp_data_dir();
     create_minimal_instance(&data_dir, "loadout-del");

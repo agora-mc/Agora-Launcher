@@ -73,6 +73,7 @@ pub mod loader_compatibility;
 pub mod loader_manifests;
 pub mod loader_service;
 pub mod loadout;
+pub mod loadout_service;
 pub mod lock_manager;
 pub mod lockfile;
 pub mod log_sanitizer;
