@@ -1418,3 +1418,65 @@ main::-webkit-scrollbar-thumb:hover {
 main::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* The sidebar's nav scrolls by itself at large text scales. It gets the same
+   rounded scrollbar as the content panel instead of the browser's square one. */
+.app-sidebar nav::-webkit-scrollbar {
+  width: 12px;
+}
+.app-sidebar nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+.app-sidebar nav::-webkit-scrollbar-track:vertical {
+  margin: calc(var(--radius) * 1.25) 0;
+}
+.app-sidebar nav::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.4);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+.app-sidebar nav::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.65);
+  background-clip: padding-box;
+}
+.app-sidebar nav::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* At large text scales the sidebar's fixed row padding is what runs out of
+   room. The rows tighten in step with the text, so Settings stays reachable
+   in the nav instead of being pushed below the fold. */
+.app-sidebar nav button {
+  padding-top: calc(0.625rem / var(--font-scale));
+  padding-bottom: calc(0.625rem / var(--font-scale));
+}
+
+/* "Skip to content" is parked off-screen until it takes keyboard focus. */
+.skip-link:not(:focus) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.skip-link {
+  position: absolute;
+  left: 0.75rem;
+  top: 0.75rem;
+  z-index: 100;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-size: calc(0.875rem * var(--font-scale));
+  font-weight: 600;
+}
+
+/* A page heading takes focus after a page change so the next Tab starts in
+   the page. It is a landing point, not a control, so it gets no ring. */
+main h1[tabindex="-1"]:focus,
+main h2[tabindex="-1"]:focus {
+  outline: none;
+}

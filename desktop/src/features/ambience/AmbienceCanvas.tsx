@@ -68,6 +68,9 @@ export function AmbienceCanvas({ profile, soundOn, soundVolume = 1, musicVolume,
   }, []);
 
   useEffect(() => { engineRef.current?.setProfile(profile); }, [profile]);
+  // Reduced motion holds the world still (one frame, no drift) rather than
+  // stopping it, so it follows the Motion setting live.
+  useEffect(() => { engineRef.current?.setReducedMotion(reducedMotion); }, [reducedMotion]);
   useEffect(() => { engineRef.current?.setSoundOn(soundOn); }, [soundOn]);
   useEffect(() => { engineRef.current?.setSoundVolume(soundVolume); }, [soundVolume]);
   useEffect(() => { engineRef.current?.setMusicVolume(musicVolume); }, [musicVolume]);
