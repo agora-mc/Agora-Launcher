@@ -14,7 +14,7 @@
  *  - `off`: no canvas, no rAF (AmbienceCanvas does not mount).
  */
 
-import { buddyStep, createBuddy, drawBuddy, buddySnap, buddyTarget, buddyVisible, type BuddyState } from './buddy';
+import { BUDDY_OFFSET, buddyStep, createBuddy, drawBuddy, buddySnap, buddyTarget, buddyVisible, type BuddyState } from './buddy';
 import { advanceClock, createClock, setWeather as clockSetWeather, type ClockState } from './clock';
 import { viewToCanvas, worldViewport } from './terrain';
 import { checkAchievements, journalData, loadJournalState, saveJournalState } from './eggs';
@@ -77,6 +77,23 @@ const INTERACTIVE_SELECTOR = [
   '[role="switch"]', '[role="option"]', '[role="radio"]', '[contenteditable]', '[data-radix-dialog-content]',
 ].join(',');
 
+/**
+ * Whether the element under a point is (or sits inside) a control. The
+ * companion is hidden over these so it never covers a label or button.
+ */
+export function coversControl(el: Element | null): boolean {
+  return el !== null && el.closest(INTERACTIVE_SELECTOR) !== null;
+}
+
+/**
+ * The element under a viewport point. Absent in some test environments, where
+ * the companion is simply not hidden: it is decoration, not a control.
+ */
+function elementAt(clientX: number, clientY: number): Element | null {
+  if (typeof document === 'undefined' || typeof document.elementFromPoint !== 'function') return null;
+  return document.elementFromPoint(clientX, clientY);
+}
+
 export class AmbienceEngine {
   readonly state: EngineState;
   private bg: HTMLCanvasElement;
@@ -130,6 +147,8 @@ export class AmbienceEngine {
     this.profile = options.profile ?? 'full';
     this.particles.reduced = this.state.reduce;
     this.buddy = createBuddy(this.state.reduce, 0, 0);
+    this.buddyRequested = this.profile === 'full';
+    this.applyBuddy();
   }
 
   get profileValue(): AmbienceProfile { return this.profile; }
@@ -146,8 +165,66 @@ export class AmbienceEngine {
   setProfile(p: AmbienceProfile): void {
     this.profile = p;
     this.particles.reduced = this.state.reduce || p === 'calm';
-    buddyVisible(this.buddy, p === 'full' && !this.state.reduce);
+    this.buddyRequested = p === 'full';
+    this.applyBuddy();
     this.bg.style.cursor = p === 'full' ? 'default' : 'default';
+    this.scheduleStill();
+  }
+
+  /**
+   * Reduced motion holds the world still rather than switching it off. While
+   * it is on, the frame loop stops and the world is painted once; turning it
+   * off starts the loop again. Live, so the Motion setting takes effect at once.
+   */
+  setReducedMotion(on: boolean): void {
+    if (this.state.reduce === on) return;
+    this.state.reduce = on;
+    this.buddy.reduced = on;
+    this.particles.reduced = on || this.profile === 'calm';
+    this.applyBuddy();
+    if (!this.running) return;
+    cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    if (on) {
+      this.paintStill();
+    } else {
+      this.raf = requestAnimationFrame(this.frame);
+    }
+  }
+
+  /** Whether the profile or the caller wants the companion shown. */
+  private buddyRequested = true;
+  /** Set while the companion would sit on a control, so it is not drawn over it. */
+  private buddyHidden = false;
+  /** Pending repaint of a still world (0 = none queued). */
+  private stillRaf = 0;
+
+  /** The one place the companion's visibility is decided. */
+  private applyBuddy(): void {
+    buddyVisible(this.buddy, this.buddyRequested && !this.state.reduce && !this.buddyHidden);
+  }
+
+  /**
+   * Queue one repaint for a still world. Changes made while the world is held
+   * still (time of day, weather, zoom, a rainbow) would otherwise not show until
+   * the next motion, which never comes.
+   */
+  private scheduleStill(): void {
+    if (!this.running || !this.state.reduce || this.stillRaf) return;
+    this.stillRaf = requestAnimationFrame(() => {
+      this.stillRaf = 0;
+      if (this.running && this.state.reduce) this.paintStill();
+    });
+  }
+
+  /** Paint the world once without advancing it: the still picture. */
+  private paintStill(): void {
+    this.applyWorldScale();
+    // Zero elapsed time: skyFrame advances the world by `ts - lastTs`, and a
+    // still frame must neither move it on nor step it backwards on resume.
+    this.state.lastTs = 0;
+    skyFrame(this.state, this.bgCtx, 0);
+    this.fxCtx.clearRect(0, 0, this.fx.width, this.fx.height);
   }
 
   setSoundOn(on: boolean): void {
@@ -174,6 +251,7 @@ export class AmbienceEngine {
     if (idx < 0) return;
     clockSetWeather(this.state, this.clock, idx);
     this.state.weatherLocked = true;
+    this.scheduleStill();
   }
 
   /** Pin the weather where it is, or hand it back to the automatic cycle. */
@@ -213,6 +291,7 @@ export class AmbienceEngine {
     if (next >= 1) { this.view.tx = 0; this.view.ty = 0; }
     if (changedCoverage) this.size();   // re-cover the viewport at the new scale
     this.applyView();
+    this.scheduleStill();
   }
 
   /** Pan the world (only meaningful while zoomed in). */
@@ -277,6 +356,7 @@ export class AmbienceEngine {
     world.flags.rainbowPinned = on;
     if (on) world.spawnRainbow();
     else world.clearRainbow();
+    this.scheduleStill();
   }
 
   private lastPinnedTrackId: string | null = null;
@@ -303,7 +383,8 @@ export class AmbienceEngine {
 
   /** Toggle the cursor companion (buddy) on/off. */
   setBuddy(on: boolean): void {
-    buddyVisible(this.buddy, on && !this.state.reduce);
+    this.buddyRequested = on;
+    this.applyBuddy();
   }
 
   /** For the High Interaction UI's drag-to-rearrange (prototype's justDragged). */
@@ -459,6 +540,7 @@ export class AmbienceEngine {
   /** Advance / set the time of day (0..1). */
   setTod(t: number): void {
     this.state.tod = t;
+    this.scheduleStill();
   }
 
   start(): void {
@@ -477,7 +559,11 @@ export class AmbienceEngine {
       window.addEventListener('pointerdown', kick);
       this.listeners.push({ el: window, type: 'pointerdown', fn: kick });
     }
-    this.raf = requestAnimationFrame(this.frame);
+    if (this.state.reduce) {
+      this.paintStill();
+    } else {
+      this.raf = requestAnimationFrame(this.frame);
+    }
   }
 
   /** Resume the shared AudioContext after a user gesture (browser autoplay). */
@@ -491,6 +577,8 @@ export class AmbienceEngine {
     this.running = false;
     cancelAnimationFrame(this.raf);
     this.raf = 0;
+    if (this.stillRaf) cancelAnimationFrame(this.stillRaf);
+    this.stillRaf = 0;
     this.listeners.forEach(({ el, type, fn, capture }) => el.removeEventListener(type, fn, capture));
     this.listeners = [];
     this.resizers.forEach((r) => r.disconnect());
@@ -635,7 +723,7 @@ export class AmbienceEngine {
       el.addEventListener(type, fn, capture);
       this.listeners.push({ el, type, fn, capture });
     };
-    const resize = () => { this.size(); };
+    const resize = () => { this.size(); this.scheduleStill(); };
     on(window, 'resize', resize);
     on(window, 'load', resize);
     // A boxed host can resize without a window resize (layout shift, font
@@ -671,6 +759,14 @@ export class AmbienceEngine {
       }
       this.particles.pointerMoved(x, y);
       buddyTarget(this.buddy, x, y);
+      // The companion trails the cursor, so where it lands is where it would
+      // cover things. Over a control it steps aside instead of hiding a label.
+      const onControl = coversControl(elementAt(e.clientX + BUDDY_OFFSET, e.clientY + BUDDY_OFFSET));
+      if (onControl !== this.buddyHidden) {
+        this.buddyHidden = onControl;
+        this.applyBuddy();
+        if (!onControl) buddySnap(this.buddy, x, y);
+      }
       {
         const p = this.toCanvas(x, y);
         state.pcx = p.x;
@@ -680,6 +776,7 @@ export class AmbienceEngine {
         const w = state.world as WorldState;
         const p = this.toCanvas(x, y);
         const m = w.hit(p.x, p.y);
+        if (m !== w.hover) this.scheduleStill();
         w.hover = m;
         this.bg.style.cursor = m ? 'pointer' : this.view.zoom > 1 ? 'grab' : 'default';
       }
@@ -773,7 +870,7 @@ export class AmbienceEngine {
   }
 
   private frame = (ts: number): void => {
-    if (!this.running) return;
+    if (!this.running || this.state.reduce) return;
     const state = this.state;
     // time of day + weather advance with the real clock: no debug slider,
     // no weather toggle

@@ -61,9 +61,12 @@ export function createBuddy(reduced: boolean, w: number, h: number): BuddyState 
  * but wrong after a gap: it would crawl across the whole screen from wherever it
  * was stranded, reading as broken rather than lively.
  */
+/** How far the companion trails the pointer, down and to the right, in px. */
+export const BUDDY_OFFSET = 26;
+
 export function buddySnap(s: BuddyState, cx: number, cy: number): void {
-  s.tx = cx + 26;
-  s.ty = cy + 26;
+  s.tx = cx + BUDDY_OFFSET;
+  s.ty = cy + BUDDY_OFFSET;
   s.x = s.tx;
   s.y = s.ty;
   s.speed = 0;
@@ -73,8 +76,8 @@ export function buddySnap(s: BuddyState, cx: number, cy: number): void {
 
 export function buddyTarget(s: BuddyState, cx: number, cy: number): void {
   // Trailing behind and below reads as "following", not "attached to".
-  const nx = cx + 26;
-  const ny = cy + 26;
+  const nx = cx + BUDDY_OFFSET;
+  const ny = cy + BUDDY_OFFSET;
   if (Math.abs(nx - s.tx) > 0.5 || Math.abs(ny - s.ty) > 0.5) {
     s.idle = 0;
     s.perk = 'none';

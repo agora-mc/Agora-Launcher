@@ -57,6 +57,7 @@ import { usePluginLaunchGate } from './features/plugins/usePluginLaunchGate';
 import { useController } from './features/controller/ControllerProvider';
 import { ControllerRootBindings, cycleTab } from './features/controller/ControllerRootBindings';
 import { focusMemoryKey, useFocusMemory } from './features/controller/useFocusMemory';
+import { moveFocusForRoute, routeFocusTarget } from './lib/routeFocus';
 import { BookOpen, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -381,6 +382,26 @@ function AppContent() {
 
     previousDestinationRef.current = destination;
   }, [destination]);
+
+  // After a page change, focus moves to the new page's heading so the next Tab
+  // starts inside the page (see lib/routeFocus). The first render is not a
+  // page change, so it never moves focus. Keyed on the destination's value, not
+  // its object: restoring the same destination from history (StrictMode and
+  // reloads both do) hands back a new object for the same page.
+  const routeKey = focusMemoryKey(destination);
+  const lastRouteRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastRouteRef.current === routeKey) return;
+    const firstRoute = lastRouteRef.current === null;
+    lastRouteRef.current = routeKey;
+    if (firstRoute) return;
+    const frame = requestAnimationFrame(() => {
+      const main = mainRef.current;
+      if (!main) return;
+      moveFocusForRoute(main, appShellRef.current?.querySelector('aside') ?? null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [routeKey]);
 
   // A desktop shortcut carrying `--launch <id>` reaches an already-running app
   // through the single-instance plugin, which forwards it as `cli-launch`.
@@ -834,6 +855,17 @@ function AppContent() {
       <AmbienceEnabledBridge onChange={setAmbienceEnabled} />
       <QueuedTourStarter />
       <div ref={appShellRef} className="app-shell flex h-screen w-full overflow-hidden gap-3 p-3">
+        {/* First in the Tab order: skips past the sidebar straight to the page. */}
+        <button
+          type="button"
+          className="skip-link"
+          onClick={() => {
+            const main = mainRef.current;
+            if (main) routeFocusTarget(main).focus({ preventScroll: true });
+          }}
+        >
+          Skip to content
+        </button>
         <ControllerRootBindings
           rootRef={appShellRef}
           onOpenPalette={() => setCommandPaletteOpen(true)}
@@ -916,7 +948,7 @@ function AppContent() {
           />
         )}
 
-        <main ref={mainRef} className={`flex-1 overflow-y-auto bg-background p-6 text-background-foreground rounded-xl border border-border ${effectiveTab === 'living-background' ? 'living-bg-active' : ''}`}>
+        <main ref={mainRef} tabIndex={-1} className={`flex-1 overflow-y-auto bg-background p-6 text-background-foreground rounded-xl border border-border ${effectiveTab === 'living-background' ? 'living-bg-active' : ''}`}>
           <div className="contents">
             {!isKnownDestType ? (
               <NotFoundView
