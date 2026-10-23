@@ -8,6 +8,8 @@
  * path reads the real requirement from the game's version file.
  */
 
+import { problemsText, warningsText } from '@/lib/healthSummary';
+
 export type ReadinessLevel = 'ready' | 'check' | 'blocked';
 
 export type JavaRuntimeMode = 'automatic' | 'prompt' | 'manual';
@@ -42,10 +44,6 @@ const LOADER_NAMES: Record<string, string> = {
   quilt: 'Quilt',
 };
 
-function plural(count: number, one: string, many: string): string {
-  return `${count} ${count === 1 ? one : many}`;
-}
-
 export function instanceReadiness(input: ReadinessInput): Readiness {
   const minecraft = input.minecraftVersion.trim();
   const loader = input.loader.trim().toLowerCase();
@@ -78,11 +76,11 @@ export function instanceReadiness(input: ReadinessInput): Readiness {
     check ??= 'mods not checked yet';
     details.push('Mods not checked yet');
   } else if (input.health.blockers > 0) {
-    blocker ??= `${plural(input.health.blockers, 'mod problem', 'mod problems')} to fix`;
-    details.push(`${plural(input.health.blockers, 'mod problem', 'mod problems')} to fix`);
+    blocker ??= problemsText(input.health.blockers);
+    details.push(problemsText(input.health.blockers));
   } else if (input.health.warnings > 0) {
-    check ??= `${plural(input.health.warnings, 'warning', 'warnings')} to review`;
-    details.push(`${plural(input.health.warnings, 'warning', 'warnings')} to review`);
+    check ??= warningsText(input.health.warnings);
+    details.push(warningsText(input.health.warnings));
   } else {
     details.push('Mods look healthy');
   }

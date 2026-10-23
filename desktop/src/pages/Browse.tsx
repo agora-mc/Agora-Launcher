@@ -64,6 +64,7 @@ import {
 import type { BrowseItemContext as ItemContext } from '../components/browse/types';
 import '../components/browse/browse-cards.css';
 import { agoraRepositoryUrl } from '../lib/brandConfig';
+import { onBrowseSearchRequest, takeBrowseSearchRequest } from '../lib/browseSearchRequest';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -497,7 +498,8 @@ function BrowseContent({
   // is not tagged fabric.
   const [modLoader, setLoader] = useState<string | null>(null);
   const loader = loaderFilterApplies(contentType) ? modLoader : null;
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(() => takeBrowseSearchRequest() ?? '');
+  useEffect(() => onBrowseSearchRequest(setQuery), []);
   const debouncedQuery = useDebounce(query, 250);
   const [layout, setLayout] = useState<'list' | 'grid'>(() => {
     try {

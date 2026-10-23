@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { CommandPalette } from './components/command-palette';
 import { Home } from './pages/Home';
 import { Browse } from './pages/Browse';
+import { requestBrowseSearch } from './lib/browseSearchRequest';
 import { Instances } from './pages/Instances';
 import { Governance } from './pages/Governance';
 import { Guide } from './pages/Guide';
@@ -929,6 +930,11 @@ function AppContent() {
             initialReport={processState.healthReport}
             onConfirm={approveLaunch}
             onCancel={cancelLaunch}
+            onFindMod={(query) => {
+              requestBrowseSearch(query);
+              cancelLaunch();
+              navigateToBrowse(processState.instanceId ?? undefined);
+            }}
             onSwitchLoader={switchLoaderAndRetry}
           />
         ) : healthReview && (
@@ -939,6 +945,12 @@ function AppContent() {
             onCancel={() => setHealthReview(null)}
             onSwitchLoader={switchLoaderFromHealthReview}
             reviewOnly
+            onFindMod={(query) => {
+              requestBrowseSearch(query);
+              const id = healthReview.instanceId;
+              setHealthReview(null);
+              navigateToBrowse(id);
+            }}
             onReportChanged={(report) => {
               healthMonitor.updateReport(healthReview.instanceId, report);
               setHealthReview((current) => current && current.instanceId === healthReview.instanceId
