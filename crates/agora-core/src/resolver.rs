@@ -24,6 +24,7 @@ use crate::install_pipeline::{
     PreparedPlan, ResolvedArtifact, ResolvedDep, ResolvedDownload, ResolvedLocal,
     ResolvedOperation, SourceType,
 };
+use crate::jar_metadata::is_platform_dependency;
 use crate::models::{InstalledMod, InstanceManifest, ModVersionCandidate};
 use crate::registry::{self, ManifestDeps};
 use serde::Deserialize;
@@ -696,7 +697,7 @@ impl Resolver {
                 );
                 continue;
             }
-            if is_platform_dependency(&key, &manifest.loader) {
+            if is_platform_dependency(&key, &manifest.loader, &manifest.loader_version) {
                 resolved.insert(
                     key,
                     ResolvedDep {
@@ -975,7 +976,11 @@ impl Resolver {
                 ),
             }
         })?;
-        Ok(jar_requirements_from_bytes(&bytes, &manifest.loader))
+        Ok(jar_requirements_from_bytes(
+            &bytes,
+            &manifest.loader,
+            &manifest.loader_version,
+        ))
     }
 
     /// Find a jar-declared requirement the registry did not list: the Agora
@@ -3879,19 +3884,15 @@ pub fn valid_hash(value: Option<&str>, length: usize) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-fn is_platform_dependency(dependency: &str, loader: &str) -> bool {
-    matches!(
-        dependency,
-        "minecraft" | "java" | "fabricloader" | "fabric_loader" | "quilt_loader" | "quilt-loader"
-    ) || dependency.eq_ignore_ascii_case(loader)
-        || (loader == "neoforge" && dependency == "forge")
-}
-
-/// Required mod ids a jar declares for `loader`, with the loader's own
-/// platform entries removed. Fails closed: a jar whose metadata could not be
-/// read completely is an error, never an empty list. A jar with no metadata
-/// for this loader declares nothing for it.
-pub(crate) fn declared_required_jar_ids(bytes: &[u8], loader: &str) -> Result<Vec<String>, String> {
+/// Required mod ids a jar declares for `loader`, with the platform entries
+/// the loader provides at `loader_version` removed. Fails closed: a jar whose
+/// metadata could not be read completely is an error, never an empty list. A
+/// jar with no metadata for this loader declares nothing for it.
+pub(crate) fn declared_required_jar_ids(
+    bytes: &[u8],
+    loader: &str,
+    loader_version: &str,
+) -> Result<Vec<String>, String> {
     let parsed = crate::jar_metadata::parse_jar_metadata_bytes_for_loader(bytes, loader);
     if parsed.status != crate::jar_metadata::ParseStatus::Complete {
         let detail = parsed
@@ -3908,7 +3909,7 @@ pub(crate) fn declared_required_jar_ids(bytes: &[u8], loader: &str) -> Result<Ve
         .metadata
         .depends_on
         .into_iter()
-        .filter(|id| !is_platform_dependency(id, loader))
+        .filter(|id| !is_platform_dependency(id, loader, loader_version))
         .collect())
 }
 
@@ -3919,8 +3920,12 @@ enum JarRequirements {
 }
 
 /// What a jar declares for `loader`, or why it could not be read.
-fn jar_requirements_from_bytes(bytes: &[u8], loader: &str) -> JarRequirements {
-    match declared_required_jar_ids(bytes, loader) {
+fn jar_requirements_from_bytes(
+    bytes: &[u8],
+    loader: &str,
+    loader_version: &str,
+) -> JarRequirements {
+    match declared_required_jar_ids(bytes, loader, loader_version) {
         Ok(ids) => JarRequirements::Declared(ids),
         Err(reason) => JarRequirements::Unreadable(reason),
     }
@@ -4306,11 +4311,11 @@ mod tests {
 
     #[test]
     fn test_is_platform_dependency() {
-        assert!(is_platform_dependency("minecraft", "fabric"));
-        assert!(is_platform_dependency("fabricloader", "fabric"));
-        assert!(is_platform_dependency("quilt_loader", "quilt"));
-        assert!(is_platform_dependency("neoforge", "neoforge"));
-        assert!(!is_platform_dependency("some-mod", "fabric"));
+        assert!(is_platform_dependency("minecraft", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("fabricloader", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("quilt_loader", "quilt", "0.27.0"));
+        assert!(is_platform_dependency("neoforge", "neoforge", "21.1.77"));
+        assert!(!is_platform_dependency("some-mod", "fabric", "0.20.1"));
     }
 
     #[test]
@@ -5667,12 +5672,41 @@ mod tests {
         "depends": {"fabricloader": ">=0.15", "minecraft": "1.21", "java": ">=21", "fabric-api": "*"}
     }"#;
 
+    /// Shaped like a Fabric mod that needs MixinExtras (Lithium-style): the
+    /// loader bundles it from 0.15.0, so it must not be looked up as a jar.
+    const MIXINEXTRAS_FABRIC_JSON: &str = r#"{
+        "schemaVersion": 1,
+        "id": "lithium",
+        "version": "0.26.1",
+        "depends": {"fabricloader": ">=0.15.0", "minecraft": "1.21.1", "java": ">=21", "mixinextras": ">=0.2.0", "fabric-api": "*"}
+    }"#;
+
     #[test]
     fn a_fabric_jar_declares_its_required_mods_minus_the_platform() {
         let jar = jar_with_entries(&[("fabric.mod.json", XAERO_FABRIC_JSON)]);
         assert_eq!(
-            declared_required_jar_ids(&jar, "fabric").unwrap(),
+            declared_required_jar_ids(&jar, "fabric", "0.20.1").unwrap(),
             vec!["fabric-api".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_modern_fabric_loader_meets_a_mixinextras_requirement_without_a_jar() {
+        let jar = jar_with_entries(&[("fabric.mod.json", MIXINEXTRAS_FABRIC_JSON)]);
+        assert_eq!(
+            declared_required_jar_ids(&jar, "fabric", "0.20.1").unwrap(),
+            vec!["fabric-api".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_old_fabric_loader_still_declares_mixinextras_as_a_jar_requirement() {
+        let jar = jar_with_entries(&[("fabric.mod.json", MIXINEXTRAS_FABRIC_JSON)]);
+        let mut ids = declared_required_jar_ids(&jar, "fabric", "0.14.22").unwrap();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["fabric-api".to_string(), "mixinextras".to_string()]
         );
     }
 
@@ -5683,14 +5717,14 @@ mod tests {
             "Manifest-Version: 1.0
 ",
         )]);
-        assert!(declared_required_jar_ids(&jar, "fabric")
+        assert!(declared_required_jar_ids(&jar, "fabric", "0.20.1")
             .unwrap()
             .is_empty());
     }
 
     #[test]
     fn an_unreadable_jar_is_an_error_not_an_empty_requirement_list() {
-        assert!(declared_required_jar_ids(b"not a zip archive", "fabric").is_err());
+        assert!(declared_required_jar_ids(b"not a zip archive", "fabric", "0.20.1").is_err());
     }
 
     #[test]
@@ -5702,7 +5736,7 @@ mod tests {
 modId=\"xaerominimap\"
 ",
         )]);
-        assert!(declared_required_jar_ids(&jar, "fabric")
+        assert!(declared_required_jar_ids(&jar, "fabric", "0.20.1")
             .unwrap()
             .is_empty());
     }
@@ -5780,7 +5814,7 @@ modId=\"xaerominimap\"
     #[test]
     fn a_jar_that_cannot_be_read_is_unreadable_not_requirement_free() {
         assert!(matches!(
-            jar_requirements_from_bytes(b"not a zip archive", "fabric"),
+            jar_requirements_from_bytes(b"not a zip archive", "fabric", "0.20.1"),
             JarRequirements::Unreadable(_)
         ));
     }
@@ -5789,7 +5823,7 @@ modId=\"xaerominimap\"
     fn a_readable_jar_reports_its_requirements() {
         let jar = jar_with_entries(&[("fabric.mod.json", XAERO_FABRIC_JSON)]);
         assert!(matches!(
-            jar_requirements_from_bytes(&jar, "fabric"),
+            jar_requirements_from_bytes(&jar, "fabric", "0.20.1"),
             JarRequirements::Declared(ids) if ids == ["fabric-api".to_string()]
         ));
     }
