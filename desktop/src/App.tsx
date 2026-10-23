@@ -39,7 +39,7 @@ import { useProcessController } from './lib/useProcessController';
 import { useInstanceHealthMonitor } from './lib/useInstanceHealthMonitor';
 import { useRegistryState } from './lib/useRegistryState';
 import { BrandMark } from './components/BrandMark';
-import { PackInstallProvider } from './components/PackInstallProgress';
+import { PackImportReports, PackInstallProvider } from './components/PackInstallProgress';
 import { GUIDE_TOPICS } from './data/guideContent';
 import { LabShell } from './features/interactive/lab/LabShell';
 import type { StandardDestination } from './features/interactive/domain/intents';
@@ -949,6 +949,7 @@ function AppContent() {
         )}
 
         <main ref={mainRef} tabIndex={-1} className={`flex-1 overflow-y-auto bg-background p-6 text-background-foreground rounded-xl border border-border ${effectiveTab === 'living-background' ? 'living-bg-active' : ''}`}>
+          <PackImportReports />
           <div className="contents">
             {!isKnownDestType ? (
               <NotFoundView

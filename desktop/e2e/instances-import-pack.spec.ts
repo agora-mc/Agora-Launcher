@@ -46,6 +46,19 @@ async function installMock(
             : options.instances);
         }
         if (command === 'pick_open_file') return Promise.resolve(options.pickedPath);
+        if (command === 'plan_pack_import') {
+          return Promise.resolve({
+            pack_name: 'Imported Pack',
+            instance: {
+              id: 'imported-pack', name: 'Imported Pack', minecraft_version: '1.21',
+              loader: 'fabric', loader_version: '0.16.9',
+            },
+            entries: [
+              { name: 'sodium.jar', display_name: 'Sodium', source: 'curated', checkable: true, reason: null, action: null },
+              { name: 'xaero.jar', display_name: null, source: 'modrinth', checkable: true, reason: 'Needs Modrinth, which is off.', action: 'enable_modrinth' },
+            ],
+          });
+        }
         if (command === 'import_instance_pack') {
           imported = true;
           return Promise.resolve({ instance_id: 'imported-pack', report: options.report ?? null });
@@ -94,6 +107,11 @@ test.describe('My Instances: import a pack file', () => {
     await expect(page.getByRole('button', { name: 'Import pack file' })).toHaveCount(2);
     await page.getByRole('button', { name: 'Import pack file' }).last().click();
 
+    // Nothing is imported until the review's Import is pressed.
+    await expect(page.getByTestId('pack-import-review')).toContainText('Import Imported Pack?');
+    expect(await calls(page, 'import_instance_pack')).toHaveLength(0);
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+
     await expect(page.getByRole('heading', { name: 'Imported Pack' })).toBeVisible();
     // The "importing" banner goes away once the import has finished.
     await expect(page.getByRole('status').filter({ hasText: 'new instance' })).toHaveCount(0);
@@ -129,19 +147,59 @@ test.describe('My Instances: import a pack file', () => {
     await page.goto('/');
     await page.getByRole('button', { name: 'My Instances' }).click();
     await page.getByRole('button', { name: 'Import pack file' }).last().click();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
 
     const summary = page.getByTestId('pack-import-summary');
     await expect(summary.getByText('4 of 5 mods installed.')).toBeVisible();
     await expect(summary.getByText(/xaero\.jar/)).toBeVisible();
     await expect(summary.getByText(/Needs Modrinth, which is off/)).toBeVisible();
 
-    await summary.getByRole('button', { name: 'Turn on Modrinth for this' }).click();
+    // Allowing Modrinth here is for this import only: the setting is not touched.
+    await summary.getByRole('button', { name: 'Allow Modrinth for this import' }).click();
     await expect(summary.getByText('5 of 5 mods installed.')).toBeVisible();
     const retries = await calls(page, 'retry_pack_import_entries');
     expect(retries).toHaveLength(1);
-    const sent = (retries[0].args as { entries: { filename: string }[] }).entries;
-    expect(sent.map((e) => e.filename)).toEqual(['xaero.jar']);
-    expect((await calls(page, 'set_content_provider_enabled'))[0].args).toEqual({ providerId: 'modrinth', enabled: true });
+    const sent = retries[0].args as { entries: { filename: string }[]; allowModrinthOnce: boolean };
+    expect(sent.entries.map((e) => e.filename)).toEqual(['xaero.jar']);
+    expect(sent.allowModrinthOnce).toBe(true);
+    expect(await calls(page, 'set_content_provider_enabled')).toHaveLength(0);
+  });
+
+  test('the summary sits in the page flow, so it never covers the sidebar, and can be dismissed', async ({ page }) => {
+    await installMock(page, {
+      instances: [],
+      pickedPath: 'C:\\packs\\friend.agora-pack.json',
+      report: {
+        instance_id: 'imported-pack', instance_name: 'Imported Pack', total: 2, installed: 1, warnings: [],
+        outcomes: [
+          {
+            name: 'xaero.jar', status: 'needs_action', verified_against_pack: false, action: 'enable_modrinth',
+            reason: 'Needs Modrinth, which is off.', entry: { filename: 'xaero.jar', version: '1', registry_id: null, modrinth_id: 'xaero', sha256: null, source: 'modrinth_raw' },
+          },
+          {
+            name: 'a.jar', status: 'installed', verified_against_pack: true, reason: null, action: null,
+            entry: { filename: 'a.jar', version: '1', registry_id: 'sodium', modrinth_id: null, sha256: null, source: 'registry' },
+          },
+        ],
+      },
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'My Instances' }).click();
+    await page.getByRole('button', { name: 'Import pack file' }).last().click();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+
+    const summary = page.getByTestId('pack-import-summary');
+    await expect(summary).toBeVisible();
+    const box = await summary.boundingBox();
+    const navigation = await page.getByRole('navigation', { name: 'Main navigation' }).boundingBox();
+    expect(box).not.toBeNull();
+    expect(navigation).not.toBeNull();
+    // The card does not overlap the main navigation.
+    const overlaps = box!.x < navigation!.x + navigation!.width && box!.x + box!.width > navigation!.x;
+    expect(overlaps).toBe(false);
+
+    await page.getByRole('button', { name: 'Dismiss import results' }).click();
+    await expect(summary).toHaveCount(0);
   });
 
   test('header button works with existing instances and cancelling imports nothing', async ({ page }) => {

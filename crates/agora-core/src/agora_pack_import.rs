@@ -63,7 +63,7 @@ fn non_empty(value: &Option<String>) -> Option<&str> {
 }
 
 /// The `instance` object of a pack.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgoraPackInstance {
     pub id: Option<String>,
     pub name: Option<String>,
@@ -158,6 +158,56 @@ pub fn parse_agora_pack(text: &str) -> LauncherResult<ParsedAgoraPack> {
     Ok(ParsedAgoraPack { instance, mods })
 }
 
+/// The name a pack's instance gets: its name, else its id, else a fallback.
+pub fn pack_display_name(instance: &AgoraPackInstance) -> String {
+    instance
+        .name
+        .clone()
+        .or_else(|| instance.id.clone())
+        .unwrap_or_else(|| "imported-pack".to_string())
+}
+
+/// Where a pack entry would be fetched from, judged from the pack and this
+/// install's settings alone. Nothing is downloaded to decide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannedSource {
+    /// The curated catalog (the pack gave a registry id this install knows).
+    Curated,
+    /// Modrinth, by project id, as an uncurated file.
+    Modrinth,
+    /// No source this install can use. The entry's `reason` says why.
+    CannotGet,
+}
+
+/// One entry of an import plan. Says what the import will try, and what the
+/// user must do first; it is not a result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannedEntry {
+    /// The filename, or `mods[n]` for an entry that could not be read.
+    pub name: String,
+    /// The catalog's name for the mod when known.
+    pub display_name: Option<String>,
+    pub source: PlannedSource,
+    /// The pack pinned a valid SHA-256, so the download can be checked against
+    /// the pack. `false` means it is checked only against its source's hash.
+    pub checkable: bool,
+    /// What needs action, or why the entry will not install. `None` when the
+    /// entry is ready to be fetched.
+    pub reason: Option<String>,
+    /// Set when a user action (turning Modrinth on, Settings) would unblock it.
+    pub action: Option<PackNeedsAction>,
+}
+
+/// What importing a pack would do, shown to the user before anything is written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackImportPlan {
+    /// What the new instance will be called ([`pack_display_name`]).
+    pub pack_name: String,
+    pub instance: AgoraPackInstance,
+    pub entries: Vec<PlannedEntry>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackEntryStatus {
@@ -206,6 +256,19 @@ pub struct PackImportReport {
     /// Problems with the bookkeeping after the installs (e.g. the pack
     /// inventory could not be written). Installs are unaffected.
     pub warnings: Vec<String>,
+}
+
+/// True when the import installed nothing and every entry failed only for lack
+/// of a connection. Such an import left nothing usable behind, so the caller
+/// may remove the instance it made and let the user start again later.
+pub fn nothing_installed_for_lack_of_connection(report: &PackImportReport) -> bool {
+    report.installed == 0
+        && !report.outcomes.is_empty()
+        && report.outcomes.iter().all(|o| {
+            o.status == PackEntryStatus::NeedsAction
+                && o.action.is_none()
+                && o.reason.as_deref() == Some(OFFLINE_NOTE)
+        })
 }
 
 impl PackImportReport {
@@ -257,7 +320,21 @@ pub struct PackCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendError {
     NeedsAction(PackNeedsAction, String),
+    /// The source could not be reached (no connection, DNS, TLS, timeout).
+    /// Nothing was written; the entry waits until the user can get online.
+    Offline,
     Failed(String),
+}
+
+/// What an entry says when it could not be downloaded for lack of a connection.
+pub const OFFLINE_NOTE: &str =
+    "This mod needs to be downloaded, and there's no internet connection right now. Try again when you're online.";
+
+/// Whether an error is a failure to reach the source at all. The shared HTTP
+/// layer reports every send failure as `ERR_NETWORK`; that code does not by
+/// itself prove the machine is offline (a timeout or TLS error has it too).
+fn is_unreachable(error: &LauncherError) -> bool {
+    error.code() == "ERR_NETWORK"
 }
 
 #[async_trait]
@@ -268,6 +345,12 @@ pub trait PackBackend: Send + Sync {
     fn installed_sha256(&self, instance_id: &str, filename: &str) -> Option<String>;
     /// The catalog's name for a registry id, when it is known.
     fn display_name(&self, registry_id: &str) -> Option<String>;
+    /// Whether this install's catalog has the registry id at all. Local only.
+    /// An unreadable catalog is an error, not "not there".
+    fn knows_registry_item(&self, registry_id: &str) -> Result<bool, String>;
+    /// Why Modrinth may not be used for this import, `None` when it may. Reads
+    /// local settings only; no request is made.
+    fn modrinth_refusal(&self) -> Option<BackendError>;
     async fn registry_versions(
         &self,
         instance_id: &str,
@@ -285,7 +368,7 @@ pub trait PackBackend: Send + Sync {
         instance_id: &str,
         candidate: &PackCandidate,
         required_sha256: Option<&str>,
-    ) -> Result<(), String>;
+    ) -> Result<(), BackendError>;
 }
 
 /// A pack-pinned SHA-256: absent, or exactly 64 hex digits. Anything else is a
@@ -350,6 +433,13 @@ fn from_backend_error(entry: &AgoraPackEntry, error: BackendError) -> PackEntryO
             PackEntryStatus::NeedsAction,
             Some(note),
             Some(action),
+        ),
+        // Waits for a connection, not for a setting: no action to take in Settings.
+        BackendError::Offline => outcome(
+            entry,
+            PackEntryStatus::NeedsAction,
+            Some(OFFLINE_NOTE.to_string()),
+            None,
         ),
         BackendError::Failed(reason) => failed(entry, reason),
     }
@@ -421,7 +511,7 @@ async fn install_one(
             }
             done
         }
-        Err(reason) => failed(entry, reason),
+        Err(error) => from_backend_error(entry, error),
     }
 }
 
@@ -550,11 +640,27 @@ pub fn expected_sha256_for_candidate(
 
 pub struct CoreBackend {
     ctx: Ctx,
+    /// The user allowed Modrinth for this import only (see
+    /// [`CoreBackend::with_modrinth_allowed_once`]).
+    allow_modrinth_once: bool,
 }
 
 impl CoreBackend {
     pub fn new(ctx: Ctx) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            allow_modrinth_once: false,
+        }
+    }
+
+    /// A backend for an import the user allowed Modrinth for, once. The
+    /// `modrinth_enabled` toggle stays as it is; only these entries' Modrinth
+    /// requests skip it. The Privacy switch still applies.
+    pub fn with_modrinth_allowed_once(ctx: Ctx) -> Self {
+        Self {
+            ctx,
+            allow_modrinth_once: true,
+        }
     }
 
     fn instance(&self, instance_id: &str) -> Result<crate::models::InstanceRow, BackendError> {
@@ -598,6 +704,32 @@ impl PackBackend for CoreBackend {
             .filter(|name| !name.trim().is_empty())
     }
 
+    fn knows_registry_item(&self, registry_id: &str) -> Result<bool, String> {
+        crate::registry::RegistryService::new(self.ctx.clone())
+            .get_item_by_id(registry_id)
+            .map(|item| item.is_some())
+            .map_err(|e| e.to_string())
+    }
+
+    fn modrinth_refusal(&self) -> Option<BackendError> {
+        let svc = crate::modrinth::ModrinthService::new(self.ctx.clone());
+        let checked = if self.allow_modrinth_once {
+            svc.check_network_enabled()
+        } else {
+            svc.check_enabled()
+        };
+        checked.err().map(|error| match error {
+            LauncherError::ModrinthDisabled => BackendError::NeedsAction(
+                PackNeedsAction::EnableModrinth,
+                MODRINTH_OFF_NOTE.to_string(),
+            ),
+            other if other.code() == "ERR_NETWORK_DISABLED" => {
+                BackendError::NeedsAction(PackNeedsAction::OpenSettings, other.to_string())
+            }
+            other => BackendError::Failed(other.to_string()),
+        })
+    }
+
     async fn registry_versions(
         &self,
         instance_id: &str,
@@ -618,6 +750,8 @@ impl PackBackend for CoreBackend {
             .map_err(|error| {
                 if error.code() == "ERR_NO_ENABLED_SOURCE" {
                     BackendError::NeedsAction(PackNeedsAction::OpenSettings, error.to_string())
+                } else if is_unreachable(&error) {
+                    BackendError::Offline
                 } else {
                     BackendError::Failed(format!("Could not list versions: {error}"))
                 }
@@ -649,24 +783,25 @@ impl PackBackend for CoreBackend {
         instance_id: &str,
         project_id: &str,
     ) -> Result<Vec<PackCandidate>, BackendError> {
-        let svc = crate::modrinth::ModrinthService::new(self.ctx.clone());
-        if let Err(error) = svc.check_enabled() {
-            return Err(match error {
-                LauncherError::ModrinthDisabled => BackendError::NeedsAction(
-                    PackNeedsAction::EnableModrinth,
-                    MODRINTH_OFF_NOTE.to_string(),
-                ),
-                other if other.code() == "ERR_NETWORK_DISABLED" => {
-                    BackendError::NeedsAction(PackNeedsAction::OpenSettings, other.to_string())
-                }
-                other => BackendError::Failed(other.to_string()),
-            });
+        if let Some(refusal) = self.modrinth_refusal() {
+            return Err(refusal);
         }
         self.instance(instance_id)?;
-        let versions = svc
-            .list_raw_modrinth_versions(Some(instance_id), project_id, Some("mod"))
-            .await
-            .map_err(|e| BackendError::Failed(format!("Could not list Modrinth versions: {e}")))?;
+        let svc = crate::modrinth::ModrinthService::new(self.ctx.clone());
+        let listed = if self.allow_modrinth_once {
+            svc.list_raw_modrinth_versions_allowed_once(Some(instance_id), project_id, Some("mod"))
+                .await
+        } else {
+            svc.list_raw_modrinth_versions(Some(instance_id), project_id, Some("mod"))
+                .await
+        };
+        let versions = listed.map_err(|e| {
+            if is_unreachable(&e) {
+                BackendError::Offline
+            } else {
+                BackendError::Failed(format!("Could not list Modrinth versions: {e}"))
+            }
+        })?;
         Ok(versions
             .into_iter()
             .map(|v| PackCandidate {
@@ -689,7 +824,7 @@ impl PackBackend for CoreBackend {
         instance_id: &str,
         candidate: &PackCandidate,
         required_sha256: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<(), BackendError> {
         let installer = crate::install_service::InstallService::new(self.ctx.clone());
         // A pinned hash also stands in when the source published none: the
         // bytes are then held to the one hash anybody vouched for.
@@ -714,17 +849,28 @@ impl PackBackend for CoreBackend {
                 is_prerelease: false,
                 version_type: String::new(),
             };
-            return crate::modrinth::ModrinthService::new(self.ctx.clone())
-                .install_raw_modrinth_pinned(
+            let svc = crate::modrinth::ModrinthService::new(self.ctx.clone());
+            let project_id = candidate.modrinth_id.as_deref().unwrap_or_default();
+            let installed = if self.allow_modrinth_once {
+                svc.install_raw_modrinth_pinned_allowed_once(
                     instance_id,
-                    candidate.modrinth_id.as_deref().unwrap_or_default(),
+                    project_id,
                     &raw,
                     "mod",
                     required_sha256,
                 )
                 .await
-                .map(|_| ())
-                .map_err(describe_install_error);
+            } else {
+                svc.install_raw_modrinth_pinned(
+                    instance_id,
+                    project_id,
+                    &raw,
+                    "mod",
+                    required_sha256,
+                )
+                .await
+            };
+            return installed.map(|_| ()).map_err(install_error);
         }
         installer
             .install_artifact_pinned(
@@ -743,7 +889,7 @@ impl PackBackend for CoreBackend {
             )
             .await
             .map(|_| ())
-            .map_err(describe_install_error)
+            .map_err(install_error)
     }
 }
 
@@ -753,6 +899,14 @@ fn describe_install_error(error: LauncherError) -> String {
             hash the pack pinned (or the hash its source published). It was not installed."
             .to_string(),
         other => other.to_string(),
+    }
+}
+
+fn install_error(error: LauncherError) -> BackendError {
+    if is_unreachable(&error) {
+        BackendError::Offline
+    } else {
+        BackendError::Failed(describe_install_error(error))
     }
 }
 
@@ -910,13 +1064,122 @@ pub async fn install_agora_pack_mods_with(
 }
 
 /// Try the given entries again on an existing instance (after the user turned
-/// Modrinth on, say). Only entries not already installed are fetched.
+/// Modrinth on, or allowed it for this import). Only entries not already
+/// installed are fetched. `allow_modrinth_once` leaves the `modrinth_enabled`
+/// toggle alone and lets just these entries use Modrinth.
 pub async fn retry_agora_pack_entries(
     ctx: &Ctx,
     instance_id: &str,
     entries: Vec<AgoraPackEntry>,
+    allow_modrinth_once: bool,
 ) -> LauncherResult<PackImportReport> {
-    retry_agora_pack_entries_with(&CoreBackend::new(ctx.clone()), ctx, instance_id, entries).await
+    let backend = if allow_modrinth_once {
+        CoreBackend::with_modrinth_allowed_once(ctx.clone())
+    } else {
+        CoreBackend::new(ctx.clone())
+    };
+    retry_agora_pack_entries_with(&backend, ctx, instance_id, entries).await
+}
+
+/// What importing `pack` would do, judged without writing or downloading
+/// anything. Every entry gets a planned line, including ones that cannot be
+/// read, so the review shows the whole pack.
+pub fn plan_agora_pack(backend: &dyn PackBackend, pack: &ParsedAgoraPack) -> PackImportPlan {
+    let refusal = backend.modrinth_refusal();
+    let entries = pack
+        .mods
+        .iter()
+        .map(|parsed| match parsed {
+            PackEntryParse::Invalid { name, reason } => PlannedEntry {
+                name: name.clone(),
+                display_name: None,
+                source: PlannedSource::CannotGet,
+                checkable: false,
+                reason: Some(reason.clone()),
+                action: None,
+            },
+            PackEntryParse::Entry(entry) => plan_entry(backend, entry, &refusal),
+        })
+        .collect();
+    PackImportPlan {
+        pack_name: pack_display_name(&pack.instance),
+        instance: pack.instance.clone(),
+        entries,
+    }
+}
+
+fn plan_entry(
+    backend: &dyn PackBackend,
+    entry: &AgoraPackEntry,
+    refusal: &Option<BackendError>,
+) -> PlannedEntry {
+    let (source, mut reason, mut action) = if let Some(registry_id) = non_empty(&entry.registry_id)
+    {
+        match backend.knows_registry_item(registry_id) {
+            Ok(true) => (PlannedSource::Curated, None, None),
+            Ok(false) => (
+                PlannedSource::CannotGet,
+                Some(format!(
+                    "'{registry_id}' is not in the catalog this install has."
+                )),
+                None,
+            ),
+            Err(error) => (
+                PlannedSource::CannotGet,
+                Some(format!("The catalog could not be read: {error}")),
+                None,
+            ),
+        }
+    } else if non_empty(&entry.modrinth_id).is_some() {
+        match refusal {
+            None => (PlannedSource::Modrinth, None, None),
+            Some(BackendError::NeedsAction(needed, note)) => {
+                (PlannedSource::Modrinth, Some(note.clone()), Some(*needed))
+            }
+            Some(BackendError::Failed(why)) => (PlannedSource::Modrinth, Some(why.clone()), None),
+            // The settings check makes no request, so this is not expected here.
+            Some(BackendError::Offline) => (
+                PlannedSource::Modrinth,
+                Some(OFFLINE_NOTE.to_string()),
+                None,
+            ),
+        }
+    } else {
+        (
+            PlannedSource::CannotGet,
+            Some(
+                "The pack records no catalog or Modrinth id for this file, so there is nowhere \
+                 to download it from."
+                    .to_string(),
+            ),
+            None,
+        )
+    };
+
+    let checkable = match normalize_pin(&entry.sha256) {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(pin_problem) => {
+            // A damaged pin is a certain failure; say so before the import does.
+            reason = Some(pin_problem);
+            action = None;
+            false
+        }
+    };
+
+    PlannedEntry {
+        name: entry.display_name(),
+        display_name: non_empty(&entry.registry_id).and_then(|id| backend.display_name(id)),
+        source,
+        checkable,
+        reason,
+        action,
+    }
+}
+
+/// [`plan_agora_pack`] against this install's real settings and catalog.
+pub fn plan_agora_pack_import(ctx: &Ctx, pack: &ParsedAgoraPack) -> PackImportPlan {
+    plan_agora_pack(&CoreBackend::new(ctx.clone()), pack)
 }
 
 pub async fn retry_agora_pack_entries_with(
@@ -980,9 +1243,15 @@ mod tests {
         modrinth: Vec<PackCandidate>,
         /// Filenames whose install fails with this message.
         install_error: Option<(String, String)>,
+        /// Every download fails for lack of a connection.
+        install_offline: bool,
         present: Vec<String>,
         present_sha256: Option<String>,
         names: Vec<(String, String)>,
+        /// Registry ids this install's catalog has.
+        known: Vec<String>,
+        /// When set, the catalog cannot be read.
+        catalog_error: Option<String>,
         installs: Mutex<Vec<(String, Option<String>)>>,
         modrinth_lookups: Mutex<u32>,
     }
@@ -1001,9 +1270,12 @@ mod tests {
                 registry: Ok(Vec::new()),
                 modrinth: Vec::new(),
                 install_error: None,
+                install_offline: false,
                 present: Vec::new(),
                 present_sha256: None,
                 names: Vec::new(),
+                known: Vec::new(),
+                catalog_error: None,
                 installs: Mutex::new(Vec::new()),
                 modrinth_lookups: Mutex::new(0),
             }
@@ -1025,6 +1297,22 @@ mod tests {
                 .iter()
                 .find(|(id, _)| id == registry_id)
                 .map(|(_, name)| name.clone())
+        }
+        fn knows_registry_item(&self, registry_id: &str) -> Result<bool, String> {
+            if let Some(message) = &self.catalog_error {
+                return Err(message.clone());
+            }
+            Ok(self.known.iter().any(|id| id == registry_id))
+        }
+        fn modrinth_refusal(&self) -> Option<BackendError> {
+            if self.modrinth_on {
+                None
+            } else {
+                Some(BackendError::NeedsAction(
+                    PackNeedsAction::EnableModrinth,
+                    MODRINTH_OFF_NOTE.into(),
+                ))
+            }
         }
         async fn registry_versions(
             &self,
@@ -1052,10 +1340,13 @@ mod tests {
             _: &str,
             candidate: &PackCandidate,
             required: Option<&str>,
-        ) -> Result<(), String> {
+        ) -> Result<(), BackendError> {
+            if self.install_offline {
+                return Err(BackendError::Offline);
+            }
             if let Some((file, message)) = &self.install_error {
                 if *file == candidate.filename {
-                    return Err(message.clone());
+                    return Err(BackendError::Failed(message.clone()));
                 }
             }
             self.installs
@@ -1614,5 +1905,337 @@ mod tests {
         });
         let out = run(&backend, vec![e]);
         assert_eq!(out[0].display_name.as_deref(), Some("Sodium"));
+    }
+
+    // -- Review (plan) step --------------------------------------------------
+
+    fn pack_of(mods: Vec<PackEntryParse>) -> ParsedAgoraPack {
+        ParsedAgoraPack {
+            instance: AgoraPackInstance {
+                id: Some("friend-pack".into()),
+                name: Some("Friend Pack".into()),
+                minecraft_version: "1.21".into(),
+                loader: "fabric".into(),
+                loader_version: "0.16.0".into(),
+            },
+            mods,
+        }
+    }
+
+    fn registry_entry(filename: &str, registry_id: &str, sha: Option<&str>) -> PackEntryParse {
+        PackEntryParse::Entry(AgoraPackEntry {
+            filename: filename.into(),
+            version: Some("1".into()),
+            registry_id: Some(registry_id.into()),
+            modrinth_id: None,
+            sha256: sha.map(str::to_string),
+            source: Some("registry".into()),
+        })
+    }
+
+    fn modrinth_entry(filename: &str, project: &str, sha: Option<&str>) -> PackEntryParse {
+        PackEntryParse::Entry(AgoraPackEntry {
+            filename: filename.into(),
+            version: Some("1".into()),
+            registry_id: None,
+            modrinth_id: Some(project.into()),
+            sha256: sha.map(str::to_string),
+            source: Some("modrinth_raw".into()),
+        })
+    }
+
+    fn plan_of(backend: &Fake, mods: Vec<PackEntryParse>) -> PackImportPlan {
+        plan_agora_pack(backend, &pack_of(mods))
+    }
+
+    #[test]
+    fn plan_lists_every_entry_and_writes_or_downloads_nothing() {
+        let mut backend = fake();
+        backend.modrinth_on = false;
+        backend.known = vec!["sodium".into()];
+        let plan = plan_of(
+            &backend,
+            vec![
+                registry_entry("sodium.jar", "sodium", Some(GOOD_PIN)),
+                modrinth_entry("xaero.jar", "xaero", Some(GOOD_PIN)),
+                PackEntryParse::Invalid {
+                    name: "mods[2]".into(),
+                    reason: "unreadable".into(),
+                },
+            ],
+        );
+        assert_eq!(plan.entries.len(), 3, "every line of the pack is planned");
+        assert_eq!(plan.pack_name, "Friend Pack");
+        assert_eq!(plan.instance.loader, "fabric");
+        assert!(
+            backend.installs.lock().unwrap().is_empty(),
+            "plan installs nothing"
+        );
+        assert_eq!(
+            *backend.modrinth_lookups.lock().unwrap(),
+            0,
+            "plan contacts no source"
+        );
+    }
+
+    #[test]
+    fn plan_marks_modrinth_off_as_an_action_with_the_note() {
+        let mut backend = fake();
+        backend.modrinth_on = false;
+        let plan = plan_of(&backend, vec![modrinth_entry("xaero.jar", "xaero", None)]);
+        let line = &plan.entries[0];
+        assert_eq!(line.source, PlannedSource::Modrinth);
+        assert_eq!(line.action, Some(PackNeedsAction::EnableModrinth));
+        assert_eq!(line.reason.as_deref(), Some(MODRINTH_OFF_NOTE));
+    }
+
+    #[test]
+    fn plan_with_modrinth_on_leaves_a_modrinth_entry_ready() {
+        let plan = plan_of(
+            &fake(),
+            vec![modrinth_entry("xaero.jar", "xaero", Some(GOOD_PIN))],
+        );
+        let line = &plan.entries[0];
+        assert_eq!(line.source, PlannedSource::Modrinth);
+        assert_eq!(line.action, None);
+        assert_eq!(line.reason, None);
+        assert!(line.checkable);
+    }
+
+    #[test]
+    fn plan_names_a_registry_id_the_catalog_does_not_have() {
+        let mut backend = fake();
+        backend.known = vec!["sodium".into()];
+        let plan = plan_of(&backend, vec![registry_entry("ghost.jar", "ghost", None)]);
+        let line = &plan.entries[0];
+        assert_eq!(line.source, PlannedSource::CannotGet);
+        assert!(line.reason.as_deref().unwrap().contains("'ghost'"));
+        assert_eq!(line.action, None);
+    }
+
+    #[test]
+    fn plan_says_so_when_the_catalog_cannot_be_read() {
+        let mut backend = fake();
+        backend.catalog_error = Some("disk gone".into());
+        let plan = plan_of(&backend, vec![registry_entry("sodium.jar", "sodium", None)]);
+        let line = &plan.entries[0];
+        assert_eq!(line.source, PlannedSource::CannotGet);
+        let reason = line.reason.as_deref().unwrap();
+        assert!(reason.contains("could not be read"), "{reason}");
+        assert!(!reason.contains("not in the catalog"), "{reason}");
+    }
+
+    #[test]
+    fn plan_treats_a_blank_registry_id_as_absent_and_uses_modrinth() {
+        let plan = plan_of(
+            &fake(),
+            vec![PackEntryParse::Entry(AgoraPackEntry {
+                filename: "xaero.jar".into(),
+                registry_id: Some("   ".into()),
+                modrinth_id: Some("xaero".into()),
+                ..Default::default()
+            })],
+        );
+        assert_eq!(plan.entries[0].source, PlannedSource::Modrinth);
+    }
+
+    #[test]
+    fn plan_entry_with_no_source_cannot_be_got() {
+        let plan = plan_of(
+            &fake(),
+            vec![PackEntryParse::Entry(AgoraPackEntry {
+                filename: "lost.jar".into(),
+                ..Default::default()
+            })],
+        );
+        let line = &plan.entries[0];
+        assert_eq!(line.source, PlannedSource::CannotGet);
+        assert!(line.reason.is_some());
+    }
+
+    #[test]
+    fn plan_checkable_only_for_a_valid_pin_and_flags_a_damaged_one() {
+        let mut backend = fake();
+        backend.known = vec!["sodium".into()];
+        let plan = plan_of(
+            &backend,
+            vec![
+                registry_entry("a.jar", "sodium", Some(GOOD_PIN)),
+                registry_entry("b.jar", "sodium", None),
+                registry_entry("c.jar", "sodium", Some("zz")),
+                registry_entry("d.jar", "sodium", Some("   ")),
+            ],
+        );
+        assert!(plan.entries[0].checkable);
+        assert!(!plan.entries[1].checkable);
+        assert_eq!(
+            plan.entries[1].reason, None,
+            "no pin is not a problem by itself"
+        );
+        assert!(!plan.entries[2].checkable);
+        assert!(plan.entries[2].reason.is_some(), "a damaged pin is named");
+        assert!(!plan.entries[3].checkable, "a blank pin fails closed");
+        assert!(plan.entries[3].reason.is_some());
+    }
+
+    #[test]
+    fn plan_carries_the_catalog_name_and_reports_unreadable_lines() {
+        let mut backend = fake();
+        backend.known = vec!["sodium".into()];
+        backend.names = vec![("sodium".into(), "Sodium".into())];
+        let plan = plan_of(
+            &backend,
+            vec![
+                registry_entry("sodium.jar", "sodium", None),
+                PackEntryParse::Invalid {
+                    name: "mods[1]".into(),
+                    reason: "not a readable mod record".into(),
+                },
+            ],
+        );
+        assert_eq!(plan.entries[0].display_name.as_deref(), Some("Sodium"));
+        assert_eq!(plan.entries[1].name, "mods[1]");
+        assert_eq!(plan.entries[1].source, PlannedSource::CannotGet);
+        assert_eq!(
+            plan.entries[1].reason.as_deref(),
+            Some("not a readable mod record")
+        );
+    }
+
+    /// A temp instance whose Modrinth toggle is off and whose Privacy switch
+    /// is on, so only the toggle stands in the way.
+    fn modrinth_off_ctx() -> (Ctx, std::path::PathBuf) {
+        let (ctx, root) = temp_ctx_with_instance();
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::set_setting(&conn, "modrinth_enabled", &serde_json::json!(false)).unwrap();
+        crate::db::set_setting(&conn, "network_modrinth_enabled", &serde_json::json!(true))
+            .unwrap();
+        (ctx, root)
+    }
+
+    #[test]
+    fn allowing_modrinth_once_skips_the_toggle_and_leaves_it_off() {
+        let (ctx, root) = modrinth_off_ctx();
+
+        assert_eq!(
+            CoreBackend::new(ctx.clone()).modrinth_refusal(),
+            Some(BackendError::NeedsAction(
+                PackNeedsAction::EnableModrinth,
+                MODRINTH_OFF_NOTE.into()
+            )),
+            "a normal import is still refused while the toggle is off"
+        );
+        assert_eq!(
+            CoreBackend::with_modrinth_allowed_once(ctx.clone()).modrinth_refusal(),
+            None,
+            "the one-time allow lets Modrinth through for this import"
+        );
+
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        assert_eq!(
+            crate::db::get_setting(&conn, "modrinth_enabled").unwrap(),
+            Some(serde_json::json!(false)),
+            "the global Modrinth setting is not changed by the one-time allow"
+        );
+        drop(conn);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn allowing_modrinth_once_still_respects_the_privacy_switch() {
+        let (ctx, root) = modrinth_off_ctx();
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::set_setting(&conn, "network_modrinth_enabled", &serde_json::json!(false))
+            .unwrap();
+        drop(conn);
+
+        assert_eq!(
+            CoreBackend::with_modrinth_allowed_once(ctx.clone()).modrinth_refusal(),
+            Some(BackendError::NeedsAction(
+                PackNeedsAction::OpenSettings,
+                "Modrinth catalog API is disabled in Privacy settings.".into()
+            ))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // -- Offline -------------------------------------------------------------
+
+    fn network_error(code: &str) -> LauncherError {
+        LauncherError::Generic {
+            code: code.into(),
+            message: "HTTP request failed for https://cdn.modrinth.com/x.jar: dns error".into(),
+        }
+    }
+
+    #[test]
+    fn offline_download_waits_with_the_offline_note_and_installs_nothing() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("1", "mod.jar")];
+        backend.install_offline = true;
+        let out = run(&backend, vec![entry("mod.jar", "1", Some(GOOD_PIN))]);
+        assert_eq!(out[0].status, PackEntryStatus::NeedsAction);
+        assert_eq!(
+            out[0].action, None,
+            "no Settings switch would fix a dropped connection"
+        );
+        assert_eq!(out[0].reason.as_deref(), Some(OFFLINE_NOTE));
+        assert!(backend.installs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn offline_import_with_nothing_installed_is_recognised_for_cleanup() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("1", "a.jar"), candidate("1", "b.jar")];
+        backend.install_offline = true;
+        let out = run(
+            &backend,
+            vec![entry("a.jar", "1", None), entry("b.jar", "1", None)],
+        );
+        let report = PackImportReport::from_outcomes("inst", "Pack", out, Vec::new());
+        assert_eq!(report.installed, 0);
+        assert!(nothing_installed_for_lack_of_connection(&report));
+    }
+
+    #[test]
+    fn a_partial_or_non_connection_failure_is_not_treated_as_offline_only() {
+        // One installed: the instance is kept.
+        let mut partly = fake();
+        partly.modrinth = vec![candidate("1", "a.jar"), candidate("1", "b.jar")];
+        partly.install_error = Some(("b.jar".into(), "disk full".into()));
+        let out = run(
+            &partly,
+            vec![entry("a.jar", "1", None), entry("b.jar", "1", None)],
+        );
+        let report = PackImportReport::from_outcomes("inst", "Pack", out, Vec::new());
+        assert!(!nothing_installed_for_lack_of_connection(&report));
+
+        // Modrinth off is an action, not a connection problem.
+        let mut off = fake();
+        off.modrinth_on = false;
+        let out = run(&off, vec![entry("xaero.jar", "1", None)]);
+        let report = PackImportReport::from_outcomes("inst", "Pack", out, Vec::new());
+        assert!(!nothing_installed_for_lack_of_connection(&report));
+
+        // An empty pack is not "lost to the connection".
+        let report = PackImportReport::from_outcomes("inst", "Pack", Vec::new(), Vec::new());
+        assert!(!nothing_installed_for_lack_of_connection(&report));
+    }
+
+    #[test]
+    fn only_a_send_failure_counts_as_unreachable() {
+        assert_eq!(
+            install_error(network_error("ERR_NETWORK")),
+            BackendError::Offline
+        );
+        // The privacy switch and a hash mismatch are not connection failures.
+        assert!(matches!(
+            install_error(network_error("ERR_NETWORK_DISABLED")),
+            BackendError::Failed(_)
+        ));
+        assert!(matches!(
+            install_error(LauncherError::HashMismatch),
+            BackendError::Failed(_)
+        ));
     }
 }

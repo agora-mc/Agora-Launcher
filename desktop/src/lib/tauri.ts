@@ -1507,11 +1507,54 @@ export interface PackImportOutcome {
   report: PackImportReport | null;
 }
 
+/** The instance block of an Agora pack file. */
+export interface AgoraPackInstance {
+  id: string | null;
+  name: string | null;
+  minecraft_version: string;
+  loader: string;
+  loader_version: string;
+}
+
+/**
+ * Where a pack entry would be fetched from, judged without downloading:
+ * `curated` (the catalog), `modrinth`, or `cannot_get` (no usable source).
+ */
+export type PlannedPackSource = 'curated' | 'modrinth' | 'cannot_get';
+
+/** One line of the import review. Not a result: nothing is installed yet. */
+export interface PlannedPackEntry {
+  name: string;
+  display_name: string | null;
+  source: PlannedPackSource;
+  /** The pack pinned a valid SHA-256, so the download can be checked against it. */
+  checkable: boolean;
+  /** What needs action, or why the entry will not install. Null when it is ready. */
+  reason: string | null;
+  action: PackNeedsAction | null;
+}
+
+export interface PackImportPlan {
+  pack_name: string;
+  instance: AgoraPackInstance;
+  entries: PlannedPackEntry[];
+}
+
 export const importInstancePack = (sourcePath: string) =>
   invoke<PackImportOutcome>('import_instance_pack', { sourcePath });
-/** Try needs-action entries again on the instance the import created. */
-export const retryPackImportEntries = (instanceId: string, entries: AgoraPackEntry[]) =>
-  invoke<PackImportReport>('retry_pack_import_entries', { instanceId, entries });
+/** What importing an .agora-pack.json would do. Writes and downloads nothing. */
+export const planPackImport = (sourcePath: string) =>
+  invoke<PackImportPlan>('plan_pack_import', { sourcePath });
+/**
+ * Try needs-action entries again on the instance the import created.
+ * `allowModrinthOnce` lets these entries use Modrinth without turning the
+ * Modrinth setting on.
+ */
+export const retryPackImportEntries = (
+  instanceId: string,
+  entries: AgoraPackEntry[],
+  allowModrinthOnce: boolean,
+) => invoke<PackImportReport>('retry_pack_import_entries', { instanceId, entries, allowModrinthOnce });
 export const importModrinthPackByUrl = (downloadUrl: string, packIconUrl?: string | null) =>
   invoke<string>('import_modrinth_pack_by_url', {
     downloadUrl,

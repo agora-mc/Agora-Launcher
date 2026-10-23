@@ -8,6 +8,14 @@ export function needsActionOutcomes(report: PackImportReport): PackEntryOutcome[
   return report.outcomes.filter((outcome) => outcome.status === 'needs_action');
 }
 
+/**
+ * Entries that could not be downloaded for lack of a connection. They carry no
+ * Settings action: they wait for the user to be online and try again.
+ */
+export function offlineOutcomes(report: PackImportReport): PackEntryOutcome[] {
+  return needsActionOutcomes(report).filter((outcome) => outcome.action === null);
+}
+
 export function failedOutcomes(report: PackImportReport): PackEntryOutcome[] {
   return report.outcomes.filter((outcome) => outcome.status === 'failed');
 }
