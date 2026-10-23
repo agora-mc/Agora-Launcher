@@ -60,8 +60,16 @@ pub fn build_install_plan(
     target_manifest_deps: Option<crate::registry::ManifestDeps>,
     target_jar_deps: &JarDeps,
     installed: &[crate::models::InstalledMod],
+    loader: &str,
+    loader_version: &str,
 ) -> InstallPlan {
-    agora_core::dependency_ops::build_install_plan(target_manifest_deps, target_jar_deps, installed)
+    agora_core::dependency_ops::build_install_plan(
+        target_manifest_deps,
+        target_jar_deps,
+        installed,
+        loader,
+        loader_version,
+    )
 }
 
 /// One jar's parsed dependency identity, plus what it was parsed from.

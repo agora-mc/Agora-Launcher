@@ -66,6 +66,58 @@ const DEPENDENCY_IGNORE_LIST: &[&str] = &[
     "neoforge",
 ];
 
+/// Mod ids a loader ships inside itself, as `(loader, mod id, first loader
+/// version that ships it)`. A dependency on one of these is met by the loader,
+/// so no jar has to be found for it.
+///
+/// Sources: the MixinExtras README (https://github.com/LlamaLad7/MixinExtras)
+/// says "FabricLoader 0.15.0+ includes MixinExtras already" and "NeoForge
+/// 20.2.84+ includes MixinExtras already". Fabric Loader's release PR is
+/// FabricMC/fabric-loader#854 ("Include MixinExtras"). The same README tells
+/// Forge mods to depend on MixinExtras, so Forge is not listed. Quilt is not
+/// stated anywhere we checked, so it is not listed either.
+///
+/// Not verified: the exact mod id each loader exposes for the bundled library
+/// (the README gives none), and the MixinExtras version it bundles. A
+/// dependency's version range is not checked against that bundled version.
+const LOADER_BUNDLED_MODS: &[(&str, &str, &str)] = &[
+    ("fabric", "mixinextras", "0.15.0"),
+    ("neoforge", "mixinextras", "20.2.84"),
+];
+
+/// True when `dependency` is a platform id that needs no jar: the game, Java,
+/// the loader's own identity, or a library `loader` ships at `loader_version`.
+/// Every place that judges a dependency should ask this one question.
+pub fn is_platform_dependency(dependency: &str, loader: &str, loader_version: &str) -> bool {
+    matches!(
+        dependency,
+        "minecraft" | "java" | "fabricloader" | "fabric_loader" | "quilt_loader" | "quilt-loader"
+    ) || dependency.eq_ignore_ascii_case(loader)
+        || (loader == "neoforge" && dependency == "forge")
+        || is_loader_bundled_mod(dependency, loader, loader_version)
+}
+
+fn is_loader_bundled_mod(dependency: &str, loader: &str, loader_version: &str) -> bool {
+    LOADER_BUNDLED_MODS.iter().any(|(bundler, id, since)| {
+        bundler.eq_ignore_ascii_case(loader)
+            && id.eq_ignore_ascii_case(dependency)
+            && loader_version_at_least(loader_version, since)
+    })
+}
+
+/// Whether `version` is a plain dotted-number release at or after `since`.
+/// Anything else (empty, pre-release like `0.20.1-beta`, build metadata,
+/// surrounding spaces) is not trusted, so the dependency stays a normal jar
+/// requirement and is reported as missing if no jar provides it.
+fn loader_version_at_least(version: &str, since: &str) -> bool {
+    let is_plain_release = !version.is_empty()
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+    is_plain_release
+        && crate::version_match::compare_versions(version, since) != std::cmp::Ordering::Less
+}
+
 /// Maximum nesting depth for explicitly declared nested JARs.
 const MAX_NESTING_DEPTH: u32 = 4;
 
@@ -3547,5 +3599,74 @@ Embedded-Dependencies-Mod: a.jar
             .expect("language loader decl");
         assert_eq!(loader_decl.target_id, "javafml");
         assert!(loader_decl.version_ranges.is_empty());
+    }
+
+    #[test]
+    fn fabric_loader_provides_mixinextras_from_015_on() {
+        assert!(is_platform_dependency("mixinextras", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("mixinextras", "fabric", "0.15.0"));
+        assert!(!is_platform_dependency("mixinextras", "fabric", "0.14.22"));
+        assert!(!is_platform_dependency("mixinextras", "fabric", "0.5.0"));
+    }
+
+    #[test]
+    fn mixinextras_is_not_provided_when_the_loader_version_is_unreadable() {
+        for version in [
+            "",
+            " 0.20.1",
+            "0.20.1-beta.2",
+            "0.15.0+build.7",
+            "latest",
+            "0..1",
+        ] {
+            assert!(
+                !is_platform_dependency("mixinextras", "fabric", version),
+                "{version:?} must not count as a bundled MixinExtras"
+            );
+        }
+    }
+
+    #[test]
+    fn neoforge_provides_mixinextras_from_20_2_84_on() {
+        assert!(is_platform_dependency("mixinextras", "neoforge", "20.2.84"));
+        assert!(is_platform_dependency("mixinextras", "neoforge", "21.1.77"));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "20.2.83"
+        ));
+        assert!(!is_platform_dependency("mixinextras", "neoforge", "20.1.0"));
+    }
+
+    #[test]
+    fn forge_and_quilt_do_not_get_a_bundled_mixinextras() {
+        assert!(!is_platform_dependency("mixinextras", "forge", "47.2.0"));
+        assert!(!is_platform_dependency("mixinextras", "quilt", "0.27.0"));
+    }
+
+    #[test]
+    fn a_loader_does_not_provide_mixinextras_to_another_loader() {
+        assert!(!is_platform_dependency("mixinextras", "forge", "21.1.77"));
+        assert!(!is_platform_dependency("mixinextras", "quilt", "21.1.77"));
+    }
+
+    #[test]
+    fn game_java_and_the_loader_itself_are_always_platform() {
+        assert!(is_platform_dependency("minecraft", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("java", "fabric", ""));
+        assert!(is_platform_dependency("fabricloader", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("fabric_loader", "fabric", ""));
+        assert!(is_platform_dependency("quilt_loader", "quilt", ""));
+        assert!(is_platform_dependency("quilt-loader", "quilt", ""));
+        assert!(is_platform_dependency("neoforge", "neoforge", ""));
+        assert!(is_platform_dependency("forge", "neoforge", ""));
+        assert!(is_platform_dependency("MIXINEXTRAS", "FABRIC", "0.20.1"));
+    }
+
+    #[test]
+    fn ordinary_mods_are_never_platform() {
+        assert!(!is_platform_dependency("some-mod", "fabric", "0.20.1"));
+        assert!(!is_platform_dependency("fabric-api", "fabric", "0.20.1"));
+        assert!(!is_platform_dependency("", "fabric", "0.20.1"));
     }
 }

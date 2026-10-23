@@ -6,6 +6,7 @@
 //! The desktop crate provides thin shim functions that open DB connections
 //! and delegate to these pure functions.
 
+use crate::jar_metadata::is_platform_dependency;
 use crate::models::InstalledMod;
 use crate::registry::ManifestDeps;
 use serde::{Deserialize, Serialize};
@@ -465,6 +466,8 @@ pub fn resolve_install_deps_with_aliases(
     target_jar_deps: &JarDeps,
     installed: &[InstalledMod],
     aliases: &AliasMap,
+    loader: &str,
+    loader_version: &str,
 ) -> ResolvedInstallDeps {
     // Build installed set with alias resolution.
     let installed_ids: HashSet<String> = installed
@@ -515,10 +518,13 @@ pub fn resolve_install_deps_with_aliases(
     }
 
     // Helper: filter out already-installed candidates.
+    // Also drops ids the loader itself provides (see `is_platform_dependency`):
+    // those are never a missing dependency to install.
     let filter_installed = |cands: Vec<DepCandidate>| -> Vec<DepCandidate> {
         cands
             .into_iter()
             .filter(|c| !installed_ids.contains(&c.mod_jar_id.to_lowercase()))
+            .filter(|c| !is_platform_dependency(&c.mod_jar_id, loader, loader_version))
             .collect()
     };
 
@@ -672,8 +678,17 @@ pub fn build_install_plan_with_aliases(
     target_jar_deps: &JarDeps,
     installed: &[InstalledMod],
     aliases: &AliasMap,
+    loader: &str,
+    loader_version: &str,
 ) -> InstallPlan {
-    resolve_install_deps_with_aliases(target_manifest_deps, target_jar_deps, installed, aliases)
+    resolve_install_deps_with_aliases(
+        target_manifest_deps,
+        target_jar_deps,
+        installed,
+        aliases,
+        loader,
+        loader_version,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -844,12 +859,16 @@ pub fn resolve_install_deps(
     target_manifest_deps: Option<ManifestDeps>,
     target_jar_deps: &JarDeps,
     installed: &[InstalledMod],
+    loader: &str,
+    loader_version: &str,
 ) -> ResolvedInstallDeps {
     resolve_install_deps_with_aliases(
         target_manifest_deps,
         target_jar_deps,
         installed,
         &AliasMap::from_pairs(&[]),
+        loader,
+        loader_version,
     )
 }
 
@@ -874,12 +893,16 @@ pub fn build_install_plan(
     target_manifest_deps: Option<ManifestDeps>,
     target_jar_deps: &JarDeps,
     installed: &[InstalledMod],
+    loader: &str,
+    loader_version: &str,
 ) -> InstallPlan {
     build_install_plan_with_aliases(
         target_manifest_deps,
         target_jar_deps,
         installed,
         &AliasMap::from_pairs(&[]),
+        loader,
+        loader_version,
     )
 }
 
@@ -1454,7 +1477,7 @@ mod tests {
         let jar_meta = jar_deps(Some("target"), &["missing"], &[], &[]);
         let installed: Vec<InstalledMod> = vec![];
 
-        let plan = resolve_install_deps(None, &jar_meta, &installed);
+        let plan = resolve_install_deps(None, &jar_meta, &installed, "fabric", "0.20.1");
 
         assert_eq!(plan.missing_required.len(), 1);
         assert_eq!(plan.missing_required[0].mod_jar_id, "missing");
@@ -1464,12 +1487,33 @@ mod tests {
     }
 
     #[test]
+    fn a_dependency_the_loader_bundles_is_not_a_missing_install() {
+        // Shaped like a Fabric mod that depends on MixinExtras, with no jar.
+        let jar_meta = jar_deps(Some("lithium"), &["mixinextras", "fabric-api"], &[], &[]);
+        let plan = resolve_install_deps(None, &jar_meta, &[], "fabric", "0.20.1");
+        let missing: Vec<&str> = plan
+            .missing_required
+            .iter()
+            .map(|c| c.mod_jar_id.as_str())
+            .collect();
+        assert_eq!(missing, vec!["fabric-api"]);
+    }
+
+    #[test]
+    fn a_dependency_an_old_loader_does_not_bundle_is_still_missing() {
+        let jar_meta = jar_deps(Some("lithium"), &["mixinextras"], &[], &[]);
+        let plan = resolve_install_deps(None, &jar_meta, &[], "fabric", "0.14.22");
+        assert_eq!(plan.missing_required.len(), 1);
+        assert_eq!(plan.missing_required[0].mod_jar_id, "mixinextras");
+    }
+
+    #[test]
     fn test_install_plan_already_installed_skipped() {
         let m = installed("m.jar", Some("m"), &[], &[]);
         let installed = vec![m];
         let jar_meta = jar_deps(Some("target"), &["m"], &[], &[]);
 
-        let plan = resolve_install_deps(None, &jar_meta, &installed);
+        let plan = resolve_install_deps(None, &jar_meta, &installed, "fabric", "0.20.1");
 
         assert!(plan.missing_required.is_empty());
     }
@@ -1479,7 +1523,7 @@ mod tests {
         let jar_meta = jar_deps(Some("target"), &["req"], &["opt"], &[]);
         let installed: Vec<InstalledMod> = vec![];
 
-        let plan = resolve_install_deps(None, &jar_meta, &installed);
+        let plan = resolve_install_deps(None, &jar_meta, &installed, "fabric", "0.20.1");
 
         assert_eq!(plan.missing_required.len(), 1);
         assert_eq!(plan.missing_required[0].mod_jar_id, "req");
@@ -1496,7 +1540,7 @@ mod tests {
         let manifest = manifest_deps(&["x"], &[], &[]);
         let installed: Vec<InstalledMod> = vec![];
 
-        let plan = resolve_install_deps(Some(manifest), &jar_meta, &installed);
+        let plan = resolve_install_deps(Some(manifest), &jar_meta, &installed, "fabric", "0.20.1");
 
         assert_eq!(plan.missing_required.len(), 1);
         assert_eq!(plan.missing_required[0].mod_jar_id, "x");
@@ -1509,7 +1553,7 @@ mod tests {
         let manifest = manifest_deps(&[], &["x"], &[]);
         let installed: Vec<InstalledMod> = vec![];
 
-        let plan = resolve_install_deps(Some(manifest), &jar_meta, &installed);
+        let plan = resolve_install_deps(Some(manifest), &jar_meta, &installed, "fabric", "0.20.1");
 
         // "x" should NOT appear in missing_required or missing_optional
         let in_missing_req = plan.missing_required.iter().any(|c| c.mod_jar_id == "x");
@@ -1671,7 +1715,7 @@ mod tests {
             &[],
         );
 
-        let plan = build_install_plan(None, &target, &[fabric_api]);
+        let plan = build_install_plan(None, &target, &[fabric_api], "fabric", "0.20.1");
         assert!(plan.missing_required.is_empty());
     }
 

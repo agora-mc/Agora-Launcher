@@ -3035,6 +3035,8 @@ pub async fn get_install_plan(
             &jar_metadata,
             &manifest.mods,
             &dependency_ops::AliasMap::from_pairs(&aliases),
+            &manifest.loader,
+            &manifest.loader_version,
         ))
     })
     .await

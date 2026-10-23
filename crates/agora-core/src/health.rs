@@ -3,7 +3,7 @@ use crate::dependency_ops::{
     AliasMap, DependencyDecl, DependencyImportance, JarDeps, ProvidedModSource,
 };
 use crate::jar_metadata::{
-    parse_jar_metadata_for_loader_with_status, ParseDiagnostic, ParseStatus,
+    is_platform_dependency, parse_jar_metadata_for_loader_with_status, ParseDiagnostic, ParseStatus,
 };
 use crate::loader_compatibility::{
     evaluate_loader_compatibility, CurrentLoaderStatus, LoaderCompatibilityReport,
@@ -1220,7 +1220,10 @@ fn health_from_inventory(
                 // A bundled module is registered under its own id (see
                 // `resolve_capability_providers`), so ask for the id as written.
                 || dependency_presence_keys.contains(&dependency_id_key(dep))
-                || (connector_bridge_present && is_fabric_api_module(&dep_resolved));
+                || (connector_bridge_present && is_fabric_api_module(&dep_resolved))
+                // The loader itself supplies some libraries (MixinExtras on a
+                // new enough Fabric or NeoForge), so no jar has to.
+                || is_platform_dependency(dep, &manifest.loader, &manifest.loader_version);
             if !dep_present {
                 let display_name = if dep_resolved != dep.to_lowercase() {
                     dep_resolved.clone()
@@ -1574,7 +1577,10 @@ fn health_from_inventory(
                 // A bundled module is registered under its own id (see
                 // `resolve_capability_providers`), so ask for the id as written.
                 || dependency_presence_keys.contains(&dependency_id_key(dep))
-                || (connector_bridge_present && is_fabric_api_module(&dep_resolved));
+                || (connector_bridge_present && is_fabric_api_module(&dep_resolved))
+                // The loader itself supplies some libraries (MixinExtras on a
+                // new enough Fabric or NeoForge), so no jar has to.
+                || is_platform_dependency(dep, &manifest.loader, &manifest.loader_version);
             if !dep_present {
                 let display_name = if dep_resolved != dep.to_lowercase() {
                     dep_resolved.clone()
@@ -2995,6 +3001,77 @@ type="required"
                 .iter()
                 .any(|blocker| { blocker.kind == BlockerKind::MissingRequiredDependency }),
             "JarJar dependencies were not inventoried: {report:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_mixinextras_required_is_met_by_a_fabric_loader_that_bundles_it() {
+        let dir = fresh_instance("mixinextras_required_modern_fabric");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","depends":{"fabricloader":">=0.15.0","mixinextras":">=0.2.0"}}"#,
+            )],
+        );
+        let mut manifest = tracked_manifest(&[("consumer.jar", "consumer")]);
+        manifest.loader_version = "0.20.1".into();
+        let report = health(&dir, &manifest, None);
+        assert!(
+            !report
+                .blockers
+                .iter()
+                .any(|blocker| blocker.mod_id.as_deref() == Some("mixinextras")),
+            "{:?}",
+            report.blockers
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_mixinextras_required_is_still_missing_on_an_old_fabric_loader() {
+        let dir = fresh_instance("mixinextras_required_old_fabric");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","depends":{"fabricloader":">=0.14.0","mixinextras":">=0.2.0"}}"#,
+            )],
+        );
+        let mut manifest = tracked_manifest(&[("consumer.jar", "consumer")]);
+        manifest.loader_version = "0.14.22".into();
+        let report = health(&dir, &manifest, None);
+        assert!(report.blockers.iter().any(|blocker| {
+            blocker.kind == BlockerKind::MissingRequiredDependency
+                && blocker.mod_id.as_deref() == Some("mixinextras")
+        }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_mixinextras_suggested_is_not_recommended_on_a_fabric_loader_that_bundles_it() {
+        let dir = fresh_instance("mixinextras_suggested_modern_fabric");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","suggests":{"mixinextras":"*"}}"#,
+            )],
+        );
+        let mut manifest = tracked_manifest(&[("consumer.jar", "consumer")]);
+        manifest.loader_version = "0.20.1".into();
+        let report = health(&dir, &manifest, None);
+        assert!(
+            !report
+                .recommendations
+                .iter()
+                .any(|rec| rec.mod_id.as_deref() == Some("mixinextras")),
+            "{:?}",
+            report.recommendations
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
