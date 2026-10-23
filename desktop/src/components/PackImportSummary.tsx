@@ -77,8 +77,8 @@ export function PackImportSummary({
 
       {offline > 0 && (
         <p className="mt-2 text-sm">
-          {offline === 1 ? 'This mod needs' : `These ${offline} mods need`} to be downloaded, and there&apos;s
-          no internet connection right now.
+          {offline === 1 ? 'This mod needs' : `These ${offline} mods need`} to be downloaded. Couldn&apos;t
+          connect: no internet, or the server can&apos;t be reached right now.
           {report.installed === 0 ? ' Nothing was installed.' : ''} Try again when you&apos;re online.
         </p>
       )}

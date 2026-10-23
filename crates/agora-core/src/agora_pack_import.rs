@@ -206,6 +206,62 @@ pub struct PackImportPlan {
     pub pack_name: String,
     pub instance: AgoraPackInstance,
     pub entries: Vec<PlannedEntry>,
+    /// SHA-256 (lowercase hex) of the exact file bytes that were reviewed. The
+    /// import refuses any file whose bytes no longer hash to this.
+    pub file_sha256: String,
+    /// Size in bytes of the reviewed file.
+    pub file_size: u64,
+}
+
+/// SHA-256 (lowercase hex) of a pack file's bytes.
+pub fn pack_fingerprint(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+/// The bytes of a pack file, parsed. Refuses an oversized file.
+fn parse_pack_bytes(bytes: &[u8]) -> LauncherResult<ParsedAgoraPack> {
+    if bytes.len() as u64 > MAX_PACK_FILE_BYTES {
+        return Err(pack_too_big_error());
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| parse_error("Failed to parse agora-pack JSON: the file is not UTF-8."))?;
+    parse_agora_pack(text)
+}
+
+/// Parse the exact bytes the user reviewed, and only those. The import is
+/// refused unless `reviewed_sha256` is present and the bytes hash to it, so a
+/// file changed after review is never installed unreviewed.
+pub fn parse_reviewed_agora_pack(
+    bytes: &[u8],
+    reviewed_sha256: Option<&str>,
+) -> LauncherResult<ParsedAgoraPack> {
+    if bytes.len() as u64 > MAX_PACK_FILE_BYTES {
+        return Err(pack_too_big_error());
+    }
+    let Some(reviewed) = reviewed_sha256 else {
+        return Err(LauncherError::Generic {
+            code: "ERR_PACK_NOT_REVIEWED".into(),
+            message: "Review the pack before importing it.".into(),
+        });
+    };
+    if !pack_fingerprint(bytes).eq_ignore_ascii_case(reviewed.trim()) {
+        return Err(LauncherError::Generic {
+            code: "ERR_PACK_CHANGED".into(),
+            message: "The pack file changed since you reviewed it. Review it again.".into(),
+        });
+    }
+    parse_pack_bytes(bytes)
+}
+
+/// [`plan_agora_pack_import`] for the exact bytes of a pack file: also records
+/// the fingerprint the import will be held to.
+pub fn plan_agora_pack_bytes(ctx: &Ctx, bytes: &[u8]) -> LauncherResult<PackImportPlan> {
+    let pack = parse_pack_bytes(bytes)?;
+    let mut plan = plan_agora_pack_import(ctx, &pack);
+    plan.file_sha256 = pack_fingerprint(bytes);
+    plan.file_size = bytes.len() as u64;
+    Ok(plan)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,7 +384,7 @@ pub enum BackendError {
 
 /// What an entry says when it could not be downloaded for lack of a connection.
 pub const OFFLINE_NOTE: &str =
-    "This mod needs to be downloaded, and there's no internet connection right now. Try again when you're online.";
+    "This mod needs to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Try again when you're online.";
 
 /// Whether an error is a failure to reach the source at all. The shared HTTP
 /// layer reports every send failure as `ERR_NETWORK`; that code does not by
@@ -1105,6 +1161,9 @@ pub fn plan_agora_pack(backend: &dyn PackBackend, pack: &ParsedAgoraPack) -> Pac
         pack_name: pack_display_name(&pack.instance),
         instance: pack.instance.clone(),
         entries,
+        // Filled in by `plan_agora_pack_bytes`, which has the file's bytes.
+        file_sha256: String::new(),
+        file_size: 0,
     }
 }
 
@@ -2237,5 +2296,66 @@ mod tests {
             install_error(LauncherError::HashMismatch),
             BackendError::Failed(_)
         ));
+    }
+
+    // -- Review fingerprint --------------------------------------------------
+
+    fn pack_bytes(mod_file: &str) -> Vec<u8> {
+        format!(
+            "{{\"instance\":{{\"name\":\"Friend\",\"minecraft_version\":\"1.21\",\"loader\":\"fabric\",\"loader_version\":\"0.16.0\"}},\"mods\":[{{\"filename\":\"{mod_file}\",\"version\":\"1\",\"modrinth_id\":\"proj\",\"sha256\":null}}]}}"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn file_changed_between_review_and_import_is_refused() {
+        let reviewed = pack_bytes("sodium.jar");
+        let fingerprint = pack_fingerprint(&reviewed);
+        // Same name, different content on disk now: the review is out of date.
+        let changed = pack_bytes("evil.jar");
+
+        let err = parse_reviewed_agora_pack(&changed, Some(&fingerprint)).unwrap_err();
+        assert_eq!(err.code(), "ERR_PACK_CHANGED");
+        assert!(err.to_string().contains("Review it again"), "{err}");
+
+        // The bytes that were reviewed still import.
+        assert!(parse_reviewed_agora_pack(&reviewed, Some(&fingerprint)).is_ok());
+    }
+
+    #[test]
+    fn import_without_a_review_is_refused() {
+        let bytes = pack_bytes("sodium.jar");
+        let err = parse_reviewed_agora_pack(&bytes, None).unwrap_err();
+        assert_eq!(err.code(), "ERR_PACK_NOT_REVIEWED");
+    }
+
+    #[test]
+    fn the_reviewed_hash_is_matched_exactly_but_not_by_case_or_padding() {
+        let bytes = pack_bytes("sodium.jar");
+        let fingerprint = pack_fingerprint(&bytes);
+        assert!(parse_reviewed_agora_pack(&bytes, Some(&fingerprint.to_uppercase())).is_ok());
+        assert!(parse_reviewed_agora_pack(&bytes, Some(&format!("  {fingerprint}\n"))).is_ok());
+        // Empty, blank or truncated hashes fail closed.
+        for bad in ["", "   ", &fingerprint[..10]] {
+            let err = parse_reviewed_agora_pack(&bytes, Some(bad)).unwrap_err();
+            assert_eq!(err.code(), "ERR_PACK_CHANGED", "hash {bad:?}");
+        }
+    }
+
+    #[test]
+    fn reviewed_import_refuses_an_oversized_file_before_hashing_it() {
+        let bytes = vec![b' '; (MAX_PACK_FILE_BYTES + 1) as usize];
+        let err = parse_reviewed_agora_pack(&bytes, Some(&pack_fingerprint(&bytes))).unwrap_err();
+        assert!(err.to_string().contains("larger than 5 MB"), "{err}");
+    }
+
+    #[test]
+    fn the_plan_records_the_exact_file_it_reviewed() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = pack_bytes("sodium.jar");
+        let plan = plan_agora_pack_bytes(&ctx, &bytes).unwrap();
+        assert_eq!(plan.file_sha256, pack_fingerprint(&bytes));
+        assert_eq!(plan.file_size, bytes.len() as u64);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

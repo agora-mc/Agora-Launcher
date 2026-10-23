@@ -316,9 +316,12 @@ pub struct PackImportOutcome {
 }
 
 /// Import a pack file.  .mrpack → core ImportService.  .agora-pack.json → local orchestrator.
+/// `reviewed_sha256` is the fingerprint the review step recorded for an Agora
+/// pack; the import refuses a file whose bytes no longer match it.
 pub async fn import_instance_pack(
     app: &tauri::AppHandle,
     source_path: &str,
+    reviewed_sha256: Option<&str>,
 ) -> LauncherResult<PackImportOutcome> {
     let lower = source_path.to_ascii_lowercase();
     if lower.ends_with(".mrpack") {
@@ -327,7 +330,7 @@ pub async fn import_instance_pack(
             report: None,
         })
     } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
-        import_agora_json(app, source_path).await
+        import_agora_json(app, source_path, reviewed_sha256).await
     } else {
         Err(LauncherError::Generic {
             code: "ERR_INVALID_FORMAT".into(),
@@ -368,17 +371,14 @@ pub fn plan_pack_import(
         });
     }
     let ctx = crate::core_context(app)?;
-    let pack = read_agora_pack_file(source_path)?;
-    Ok(agora_core::agora_pack_import::plan_agora_pack_import(
-        &ctx, &pack,
-    ))
+    let bytes = read_agora_pack_bytes(source_path)?;
+    agora_core::agora_pack_import::plan_agora_pack_bytes(&ctx, &bytes)
 }
 
-/// Read and parse a `.agora-pack.json`, refusing one too large to read. A file
-/// whose size cannot be read is refused too, rather than read unchecked.
-fn read_agora_pack_file(
-    source_path: &str,
-) -> LauncherResult<agora_core::agora_pack_import::ParsedAgoraPack> {
+/// The bytes of a `.agora-pack.json`, refusing one too large to read. A file
+/// whose size cannot be read is refused too, rather than read unchecked. The
+/// core re-checks the size of the bytes it is given.
+fn read_agora_pack_bytes(source_path: &str) -> LauncherResult<Vec<u8>> {
     let unreadable = || LauncherError::Generic {
         code: "ERR_PACK_READ".into(),
         message: format!("Cannot read pack file: {source_path}"),
@@ -390,8 +390,7 @@ fn read_agora_pack_file(
     if too_big {
         return Err(agora_core::agora_pack_import::pack_too_big_error());
     }
-    let text = std::fs::read_to_string(source_path).map_err(|_| unreadable())?;
-    agora_core::agora_pack_import::parse_agora_pack(&text)
+    std::fs::read(source_path).map_err(|_| unreadable())
 }
 
 async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherResult<String> {
@@ -415,9 +414,13 @@ async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherRes
 async fn import_agora_json(
     app: &tauri::AppHandle,
     source_path: &str,
+    reviewed_sha256: Option<&str>,
 ) -> LauncherResult<PackImportOutcome> {
     let ctx = crate::core_context(app)?;
-    let pack = read_agora_pack_file(source_path)?;
+    // One read: the bytes checked against the reviewed fingerprint are the
+    // bytes parsed and installed.
+    let bytes = read_agora_pack_bytes(source_path)?;
+    let pack = agora_core::agora_pack_import::parse_reviewed_agora_pack(&bytes, reviewed_sha256)?;
     let inst = &pack.instance;
     let name = agora_core::agora_pack_import::pack_display_name(inst);
     let instance_id = paths::sanitize_id(inst.id.as_deref().unwrap_or(&name));
@@ -458,9 +461,9 @@ async fn import_agora_json(
                 return Err(LauncherError::Generic {
                     code: "ERR_PACK_OFFLINE".into(),
                     message: format!(
-                        "{subject} to be downloaded, and there's no internet connection right \
-                         now. Nothing was installed, and the new instance was removed. Try again \
-                         when you're online."
+                        "{subject} to be downloaded. Couldn't connect: no internet, or the \
+                         server can't be reached right now. Nothing was installed, and the new \
+                         instance was removed. Try again when you're online."
                     ),
                 });
             }

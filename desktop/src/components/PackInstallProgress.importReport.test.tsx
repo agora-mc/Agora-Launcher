@@ -37,6 +37,8 @@ const plan: PackImportPlan = {
     { name: 'xaero.jar', display_name: null, source: 'modrinth', checkable: true, reason: 'Needs Modrinth, which is off.', action: 'enable_modrinth' },
     { name: 'ghost.jar', display_name: null, source: 'cannot_get', checkable: false, reason: "'ghost' is not in the catalog this install has.", action: null },
   ],
+  file_sha256: 'b'.repeat(64),
+  file_size: 1234,
 };
 
 function Starter({ path = 'C:\\friend.agora-pack.json' }: { path?: string }) {
@@ -93,7 +95,8 @@ describe('pack import review', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(1));
-    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\friend.agora-pack.json' });
+    // The import is held to the exact bytes that were reviewed.
+    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\friend.agora-pack.json', reviewedSha256: plan.file_sha256 });
   });
 
   it('Cancel leaves nothing behind', async () => {
@@ -119,7 +122,7 @@ describe('pack import review', () => {
       const review = await screen.findByTestId('pack-import-review');
       // Only Sodium is ready to download now: Xaero waits on Modrinth, Ghost cannot be fetched.
       expect(review.textContent).toContain(
-        "This mod needs to be downloaded, and there's no internet connection right now. Nothing was installed.",
+        "This mod needs to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Nothing was installed.",
       );
     } finally {
       Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
@@ -130,6 +133,7 @@ describe('pack import review', () => {
     renderImport('C:\\packs\\friend.mrpack');
     await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(1));
     expect(callsTo('plan_pack_import')).toHaveLength(0);
+    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\packs\\friend.mrpack', reviewedSha256: null });
     expect(screen.queryByTestId('pack-import-review')).toBeNull();
   });
 });
@@ -193,7 +197,7 @@ describe('pack import without a connection', () => {
   const offlineReport = (total: number, installedCount: number): PackImportReport => {
     const offlineEntry = (filename: string): PackEntryOutcome => ({
       name: filename, status: 'needs_action', verified_against_pack: false, action: null,
-      reason: "This mod needs to be downloaded, and there's no internet connection right now. Try again when you're online.",
+      reason: "This mod needs to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Try again when you're online.",
       entry: entry(filename, 'sodium'),
     });
     const outcomes = [
@@ -210,7 +214,7 @@ describe('pack import without a connection', () => {
 
     const summary = await screen.findByTestId('pack-import-summary');
     expect(summary.textContent).toContain(
-      "These 3 mods need to be downloaded, and there's no internet connection right now. Nothing was installed. Try again when you're online.",
+      "These 3 mods need to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Nothing was installed. Try again when you're online.",
     );
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Open Settings' })).toBeNull();
@@ -223,7 +227,7 @@ describe('pack import without a connection', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
 
     const summary = await screen.findByTestId('pack-import-summary');
-    expect(summary.textContent).toContain("These 2 mods need to be downloaded, and there's no internet connection right now.");
+    expect(summary.textContent).toContain("These 2 mods need to be downloaded. Couldn't connect: no internet, or the server can't be reached right now.");
     expect(summary.textContent).not.toContain('Nothing was installed');
   });
 
@@ -231,7 +235,7 @@ describe('pack import without a connection', () => {
     answer({
       import_instance_pack: () => Promise.reject({
         code: 'ERR_PACK_OFFLINE',
-        message: "These 3 mods need to be downloaded, and there's no internet connection right now. Nothing was installed, and the new instance was removed. Try again when you're online.",
+        message: "These 3 mods need to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Nothing was installed, and the new instance was removed. Try again when you're online.",
       }),
     });
     renderImport();

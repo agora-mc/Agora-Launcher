@@ -57,6 +57,8 @@ async function installMock(
               { name: 'sodium.jar', display_name: 'Sodium', source: 'curated', checkable: true, reason: null, action: null },
               { name: 'xaero.jar', display_name: null, source: 'modrinth', checkable: true, reason: 'Needs Modrinth, which is off.', action: 'enable_modrinth' },
             ],
+            file_sha256: 'c'.repeat(64),
+            file_size: 512,
           });
         }
         if (command === 'import_instance_pack') {
@@ -118,6 +120,8 @@ test.describe('My Instances: import a pack file', () => {
     const imports = await calls(page, 'import_instance_pack');
     expect(imports).toHaveLength(1);
     expect((imports[0].args as Record<string, unknown>).sourcePath).toBe('C:\\packs\\my.agora-pack.json');
+    // The import is held to the bytes the review recorded.
+    expect((imports[0].args as Record<string, unknown>).reviewedSha256).toBe('c'.repeat(64));
   });
 
   test('a partial import says which mod is missing and retries it after Modrinth is turned on', async ({ page }) => {

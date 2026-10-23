@@ -1538,10 +1538,17 @@ export interface PackImportPlan {
   pack_name: string;
   instance: AgoraPackInstance;
   entries: PlannedPackEntry[];
+  /** SHA-256 of the exact file that was reviewed; the import is held to it. */
+  file_sha256: string;
+  file_size: number;
 }
 
-export const importInstancePack = (sourcePath: string) =>
-  invoke<PackImportOutcome>('import_instance_pack', { sourcePath });
+/**
+ * Import a pack file as a new instance. `reviewedSha256` is the plan's
+ * `file_sha256` for an .agora-pack.json; the import refuses a changed file.
+ */
+export const importInstancePack = (sourcePath: string, reviewedSha256?: string | null) =>
+  invoke<PackImportOutcome>('import_instance_pack', { sourcePath, reviewedSha256: reviewedSha256 ?? null });
 /** What importing an .agora-pack.json would do. Writes and downloads nothing. */
 export const planPackImport = (sourcePath: string) =>
   invoke<PackImportPlan>('plan_pack_import', { sourcePath });

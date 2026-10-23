@@ -69,8 +69,8 @@ export function PackImportReview({
             {offlineNow && downloadCount > 0 && (
               <p role="alert" className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
                 {downloadCount === 1 ? 'This mod needs' : `These ${downloadCount} mods need`} to be
-                downloaded, and there&apos;s no internet connection right now. Nothing was installed.
-                Try again when you&apos;re online.
+                downloaded. Couldn&apos;t connect: no internet, or the server can&apos;t be reached right
+                now. Nothing was installed. Try again when you&apos;re online.
               </p>
             )}
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">

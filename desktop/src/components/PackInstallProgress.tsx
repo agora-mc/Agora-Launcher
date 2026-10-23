@@ -385,13 +385,14 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       .catch((cause) => failTask(id, formatError(cause)));
   };
 
-  const beginPackFileImport = (sourcePath: string, label: string) => {
+  /** `reviewedSha256` is the fingerprint the review recorded (.agora-pack.json only). */
+  const beginPackFileImport = (sourcePath: string, label: string, reviewedSha256?: string) => {
     const id = `pack-file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setTaskMap((current) => ({
       ...current,
       [id]: initialTask(id, label, 'pack-file', null, label),
     }));
-    void importInstancePack(sourcePath)
+    void importInstancePack(sourcePath, reviewedSha256)
       .then((outcome) => completeImportedTask(id, outcome.instance_id, label, outcome.report))
       .catch((cause) => failTask(id, formatError(cause)));
   };
@@ -415,9 +416,10 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
 
   const confirmReview = () => {
     if (!review?.plan) return;
-    const { sourcePath, label } = review;
+    const { sourcePath, label, plan } = review;
     setReview(null);
-    beginPackFileImport(sourcePath, label);
+    // The import is held to the exact bytes that were reviewed.
+    beginPackFileImport(sourcePath, label, plan.file_sha256);
   };
 
   const updateImportReport = (instanceId: string, report: PackImportReport | null) => {
