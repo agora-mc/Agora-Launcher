@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { TOUR_STEPS } from '../src/features/tour/tourModel';
 
 /**
@@ -54,11 +54,62 @@ async function expectNoSidewaysScroll(page: Page) {
   expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 }
 
+/**
+ * Nothing may sit under another visible cell at the scroll position the user
+ * starts from. Each table cell's visible centre must hit that cell, so content
+ * under a pinned column is caught even when no control is out of reach.
+ */
+async function cellsCoveredAtRest(page: Page) {
+  return page.evaluate(() => {
+    const hits: string[] = [];
+    for (const cell of document.querySelectorAll('main table td, main table th')) {
+      let left = 0, top = 0, right = 0, bottom = 0;
+      const own = cell.getBoundingClientRect();
+      left = own.left; top = own.top; right = own.right; bottom = own.bottom;
+      for (let node = cell.parentElement; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+        const clip = node.getBoundingClientRect();
+        left = Math.max(left, clip.left);
+        top = Math.max(top, clip.top);
+        right = Math.min(right, clip.right);
+        bottom = Math.min(bottom, clip.bottom);
+      }
+      if (right - left <= 0 || bottom - top <= 0) continue;
+      const x = (left + right) / 2;
+      const y = (top + bottom) / 2;
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || !(cell === hit || cell.contains(hit))) {
+        hits.push(`"${(cell.textContent || '').trim().slice(0, 30)}" is under "${(hit?.textContent || hit?.tagName || '').trim().slice(0, 30)}"`);
+      }
+    }
+    return hits;
+  });
+}
+
 /** No two visible buttons in the main column may share pixels. */
 async function expectButtonsDoNotOverlap(page: Page) {
   const overlaps = await page.evaluate(() => {
+    // Only the part of a control that a scroll box shows counts: a control
+    // scrolled out of its box is clipped, and cannot visibly overlap anything.
+    const visiblePart = (el: Element) => {
+      let left = 0, top = 0, right = 0, bottom = 0;
+      const own = el.getBoundingClientRect();
+      left = own.left; top = own.top; right = own.right; bottom = own.bottom;
+      for (let node = el.parentElement; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+        const clip = node.getBoundingClientRect();
+        left = Math.max(left, clip.left);
+        top = Math.max(top, clip.top);
+        right = Math.min(right, clip.right);
+        bottom = Math.min(bottom, clip.bottom);
+      }
+      return { left, top, right, bottom, width: right - left, height: bottom - top };
+    };
     const boxes = [...document.querySelectorAll('main button, main a[href]')]
-      .map((el) => ({ el, r: el.getBoundingClientRect() }))
+      .map((el) => ({ el, r: visiblePart(el) }))
       .filter(({ r }) => r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight);
     const hits: string[] = [];
     for (let i = 0; i < boxes.length; i += 1) {
@@ -183,6 +234,11 @@ async function bootEditor(
             contentRows = contentRows.map((row) => (row.filename === args.filename ? { ...row, enabled: true } : row));
             return Promise.resolve(null);
           }
+          if (command === 'disable_instance_mod') {
+            contentRows = contentRows.map((row) => (row.filename === args.filename ? { ...row, enabled: false } : row));
+            return Promise.resolve(null);
+          }
+          if (command === 'get_disable_plan') return Promise.resolve({ dependents: [] });
           if (command === 'list_instance_content') return Promise.resolve(contentRows);
           if (command === 'check_instance_updates') return Promise.resolve(updates);
           if (command === 'export_instance_pack') return Promise.resolve('C:/exports/test.mrpack');
@@ -443,6 +499,71 @@ for (const width of [760, 1024] as const) {
     expect(reachable).toBe(true);
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
+}
+
+// Every control in every row must receive a click once it is scrolled into
+// view, at any width and in any saved column order. Playwright's click refuses
+// a target that another element covers, so a passing click is the check. Real
+// clicks are used where they change nothing else (the enable switch, the
+// row menu); the rest are hit-target checks, which click nothing.
+const REVERSED_COLUMNS = ['actions', 'installed', 'size', 'source', 'author', 'name', 'update_status', 'enabled'];
+for (const [width, order] of [[1024, 'default'], [1280, 'default'], [1024, 'reversed'], [1280, 'reversed']] as const) {
+  test(`every row control receives a click once scrolled into view (${width}px, ${order} column order)`, async ({ page }) => {
+    test.setTimeout(180_000);
+    if (order === 'reversed') {
+      await page.addInitScript((saved) => {
+        localStorage.setItem('agora.installed-content.v2.mod', JSON.stringify({ version: 2, columns: saved, sort: { column: 'name', direction: 'asc' } }));
+      }, REVERSED_COLUMNS);
+    }
+    await bootEditor(page, width, 700);
+    await page.getByRole('button', { name: 'Check for updates' }).click();
+    await expect(page.getByRole('button', { name: /^Update all/ })).toBeVisible();
+    const scrollTable = page.getByRole('table').first();
+    await scrollTable.scrollIntoViewIfNeeded();
+    // Before any scrolling: nothing visible may be under another cell.
+    expect(await cellsCoveredAtRest(page)).toEqual([]);
+    const failures: string[] = [];
+    for (const name of MOD_NAMES) {
+      const controls: Array<{ label: string; locator: Locator; real: boolean }> = [
+        { label: `enable switch of ${name}`, locator: page.getByRole('switch', { name: new RegExp(`(Enable|Disable) ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }), real: true },
+        { label: `row menu of ${name}`, locator: page.getByRole('button', { name: `More actions for ${name}` }), real: true },
+        { label: `remove ${name}`, locator: page.getByRole('button', { name: `Remove ${name}` }), real: false },
+        { label: `name of ${name}`, locator: scrollTable.locator('button', { hasText: name }), real: false },
+      ];
+      for (const control of controls) {
+        const target = control.locator.first();
+        try {
+          await target.scrollIntoViewIfNeeded();
+          if (control.real && control.label.startsWith('enable')) {
+            const before = await target.getAttribute('aria-checked');
+            await target.click({ timeout: 5_000 });
+            await expect(target).not.toHaveAttribute('aria-checked', before ?? '');
+          } else if (control.real) {
+            await target.click({ timeout: 3_000 });
+            await page.keyboard.press('Escape');
+          } else {
+            await target.click({ trial: true, timeout: 3_000 });
+          }
+        } catch (error) {
+          failures.push(`${control.label}: ${String(error).split('\n')[0]}`);
+        }
+      }
+    }
+    // The update controls: the status button in each row and the Actions icon.
+    const updateButtons = [scrollTable.getByRole('button', { name: 'Update available' }), page.getByRole('button', { name: /^Update .+ to 0\.7\.0$/ })];
+    for (const buttons of updateButtons) {
+      const count = await buttons.count();
+      for (let i = 0; i < count; i += 1) {
+        try {
+          await buttons.nth(i).scrollIntoViewIfNeeded();
+          await buttons.nth(i).click({ trial: true, timeout: 3_000 });
+        } catch (error) {
+          failures.push(`update control ${i}: ${String(error).split('\n')[0]}`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
   });
 }
 

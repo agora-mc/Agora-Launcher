@@ -189,7 +189,7 @@ describe('installed content details', () => {
     await screen.findByText('lookup-me');
     expect(screen.getByRole('status', { name: 'Loading author' })).toBeTruthy();
     expect(screen.getByText('Loading details…')).toBeTruthy();
-    expect(within(screen.getByRole('table')).queryByText('Unknown')).toBeNull();
+    expect(within(screen.getAllByRole('table')[0]).queryByText('Unknown')).toBeNull();
 
     await act(async () => { finish([{ key: row.key, display_name: 'Lookup Mod', icon_url: null, author: 'Some Author' }]); });
     await screen.findByText('Some Author');
@@ -200,7 +200,7 @@ describe('installed content details', () => {
     content = [contentRow('nothing-found.jar')];
     render(editor('alpha'));
     await screen.findByText('nothing-found');
-    await within(screen.getByRole('table')).findByText('Unknown');
+    await within(screen.getAllByRole('table')[0]).findByText('Unknown');
     expect(screen.queryByText('Loading details…')).toBeNull();
   });
 
@@ -209,7 +209,7 @@ describe('installed content details', () => {
     content = [contentRow('hand-made.jar', { modrinth_id: null, metadata_status: 'unavailable' })];
     render(editor('alpha'));
     await screen.findByText('hand-made');
-    expect(within(screen.getByRole('table')).getByText('Unknown')).toBeTruthy();
+    expect(within(screen.getAllByRole('table')[0]).getByText('Unknown')).toBeTruthy();
   });
 });
 

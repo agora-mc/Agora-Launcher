@@ -126,9 +126,8 @@ export function formatInstalledDate(value: string): string {
   }).format(date);
 }
 
-// The enable switch comes first and is pinned left (see InstalledContentPanel),
-// so it stays on screen and clickable at any width. Actions is pinned right.
-export const defaultColumns: ContentColumn[] = ['enabled', 'name', 'author', 'source', 'size', 'installed', 'update_status', 'actions'];
+// The switch and the update status are what people act on, so they come first.
+export const defaultColumns: ContentColumn[] = ['enabled', 'update_status', 'name', 'author', 'source', 'size', 'installed', 'actions'];
 
 /**
  * Split rows into display groups.
