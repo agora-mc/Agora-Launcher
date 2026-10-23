@@ -190,8 +190,51 @@ impl InstanceService {
         })
     }
 
+    /// Lock the instance and take the lock snapshot Revert returns to.
+    ///
+    /// The snapshot is taken before the lock is set, so it records the
+    /// unlocked state, and a failed snapshot leaves the instance unlocked:
+    /// locking without one would leave Revert pointing at an older state.
+    /// The new snapshot replaces the previous lock snapshot.
     pub fn lock(&self, instance_id: &str) -> LauncherResult<()> {
-        self.set_locked(instance_id, true)
+        let instance_id = self.validate_id(instance_id)?;
+        let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+        let _guard = self.ctx.lock_manager.acquire(
+            crate::lock_manager::LockResource::Instance(instance_id.clone()),
+            "lock_instance",
+        )?;
+        let label = format!("Locked {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
+        let snapshot = crate::snapshot::create_snapshot_scoped_with_origin(
+            &instance_dir,
+            Some(&label),
+            crate::snapshot::prelaunch_tracked_entries(),
+            crate::snapshot::SnapshotOrigin::Lock,
+        )
+        .map_err(|error| LauncherError::Generic {
+            code: "ERR_LOCK_SNAPSHOT".into(),
+            message: format!(
+                "Could not take the lock snapshot, so the instance was not locked: {error}"
+            ),
+        })?;
+        self.set_locked(&instance_id, true)?;
+        // Revert picks the newest lock snapshot, so a failed cleanup of the old
+        // ones leaves clutter, not a wrong revert. Say so rather than hide it.
+        match crate::snapshot::lock_snapshots(&instance_dir) {
+            Ok(old) => {
+                for previous in old.into_iter().filter(|s| s.id != snapshot.id) {
+                    if let Err(error) =
+                        crate::snapshot::delete_snapshot(&instance_dir, &previous.id)
+                    {
+                        eprintln!(
+                            "[lock] could not remove the previous lock snapshot {}: {error}",
+                            previous.id
+                        );
+                    }
+                }
+            }
+            Err(error) => eprintln!("[lock] could not list lock snapshots to replace: {error}"),
+        }
+        Ok(())
     }
 
     pub fn unlock(&self, instance_id: &str) -> LauncherResult<()> {
@@ -1664,6 +1707,176 @@ mod tests {
             missing,
             vec!["xaero.jar"],
             "sodium.jar is in the manifest now"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An unlocked instance with one mod on disk and a matching manifest.
+    fn instance_with_mod() -> (Ctx, PathBuf) {
+        let (ctx, root) = context();
+        let request = CreateInstanceRequest {
+            name: "Inst".into(),
+            instance_id: "inst".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &prepare_row("inst", &request)).unwrap();
+        drop(conn);
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::write(dir.join("mods").join("a.jar"), b"original").unwrap();
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "inst", "name": "Inst", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.16.0", "is_locked": false,
+            "mods": [], "resourcepacks": [], "shaders": [], "datapacks": [], "worlds": [],
+            "user_preferences": {}, "manifest_version": crate::models::CURRENT_MANIFEST_VERSION
+        }))
+        .unwrap();
+        crate::helpers::atomic_write_manifest(
+            &ctx.paths.instance_manifest("inst").unwrap(),
+            &manifest,
+        )
+        .unwrap();
+        (ctx, root)
+    }
+
+    fn lock_snapshot_ids(dir: &Path) -> Vec<String> {
+        crate::snapshot::lock_snapshots(dir)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    #[test]
+    fn lock_then_revert_removes_what_was_added_since_and_the_revert_can_be_undone() {
+        let (ctx, root) = instance_with_mod();
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        let service = InstanceService::new(ctx.clone());
+        service.lock("inst").unwrap();
+        assert!(
+            crate::snapshot::lock_snapshots(&dir).unwrap()[0].is_preserved(),
+            "a lock snapshot is never pushed out by automatic retention"
+        );
+        service.unlock("inst").unwrap();
+        std::fs::write(dir.join("mods").join("b.jar"), b"added").unwrap();
+
+        crate::snapshot_service::SnapshotService::new(ctx.clone())
+            .revert_to_lock("inst")
+            .unwrap();
+
+        assert!(
+            !dir.join("mods").join("b.jar").exists(),
+            "the mod added after locking is gone"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("a.jar")).unwrap(),
+            b"original"
+        );
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        assert!(
+            !crate::db::get_instance(&conn, "inst")
+                .unwrap()
+                .unwrap()
+                .is_locked
+        );
+
+        // The revert's own undo point brings the removed mod back.
+        let undo = crate::snapshot::list_snapshots(&dir)
+            .unwrap()
+            .into_iter()
+            .find(|s| {
+                s.label
+                    .as_deref()
+                    .is_some_and(|l| l.starts_with("pre-restore-"))
+            })
+            .expect("the revert took no undo snapshot");
+        crate::snapshot_service::SnapshotService::new(ctx.clone())
+            .restore("inst", &undo.id)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("b.jar")).unwrap(),
+            b"added"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn revert_refuses_an_instance_with_no_lock_snapshot_and_changes_nothing() {
+        // Locked before lock snapshots existed: there is no lock snapshot to return to.
+        let (ctx, root) = instance_with_mod();
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        std::fs::write(dir.join("mods").join("b.jar"), b"added").unwrap();
+
+        match crate::snapshot_service::SnapshotService::new(ctx.clone()).revert_to_lock("inst") {
+            Err(LauncherError::Generic { code, .. }) => assert_eq!(code, "ERR_NO_LOCK_SNAPSHOT"),
+            Err(other) => panic!("expected a plain refusal, got {other:?}"),
+            Ok(_) => panic!("revert with no lock snapshot must not restore anything"),
+        }
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("b.jar")).unwrap(),
+            b"added"
+        );
+        assert!(crate::snapshot::list_snapshots(&dir).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relocking_replaces_the_lock_snapshot_and_unlocking_keeps_it() {
+        let (ctx, root) = instance_with_mod();
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        let service = InstanceService::new(ctx.clone());
+        service.lock("inst").unwrap();
+        let first = lock_snapshot_ids(&dir);
+        assert_eq!(first.len(), 1);
+        service.unlock("inst").unwrap();
+        assert_eq!(
+            lock_snapshot_ids(&dir),
+            first,
+            "unlocking keeps the lock snapshot for Revert"
+        );
+
+        std::fs::write(dir.join("mods").join("b.jar"), b"added").unwrap();
+        service.lock("inst").unwrap();
+        let second = lock_snapshot_ids(&dir);
+        assert_eq!(second.len(), 1, "only the newest lock snapshot is kept");
+        assert_ne!(second, first);
+        service.unlock("inst").unwrap();
+
+        // Revert returns to the second lock, which already had the added mod.
+        crate::snapshot_service::SnapshotService::new(ctx.clone())
+            .revert_to_lock("inst")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("b.jar")).unwrap(),
+            b"added"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn revert_refuses_while_the_instance_is_locked() {
+        let (ctx, root) = instance_with_mod();
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        InstanceService::new(ctx.clone()).lock("inst").unwrap();
+        match crate::snapshot_service::SnapshotService::new(ctx.clone()).revert_to_lock("inst") {
+            Err(LauncherError::Generic { code, .. }) => assert_eq!(code, "ERR_INSTANCE_LOCKED"),
+            Err(other) => panic!("expected a refusal, got {other:?}"),
+            Ok(_) => panic!("revert on a locked instance must not restore anything"),
+        }
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("a.jar")).unwrap(),
+            b"original"
         );
         let _ = std::fs::remove_dir_all(root);
     }

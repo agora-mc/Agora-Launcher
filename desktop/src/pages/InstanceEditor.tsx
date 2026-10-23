@@ -260,7 +260,7 @@ function wrapperCommandOf(detail: InstanceDetail): string {
 }
 
 /** What the Lock control does, shown as a tooltip on Lock, Unlock and the status. */
-const LOCK_HELP = 'Locking stops mod changes (installing, updating, removing, or turning mods on and off) until you unlock. Launching still works.';
+const LOCK_HELP = 'Locking stops mod changes (installing, updating, removing, or turning mods on and off) until you unlock. Launching still works. Locking also takes a lock snapshot, which Revert returns to.';
 
 function previewJavaMajor(version: string | undefined): number {
   const parts = (version ?? '').split('.');
@@ -1229,15 +1229,28 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   };
 
   const handleRevert = async () => {
+    setError(null);
+    // Read the list fresh: the Snapshots list may not have loaded yet, and it
+    // must not decide what the confirmation promises.
+    let lockSnapshot: Snapshot | undefined;
+    try {
+      lockSnapshot = (await listSnapshots(instanceId)).find((snap) => snap.effective_origin === 'lock');
+    } catch (e) {
+      setError(formatError(e));
+      return;
+    }
+    if (!lockSnapshot) {
+      setError('This instance has no lock snapshot to revert to. Lock it once to take one; Revert then returns to that point.');
+      return;
+    }
     if (!await confirm({
-      title: 'Revert to the snapshot taken when this instance was unlocked?',
-      body: 'This removes any mods you added since then.',
+      title: `Revert to the lock snapshot from ${formatInstalledDate(lockSnapshot.created_at)}?`,
+      body: 'Mods, configs and other files changed since then go back to how they were at that point. Saves (worlds) are not touched. Agora first takes an undo snapshot, so you can undo this from Snapshots.',
       confirmLabel: 'Revert',
       tone: 'danger',
     })) {
       return;
     }
-    setError(null);
     try {
       await revertInstance(instanceId);
       await reloadInstance();
@@ -1997,7 +2010,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     <button
                       onClick={handleRevert}
                       disabled={recoveryBlocked}
-                      title="Revert is not wired up yet: it only locks the instance and restores no files."
+                      title="Go back to the lock snapshot: mods and config changed since the instance was last locked are put back. You can undo this from Snapshots."
                       className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                     >
                       Revert
@@ -2467,6 +2480,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       <span>{snap.label}</span>
                       {snap.effective_origin === 'automatic' && (
                         <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground" title="Taken by Agora before a change; only the last 5 are kept">Automatic</span>
+                      )}
+                      {snap.effective_origin === 'lock' && (
+                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300" title="Taken when the instance was locked. Revert returns to it until the next lock replaces it.">Lock</span>
                       )}
                       {snap.effective_origin === 'migration' && (
                         <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>

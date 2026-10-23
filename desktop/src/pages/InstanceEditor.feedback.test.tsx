@@ -154,12 +154,22 @@ describe('readiness line', () => {
 });
 
 describe('instance header controls', () => {
-  it('tells the user what Revert does today, rather than promising a restore', async () => {
+  it('says what Revert returns to, and that it can be undone', async () => {
     render(editor('alpha'));
     const revert = await screen.findByRole('button', { name: 'Revert' });
     const title = revert.getAttribute('title') ?? '';
-    expect(title).toContain('only locks the instance');
-    expect(title).not.toMatch(/restores? (your )?mods/i);
+    expect(title).toContain('lock snapshot');
+    expect(title).toContain('undo');
+  });
+
+  it('says plainly when there is no lock snapshot, and reverts nothing', async () => {
+    const previous = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (command: string, args: { instanceId?: string } = {}) =>
+      command === 'list_snapshots' ? [] : previous?.(command, args));
+    render(editor('alpha'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Revert' }));
+    await screen.findByText(/has no lock snapshot to revert to/);
+    expect(invokeMock.mock.calls.some(([command]) => command === 'revert_instance')).toBe(false);
   });
 
   it('explains Lock on the button itself, where a hover reaches it', async () => {
