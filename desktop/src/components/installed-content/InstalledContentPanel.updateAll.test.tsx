@@ -126,6 +126,29 @@ describe('InstalledContentPanel Update All', () => {
     expect(screen.queryByText('Update available')).toBeNull();
   });
 
+  it('lists an uncertain version for manual choice without counting it or putting it in Update All', async () => {
+    const onApplyUpdate = vi.fn();
+    render(
+      <InstalledContentPanel
+        {...baseProps}
+        rows={[row({ filename: 'lithium.jar' }), row({ filename: 'iris.jar' })]}
+        onCheckUpdates={async () => [
+          { ...update('lithium.jar'), latest_version: 'nightly', uncertain: true },
+          update('iris.jar'),
+        ]}
+        onApplyUpdate={onApplyUpdate}
+        onUpdateAll={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Check for updates/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/can.t tell if it.s newer/)).toBeTruthy();
+    });
+    expect(screen.getByRole('button', { name: /Update all 1 mods/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Install nightly/ }));
+    expect(onApplyUpdate).toHaveBeenCalledTimes(1);
+  });
+
   // The backend returns updates for the WHOLE instance, so a mods panel must
   // never offer to update a shader that it does not render.
   it('only counts and submits updates belonging to this panel', async () => {

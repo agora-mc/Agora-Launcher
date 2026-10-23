@@ -308,7 +308,11 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
   // not an update: it is never offered, counted or applied.
   const updateForRow = (row: InstalledContentRow) => {
     const update = row.update_pinned ? undefined : updatesByFilename[row.filename];
-    return update?.needs_minecraft ? undefined : update;
+    return update?.needs_minecraft || update?.uncertain ? undefined : update;
+  };
+  const uncertainForRow = (row: InstalledContentRow) => {
+    const update = row.update_pinned ? undefined : updatesByFilename[row.filename];
+    return update?.uncertain ? update : undefined;
   };
   const minecraftNoteForRow = (row: InstalledContentRow) =>
     (row.update_pinned ? undefined : updatesByFilename[row.filename]?.needs_minecraft ?? undefined);
@@ -316,6 +320,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     if (row.update_pinned) return 'pinned';
     if (updateForRow(row)) return 'available';
     if (minecraftNoteForRow(row)) return 'needs_minecraft';
+    if (uncertainForRow(row)) return 'uncertain';
     if (!updatesChecked) return 'unchecked';
     return row.registry_id || row.modrinth_id ? 'current' : 'unavailable';
   };
@@ -460,6 +465,12 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
         return <td key={column} className="px-3 py-2 text-sm whitespace-nowrap">
           {status === 'available' && update ? <button type="button" disabled={props.locked} onClick={() => props.onApplyUpdate?.(row, update)} className="rounded-full bg-primary/10 px-2 py-1 text-primary hover:bg-primary/20 disabled:opacity-50" title={`Update to ${update.latest_version}`}>Update available</button> : null}
           {status === 'needs_minecraft' ? <span className="text-muted-foreground" title="A newer version exists, but it is built for a different Minecraft version than this instance.">Newer versions need Minecraft {minecraftNoteForRow(row)}</span> : null}
+          {status === 'uncertain' ? (() => {
+            const maybe = uncertainForRow(row)!;
+            const when = maybe.latest_released ? ` (${new Date(maybe.latest_released).toLocaleDateString()})` : '';
+            return <span className="text-muted-foreground">Another version is available (can&apos;t tell if it&apos;s newer){' '}
+              <button type="button" disabled={props.locked} onClick={() => props.onApplyUpdate?.(row, maybe)} className="underline hover:text-foreground disabled:opacity-50" title="Not counted as an update and not part of Update All. Choose it yourself if you want it.">Install {maybe.latest_version}{when}</button></span>;
+          })() : null}
           {status === 'current' ? <span className="text-muted-foreground">Up to date</span> : null}
           {status === 'unavailable' ? <span className="text-muted-foreground">Unavailable</span> : null}
           {status === 'unchecked' ? <span className="text-muted-foreground">Not checked</span> : null}
