@@ -341,10 +341,13 @@ impl CrashService {
         } else {
             None
         };
-        Ok(crate::crash_diagnostics::triage_with_db(
-            &text,
-            conn_opt.as_ref(),
-        ))
+        let triage = crate::crash_diagnostics::triage_with_db(&text, conn_opt.as_ref());
+        if triage.matched {
+            return Ok(triage);
+        }
+        Ok(self
+            .missing_class_finding(&sanitized, &text)
+            .map_or(triage, |finding| finding.triage))
     }
 }
 
@@ -704,7 +707,17 @@ impl CrashService {
         } else {
             None
         };
-        let triage = crate::crash_diagnostics::triage_with_db(&combined_text, conn_opt.as_ref());
+        let mut triage =
+            crate::crash_diagnostics::triage_with_db(&combined_text, conn_opt.as_ref());
+        // A named missing class is more specific than "no match", but a curated
+        // signature that matched is left alone.
+        let mut throwers: Vec<String> = Vec::new();
+        if !triage.matched {
+            if let Some(finding) = self.missing_class_finding(&sanitized, &combined_text) {
+                triage = finding.triage;
+                throwers = finding.throwers;
+            }
+        }
 
         // 4. Extract fingerprint
         let fingerprint = crate::crash_service::parse_crash_log(&combined_text);
@@ -716,7 +729,7 @@ impl CrashService {
                     crate::crash_service::score_suspects(&self.ctx, &combined_text, &manifest.mods)
                         .unwrap_or_default()
                         .into_iter()
-                        .filter(|s| s.total_score > 0.0)
+                        .filter(|s| s.total_score > 0.0 && !throwers.contains(&s.filename))
                         .collect()
                 }
                 _ => vec![],
@@ -1279,6 +1292,179 @@ impl CrashService {
             }
         };
         score_suspects(&self.ctx, crash_text, &manifest.mods)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Missing-class findings — a class an installed mod supplies is absent
+// ---------------------------------------------------------------------------
+
+/// A finding that the game could not load a class because the mod that
+/// supplies it is turned off or its file is missing.
+#[derive(Debug, Clone)]
+pub struct MissingClassFinding {
+    pub triage: CrashTriageResult,
+    /// Files of the mods whose frames threw the error. The finding names their
+    /// missing dependency, so the caller keeps them out of the suspect list.
+    pub throwers: Vec<String>,
+}
+
+fn missing_class_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(r"(?:NoClassDefFoundError|ClassNotFoundException):\s*([\w$./]+)")
+            .expect("missing-class pattern is valid")
+    })
+}
+
+/// Package of a class written either as `a/b/C` or `a.b.C`.
+fn package_of_class(name: &str) -> Option<String> {
+    let dotted = name.replace('/', ".");
+    let (package, _class) = dotted.rsplit_once('.')?;
+    (!package.is_empty()).then(|| package.to_string())
+}
+
+/// Whether a declared java package contains `package`, matching on a `.` boundary.
+fn package_covers(listed: &str, package: &str) -> bool {
+    !listed.is_empty()
+        && (package == listed
+            || package
+                .strip_prefix(listed)
+                .is_some_and(|rest| rest.starts_with('.')))
+}
+
+/// Package of the first stack frame after the error, which is where it was thrown.
+fn thrower_package(text_after_error: &str) -> Option<String> {
+    let frame = text_after_error
+        .lines()
+        .map(str::trim_start)
+        .find_map(|line| line.strip_prefix("at "))?;
+    let class_path = match frame.find('(') {
+        Some(idx) => &frame[..idx],
+        None => frame,
+    };
+    let (owner, _method) = class_path.rsplit_once('.')?;
+    package_of_class(owner)
+}
+
+fn mod_display_name(entry: &crate::models::InstalledMod) -> String {
+    entry
+        .registry_id
+        .clone()
+        .or_else(|| entry.mod_jar_id.clone())
+        .unwrap_or_else(|| entry.filename.clone())
+}
+
+fn code_span(text: &str) -> String {
+    format!("`{}`", text.replace(['`', '\r', '\n'], ""))
+}
+
+/// A mod is running when it is enabled and its jar is on disk.
+fn is_running(entry: &crate::models::InstalledMod, mods_dir: &std::path::Path) -> bool {
+    entry.enabled && mods_dir.join(&entry.filename).exists()
+}
+
+/// Find classes the log says were missing that some listed mod supplies, where
+/// every such supplier is turned off or missing. Mods whose frames threw the
+/// error are never named as the supplier.
+pub fn missing_class_finding_for(
+    mods: &[crate::models::InstalledMod],
+    mods_dir: &std::path::Path,
+    log: &str,
+) -> Option<MissingClassFinding> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut throwers: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for caps in missing_class_pattern().captures_iter(log) {
+        let Some(whole) = caps.get(0) else {
+            continue;
+        };
+        let class = caps[1].to_string();
+        // NoClassDefFoundError and ClassNotFoundException name the same class in
+        // different spellings; report it once.
+        if !seen.insert(class.replace('/', ".")) {
+            continue;
+        }
+        let Some(package) = package_of_class(&class) else {
+            continue;
+        };
+        let thrower_pkg = thrower_package(&log[whole.end()..]);
+        let is_thrower = |m: &crate::models::InstalledMod| {
+            thrower_pkg
+                .as_deref()
+                .is_some_and(|tp| m.java_packages.iter().any(|p| package_covers(p, tp)))
+        };
+        let thrower_mods: Vec<&crate::models::InstalledMod> =
+            mods.iter().filter(|m| is_thrower(m)).collect();
+        let providers: Vec<&crate::models::InstalledMod> = mods
+            .iter()
+            .filter(|m| {
+                !is_thrower(m) && m.java_packages.iter().any(|p| package_covers(p, &package))
+            })
+            .collect();
+        // Any running supplier means the class is simply absent from a present
+        // jar, which is not a missing-mod problem.
+        if providers.is_empty() || providers.iter().any(|m| is_running(m, mods_dir)) {
+            continue;
+        }
+        let needer = match thrower_mods.first() {
+            Some(m) => code_span(&mod_display_name(m)),
+            None => "the game".to_string(),
+        };
+        let provided_by = providers
+            .iter()
+            .map(|m| {
+                let reason = if m.enabled {
+                    "its file is missing from your mods folder"
+                } else {
+                    "it is turned off"
+                };
+                format!("{} ({reason})", code_span(&mod_display_name(m)))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!(
+            "- **Missing class** {}: {needer} needs it, and it comes from {provided_by}.",
+            code_span(&class)
+        ));
+        for m in thrower_mods {
+            if !throwers.contains(&m.filename) {
+                throwers.push(m.filename.clone());
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+    let solution = format!(
+        "The game could not load a class that an installed mod needs. The mod that supplies it is turned off or its file is missing.\n\n{}\n\nIf it is off, turn it back on in the mod list. If its file is missing, reinstall it from Browse. Then launch again.",
+        lines.join("\n")
+    );
+    Some(MissingClassFinding {
+        triage: CrashTriageResult {
+            matched: true,
+            signature_name: Some("Required Mod Not Running".into()),
+            solution_markdown: Some(solution),
+            action_button_json: None,
+        },
+        throwers,
+    })
+}
+
+impl CrashService {
+    /// Missing-class finding for one instance's crash text.
+    ///
+    /// An unreadable or missing manifest means the mod list cannot be checked,
+    /// so no finding is made. The result type has no field to say "could not
+    /// check", so this gap is not visible to the user yet.
+    fn missing_class_finding(&self, instance_id: &str, log: &str) -> Option<MissingClassFinding> {
+        let manifest = match self.load_instance_manifest(instance_id) {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) | Err(_) => return None,
+        };
+        let mods_dir = self.ctx.paths.instance_dir(instance_id).ok()?.join("mods");
+        missing_class_finding_for(&manifest.mods, &mods_dir, log)
     }
 }
 
@@ -2016,6 +2202,323 @@ mod tests {
         assert_eq!(ac_unrelated, 0);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ------------------------------------------------------------------
+    // Missing-class findings
+    // ------------------------------------------------------------------
+
+    const IRIS_PACKAGE: &str = "net.irisshaders.iris";
+    const FABRIC_KEYBINDING_PACKAGE: &str = "net.fabricmc.fabric.api.client.keybinding.v1";
+
+    fn mod_with_packages(
+        filename: &str,
+        enabled: bool,
+        packages: &[&str],
+    ) -> crate::models::InstalledMod {
+        crate::models::InstalledMod {
+            provider: None,
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            filename: filename.to_string(),
+            registry_id: Some(filename.trim_end_matches(".jar").to_string()),
+            modrinth_id: None,
+            source: "local".into(),
+            source_url: None,
+            version: Some("1.0.0".into()),
+            sha256: "abc".into(),
+            installed_at: "2024-01-01T00:00:00Z".into(),
+            java_packages: packages.iter().map(|p| p.to_string()).collect(),
+            mod_jar_id: None,
+            provided_mod_ids: vec![],
+            enabled,
+            content_type: "mod".into(),
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        }
+    }
+
+    /// Crash shaped like the report that prompted this: Iris's init fails
+    /// because a Fabric API class is absent from the mods folder.
+    fn missing_fabric_class_log() -> &'static str {
+        "java.lang.NoClassDefFoundError: net/fabricmc/fabric/api/client/keybinding/v1/KeyBindingHelper\n\tat net.irisshaders.iris.Iris.onInitializeClient(Iris.java:201)\n\tat net.fabricmc.loader.impl.FabricLoaderImpl.invokeEntrypoints(FabricLoaderImpl.java:1)\nCaused by: java.lang.ClassNotFoundException: net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper\n\tat java.base/java.net.URLClassLoader.findClass(URLClassLoader.java:445)\n"
+    }
+
+    fn write_jar(mods_dir: &std::path::Path, filename: &str) {
+        std::fs::create_dir_all(mods_dir).unwrap();
+        std::fs::write(mods_dir.join(filename), b"jar").unwrap();
+    }
+
+    #[test]
+    fn test_missing_class_names_the_absent_provider_not_the_thrower() {
+        let (_ctx, tmp) = setup_ctx();
+        let mods_dir = tmp.join("mods");
+        write_jar(&mods_dir, "iris.jar");
+        let mods = vec![
+            mod_with_packages("iris.jar", true, &[IRIS_PACKAGE]),
+            mod_with_packages("fabric-api.jar", true, &[FABRIC_KEYBINDING_PACKAGE]),
+        ];
+
+        let finding = missing_class_finding_for(&mods, &mods_dir, missing_fabric_class_log())
+            .expect("a missing class with a missing provider is a finding");
+        assert!(finding.triage.matched);
+        assert_eq!(
+            finding.triage.signature_name.as_deref(),
+            Some("Required Mod Not Running")
+        );
+        let md = finding.triage.solution_markdown.expect("solution text");
+        assert!(md.contains("`iris` needs it"), "{md}");
+        assert!(
+            md.contains("comes from `fabric-api` (its file is missing from your mods folder)"),
+            "{md}"
+        );
+        assert!(!md.contains("comes from `iris`"), "{md}");
+        assert_eq!(finding.throwers, vec!["iris.jar".to_string()]);
+    }
+
+    #[test]
+    fn test_missing_class_reports_a_turned_off_provider_as_turned_off() {
+        let (_ctx, tmp) = setup_ctx();
+        let mods_dir = tmp.join("mods");
+        write_jar(&mods_dir, "iris.jar");
+        let mods = vec![
+            mod_with_packages("iris.jar", true, &[IRIS_PACKAGE]),
+            mod_with_packages("fabric-api.jar", false, &[FABRIC_KEYBINDING_PACKAGE]),
+        ];
+
+        let finding = missing_class_finding_for(&mods, &mods_dir, missing_fabric_class_log())
+            .expect("finding");
+        let md = finding.triage.solution_markdown.expect("solution text");
+        assert!(md.contains("`fabric-api` (it is turned off)"), "{md}");
+    }
+
+    #[test]
+    fn test_missing_class_with_a_running_provider_is_not_a_finding() {
+        let (_ctx, tmp) = setup_ctx();
+        let mods_dir = tmp.join("mods");
+        write_jar(&mods_dir, "iris.jar");
+        write_jar(&mods_dir, "fabric-api.jar");
+        let mods = vec![
+            mod_with_packages("iris.jar", true, &[IRIS_PACKAGE]),
+            mod_with_packages("fabric-api.jar", true, &[FABRIC_KEYBINDING_PACKAGE]),
+        ];
+
+        assert!(missing_class_finding_for(&mods, &mods_dir, missing_fabric_class_log()).is_none());
+    }
+
+    #[test]
+    fn test_missing_class_thrower_that_also_covers_the_package_is_not_named_as_provider() {
+        let (_ctx, tmp) = setup_ctx();
+        let mods_dir = tmp.join("mods");
+        write_jar(&mods_dir, "iris.jar");
+        // Iris is the thrower and is turned off. It also lists the missing
+        // package, so it must not be offered as the provider.
+        let mods = vec![
+            mod_with_packages(
+                "iris.jar",
+                false,
+                &[IRIS_PACKAGE, FABRIC_KEYBINDING_PACKAGE],
+            ),
+            mod_with_packages("fabric-api.jar", true, &[FABRIC_KEYBINDING_PACKAGE]),
+        ];
+
+        let finding = missing_class_finding_for(&mods, &mods_dir, missing_fabric_class_log())
+            .expect("finding");
+        let md = finding.triage.solution_markdown.expect("solution text");
+        assert!(md.contains("comes from `fabric-api`"), "{md}");
+        assert!(!md.contains("`iris` (it is turned off)"), "{md}");
+    }
+
+    #[test]
+    fn test_missing_class_accepts_the_dotted_class_form_alone() {
+        let (_ctx, tmp) = setup_ctx();
+        let mods_dir = tmp.join("mods");
+        std::fs::create_dir_all(&mods_dir).unwrap();
+        let mods = vec![
+            mod_with_packages("iris.jar", true, &[IRIS_PACKAGE]),
+            mod_with_packages("fabric-api.jar", false, &[FABRIC_KEYBINDING_PACKAGE]),
+        ];
+        let log = "Caused by: java.lang.ClassNotFoundException: net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper\n\tat net.irisshaders.iris.Iris.onInitializeClient(Iris.java:201)\n";
+
+        let finding = missing_class_finding_for(&mods, &mods_dir, log).expect("finding");
+        let md = finding.triage.solution_markdown.expect("solution text");
+        assert!(
+            md.contains("`net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper`"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn test_missing_class_reports_one_class_once_across_both_spellings() {
+        let (_ctx, tmp) = setup_ctx();
+        let mods_dir = tmp.join("mods");
+        std::fs::create_dir_all(&mods_dir).unwrap();
+        let mods = vec![
+            mod_with_packages("iris.jar", true, &[IRIS_PACKAGE]),
+            mod_with_packages("fabric-api.jar", false, &[FABRIC_KEYBINDING_PACKAGE]),
+        ];
+        let log = format!(
+            "{}{}",
+            missing_fabric_class_log(),
+            missing_fabric_class_log()
+        );
+
+        let finding = missing_class_finding_for(&mods, &mods_dir, &log).expect("finding");
+        let md = finding.triage.solution_markdown.expect("solution text");
+        assert_eq!(md.matches("**Missing class**").count(), 1, "{md}");
+    }
+
+    #[test]
+    fn test_missing_class_without_a_listed_provider_is_not_a_finding() {
+        let (_ctx, tmp) = setup_ctx();
+        let mods_dir = tmp.join("mods");
+        std::fs::create_dir_all(&mods_dir).unwrap();
+        let mods = vec![mod_with_packages("iris.jar", true, &[IRIS_PACKAGE])];
+
+        assert!(missing_class_finding_for(&mods, &mods_dir, missing_fabric_class_log()).is_none());
+    }
+
+    #[test]
+    fn test_missing_class_hostile_inputs_are_not_findings() {
+        let (_ctx, tmp) = setup_ctx();
+        let mods_dir = tmp.join("mods");
+        std::fs::create_dir_all(&mods_dir).unwrap();
+        let mods = vec![
+            mod_with_packages("iris.jar", true, &[IRIS_PACKAGE]),
+            mod_with_packages("fabric-api.jar", false, &[FABRIC_KEYBINDING_PACKAGE]),
+        ];
+        let inputs = [
+            "",
+            "   \n\t  ",
+            "NoClassDefFoundError:",
+            "NoClassDefFoundError:    ",
+            // A default-package class has no package, so nothing can supply it.
+            "java.lang.NoClassDefFoundError: KeyBindingHelper\n\tat net.irisshaders.iris.Iris.init(Iris.java:1)\n",
+        ];
+        for input in inputs {
+            assert!(
+                missing_class_finding_for(&mods, &mods_dir, input).is_none(),
+                "unexpected finding for {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_triage_crash_names_the_missing_provider_for_an_unmatched_log() {
+        let (ctx, _tmp) = setup_ctx();
+        create_instance(&ctx, "inst", &["iris.jar"]);
+        let mut manifest = read_manifest(&ctx, "inst");
+        manifest.mods[0].java_packages = vec![IRIS_PACKAGE.to_string()];
+        manifest.mods.push(mod_with_packages(
+            "fabric-api.jar",
+            true,
+            &[FABRIC_KEYBINDING_PACKAGE],
+        ));
+        std::fs::write(
+            ctx.paths.instance_manifest("inst").unwrap(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let reports = ctx
+            .paths
+            .instance_dir("inst")
+            .unwrap()
+            .join("crash-reports");
+        std::fs::create_dir_all(&reports).unwrap();
+        std::fs::write(reports.join("crash.txt"), missing_fabric_class_log()).unwrap();
+
+        let result = CrashService::new(ctx.clone())
+            .triage_crash("inst", "crash.txt")
+            .unwrap();
+        assert!(result.matched);
+        assert_eq!(
+            result.signature_name.as_deref(),
+            Some("Required Mod Not Running")
+        );
+    }
+
+    #[test]
+    fn test_triage_crash_keeps_a_matched_signature_over_the_finding() {
+        let (ctx, _tmp) = setup_ctx();
+        create_instance(&ctx, "inst", &["iris.jar"]);
+        let mut manifest = read_manifest(&ctx, "inst");
+        manifest.mods[0].java_packages = vec![IRIS_PACKAGE.to_string()];
+        manifest.mods.push(mod_with_packages(
+            "fabric-api.jar",
+            true,
+            &[FABRIC_KEYBINDING_PACKAGE],
+        ));
+        std::fs::write(
+            ctx.paths.instance_manifest("inst").unwrap(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let reports = ctx
+            .paths
+            .instance_dir("inst")
+            .unwrap()
+            .join("crash-reports");
+        std::fs::create_dir_all(&reports).unwrap();
+        let log = format!(
+            "Mod 'Iris' (iris) 1.0 requires any version of fabric-api, which is missing!\n{}",
+            missing_fabric_class_log()
+        );
+        std::fs::write(reports.join("crash.txt"), log).unwrap();
+
+        let result = CrashService::new(ctx.clone())
+            .triage_crash("inst", "crash.txt")
+            .unwrap();
+        assert_eq!(
+            result.signature_name.as_deref(),
+            Some("Missing Required Mod")
+        );
+    }
+
+    #[test]
+    fn test_investigation_suspects_leave_out_the_thrower() {
+        let (ctx, _tmp) = setup_ctx();
+        create_instance(&ctx, "inst", &["iris.jar"]);
+        let mut manifest = read_manifest(&ctx, "inst");
+        manifest.mods[0].java_packages = vec![IRIS_PACKAGE.to_string()];
+        manifest.mods.push(mod_with_packages(
+            "fabric-api.jar",
+            true,
+            &[FABRIC_KEYBINDING_PACKAGE],
+        ));
+        std::fs::write(
+            ctx.paths.instance_manifest("inst").unwrap(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let reports = ctx
+            .paths
+            .instance_dir("inst")
+            .unwrap()
+            .join("crash-reports");
+        std::fs::create_dir_all(&reports).unwrap();
+        std::fs::write(reports.join("crash.txt"), missing_fabric_class_log()).unwrap();
+
+        let investigation = CrashService::new(ctx.clone())
+            .investigate_evidence("inst", &[])
+            .unwrap();
+        assert_eq!(
+            investigation.triage.signature_name.as_deref(),
+            Some("Required Mod Not Running")
+        );
+        assert!(
+            investigation
+                .suspects
+                .iter()
+                .all(|s| s.filename != "iris.jar"),
+            "thrower still listed as suspect: {:?}",
+            investigation
+                .suspects
+                .iter()
+                .map(|s| &s.filename)
+                .collect::<Vec<_>>()
+        );
     }
 
     // ------------------------------------------------------------------
