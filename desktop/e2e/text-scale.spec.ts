@@ -166,6 +166,7 @@ async function bootEditor(
   await page.setViewportSize({ width, height });
   await page.addInitScript(({ instances, detail, content, updates, plan, fontScale, preferences }) => {
     localStorage.setItem('agora-ui-preferences', JSON.stringify({ version: 1, fontScale, ...preferences }));
+    let contentRows = content as Array<{ filename: string; enabled: boolean }>;
     window.history.replaceState({ __agora: { type: 'instance-detail', instanceId: 'a' } }, '', '');
     Object.assign(window as unknown as Record<string, unknown>, {
       __TAURI_INTERNALS__: {
@@ -177,7 +178,12 @@ async function bootEditor(
           if (command.startsWith('plugin:event|')) return Promise.resolve(1);
           if (command === 'list_instances') return Promise.resolve(instances);
           if (command === 'get_instance_detail') return Promise.resolve(detail);
-          if (command === 'list_instance_content') return Promise.resolve(content);
+          if (command === 'enable_instance_mod') {
+            // Keep the rows in step with the toggle, as the backend would.
+            contentRows = contentRows.map((row) => (row.filename === args.filename ? { ...row, enabled: true } : row));
+            return Promise.resolve(null);
+          }
+          if (command === 'list_instance_content') return Promise.resolve(contentRows);
           if (command === 'check_instance_updates') return Promise.resolve(updates);
           if (command === 'export_instance_pack') return Promise.resolve('C:/exports/test.mrpack');
           if (command === 'resolve_install_plan') return Promise.resolve(plan);
@@ -412,6 +418,33 @@ test('row actions stay reachable without sideways scrolling at 100% text size', 
   const scrolls = await page.getByRole('table').first().evaluate((table) => table.parentElement!.scrollWidth > table.parentElement!.clientWidth);
   expect(scrolls).toBe(true);
 });
+
+// A narrow window or large text makes the mod table wider than its panel. The
+// enable switch used to sit at the far right of the table, past the visible
+// edge, so it could only be reached by scrolling the table sideways first. A
+// click scrolls on its own and would hide that, so this checks the switch is
+// inside the visible table at the scroll position the user starts from, and
+// that the click lands on it.
+for (const width of [760, 1024] as const) {
+  test(`a disabled mod's enable switch is on screen and clickable at ${width}px wide`, async ({ page }) => {
+    await bootEditor(page, width, 700);
+    await page.getByRole('table').first().scrollIntoViewIfNeeded();
+    // The label reads "Enable …" until the mod is on, then "Disable …".
+    const toggle = page.getByRole('switch', { name: /Disabled Example Mod$/ });
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    const reachable = await toggle.evaluate((el) => {
+      const frame = el.closest('table')!.parentElement!.getBoundingClientRect();
+      const box = el.getBoundingClientRect();
+      const inside = box.left >= frame.left && box.right <= frame.right;
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return inside && !!hit && el.contains(hit);
+    });
+    expect(reachable).toBe(true);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
+}
 
 test('the install review opens at its title from a scrolled page at 100% text size', async ({ page }) => {
   await bootEditor(page, 1280, 700, 1);

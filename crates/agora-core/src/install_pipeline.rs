@@ -1072,6 +1072,7 @@ impl InstallPipeline {
                 artifact,
                 false,
                 &installed,
+                instance_dir,
                 &intent,
                 &mut files_to_add,
                 &mut files_to_remove,
@@ -1086,6 +1087,7 @@ impl InstallPipeline {
                 new_artifact,
                 true,
                 &installed,
+                instance_dir,
                 &intent,
                 &mut files_to_add,
                 &mut files_to_remove,
@@ -1131,6 +1133,7 @@ impl InstallPipeline {
                             new_artifact,
                             true,
                             &installed,
+                            instance_dir,
                             &intent,
                             &mut files_to_add,
                             &mut files_to_remove,
@@ -1197,6 +1200,7 @@ impl InstallPipeline {
                             artifact,
                             false,
                             &installed,
+                            instance_dir,
                             &intent,
                             &mut files_to_add,
                             &mut files_to_remove,
@@ -1229,6 +1233,7 @@ impl InstallPipeline {
                             artifact,
                             false,
                             &installed,
+                            instance_dir,
                             &intent,
                             &mut files_to_add,
                             &mut files_to_remove,
@@ -1243,6 +1248,7 @@ impl InstallPipeline {
                             new_artifact,
                             true,
                             &installed,
+                            instance_dir,
                             &intent,
                             &mut files_to_add,
                             &mut files_to_remove,
@@ -1297,6 +1303,7 @@ impl InstallPipeline {
                     artifact,
                     false,
                     &installed,
+                    instance_dir,
                     &intent,
                     &mut files_to_add,
                     &mut files_to_remove,
@@ -2286,6 +2293,7 @@ fn plan_artifact_change(
     artifact: &ResolvedArtifact,
     require_existing: bool,
     installed: &[&crate::models::InstalledMod],
+    instance_dir: &Path,
     intent: &InstallIntent,
     files_to_add: &mut Vec<FileAdd>,
     files_to_remove: &mut Vec<FileRemove>,
@@ -2341,7 +2349,20 @@ fn plan_artifact_change(
             .map(|hash| hash.eq_ignore_ascii_case(&existing.sha256))
             .unwrap_or(false);
         let same_version = existing.version.as_deref() == Some(artifact_version_id(artifact));
-        if same_content && same_version {
+        // The manifest entry says the file is installed, but the file itself
+        // may be gone from disk. Only a present file counts as installed; a
+        // missing one falls through to the replace path, which drops the stale
+        // entry (the apply step skips files that are not there) and adds the
+        // file back. An unreadable path is treated as present, so the planner
+        // never writes over a file it could not check.
+        let file_missing = matches!(
+            instance_dir
+                .join(content_subdir(&existing.content_type))
+                .join(effective_installed_filename(existing))
+                .try_exists(),
+            Ok(false)
+        );
+        if same_content && same_version && !file_missing {
             if !installed_as_dependency && existing.installed_as_dependency {
                 promotions.push(FilePromote {
                     filename: existing.filename.clone(),
@@ -3929,6 +3950,7 @@ mod tests {
                 warnings: vec![],
                 blockers: vec![],
                 recommendations: vec![],
+                missing_files: vec![],
                 scan_token: "test-scan".into(),
             },
         };
@@ -4049,6 +4071,95 @@ mod tests {
             before
         );
         assert!(!instance_dir.join(".agora").exists());
+    }
+
+    #[test]
+    fn reinstalling_a_listed_mod_whose_file_is_gone_adds_the_file_back() {
+        // Regression: a manifest entry at the same version with no file on disk
+        // was planned as "already installed; no duplicate file will be added",
+        // so Reinstall from the Health Check or Browse did nothing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["mods"] = serde_json::json!([{
+            "filename": "fabric-api.jar",
+            "registry_id": "fabric-api",
+            "source": "curated",
+            "sha256": "a".repeat(64),
+            "installed_at": "2026-01-01T00:00:00Z",
+            "version": "1.0",
+        }]);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let intent = InstallIntent {
+            action: InstallAction::Install {
+                source_type: SourceType::Curated,
+                item_id: "fabric-api".into(),
+                candidate_version: Some("1.0".into()),
+            },
+            target_instance: "test".into(),
+            optional_deps: OptionalDepsPolicy::ExcludeAll,
+            requested_by: RequestSource::Interactive,
+            overrides: PlanOverrides::default(),
+        };
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "fabric-api",
+                    "fabric-api.jar",
+                    "a".repeat(64),
+                    ArtifactSource::Download {
+                        url: "https://cdn.modrinth.com/data/file.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let plan_now = || {
+            rt.block_on(async {
+                InstallPipeline
+                    .resolve_plan(
+                        intent.clone(),
+                        &instance_dir,
+                        prepared.clone(),
+                        &NoopReporter,
+                    )
+                    .await
+                    .unwrap()
+            })
+        };
+
+        // Control: with the file on disk the entry really is installed.
+        std::fs::write(instance_dir.join("mods").join("fabric-api.jar"), b"jar").unwrap();
+        let present = plan_now();
+        assert!(present.files_to_add.is_empty());
+        assert!(present
+            .warnings
+            .iter()
+            .any(|w| w.code == "ALREADY_INSTALLED"));
+
+        // The file is gone: the plan must add it back and drop the stale entry.
+        std::fs::remove_file(instance_dir.join("mods").join("fabric-api.jar")).unwrap();
+        let missing = plan_now();
+        assert_eq!(missing.files_to_add.len(), 1);
+        assert!(missing
+            .files_to_remove
+            .iter()
+            .any(|remove| remove.filename == "fabric-api.jar"));
+        assert!(!missing
+            .warnings
+            .iter()
+            .any(|w| w.code == "ALREADY_INSTALLED"));
+        assert!(missing.is_fully_resolved());
     }
 
     #[test]

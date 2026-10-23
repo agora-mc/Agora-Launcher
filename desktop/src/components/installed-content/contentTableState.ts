@@ -126,7 +126,9 @@ export function formatInstalledDate(value: string): string {
   }).format(date);
 }
 
-export const defaultColumns: ContentColumn[] = ['name', 'author', 'source', 'size', 'installed', 'enabled', 'update_status', 'actions'];
+// The enable switch comes first: it is pinned to the left edge, so it stays
+// clickable at any width. Pinned right is the actions column.
+export const defaultColumns: ContentColumn[] = ['enabled', 'name', 'author', 'source', 'size', 'installed', 'update_status', 'actions'];
 
 /**
  * Split rows into display groups.

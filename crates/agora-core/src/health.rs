@@ -175,6 +175,12 @@ pub struct HealthReport {
     pub blockers: Vec<Blocker>,
     #[serde(default)]
     pub recommendations: Vec<Recommendation>,
+    /// Enabled mod files the instance manifest tracks but `mods/` does not
+    /// contain, by filename. The same finding the `ManifestDrift` warning
+    /// names, kept structured so the desktop can act on it without parsing
+    /// the message.
+    #[serde(default)]
+    pub missing_files: Vec<String>,
     pub scan_token: String,
 }
 
@@ -193,7 +199,9 @@ struct CachedHealth {
 const HEALTH_CACHE_CAPACITY: usize = 64;
 /// v6: JAR parser variable expansion changed; reports written before the
 /// matching parser cache schema can retain literal `${...}` constraints.
-const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 6;
+/// v7: reports carry `missing_files`. A v6 report would deserialize with an
+/// empty list, which would read as "nothing is missing" to the desktop.
+const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 7;
 const JAR_METADATA_CACHE_SCHEMA_VERSION: u32 = 1;
 // v2 resolves Forge/NeoForge TOML variables and distinguishes third-party
 // language-provider mods from built-in FML loader capabilities.
@@ -1711,6 +1719,7 @@ fn health_from_inventory(
         warnings,
         blockers,
         recommendations,
+        missing_files: missing_enabled_manifest_files,
         scan_token: scan_token(instance_dir, manifest, registry_db_path),
     }
 }
@@ -2245,6 +2254,28 @@ mod tests {
             .find(|warning| warning.kind == WarningKind::ManifestDrift)
             .expect("missing tracked files must be visible in health output");
         assert!(warning.message.contains("missing-provider.jar"));
+        assert_eq!(
+            report.missing_files,
+            vec!["missing-provider.jar".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_files_lists_only_enabled_tracked_files_absent_from_mods() {
+        // Hostile mix: a present file, a disabled entry whose file is gone (not
+        // a missing enabled file), and an enabled entry with no file on disk.
+        let dir = fresh_instance("missing_files_structured");
+        std::fs::write(dir.join("mods").join("present.jar"), b"not a zip")
+            .expect("write present jar");
+        let mut manifest = tracked_manifest(&[
+            ("present.jar", "present"),
+            ("gone-disabled.jar", "gone_disabled"),
+            ("gone.jar", "gone"),
+        ]);
+        manifest.mods[1].enabled = false;
+        let report = health(&dir, &manifest, None);
+        assert_eq!(report.missing_files, vec!["gone.jar".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
