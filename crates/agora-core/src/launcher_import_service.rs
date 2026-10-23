@@ -1685,9 +1685,7 @@ impl LauncherImportService {
         );
         let mut health_warnings: Vec<String> = Vec::new();
         if health_report.score == HealthScore::Red {
-            for b in &health_report.blockers {
-                health_warnings.push(format!("Health blocker: {}", b.message));
-            }
+            push_blocker_lines(&mut health_warnings, &health_report.blockers);
         }
 
         // ── Handle new vs update ─────────────────────────────────────────
@@ -1870,12 +1868,7 @@ impl LauncherImportService {
                 let final_health =
                     health::health(&final_dir, &manifest, Some(&self.ctx.paths.registry_db()));
                 if final_health.score == HealthScore::Red {
-                    let details: Vec<String> = final_health
-                        .blockers
-                        .iter()
-                        .map(|b| b.message.clone())
-                        .collect();
-                    health_warnings.extend(details);
+                    push_blocker_lines(&mut health_warnings, &final_health.blockers);
                 }
 
                 Ok(PerItemOutcome::Imported {
@@ -2166,12 +2159,7 @@ impl LauncherImportService {
                 let final_health =
                     health::health(&final_dir, &manifest, Some(&self.ctx.paths.registry_db()));
                 if final_health.score == HealthScore::Red {
-                    let details: Vec<String> = final_health
-                        .blockers
-                        .iter()
-                        .map(|b| b.message.clone())
-                        .collect();
-                    health_warnings.extend(details);
+                    push_blocker_lines(&mut health_warnings, &final_health.blockers);
                 }
 
                 Ok(PerItemOutcome::Updated {
@@ -2403,8 +2391,42 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Add one "Needs fixing" line per distinct blocker message. The pre-install
+/// and post-install scans report the same problems, and a result list that
+/// shows each twice reads as twice as many problems.
+fn push_blocker_lines(lines: &mut Vec<String>, blockers: &[health::Blocker]) {
+    for blocker in blockers {
+        let line = format!("Needs fixing: {}", blocker.message);
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blocker_lines_are_deduplicated_across_scans() {
+        let blocker = |msg: &str| health::Blocker {
+            kind: health::BlockerKind::MissingRequiredDependency,
+            mod_id: None,
+            filename: None,
+            message: msg.into(),
+            suggested_action: None,
+            loader_compatibility: None,
+        };
+        let mut lines = Vec::new();
+        push_blocker_lines(
+            &mut lines,
+            &[
+                blocker("A needs B, which isn't installed."),
+                blocker("C needs D, which isn't installed."),
+            ],
+        );
+        push_blocker_lines(&mut lines, &[blocker("A needs B, which isn't installed.")]);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+    }
+
     use super::*;
     use crate::ctx::CoreContext;
     use crate::launcher_import::{ContentInventory, LaunchStrategy};

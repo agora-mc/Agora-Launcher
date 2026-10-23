@@ -1,4 +1,5 @@
 import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
+import { healthCounts, healthHeadline, healthLaunchNote } from '@/lib/healthSummary';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
@@ -1610,10 +1611,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const playDisabled = playBusy || operationHeld || processLaunching || processStopping || processDelegated || anotherProcessActive;
   const recoveryPending = detail?.snapshot_readiness === 'pending';
   const snapshotOperationPending = recoveryPending || packInstall?.status === 'running' || migrationBusy || gameActive;
-  const healthIssueCount = healthReport
-    ? healthReport.blockers.length + healthReport.warnings.length
-    : 0;
-  const healthBlocked = (healthReport?.blockers.length ?? 0) > 0;
+  const counts = healthCounts(healthReport);
+  const healthIssueCount = counts.problems + counts.warnings;
+  const healthBlocked = counts.problems > 0;
   const readiness = row ? instanceReadiness({
     minecraftVersion: row.minecraft_version,
     loader: manifest?.loader ?? row.loader,
@@ -1965,16 +1965,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       : 'border-amber-500/60 bg-amber-500/10'
                   }`}
                   role="alert"
-                  aria-label={`${healthIssueCount} health issue${healthIssueCount === 1 ? '' : 's'} detected`}
+                  aria-label={healthHeadline(counts)}
                 >
                   <div className="min-w-0">
                     <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
-                      {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
+                      {healthHeadline(counts)}
                     </p>
                     <p className="truncate text-muted-foreground">
-                      {healthBlocked
-                        ? 'Review before launching. You can continue after confirming risk.'
-                        : 'Review recommended before launch.'}
+                      {healthLaunchNote(counts)}
                     </p>
                   </div>
                   <button

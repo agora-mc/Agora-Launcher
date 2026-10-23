@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { healthCounts, healthHeadline, healthLaunchNote } from '@/lib/healthSummary';
 import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { requestEditorTab } from '../lib/editorDeepLink';
@@ -565,10 +566,9 @@ function InstanceCard({
   const displayError = error ?? controllerError;
   const effectiveBusy = launchBusy || repairBusy || repairing || cancellingJava;
   const recoveryBlocked = recoveryPending || recoveryFailed || packInstall?.status === 'running';
-  const healthIssueCount = healthReport
-    ? healthReport.blockers.length + healthReport.warnings.length
-    : 0;
-  const healthBlocked = (healthReport?.blockers.length ?? 0) > 0;
+  const counts = healthCounts(healthReport);
+  const healthIssueCount = counts.problems + counts.warnings;
+  const healthBlocked = counts.problems > 0;
 
   const handleCancelJavaProvisioning = async () => {
     if (!runtimeProgress) return;
@@ -740,16 +740,14 @@ function InstanceCard({
               : 'border-amber-500/60 bg-amber-500/10'
           }`}
           role="alert"
-          aria-label={`${healthIssueCount} health issue${healthIssueCount === 1 ? '' : 's'} detected`}
+          aria-label={healthHeadline(counts)}
         >
           <div className="min-w-0">
             <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
-              {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
+              {healthHeadline(counts)}
             </p>
             <p className="truncate text-muted-foreground">
-              {healthBlocked
-                ? 'Review before launching. You can continue after confirming risk.'
-                : 'Review recommended before launch.'}
+              {healthLaunchNote(counts)}
             </p>
           </div>
           <button

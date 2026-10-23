@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { describeRequirement } from '@/lib/healthSummary';
 import {
   checkInstanceHealth,
   disableModForTest,
@@ -44,12 +45,8 @@ interface HealthDialogProps {
   reviewOnly?: boolean;
   /** Synchronizes a repair result with periodic instance-card health state. */
   onReportChanged?: (report: HealthReport) => void;
-}
-
-function verdictLabel(verdict: RequirementVerdict): string {
-  if (verdict === 'satisfied') return 'Satisfied';
-  if (verdict === 'unsatisfied') return 'Unsatisfied';
-  return 'Unsupported';
+  /** Open Browse with this search ("Find <mod>" on a missing dependency). */
+  onFindMod?: (query: string) => void;
 }
 
 function verdictKey(verdict: RequirementVerdict): string {
@@ -94,25 +91,19 @@ function groupRequirements(issue: LoaderCompatibilityIssue, satisfied: boolean):
   return [...groups.values()].sort((left, right) => left.targetId.localeCompare(right.targetId));
 }
 
-function RequirementGroupCard({ group }: { group: RequirementGroup }) {
-  const predicate = group.versionRanges.length > 0
-    ? group.versionRanges.join(' or ')
-    : 'any version';
+function RequirementGroupCard({ group, loader }: { group: RequirementGroup; loader: string }) {
   const affectedLabel = group.modIds.length === 1
     ? '1 affected mod'
     : `${group.modIds.length} affected mods`;
   return (
     <div className="rounded-sm border border-border bg-background/60 p-2">
-      <p className="text-xs font-medium">
-        {group.targetId} {predicate}
-        <span className="ml-1 text-muted-foreground">({verdictLabel(group.verdict)})</span>
-      </p>
+      <p className="text-xs font-medium">{describeRequirement(group, loader)}</p>
       {group.candidateVersion && (
         <p className="text-xs text-muted-foreground">
-          Current loader provides {group.candidateVersion}
+          This instance provides {group.candidateVersion}
         </p>
       )}
-      {group.modIds.length > 0 && (
+      {group.modIds.length > 1 && (
         <details className="mt-1">
           <summary className="cursor-pointer select-none text-xs text-muted-foreground">
             {affectedLabel}
@@ -242,10 +233,10 @@ function LoaderCompatibilityCard({
       {unresolvedRequirements.length > 0 && (
         <div className="mt-2 space-y-2">
           <p className="text-xs font-medium text-destructive">
-            Unresolved requirements ({unresolvedRequirements.length})
+            Not met ({unresolvedRequirements.length})
           </p>
           {unresolvedRequirements.map((group, index) => (
-            <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} />
+            <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} loader={issue.loader} />
           ))}
         </div>
       )}
@@ -253,8 +244,8 @@ function LoaderCompatibilityCard({
       {(issue.conflicts.length > 0 || indeterminateVersions.length > 0 || satisfiedRequirements.length > 0) && (
         <details className="mt-2">
           <summary className="cursor-pointer select-none text-xs font-medium">
-            View compatibility evidence
-            {satisfiedRequirements.length > 0 ? ` (${satisfiedRequirements.length} satisfied)` : ''}
+            Advanced details
+            {satisfiedRequirements.length > 0 ? ` (${satisfiedRequirements.length} checks passed)` : ''}
             {issue.conflicts.length > 0 ? ` · ${issue.conflicts.length} conflict${issue.conflicts.length > 1 ? 's' : ''}` : ''}
           </summary>
           <div className="mt-2 space-y-2">
@@ -265,7 +256,7 @@ function LoaderCompatibilityCard({
               </p>
             )}
             {satisfiedRequirements.map((group, index) => (
-              <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} />
+              <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} loader={issue.loader} />
             ))}
             {issue.conflicts.map((conflict, index) => (
               <div key={`conflict-${index}`} className="rounded-sm border border-destructive bg-background/60 p-2">
@@ -294,6 +285,7 @@ export function HealthDialog({
   onSwitchLoader,
   reviewOnly = false,
   onReportChanged,
+  onFindMod,
 }: HealthDialogProps) {
   const [report, setReport] = useState<HealthReport>(initialReport);
   const [error, setError] = useState<string | null>(null);
@@ -447,7 +439,7 @@ export function HealthDialog({
           {/* Blockers */}
           {report.blockers.length > 0 && (
             <div className="mb-3">
-              <h4 className="text-sm font-semibold mb-2">Blockers ({report.blockers.length})</h4>
+              <h4 className="text-sm font-semibold mb-2">Problems to fix ({report.blockers.length})</h4>
               <div className="space-y-2">
                 {report.blockers.map((b, i) => {
                   const key = `${b.kind}:${b.mod_id ?? b.filename ?? i}`;
@@ -473,6 +465,15 @@ export function HealthDialog({
                         )}
                       </div>
                       <div className="flex items-center gap-3 mt-2">
+                        {onFindMod && b.kind === 'missing_required_dependency' && b.mod_id && (
+                          <Button
+                            size="sm"
+                            title="Search for this mod in Browse"
+                            onClick={() => onFindMod(b.mod_id!)}
+                          >
+                            Find {b.mod_id}
+                          </Button>
+                        )}
                         {!reviewOnly && (b.kind === 'missing_required_dependency' || b.kind === 'incompatible_mod' || b.kind === 'curated_conflict') && b.filename && (
                           <Button
                             size="sm"
@@ -495,7 +496,7 @@ export function HealthDialog({
           {/* Warnings */}
           {report.warnings.length > 0 && (
             <div className="mb-3">
-              <h4 className="text-sm font-semibold mb-2">Warnings ({report.warnings.length})</h4>
+              <h4 className="text-sm font-semibold mb-2">Warnings to review ({report.warnings.length})</h4>
               <div className="space-y-2">
                 {report.warnings.map((w, i) => {
                   const key = healthWarningKey(w);

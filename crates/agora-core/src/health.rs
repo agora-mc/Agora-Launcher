@@ -971,6 +971,12 @@ type RegistryHealthInputs = (
     Vec<(String, String)>,
 );
 
+/// A mod file name as a player would say it: no `.jar` / `.disabled` suffix.
+fn player_mod_label(filename: &str) -> String {
+    let trimmed = filename.strip_suffix(".disabled").unwrap_or(filename);
+    trimmed.strip_suffix(".jar").unwrap_or(trimmed).to_string()
+}
+
 /// Tell the player how to actually obtain a dependency that is not installed.
 ///
 /// The health dialog renders `suggested_action` as plain muted text with no
@@ -995,10 +1001,10 @@ fn missing_dependency_guidance(
 ) -> String {
     match catalog_name {
         Some(name) => format!(
-            "'{name}' is in Agora's catalog. Open Browse, filter to Minecraft {minecraft_version} / {loader}, and install it."
+            "{name} is in Agora's catalog. Use Find to open Browse for Minecraft {minecraft_version} / {loader} and install it."
         ),
         None => format!(
-            "Agora's catalog has no mod with the ID '{dependency_id}'. Search Modrinth or CurseForge for a Minecraft {minecraft_version} / {loader} mod that provides that mod ID, then put the .jar in this instance's mods folder; Agora will launch it, but will not track or update it."
+            "Agora's catalog doesn't list it. Use Find to search for it, or look on Modrinth or CurseForge for a Minecraft {minecraft_version} / {loader} version that provides '{dependency_id}' and put the .jar in this instance's mods folder yourself; Agora will launch it, but will not track or update it."
         ),
     }
 }
@@ -1237,8 +1243,9 @@ fn health_from_inventory(
                         mod_id: Some(display_name.clone()),
                         filename: Some(source.clone()),
                         message: format!(
-                            "'{}' requires '{}', but Agora could not verify every enabled JAR.",
-                            source, display_name
+                            "{} needs {}, but Agora couldn't read every mod file, so it can't tell whether it is installed.",
+                            player_mod_label(source),
+                            catalog_name.unwrap_or(display_name.as_str())
                         ),
                         suggested_action: Some(format!(
                             "An unreadable JAR may already provide it, so this can be a false alarm. If the game fails to start: {guidance}"
@@ -1255,8 +1262,9 @@ fn health_from_inventory(
                         // coarse repair of disabling the dependent mod.
                         filename: Some(source.clone()),
                         message: format!(
-                            "'{}' requires '{}' but no enabled artifact provides it.",
-                            source, display_name
+                            "{} needs {}, which isn't installed.",
+                            player_mod_label(source),
+                            catalog_name.unwrap_or(display_name.as_str())
                         ),
                         suggested_action: Some(guidance),
                         loader_compatibility: None,
@@ -2672,6 +2680,67 @@ mandatory=true
         manifest.mods[0].modrinth_id = Some("u58R1TMW".into());
         let report = health(&dir, &manifest, None);
         assert!(report.blockers.is_empty(), "Connector mapping: {report:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_connector_nested_mod_in_manifest_supplies_connectormod_without_project_mapping() {
+        // Sinytra Connector ships its mod as META-INF/jarjar/*-mod.jar named only
+        // by the manifest (no metadata.json); an imported pack has no mapping.
+        let dir = fresh_instance("connector_nested_manifest");
+        let mods_dir = dir.join("mods");
+        let nested = jar_bytes(&[(
+            "META-INF/mods.toml",
+            b"[[mods]]
+modId=\"connectormod\"
+version=\"1.0\"
+",
+        )]);
+        write_binary_jar(
+            &mods_dir,
+            "connector.jar",
+            &[
+                (
+                    "META-INF/MANIFEST.MF",
+                    b"Manifest-Version: 1.0
+Embedded-Dependencies-Mod: META-INF/jarjar/c-mod.jar
+
+",
+                ),
+                ("META-INF/jarjar/c-mod.jar", &nested),
+            ],
+        );
+        let extras = r#"[[mods]]
+modId="connectorextras"
+version="1.0"
+[[dependencies.connectorextras]]
+modId="connectormod"
+mandatory=true
+"#;
+        write_jar(&mods_dir, "extras.jar", &[("META-INF/mods.toml", extras)]);
+        let manifest = tracked_manifest_for_loader(
+            "forge",
+            &[
+                ("connector.jar", "connector"),
+                ("extras.jar", "connectorextras"),
+            ],
+        );
+        let report = health(&dir, &manifest, None);
+        assert!(report.blockers.is_empty(), "{report:?}");
+
+        // Without the provider the same pack still blocks, in player words.
+        std::fs::remove_file(mods_dir.join("connector.jar")).unwrap();
+        let manifest = tracked_manifest_for_loader("forge", &[("extras.jar", "connectorextras")]);
+        let report = health(&dir, &manifest, None);
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|b| b.kind == BlockerKind::MissingRequiredDependency)
+            .expect("real missing dependency must still block");
+        assert_eq!(
+            blocker.message,
+            "extras needs connectormod, which isn't installed."
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
