@@ -474,6 +474,13 @@ pub fn validate_path_component(id: &str) -> LauncherResult<()> {
             message: "Path component must not be empty.".into(),
         });
     }
+    // A colon names an NTFS alternate data stream (`name:stream`) or a drive.
+    if id.contains(':') {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_PATH_COMPONENT".into(),
+            message: "Path component must not contain ':'.".into(),
+        });
+    }
     if id.len() > 256 {
         return Err(LauncherError::Generic {
             code: "ERR_INVALID_PATH_COMPONENT".into(),

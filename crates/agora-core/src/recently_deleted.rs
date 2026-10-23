@@ -77,6 +77,8 @@ pub struct CleanupSummary {
 pub(crate) struct TableDump {
     table: String,
     columns: Vec<String>,
+    #[serde(default)]
+    via: Option<LinkVia>,
     rows: Vec<Vec<Json>>,
 }
 
@@ -141,25 +143,83 @@ fn tree_size(root: &Path) -> std::io::Result<u64> {
     Ok(total)
 }
 
+/// A link taken out of a tree, with what is needed to put it back.
+struct RemovedLink {
+    path: PathBuf,
+    target: PathBuf,
+    is_dir: bool,
+    junction: bool,
+}
+
+fn recreate_link(link: &RemovedLink) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        if link.junction {
+            return junction::create(&link.target, &link.path);
+        }
+        if link.is_dir {
+            return std::os::windows::fs::symlink_dir(&link.target, &link.path);
+        }
+        std::os::windows::fs::symlink_file(&link.target, &link.path)
+    }
+    #[cfg(unix)]
+    {
+        let _ = (link.is_dir, link.junction);
+        std::os::unix::fs::symlink(&link.target, &link.path)
+    }
+}
+
+/// Put removed links back; reports how many could not be recreated.
+fn restore_links(links: &[RemovedLink]) -> usize {
+    links.iter().filter(|l| recreate_link(l).is_err()).count()
+}
+
 /// Remove every link under `root` (the links only, never their targets).
-/// Any failure aborts so the caller leaves the entry alone.
-fn detach_links(root: &Path) -> std::io::Result<usize> {
-    let mut removed = 0;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let metadata = std::fs::symlink_metadata(&path)?;
-            if is_link(&metadata) {
-                remove_link(&path, &metadata)?;
-                removed += 1;
-            } else if metadata.is_dir() {
-                stack.push(path);
+/// If anything fails, the links already removed are put back.
+fn detach_links(root: &Path) -> std::io::Result<Vec<RemovedLink>> {
+    let mut removed: Vec<RemovedLink> = Vec::new();
+    let result = (|| -> std::io::Result<()> {
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if is_link(&metadata) {
+                    #[cfg(windows)]
+                    let (target, junction, is_dir) = {
+                        use std::os::windows::fs::FileTypeExt;
+                        let junction = junction::exists(&path).unwrap_or(false);
+                        let target = if junction {
+                            junction::get_target(&path)?
+                        } else {
+                            std::fs::read_link(&path)?
+                        };
+                        (target, junction, metadata.file_type().is_symlink_dir())
+                    };
+                    #[cfg(unix)]
+                    let (target, junction, is_dir) = (std::fs::read_link(&path)?, false, false);
+                    remove_link(&path, &metadata)?;
+                    removed.push(RemovedLink {
+                        path,
+                        target,
+                        is_dir,
+                        junction,
+                    });
+                } else if metadata.is_dir() {
+                    stack.push(path);
+                }
             }
         }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(removed),
+        Err(error) => {
+            restore_links(&removed);
+            Err(error)
+        }
     }
-    Ok(removed)
 }
 
 /// True when `path` exists and is a plain directory (not a link to one).
@@ -181,65 +241,171 @@ fn db_err(error: impl std::fmt::Display) -> LauncherError {
     err("ERR_LOCAL_STATE_FAILED", error.to_string())
 }
 
-/// Tables whose rows disappear when an instance row is deleted: every table
-/// with a foreign key to `user_instances`, then tables hanging off those.
-/// Parents come before children. A table in that set without an
-/// `instance_id` column cannot be captured safely, so deleting fails closed.
-fn cascade_tables(conn: &Connection) -> LauncherResult<Vec<(String, Vec<String>)>> {
+/// Tables that hold permissions rather than data about an instance. Their rows
+/// are captured (so Restore under the original id is exact) but are never
+/// replayed onto a *different* id: a grant must not carry over to another
+/// instance.
+const PERMISSION_TABLES: &[&str] = &["mcp_approval_grants"];
+
+/// How a table is tied to an instance: directly by an `instance_id` column, or
+/// through a foreign key to a table that is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LinkVia {
+    pub col: String,
+    pub parent: String,
+    pub parent_col: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TableSpec {
+    pub table: String,
+    pub columns: Vec<String>,
+    pub via: Option<LinkVia>,
+}
+
+impl TableSpec {
+    fn filter(&self) -> String {
+        match &self.via {
+            None => "instance_id = ?1".to_string(),
+            Some(v) => format!(
+                "{} IN (SELECT {} FROM {} WHERE instance_id = ?1)",
+                quote_ident(&v.col),
+                quote_ident(&v.parent_col),
+                quote_ident(&v.parent)
+            ),
+        }
+    }
+}
+
+/// Every table whose rows belong to an instance, enumerated from the schema:
+/// each table with an `instance_id` column, then tables that point at one of
+/// those through a foreign key (e.g. survival mods). Parents come first.
+/// Anything tied to an instance in a way this cannot express makes delete fail
+/// closed rather than leave rows behind.
+pub(crate) fn instance_tables(conn: &Connection) -> LauncherResult<Vec<TableSpec>> {
+    struct Fk {
+        parent: String,
+        from: String,
+        to: Option<String>,
+    }
     let mut stmt = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .map_err(db_err)?;
-    let all: Vec<String> = stmt
+    let names: Vec<String> = stmt
         .query_map([], |row| row.get(0))
         .map_err(db_err)?
         .collect::<Result<_, _>>()
         .map_err(db_err)?;
-    let mut parents_of: Vec<(String, Vec<String>)> = Vec::new();
-    for table in &all {
-        let mut fk = conn
-            .prepare(&format!("PRAGMA foreign_key_list({})", quote_ident(table)))
-            .map_err(db_err)?;
-        let parents: Vec<String> = fk
-            .query_map([], |row| row.get::<_, String>(2))
-            .map_err(db_err)?
-            .collect::<Result<_, _>>()
-            .map_err(db_err)?;
-        parents_of.push((table.clone(), parents));
-    }
-    let mut ordered = vec!["user_instances".to_string()];
-    loop {
-        let before = ordered.len();
-        for (table, parents) in &parents_of {
-            if !ordered.contains(table) && parents.iter().any(|p| ordered.contains(p)) {
-                ordered.push(table.clone());
-            }
-        }
-        if ordered.len() == before {
-            break;
-        }
-    }
-    let mut out = Vec::new();
-    for table in ordered {
+    let mut columns: std::collections::HashMap<String, Vec<String>> = Default::default();
+    let mut fks: std::collections::HashMap<String, Vec<Fk>> = Default::default();
+    for table in &names {
         let mut info = conn
-            .prepare(&format!("PRAGMA table_info({})", quote_ident(&table)))
+            .prepare(&format!("PRAGMA table_info({})", quote_ident(table)))
             .map_err(db_err)?;
-        let columns: Vec<String> = info
+        let cols: Vec<String> = info
             .query_map([], |row| row.get::<_, String>(1))
             .map_err(db_err)?
             .collect::<Result<_, _>>()
             .map_err(db_err)?;
-        if !columns.iter().any(|c| c == "instance_id") {
+        columns.insert(table.clone(), cols);
+        let mut fk = conn
+            .prepare(&format!("PRAGMA foreign_key_list({})", quote_ident(table)))
+            .map_err(db_err)?;
+        let list: Vec<Fk> = fk
+            .query_map([], |row| {
+                Ok(Fk {
+                    parent: row.get(2)?,
+                    from: row.get(3)?,
+                    to: row.get(4)?,
+                })
+            })
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        fks.insert(table.clone(), list);
+    }
+    let direct: Vec<&String> = names
+        .iter()
+        .filter(|t| columns[*t].iter().any(|c| c == "instance_id"))
+        .collect();
+    if !direct.iter().any(|t| *t == "user_instances") {
+        return Err(err(
+            "ERR_INSTANCE_DELETE",
+            "user_instances has no instance_id.",
+        ));
+    }
+    let mut placed: Vec<TableSpec> = vec![TableSpec {
+        table: "user_instances".into(),
+        columns: columns["user_instances"].clone(),
+        via: None,
+    }];
+    let is_placed = |placed: &Vec<TableSpec>, t: &str| placed.iter().any(|s| s.table == t);
+    // Direct tables, parents before children.
+    let mut remaining: Vec<&String> = direct
+        .iter()
+        .copied()
+        .filter(|t| *t != "user_instances")
+        .collect();
+    while !remaining.is_empty() {
+        let ready = remaining.iter().position(|t| {
+            fks[*t]
+                .iter()
+                .all(|f| is_placed(&placed, &f.parent) || !direct.iter().any(|d| **d == f.parent))
+        });
+        let t = remaining.remove(ready.unwrap_or(0));
+        placed.push(TableSpec {
+            table: t.clone(),
+            columns: columns[t].clone(),
+            via: None,
+        });
+    }
+    // Tables without instance_id that point at an instance table.
+    let direct_count = placed.len();
+    loop {
+        let mut grew = false;
+        for t in &names {
+            if is_placed(&placed, t) {
+                continue;
+            }
+            let Some(f) = fks[t]
+                .iter()
+                .find(|f| placed[..direct_count].iter().any(|s| s.table == f.parent))
+            else {
+                continue;
+            };
+            let parent_col = f.to.clone().ok_or_else(|| {
+                err(
+                    "ERR_INSTANCE_DELETE",
+                    format!("Table '{t}' references an instance table without naming a column."),
+                )
+            })?;
+            placed.push(TableSpec {
+                table: t.clone(),
+                columns: columns[t].clone(),
+                via: Some(LinkVia {
+                    col: f.from.clone(),
+                    parent: f.parent.clone(),
+                    parent_col,
+                }),
+            });
+            grew = true;
+        }
+        if !grew {
+            break;
+        }
+    }
+    // Anything still pointing at a captured table is a shape we cannot restore.
+    for t in &names {
+        if !is_placed(&placed, t) && fks[t].iter().any(|f| is_placed(&placed, &f.parent)) {
             return Err(err(
                 "ERR_INSTANCE_DELETE",
                 format!(
-                    "Table '{table}' depends on instances but has no instance_id column; \
-                     refusing to delete because it could not be restored."
+                    "Table '{t}' depends on instance data in a way that cannot be restored; refusing to delete."
                 ),
             ));
         }
-        out.push((table, columns));
     }
-    Ok(out)
+    Ok(placed)
 }
 
 fn sql_to_json(value: SqlValue) -> LauncherResult<Json> {
@@ -260,7 +426,6 @@ fn sql_to_json(value: SqlValue) -> LauncherResult<Json> {
 fn json_to_sql(value: &Json) -> LauncherResult<SqlValue> {
     Ok(match value {
         Json::Null => SqlValue::Null,
-        Json::Bool(b) => SqlValue::Integer(i64::from(*b)),
         Json::Number(n) => match n.as_i64() {
             Some(i) => SqlValue::Integer(i),
             None => SqlValue::Real(
@@ -269,7 +434,7 @@ fn json_to_sql(value: &Json) -> LauncherResult<SqlValue> {
             ),
         },
         Json::String(s) => SqlValue::Text(s.clone()),
-        Json::Object(map) => {
+        Json::Object(map) if map.len() == 1 => {
             let hex = map
                 .get("$blob")
                 .and_then(Json::as_str)
@@ -287,7 +452,12 @@ fn json_to_sql(value: &Json) -> LauncherResult<SqlValue> {
             }
             SqlValue::Blob(bytes)
         }
-        Json::Array(_) => return Err(err("ERR_INSTANCE_RESTORE", "Unreadable value in entry.")),
+        _ => {
+            return Err(err(
+                "ERR_INSTANCE_RESTORE",
+                "Unexpected value type in entry.",
+            ))
+        }
     })
 }
 
@@ -296,13 +466,14 @@ pub(crate) fn capture_db_state(
     instance_id: &str,
 ) -> LauncherResult<Vec<TableDump>> {
     let mut dumps = Vec::new();
-    for (table, columns) in cascade_tables(conn)? {
+    for spec in instance_tables(conn)? {
         let sql = format!(
-            "SELECT * FROM {} WHERE instance_id = ?1",
-            quote_ident(&table)
+            "SELECT * FROM {} WHERE {}",
+            quote_ident(&spec.table),
+            spec.filter()
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let width = columns.len();
+        let width = spec.columns.len();
         let mut rows = Vec::new();
         let mut cursor = stmt.query([instance_id]).map_err(db_err)?;
         while let Some(row) = cursor.next().map_err(db_err)? {
@@ -313,45 +484,114 @@ pub(crate) fn capture_db_state(
             rows.push(values);
         }
         dumps.push(TableDump {
-            table,
-            columns,
+            table: spec.table,
+            columns: spec.columns,
+            via: spec.via,
             rows,
         });
     }
     Ok(dumps)
 }
 
+/// Remove every row belonging to the instance, children first, in one
+/// transaction: all or nothing.
+pub(crate) fn delete_instance_rows(conn: &Connection, instance_id: &str) -> LauncherResult<()> {
+    let specs = instance_tables(conn)?;
+    let tx = conn.unchecked_transaction().map_err(db_err)?;
+    for spec in specs.iter().rev() {
+        tx.execute(
+            &format!(
+                "DELETE FROM {} WHERE {}",
+                quote_ident(&spec.table),
+                spec.filter()
+            ),
+            [instance_id],
+        )
+        .map_err(db_err)?;
+    }
+    tx.commit().map_err(db_err)
+}
+
+/// Check an entry's captured rows against the live schema and the entry's own
+/// identity before anything is written: known tables and columns only, the
+/// same link shape, well-formed values, and every row belongs to this
+/// instance. The entry is data, never instructions.
+fn validate_dump(conn: &Connection, dumps: &[TableDump], original_id: &str) -> LauncherResult<()> {
+    let specs = instance_tables(conn)?;
+    let mut saw_instance_row = false;
+    for dump in dumps {
+        let spec = specs
+            .iter()
+            .find(|s| s.table == dump.table)
+            .ok_or_else(|| {
+                err(
+                    "ERR_INSTANCE_RESTORE",
+                    format!("Entry mentions unknown table '{}'.", dump.table),
+                )
+            })?;
+        if spec.via != dump.via {
+            return Err(err(
+                "ERR_INSTANCE_RESTORE",
+                "Entry table links do not match the schema.",
+            ));
+        }
+        if dump.columns.iter().any(|c| !spec.columns.contains(c)) {
+            return Err(err(
+                "ERR_INSTANCE_RESTORE",
+                format!("Entry has unknown columns for '{}'.", dump.table),
+            ));
+        }
+        let id_col = dump.columns.iter().position(|c| c == "instance_id");
+        for row in &dump.rows {
+            if row.len() != dump.columns.len() {
+                return Err(err("ERR_INSTANCE_RESTORE", "Entry rows are malformed."));
+            }
+            for value in row {
+                json_to_sql(value)?;
+            }
+            if let Some(i) = id_col {
+                if row[i].as_str() != Some(original_id) {
+                    return Err(err(
+                        "ERR_INSTANCE_RESTORE",
+                        "Entry contains rows for a different instance.",
+                    ));
+                }
+            }
+        }
+        if dump.table == "user_instances" {
+            if dump.rows.len() != 1 {
+                return Err(err(
+                    "ERR_INSTANCE_RESTORE",
+                    "Entry must hold exactly one instance row.",
+                ));
+            }
+            saw_instance_row = true;
+        }
+    }
+    if !saw_instance_row {
+        return Err(err("ERR_INSTANCE_RESTORE", "Entry has no instance row."));
+    }
+    Ok(())
+}
+
 /// Re-insert captured rows in one transaction (so a failure inserts nothing),
-/// optionally under a different instance id.
-fn replay_db_state(
+/// optionally under a different instance id. Permission rows are skipped when
+/// the id changes.
+pub(crate) fn replay_db_state(
     conn: &mut Connection,
     dumps: &[TableDump],
+    original_id: &str,
     new_id: &str,
     new_name: Option<&str>,
 ) -> LauncherResult<()> {
-    // Only tables that exist now, and only columns that exist now, are
-    // acceptable: anything else means the schema moved on and a partial
-    // restore would be worse than none.
-    let current: Vec<String> = cascade_tables(conn)?
-        .into_iter()
-        .map(|(table, _)| table)
-        .collect();
+    validate_dump(conn, dumps, original_id)?;
+    let renamed = new_id != original_id;
     let tx = conn.transaction().map_err(db_err)?;
     for dump in dumps {
-        if !current.contains(&dump.table) {
-            return Err(err(
-                "ERR_INSTANCE_RESTORE",
-                format!("Table '{}' no longer exists; cannot restore.", dump.table),
-            ));
-        }
-        if dump.rows.is_empty() {
+        if dump.rows.is_empty() || (renamed && PERMISSION_TABLES.contains(&dump.table.as_str())) {
             continue;
         }
-        let id_col = dump
-            .columns
-            .iter()
-            .position(|c| c == "instance_id")
-            .ok_or_else(|| err("ERR_INSTANCE_RESTORE", "Entry is missing instance_id."))?;
+        let id_col = dump.columns.iter().position(|c| c == "instance_id");
         let name_col = (dump.table == "user_instances")
             .then(|| dump.columns.iter().position(|c| c == "name"))
             .flatten();
@@ -375,12 +615,9 @@ fn replay_db_state(
             )
         })?;
         for row in &dump.rows {
-            if row.len() != dump.columns.len() {
-                return Err(err("ERR_INSTANCE_RESTORE", "Entry rows are malformed."));
-            }
             let mut params = Vec::with_capacity(row.len());
             for (i, value) in row.iter().enumerate() {
-                if i == id_col {
+                if Some(i) == id_col {
                     params.push(SqlValue::Text(new_id.to_string()));
                 } else if Some(i) == name_col && new_name.is_some() {
                     params.push(SqlValue::Text(new_name.unwrap_or_default().to_string()));
@@ -410,6 +647,19 @@ fn entry_dir(root: &Path, entry_id: &str) -> LauncherResult<PathBuf> {
 }
 
 fn read_entry(root: &Path, entry_id: &str) -> LauncherResult<StoredEntry> {
+    let stored = read_entry_file(root, entry_id)?;
+    let dir = entry_dir(root, entry_id)?;
+    if !is_plain_dir(&dir.join(INSTANCE_SUBDIR)) {
+        return Err(err(
+            "ERR_INSTANCE_RESTORE",
+            "The deleted instance's files are missing from this entry.",
+        ));
+    }
+    Ok(stored)
+}
+
+/// The entry's record, whether or not its files are still inside.
+fn read_entry_file(root: &Path, entry_id: &str) -> LauncherResult<StoredEntry> {
     let dir = entry_dir(root, entry_id)?;
     let text = std::fs::read_to_string(dir.join(ENTRY_FILE))
         .map_err(|e| io_err("ERR_INSTANCE_RESTORE", "Cannot read the deleted entry", e))?;
@@ -421,12 +671,7 @@ fn read_entry(root: &Path, entry_id: &str) -> LauncherResult<StoredEntry> {
             "Entry is from a different version or does not match its folder.",
         ));
     }
-    if !is_plain_dir(&dir.join(INSTANCE_SUBDIR)) {
-        return Err(err(
-            "ERR_INSTANCE_RESTORE",
-            "The deleted instance's files are missing from this entry.",
-        ));
-    }
+    validate_path_component(&stored.info.instance_id)?;
     Ok(stored)
 }
 
@@ -501,7 +746,7 @@ pub(crate) fn stash_instance(
             ),
         ));
     }
-    if let Err(e) = crate::db::delete_instance(conn, &row.instance_id) {
+    if let Err(e) = delete_instance_rows(conn, &row.instance_id) {
         match std::fs::rename(&target, instance_dir) {
             Ok(()) => abandon(&dir),
             Err(_) => {
@@ -509,7 +754,7 @@ pub(crate) fn stash_instance(
                 // reachable and restorable.
             }
         }
-        return Err(db_err(e));
+        return Err(e);
     }
     Ok(info)
 }
@@ -619,7 +864,7 @@ pub(crate) fn restore_entry(
             e,
         ));
     }
-    if let Err(e) = replay_db_state(conn, &stored.db, &new_id, new_name.as_deref()) {
+    if let Err(e) = replay_db_state(conn, &stored.db, &original, &new_id, new_name.as_deref()) {
         if std::fs::rename(&dest, &source).is_ok() {
             undo_manifest(&original_manifest);
         }
@@ -648,14 +893,25 @@ pub fn purge_entry(root: &Path, entry_id: &str, trash: &TrashFn) -> LauncherResu
             "Entry is not a plain folder; leaving it alone.",
         ));
     }
-    detach_links(&dir).map_err(|e| {
+    let links = detach_links(&dir).map_err(|e| {
         io_err(
             "ERR_INSTANCE_DELETE",
             "Cannot prepare entry for the trash",
             e,
         )
     })?;
-    trash(&dir)
+    if let Err(error) = trash(&dir) {
+        // Leave the entry exactly as it was: put the links back.
+        let lost = restore_links(&links);
+        if lost > 0 {
+            return Err(err(
+                "ERR_INSTANCE_DELETE",
+                format!("{error} ({lost} link(s) in the entry could not be put back.)"),
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Purge entries older than the retention window, then the oldest until the
@@ -672,21 +928,12 @@ pub(crate) fn cleanup_with_budget(
     budget: u64,
 ) -> CleanupSummary {
     let mut summary = CleanupSummary::default();
-    // Shells: an entry folder with no instance inside holds nothing to lose.
+    // Truly empty folders hold nothing; `remove_dir` refuses anything else.
     if let Ok(read) = std::fs::read_dir(root) {
         for item in read.filter_map(Result::ok) {
             let path = item.path();
-            if is_plain_dir(&path) && !path.join(INSTANCE_SUBDIR).exists() {
-                let only_entry_file = std::fs::read_dir(&path)
-                    .map(|r| {
-                        r.filter_map(Result::ok)
-                            .all(|e| e.file_name() == ENTRY_FILE)
-                    })
-                    .unwrap_or(false);
-                if only_entry_file {
-                    let _ = std::fs::remove_file(path.join(ENTRY_FILE));
-                    let _ = std::fs::remove_dir(&path);
-                }
+            if is_plain_dir(&path) {
+                let _ = std::fs::remove_dir(&path);
             }
         }
     }
@@ -713,4 +960,70 @@ pub(crate) fn cleanup_with_budget(
         }
     }
     summary
+}
+
+/// Repair what a crash can leave between the steps of delete and restore.
+/// Returns how many entries were repaired. Each case is recognised by the
+/// instance's own `created_at`, so a different instance that merely reuses the
+/// id is never touched.
+///
+/// - Delete moved the folder but died before removing the rows: finish the
+///   row removal (the entry holds everything).
+/// - Restore moved the folder back but died before restoring the rows (same
+///   id): replay them, then retire the entry.
+/// - Restore committed but could not tidy the entry: retire the entry.
+pub(crate) fn reconcile(root: &Path, conn: &mut Connection, instances_root: &Path) -> usize {
+    let Ok(read) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut repaired = 0;
+    for item in read.filter_map(Result::ok) {
+        let Ok(entry_id) = item.file_name().into_string() else {
+            continue;
+        };
+        let Ok(stored) = read_entry_file(root, &entry_id) else {
+            continue;
+        };
+        let id = stored.info.instance_id.clone();
+        let Some(dumped_created) = stored
+            .db
+            .iter()
+            .find(|d| d.table == "user_instances")
+            .and_then(|d| {
+                let col = d.columns.iter().position(|c| c == "created_at")?;
+                d.rows.first()?.get(col)?.as_str().map(str::to_owned)
+            })
+        else {
+            continue;
+        };
+        let live_created: Option<String> = conn
+            .query_row(
+                "SELECT created_at FROM user_instances WHERE instance_id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .ok();
+        let same_instance = live_created.as_deref() == Some(dumped_created.as_str());
+        let Ok(dir) = entry_dir(root, &entry_id) else {
+            continue;
+        };
+        let has_files = is_plain_dir(&dir.join(INSTANCE_SUBDIR));
+        let live_dir = instances_root.join(&id);
+        if has_files && same_instance && std::fs::symlink_metadata(&live_dir).is_err() {
+            if delete_instance_rows(conn, &id).is_ok() {
+                repaired += 1;
+            }
+        } else if !has_files && live_created.is_none() && is_plain_dir(&live_dir) {
+            if replay_db_state(conn, &stored.db, &id, &id, None).is_ok() {
+                let _ = std::fs::remove_file(dir.join(ENTRY_FILE));
+                let _ = std::fs::remove_dir(&dir);
+                repaired += 1;
+            }
+        } else if !has_files && same_instance {
+            let _ = std::fs::remove_file(dir.join(ENTRY_FILE));
+            let _ = std::fs::remove_dir(&dir);
+            repaired += 1;
+        }
+    }
+    repaired
 }
