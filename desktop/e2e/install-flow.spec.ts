@@ -677,12 +677,13 @@ test.describe('Release C3 — Install flow entry points', () => {
 
     await page.getByText('Test Instance').first().waitFor();
 
-    // The button sits next to Import Mod in the Mods panel and counts the
-    // entries the overlay lists (mods that recommend add-ons).
-    await page.getByRole('button', { name: 'Optional dependencies (1)' }).click();
+    // The button sits next to Import Mod in the Mods panel. It says all listed
+    // add-ons are installed, since the overlay only lists satisfied pairs.
+    await expect(page.getByRole('button', { name: 'Optional add-ons' })).toContainText('all installed');
+    await page.getByRole('button', { name: 'Optional add-ons' }).click();
 
     const dialog = page.getByRole('dialog');
-    await expect(dialog.getByRole('heading', { name: 'Optional dependencies' })).toBeVisible();
+    await expect(dialog.getByRole('heading', { name: 'Optional add-ons' })).toBeVisible();
     await expect(dialog.getByText('Test Mod')).toBeVisible();
     await expect(dialog.getByText('recommends')).toBeVisible();
     await expect(dialog.getByText('companion-mod')).toBeVisible();

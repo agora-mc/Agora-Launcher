@@ -82,7 +82,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Keep Pack release selected: it installs the exact mod builds the curator tested. Flexible lets you pick another Minecraft version, but mods without a build for it are left out, and the install stops if a required one is missing.',
             'Set the instance name, then choose Check pack. It lists the Minecraft version and loader, how many mods will be installed, anything left out or missing, and each mod with its version. It does not show memory or download size; adjust memory afterwards in the instance editor.',
             'Launch the new instance. Resolve any health warnings before selecting Launch Anyway.',
-            'Play for at least 60 seconds so Agora can establish a Last Known Good recovery point.',
+            'Play for at least 60 seconds so Agora can save the last setup that launched fine (Last Known Good) as a recovery point.',
           ],
         },
       ],
@@ -203,7 +203,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Start from a known-good snapshot.',
             'Apply a reviewed install plan.',
             'Launch and exercise the affected game area.',
-            'If stable, name a new snapshot or let a successful session promote the Last Known Good state.',
+            'If stable, name a new snapshot or let a successful session mark the last setup that launched fine (Last Known Good).',
             'If unstable, restore and revise the dependency or version choice.',
           ],
         },
@@ -227,7 +227,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Read Home from top to bottom',
-          body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. Last Known Good offers recovery when one exists. Compatible recommendations use your recent instance version and loader.',
+          body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. The last setup that launched fine (Last Known Good) offers recovery when one exists. Compatible recommendations use your recent instance version and loader.',
           bullets: [
             'A catalog alert means discovery data is missing or unavailable.',
             'A crash alert means the latest instance did not exit cleanly.',
@@ -268,11 +268,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Understand Home signals',
-          body: 'The Last Known Good card points to an explicitly promoted pre-launch snapshot, not merely the newest snapshot. Recommendations rank category overlap and then filter against the active instance\'s Minecraft version and loader.',
+          body: 'The card for the last setup that launched fine (Last Known Good) points to an explicitly promoted pre-launch snapshot, not merely the newest snapshot. Recommendations rank category overlap and then filter against the active instance\'s Minecraft version and loader.',
           callout: {
             tone: 'note',
             title: 'Recovery is deliberate',
-            text: 'Restoring a Last Known Good state creates an undo snapshot first, so the current state is not silently discarded.',
+            text: 'Restoring the last setup that launched fine (Last Known Good) creates an undo snapshot first, so the current state is not silently discarded.',
           },
         },
         {
@@ -773,7 +773,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Crash diagnosis and recovery',
     shortTitle: 'Crashes & recovery',
     category: 'Recover',
-    description: 'Use Crash Doctor, evidence-based testing, and Last Known Good recovery.',
+    description: 'Use Crash Doctor, evidence-based testing, and recovery to the last setup that launched fine (Last Known Good).',
     keywords: ['crash doctor', 'crash report', 'suspect', 'disable relaunch', 'restore'],
     basic: {
       summary: 'Crashes are usually solved fastest by preserving the current state, reading the first useful evidence, and testing one likely cause at a time. Crash Doctor guides that process.',
@@ -809,7 +809,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Recover instead of investigate',
-          body: 'If you need to play immediately, restore the Last Known Good state from Home or the Snapshots tab. Use Restore All & Close in Crash Doctor to undo its test changes.',
+          body: 'If you need to play immediately, restore the last setup that launched fine (Last Known Good) from Home or the Snapshots tab. Use Restore All & Close in Crash Doctor to undo its test changes.',
           callout: {
             tone: 'tip',
             title: 'Keep the crash report',
@@ -852,12 +852,12 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     shortTitle: 'Snapshots & loadouts',
     category: 'Recover',
     description: 'Create restore points and switch between groups of enabled mods.',
-    keywords: ['snapshot', 'last known good', 'loadout', 'profile', 'diff', 'restore'],
+    keywords: ['snapshot', 'last known good', 'last setup that launched fine', 'loadout', 'profile', 'diff', 'restore'],
     basic: {
       summary: 'Snapshots restore files to an earlier state. Loadout profiles remember which installed mods are enabled. They solve different problems and work well together.',
       outcomes: [
         'Create, compare, restore, and delete snapshots.',
-        'Understand automatic Last Known Good promotion.',
+        'Understand how the last setup that launched fine (Last Known Good) is saved automatically.',
         'Save and apply an enabled-mod loadout.',
       ],
       sections: [
@@ -870,8 +870,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Show diff lists added, removed, and modified files relative to the snapshot. Restore returns the instance to that state and first creates an undo snapshot. Delete removes only the selected recovery point. Automatic pre-launch recovery intentionally excludes saves so launch does not rescan large worlds; full manual and transactional snapshots use a broader scope.',
           callout: {
             tone: 'note',
-            title: 'Last Known Good is automatic',
-            text: 'After a successful play session of at least 60 seconds, Agora can promote the exact pre-launch snapshot as the current Last Known Good state. Last Known Good protects mod and configuration state, not world saves.',
+            title: 'The last setup that launched fine is saved automatically',
+            text: 'After a successful play session of at least 60 seconds, Agora can save the exact pre-launch snapshot as the last setup that launched fine (Last Known Good). That protects mod and configuration state, not world saves.',
           },
         },
         {
@@ -934,7 +934,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Import a pack',
-          body: 'Open an instance with Edit, then use the Import tab (Select File & Import, for a .mrpack or Prism .zip) or "Import pack as new instance" on the Mods tab (.mrpack or Agora pack file). A .mrpack opens a short review where you can rename the new instance before it is created. Agora prepares the loader and required content before promoting the new instance.',
+          body: 'Open an instance with Edit, then use the Other launchers & files tab (Select File & Import, for a .mrpack or Prism .zip) or "Import pack as new instance" on the Mods tab (.mrpack or Agora pack file). A .mrpack opens a short review where you can rename the new instance before it is created. Agora prepares the loader and required content before promoting the new instance.',
           steps: [
             'Choose the pack file from a trusted source.',
             'Check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',

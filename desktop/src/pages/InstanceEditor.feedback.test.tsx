@@ -8,6 +8,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { InstanceEditor } from './InstanceEditor';
 import { PackInstallProvider } from '../components/PackInstallProgress';
+import type { HealthReport } from '../lib/tauri';
 
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -93,11 +94,48 @@ describe('optional dependency count', () => {
     expect(button.textContent).not.toMatch(/\(\d+\)/);
 
     await act(async () => { release(); });
-    await waitFor(() => expect(button.textContent).toContain('(3)'));
+    await waitFor(() => expect(button.textContent).toContain('all installed'));
 
     fireEvent.click(button);
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getAllByText('recommends')).toHaveLength(3);
+  });
+});
+
+describe('readiness line', () => {
+  const cleanHealth = { score: {}, warnings: [], blockers: [], recommendations: [], scan_token: 't' } as unknown as HealthReport;
+
+  function renderWith(health: HealthReport | null) {
+    return render(
+      <PackInstallProvider>
+        <InstanceEditor instanceId="alpha" onBack={() => undefined} healthReport={health} />
+      </PackInstallProvider>,
+    );
+  }
+
+  it('says ready to play, and that Java downloads on first launch, when the setting is automatic', async () => {
+    renderWith(cleanHealth);
+    const line = await screen.findByTestId('instance-readiness');
+    await waitFor(() => expect(line.textContent).toContain('downloads on first launch'));
+    expect(within(line).getByText('Ready to play')).toBeTruthy();
+    expect(line.textContent).toContain('Minecraft 1.21 with Fabric 0.16.9');
+  });
+
+  it('says not ready and counts mod problems from the health report', async () => {
+    renderWith({ ...cleanHealth, blockers: [{} as HealthReport['blockers'][number]] });
+    const line = await screen.findByTestId('instance-readiness');
+    expect(within(line).getByText('Not ready: 1 mod problem to fix')).toBeTruthy();
+    expect(line.textContent).not.toContain('Ready to play');
+  });
+
+  it('makes no download promise when automatic Java is switched off in Settings', async () => {
+    const previous = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (command: string, args: { key?: string } = {}) =>
+      command === 'get_setting' && args.key === 'java_runtime_mode' ? 'manual' : previous?.(command, args));
+    renderWith(cleanHealth);
+    const line = await screen.findByTestId('instance-readiness');
+    await waitFor(() => expect(line.textContent).toContain('automatic downloads are off'));
+    expect(line.textContent).not.toContain('downloads on first launch');
   });
 });
 

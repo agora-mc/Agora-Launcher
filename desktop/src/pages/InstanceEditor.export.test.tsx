@@ -119,8 +119,15 @@ describe('pack export', () => {
 
   it('says configs and keybinds are not in either pack', async () => {
     await openExportTab();
-    expect(screen.getAllByText('Not included:')).toHaveLength(2);
+    // Both packs and the lockfile each say what they leave out.
+    expect(screen.getAllByText('Not included:')).toHaveLength(3);
     expect(screen.queryByText(/config files, and overrides/)).toBeNull();
+  });
+
+  it('says the lockfile holds config fingerprints only, and no memory or Java settings', async () => {
+    await openExportTab();
+    expect(screen.getByText(/config file contents, memory and Java settings/)).toBeTruthy();
+    expect(screen.queryByText(/all settings/)).toBeNull();
   });
 
   it('format badges use the named type scale, not a fixed 10px', async () => {
