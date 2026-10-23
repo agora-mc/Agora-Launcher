@@ -316,9 +316,12 @@ pub struct PackImportOutcome {
 }
 
 /// Import a pack file.  .mrpack → core ImportService.  .agora-pack.json → local orchestrator.
+/// `reviewed_sha256` is the fingerprint the review step recorded for an Agora
+/// pack; the import refuses a file whose bytes no longer match it.
 pub async fn import_instance_pack(
     app: &tauri::AppHandle,
     source_path: &str,
+    reviewed_sha256: Option<&str>,
 ) -> LauncherResult<PackImportOutcome> {
     let lower = source_path.to_ascii_lowercase();
     if lower.ends_with(".mrpack") {
@@ -327,7 +330,7 @@ pub async fn import_instance_pack(
             report: None,
         })
     } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
-        import_agora_json(app, source_path).await
+        import_agora_json(app, source_path, reviewed_sha256).await
     } else {
         Err(LauncherError::Generic {
             code: "ERR_INVALID_FORMAT".into(),
@@ -337,14 +340,57 @@ pub async fn import_instance_pack(
 }
 
 /// Try pack entries again on an existing instance (after the user turned
-/// Modrinth on). Entries already installed are not downloaded again.
+/// Modrinth on, or allowed it for this import). Entries already installed are
+/// not downloaded again.
 pub async fn retry_pack_import_entries(
     app: &tauri::AppHandle,
     instance_id: &str,
     entries: Vec<agora_core::agora_pack_import::AgoraPackEntry>,
+    allow_modrinth_once: bool,
 ) -> LauncherResult<agora_core::agora_pack_import::PackImportReport> {
     let ctx = crate::core_context(app)?;
-    agora_core::agora_pack_import::retry_agora_pack_entries(&ctx, instance_id, entries).await
+    agora_core::agora_pack_import::retry_agora_pack_entries(
+        &ctx,
+        instance_id,
+        entries,
+        allow_modrinth_once,
+    )
+    .await
+}
+
+/// What importing a `.agora-pack.json` would do, for the review step. Reads
+/// the file and this install's settings; writes nothing and contacts no source.
+pub fn plan_pack_import(
+    app: &tauri::AppHandle,
+    source_path: &str,
+) -> LauncherResult<agora_core::agora_pack_import::PackImportPlan> {
+    if !source_path.to_ascii_lowercase().ends_with(".json") {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_FORMAT".into(),
+            message: "Only .agora-pack.json files have a review step.".into(),
+        });
+    }
+    let ctx = crate::core_context(app)?;
+    let bytes = read_agora_pack_bytes(source_path)?;
+    agora_core::agora_pack_import::plan_agora_pack_bytes(&ctx, &bytes)
+}
+
+/// The bytes of a `.agora-pack.json`, refusing one too large to read. A file
+/// whose size cannot be read is refused too, rather than read unchecked. The
+/// core re-checks the size of the bytes it is given.
+fn read_agora_pack_bytes(source_path: &str) -> LauncherResult<Vec<u8>> {
+    let unreadable = || LauncherError::Generic {
+        code: "ERR_PACK_READ".into(),
+        message: format!("Cannot read pack file: {source_path}"),
+    };
+    let too_big = std::fs::metadata(source_path)
+        .map_err(|_| unreadable())?
+        .len()
+        > agora_core::agora_pack_import::MAX_PACK_FILE_BYTES;
+    if too_big {
+        return Err(agora_core::agora_pack_import::pack_too_big_error());
+    }
+    std::fs::read(source_path).map_err(|_| unreadable())
 }
 
 async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherResult<String> {
@@ -368,26 +414,15 @@ async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherRes
 async fn import_agora_json(
     app: &tauri::AppHandle,
     source_path: &str,
+    reviewed_sha256: Option<&str>,
 ) -> LauncherResult<PackImportOutcome> {
     let ctx = crate::core_context(app)?;
-    // Refuse an oversized file before reading it into memory.
-    let too_big = std::fs::metadata(source_path)
-        .map(|m| m.len() > agora_core::agora_pack_import::MAX_PACK_FILE_BYTES)
-        .unwrap_or(false);
-    if too_big {
-        return Err(agora_core::agora_pack_import::pack_too_big_error());
-    }
-    let text = std::fs::read_to_string(source_path).map_err(|_| LauncherError::Generic {
-        code: "ERR_PACK_READ".into(),
-        message: format!("Cannot read pack file: {source_path}"),
-    })?;
-    let pack = agora_core::agora_pack_import::parse_agora_pack(&text)?;
+    // One read: the bytes checked against the reviewed fingerprint are the
+    // bytes parsed and installed.
+    let bytes = read_agora_pack_bytes(source_path)?;
+    let pack = agora_core::agora_pack_import::parse_reviewed_agora_pack(&bytes, reviewed_sha256)?;
     let inst = &pack.instance;
-    let name = inst
-        .name
-        .clone()
-        .or_else(|| inst.id.clone())
-        .unwrap_or_else(|| "imported-pack".to_string());
+    let name = agora_core::agora_pack_import::pack_display_name(inst);
     let instance_id = paths::sanitize_id(inst.id.as_deref().unwrap_or(&name));
     let instance_id = if instance_id.is_empty() {
         "imported-pack".into()
@@ -410,9 +445,34 @@ async fn import_agora_json(
         template_id: None,
     };
     instances::create_instance(app.clone(), req).await?;
-    let report =
+    let mut report =
         agora_core::agora_pack_import::install_agora_pack_mods(&ctx, &instance_id, &name, pack)
             .await;
+    if agora_core::agora_pack_import::nothing_installed_for_lack_of_connection(&report) {
+        // Nothing usable was made, so do not leave an empty instance behind.
+        // It goes to the OS trash, and a later import starts clean.
+        match instances::delete_instance(app, &instance_id) {
+            Ok(()) => {
+                let subject = if report.total == 1 {
+                    "This mod needs".to_string()
+                } else {
+                    format!("These {} mods need", report.total)
+                };
+                return Err(LauncherError::Generic {
+                    code: "ERR_PACK_OFFLINE".into(),
+                    message: format!(
+                        "{subject} to be downloaded. Couldn't connect: no internet, or the \
+                         server can't be reached right now. Nothing was installed, and the new \
+                         instance was removed. Try again when you're online."
+                    ),
+                });
+            }
+            Err(error) => report.warnings.push(format!(
+                "The mods could not be downloaded for lack of a connection, and the new \
+                 instance could not be removed ({error}). It was kept; try again when you're online."
+            )),
+        }
+    }
     Ok(PackImportOutcome {
         instance_id,
         report: Some(report),

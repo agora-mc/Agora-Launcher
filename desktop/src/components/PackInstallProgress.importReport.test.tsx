@@ -1,11 +1,12 @@
 /**
- * An Agora pack import that does not end clean says so, mod by mod, and the
- * entries that were waiting on Modrinth can be retried without re-importing.
+ * An Agora pack import is reviewed before anything is written, and a result that
+ * did not end clean says so, mod by mod. Entries waiting on Modrinth can be
+ * retried for this import alone, or with the setting turned on for good.
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { PackInstallProvider, usePackInstall } from './PackInstallProgress';
-import type { AgoraPackEntry, PackEntryOutcome, PackImportReport } from '../lib/tauri';
+import { PackImportReports, PackInstallProvider, usePackInstall } from './PackInstallProgress';
+import type { AgoraPackEntry, PackEntryOutcome, PackImportPlan, PackImportReport } from '../lib/tauri';
 
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -28,56 +29,217 @@ const partial: PackImportReport = {
   instance_id: 'friend-pack', instance_name: 'Friend Pack', total: 5, installed: 4, warnings: [],
   outcomes: [waiting, installed('a.jar'), installed('b.jar'), installed('c.jar'), installed('d.jar')],
 };
+const plan: PackImportPlan = {
+  pack_name: 'Friend Pack',
+  instance: { id: 'friend-pack', name: 'Friend Pack', minecraft_version: '1.21', loader: 'fabric', loader_version: '0.16.0' },
+  entries: [
+    { name: 'sodium.jar', display_name: 'Sodium', source: 'curated', checkable: true, reason: null, action: null },
+    { name: 'xaero.jar', display_name: null, source: 'modrinth', checkable: true, reason: 'Needs Modrinth, which is off.', action: 'enable_modrinth' },
+    { name: 'ghost.jar', display_name: null, source: 'cannot_get', checkable: false, reason: "'ghost' is not in the catalog this install has.", action: null },
+  ],
+  file_sha256: 'b'.repeat(64),
+  file_size: 1234,
+};
 
-function Starter() {
+function Starter({ path = 'C:\\friend.agora-pack.json' }: { path?: string }) {
   const { startPackFile } = usePackInstall();
-  return <button onClick={() => startPackFile('C:\friend.agora-pack.json', 'friend.agora-pack.json')}>go</button>;
+  return <button onClick={() => startPackFile(path, path.split('\\').pop() ?? path)}>go</button>;
 }
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  invokeMock.mockImplementation(async (command: string) => {
+function renderImport(path?: string) {
+  render(
+    <PackInstallProvider>
+      <Starter path={path} />
+      <PackImportReports />
+    </PackInstallProvider>,
+  );
+  fireEvent.click(screen.getByText('go'));
+}
+
+/** Mock answers for the commands the flow uses; tests override what they need. */
+function answer(overrides: Record<string, (args: Record<string, unknown>) => unknown>) {
+  invokeMock.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+    if (overrides[command]) return overrides[command](args);
+    if (command === 'plan_pack_import') return plan;
     if (command === 'import_instance_pack') return { instance_id: 'friend-pack', report: partial };
     if (command === 'set_content_provider_enabled') return [];
     if (command === 'retry_pack_import_entries') {
-      return {
-        ...partial, total: 1, installed: 1,
-        outcomes: [{ ...installed('xaero.jar'), entry: xaeroEntry }],
-      };
+      return { ...partial, total: 1, installed: 1, outcomes: [{ ...installed('xaero.jar'), entry: xaeroEntry }] };
     }
     return null;
+  });
+}
+
+const callsTo = (command: string) => invokeMock.mock.calls.filter(([name]) => name === command);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  answer({});
+});
+
+describe('pack import review', () => {
+  it('shows the pack and each mod before anything is imported, and imports only on Import', async () => {
+    renderImport();
+
+    const review = await screen.findByTestId('pack-import-review');
+    expect(review.textContent).toContain('Import Friend Pack?');
+    expect(review.textContent).toContain('1.21');
+    expect(review.textContent).toContain('fabric 0.16.0');
+    expect(screen.getByText('Sodium')).toBeTruthy();
+    expect(screen.getByText(/From Modrinth/)).toBeTruthy();
+    expect(screen.getByText(/'ghost' is not in the catalog/)).toBeTruthy();
+
+    // The plan only reads: no import has been asked for yet.
+    expect(callsTo('plan_pack_import')).toHaveLength(1);
+    expect(callsTo('import_instance_pack')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(1));
+    // The import is held to the exact bytes that were reviewed.
+    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\friend.agora-pack.json', reviewedSha256: plan.file_sha256 });
+  });
+
+  it('Cancel leaves nothing behind', async () => {
+    renderImport();
+    await screen.findByTestId('pack-import-review');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('pack-import-review')).toBeNull();
+    expect(callsTo('import_instance_pack')).toHaveLength(0);
+  });
+
+  it('a pack that cannot be read is named, and cannot be imported', async () => {
+    answer({ plan_pack_import: () => Promise.reject({ code: 'ERR_PACK_PARSE', message: 'agora-pack missing loader.' }) });
+    renderImport();
+    expect(await screen.findByText('agora-pack missing loader.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Import' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(callsTo('import_instance_pack')).toHaveLength(0);
+  });
+
+  it('warns plainly when there is no connection, and only before anything is written', async () => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+    try {
+      renderImport();
+      const review = await screen.findByTestId('pack-import-review');
+      // Only Sodium is ready to download now: Xaero waits on Modrinth, Ghost cannot be fetched.
+      expect(review.textContent).toContain(
+        "This mod needs to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Nothing was installed.",
+      );
+    } finally {
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
+    }
+  });
+
+  it('a .mrpack starts straight away, as before', async () => {
+    renderImport('C:\\packs\\friend.mrpack');
+    await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(1));
+    expect(callsTo('plan_pack_import')).toHaveLength(0);
+    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\packs\\friend.mrpack', reviewedSha256: null });
+    expect(screen.queryByTestId('pack-import-review')).toBeNull();
   });
 });
 
 describe('pack import report', () => {
-  it('shows what was not installed, then retries only the waiting entries once Modrinth is on', async () => {
-    render(<PackInstallProvider><Starter /></PackInstallProvider>);
-    fireEvent.click(screen.getByText('go'));
+  beforeEach(() => {
+    answer({ import_instance_pack: () => ({ instance_id: 'friend-pack', report: partial }) });
+  });
+
+  it('shows what was not installed, then retries only the waiting entries for this import, leaving the setting alone', async () => {
+    renderImport();
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
 
     expect(await screen.findByText('4 of 5 mods installed.')).toBeTruthy();
     expect(screen.getByText(/Needs Modrinth, which is off/)).toBeTruthy();
     // The catalog name is shown when known.
     expect(screen.getByText('Xaero Minimap')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Turn on Modrinth for this' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Modrinth for this import' }));
 
     expect(await screen.findByText('5 of 5 mods installed.')).toBeTruthy();
-    expect(invokeMock).toHaveBeenCalledWith('set_content_provider_enabled', { providerId: 'modrinth', enabled: true });
-    const retry = invokeMock.mock.calls.find(([command]) => command === 'retry_pack_import_entries');
-    expect(retry?.[1]).toEqual({ instanceId: 'friend-pack', entries: [xaeroEntry] });
+    expect(callsTo('set_content_provider_enabled')).toHaveLength(0);
+    const retry = callsTo('retry_pack_import_entries');
+    expect(retry).toHaveLength(1);
+    expect(retry[0][1]).toEqual({ instanceId: 'friend-pack', entries: [xaeroEntry], allowModrinthOnce: true });
+  });
+
+  it('turns the Modrinth setting on for good only when asked to, then retries', async () => {
+    renderImport();
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn on Modrinth search (stays on, Settings > Services)' }));
+
+    expect(await screen.findByText('5 of 5 mods installed.')).toBeTruthy();
+    expect(callsTo('set_content_provider_enabled')[0][1]).toEqual({ providerId: 'modrinth', enabled: true });
+    expect(callsTo('retry_pack_import_entries')[0][1]).toMatchObject({ allowModrinthOnce: false });
   });
 
   it('shows nothing extra for a clean, fully checked import', async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command !== 'import_instance_pack') return null;
-      return {
+    answer({
+      import_instance_pack: () => ({
         instance_id: 'friend-pack',
         report: { ...partial, total: 1, installed: 1, outcomes: [installed('a.jar')] },
-      };
+      }),
     });
-    render(<PackInstallProvider><Starter /></PackInstallProvider>);
-    fireEvent.click(screen.getByText('go'));
+    renderImport();
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
     await waitFor(() => expect(screen.getByText('Pack installed successfully.')).toBeTruthy());
     expect(screen.queryByTestId('pack-import-summary')).toBeNull();
+  });
+
+  it('can be dismissed with its close control', async () => {
+    renderImport();
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+    await screen.findByTestId('pack-import-summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss import results' }));
+    expect(screen.queryByTestId('pack-import-summary')).toBeNull();
+  });
+});
+
+describe('pack import without a connection', () => {
+  const offlineReport = (total: number, installedCount: number): PackImportReport => {
+    const offlineEntry = (filename: string): PackEntryOutcome => ({
+      name: filename, status: 'needs_action', verified_against_pack: false, action: null,
+      reason: "This mod needs to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Try again when you're online.",
+      entry: entry(filename, 'sodium'),
+    });
+    const outcomes = [
+      ...Array.from({ length: installedCount }, (_, i) => installed(`done-${i}.jar`)),
+      ...Array.from({ length: total - installedCount }, (_, i) => offlineEntry(`wait-${i}.jar`)),
+    ];
+    return { instance_id: 'friend-pack', instance_name: 'Friend Pack', total, installed: installedCount, warnings: [], outcomes };
+  };
+
+  it('says the mods need a connection, that nothing was installed, and offers Try again without Settings', async () => {
+    answer({ import_instance_pack: () => ({ instance_id: 'friend-pack', report: offlineReport(3, 0) }) });
+    renderImport();
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+
+    const summary = await screen.findByTestId('pack-import-summary');
+    expect(summary.textContent).toContain(
+      "These 3 mods need to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Nothing was installed. Try again when you're online.",
+    );
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open Settings' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Allow Modrinth for this import' })).toBeNull();
+  });
+
+  it('does not claim nothing was installed when some mods did install', async () => {
+    answer({ import_instance_pack: () => ({ instance_id: 'friend-pack', report: offlineReport(3, 1) }) });
+    renderImport();
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+
+    const summary = await screen.findByTestId('pack-import-summary');
+    expect(summary.textContent).toContain("These 2 mods need to be downloaded. Couldn't connect: no internet, or the server can't be reached right now.");
+    expect(summary.textContent).not.toContain('Nothing was installed');
+  });
+
+  it('a removed import reports the connection problem as the failure, not a generic one', async () => {
+    answer({
+      import_instance_pack: () => Promise.reject({
+        code: 'ERR_PACK_OFFLINE',
+        message: "These 3 mods need to be downloaded. Couldn't connect: no internet, or the server can't be reached right now. Nothing was installed, and the new instance was removed. Try again when you're online.",
+      }),
+    });
+    renderImport();
+    fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+    expect(await screen.findByText(/the new instance was removed/)).toBeTruthy();
   });
 });

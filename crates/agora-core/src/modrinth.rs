@@ -1146,6 +1146,15 @@ impl ModrinthService {
     /// `modrinth_enabled` feature toggle. Returns `Err(ModrinthDisabled)` when
     /// the toggle is off or the DB cannot be read (secure default: closed).
     pub fn check_enabled(&self) -> LauncherResult<()> {
+        self.check_network_enabled()?;
+        let conn = self.connection()?;
+        require_modrinth_enabled(&conn)
+    }
+
+    /// Only the Privacy switch (`network_modrinth_enabled`), not the
+    /// `modrinth_enabled` toggle. Used for a Modrinth request the user allowed
+    /// for one import, which must not turn the toggle on.
+    pub fn check_network_enabled(&self) -> LauncherResult<()> {
         let conn = self.connection()?;
         if !db::is_network_enabled(&conn, "network_modrinth_enabled") {
             return Err(LauncherError::Generic {
@@ -1153,7 +1162,7 @@ impl ModrinthService {
                 message: "Modrinth catalog API is disabled in Privacy settings.".into(),
             });
         }
-        require_modrinth_enabled(&conn)
+        Ok(())
     }
 
     /// Whether the `modrinth_enabled` toggle is currently on.
@@ -1406,7 +1415,31 @@ impl ModrinthService {
         project_type: Option<&str>,
     ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
         self.check_enabled()?;
+        self.list_raw_modrinth_versions_unchecked(instance_id, project_id, project_type)
+            .await
+    }
 
+    /// [`list_raw_modrinth_versions`](Self::list_raw_modrinth_versions) for a
+    /// request the user allowed for one import: the Privacy switch still
+    /// applies, the `modrinth_enabled` toggle does not.
+    pub(crate) async fn list_raw_modrinth_versions_allowed_once(
+        &self,
+        instance_id: Option<&str>,
+        project_id: &str,
+        project_type: Option<&str>,
+    ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
+        self.check_network_enabled()?;
+        self.list_raw_modrinth_versions_unchecked(instance_id, project_id, project_type)
+            .await
+    }
+
+    /// The listing itself. Callers must have passed a gate first.
+    async fn list_raw_modrinth_versions_unchecked(
+        &self,
+        instance_id: Option<&str>,
+        project_id: &str,
+        project_type: Option<&str>,
+    ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
         let instance = match instance_id {
             Some(iid) => {
                 let svc = InstanceService::new(self.ctx.clone());
@@ -1471,7 +1504,47 @@ impl ModrinthService {
         required_sha256: Option<&str>,
     ) -> LauncherResult<InstalledMod> {
         self.check_enabled()?;
+        self.install_raw_modrinth_pinned_unchecked(
+            instance_id,
+            project_id,
+            candidate,
+            project_type,
+            required_sha256,
+        )
+        .await
+    }
 
+    /// [`install_raw_modrinth_pinned`](Self::install_raw_modrinth_pinned) for a
+    /// file the user allowed for one import: the Privacy switch still applies,
+    /// the `modrinth_enabled` toggle does not.
+    pub(crate) async fn install_raw_modrinth_pinned_allowed_once(
+        &self,
+        instance_id: &str,
+        project_id: &str,
+        candidate: &RawModrinthVersionCandidate,
+        project_type: &str,
+        required_sha256: Option<&str>,
+    ) -> LauncherResult<InstalledMod> {
+        self.check_network_enabled()?;
+        self.install_raw_modrinth_pinned_unchecked(
+            instance_id,
+            project_id,
+            candidate,
+            project_type,
+            required_sha256,
+        )
+        .await
+    }
+
+    /// The install itself. Callers must have passed a gate first.
+    async fn install_raw_modrinth_pinned_unchecked(
+        &self,
+        instance_id: &str,
+        project_id: &str,
+        candidate: &RawModrinthVersionCandidate,
+        project_type: &str,
+        required_sha256: Option<&str>,
+    ) -> LauncherResult<InstalledMod> {
         if project_type == "modpack" {
             return Err(LauncherError::Generic {
                 code: "ERR_USE_PACK_IMPORT".to_string(),

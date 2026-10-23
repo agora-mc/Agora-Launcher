@@ -5,12 +5,15 @@ import {
   importInstancePack,
   importModrinthPackByUrl,
   describeRestoreCoverage,
+  planPackImport,
   restoreSnapshot,
   retryPackImportEntries,
   setContentProviderEnabled,
+  type PackImportPlan,
   type PackImportReport,
 } from '../lib/tauri';
 import { PackImportSummary } from './PackImportSummary';
+import { PackImportReview } from './PackImportReview';
 import { importHasIssues, importHeadline, mergeRetry, needsActionOutcomes } from '../lib/packImport';
 import { applyInstallPlan, describePlanAction, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
 
@@ -57,9 +60,16 @@ type PackInstallContextValue = {
   tasks: PackInstallTask[];
   /** Per-mod results of Agora pack imports that still need the user's eyes, by instance id. */
   importReports: Record<string, PackImportReport>;
+  /** Set (or with null, remove) the kept result of an import. */
+  updateImportReport: (instanceId: string, report: PackImportReport | null) => void;
   getTaskForInstance: (instanceId: string) => PackInstallTask | null;
   startPlan: (plan: ResolvedInstallPlan, label: string, instanceName?: string, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => void;
   startModrinthPack: (downloadUrl: string, label: string, packIconUrl?: string | null) => void;
+  /**
+   * Import a pack file as a new instance. An .agora-pack.json is reviewed
+   * first (nothing is written until the user chooses Import); an .mrpack starts
+   * right away, as it always has.
+   */
   startPackFile: (sourcePath: string, label: string) => void;
   /** Start a corner task that resolves an install intent in the background. */
   startResolvingPlan: (label: string, instanceName: string) => {
@@ -154,6 +164,13 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
   const [taskMap, setTaskMap] = useState<Record<string, PackInstallTask>>({});
   const [revision, setRevision] = useState(0);
   const [importReports, setImportReports] = useState<Record<string, PackImportReport>>({});
+  /** The .agora-pack.json the user is reviewing, if any. Nothing is written until Import. */
+  const [review, setReview] = useState<{
+    sourcePath: string;
+    label: string;
+    plan: PackImportPlan | null;
+    error: string | null;
+  } | null>(null);
 
   useEffect(() => {
     const unlistenPlan = listen<ProgressEvent>('install:progress', (event) => {
@@ -368,15 +385,50 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       .catch((cause) => failTask(id, formatError(cause)));
   };
 
-  const startPackFile = (sourcePath: string, label: string) => {
+  /** `reviewedSha256` is the fingerprint the review recorded (.agora-pack.json only). */
+  const beginPackFileImport = (sourcePath: string, label: string, reviewedSha256?: string) => {
     const id = `pack-file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setTaskMap((current) => ({
       ...current,
       [id]: initialTask(id, label, 'pack-file', null, label),
     }));
-    void importInstancePack(sourcePath)
+    void importInstancePack(sourcePath, reviewedSha256)
       .then((outcome) => completeImportedTask(id, outcome.instance_id, label, outcome.report))
       .catch((cause) => failTask(id, formatError(cause)));
+  };
+
+  const startPackFile = (sourcePath: string, label: string) => {
+    if (sourcePath.toLowerCase().endsWith('.mrpack')) {
+      beginPackFileImport(sourcePath, label);
+      return;
+    }
+    // Review first. The plan only reads the file and settings, so cancelling
+    // leaves nothing behind.
+    setReview({ sourcePath, label, plan: null, error: null });
+    void planPackImport(sourcePath)
+      .then((plan) => setReview((current) => (
+        current?.sourcePath === sourcePath ? { ...current, plan } : current
+      )))
+      .catch((cause) => setReview((current) => (
+        current?.sourcePath === sourcePath ? { ...current, error: formatError(cause) } : current
+      )));
+  };
+
+  const confirmReview = () => {
+    if (!review?.plan) return;
+    const { sourcePath, label, plan } = review;
+    setReview(null);
+    // The import is held to the exact bytes that were reviewed.
+    beginPackFileImport(sourcePath, label, plan.file_sha256);
+  };
+
+  const updateImportReport = (instanceId: string, report: PackImportReport | null) => {
+    setImportReports((current) => {
+      const next = { ...current };
+      if (report !== null) next[instanceId] = report;
+      else delete next[instanceId];
+      return next;
+    });
   };
 
   const value = useMemo<PackInstallContextValue>(() => {
@@ -385,6 +437,7 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       revision,
       tasks,
       importReports,
+      updateImportReport,
       getTaskForInstance: (instanceId) =>
         tasks.find((task) => task.instanceId === instanceId) ?? null,
       startPlan,
@@ -398,15 +451,15 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
   return (
     <PackInstallContext.Provider value={value}>
       {children}
-      <PackImportReports
-        reports={importReports}
-        update={(instanceId, report) => setImportReports((current) => {
-          const next = { ...current };
-          if (report !== null) next[instanceId] = report;
-          else delete next[instanceId];
-          return next;
-        })}
-      />
+      {review && (
+        <PackImportReview
+          label={review.label}
+          plan={review.plan}
+          error={review.error}
+          onImport={confirmReview}
+          onCancel={() => setReview(null)}
+        />
+      )}
       <PackInstallIndicator tasks={value.tasks} />
     </PackInstallContext.Provider>
   );
@@ -489,43 +542,42 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
 
 /**
  * Results of Agora pack imports that did not end clean, kept until dismissed.
- * Global because imports start from more than one page. Enabling Modrinth here
- * is the same setting as Settings > Services, and the retry installs only the
- * entries that were waiting, in the instance the import already made.
+ * Global because imports start from more than one page; rendered in the page
+ * flow (top of the main area), not over it, so it never covers the sidebar or
+ * a page's controls. Two ways to let Modrinth entries in: one-time for this
+ * import (the setting is left alone), or the setting itself. The retry installs
+ * only the entries that were waiting, in the instance the import already made.
  */
-function PackImportReports({
-  reports,
-  update,
-}: {
-  reports: Record<string, PackImportReport>;
-  update: (instanceId: string, report: PackImportReport | null) => void;
-}) {
-  const entries = Object.values(reports);
+export function PackImportReports() {
+  const { importReports, updateImportReport } = usePackInstall();
+  const entries = Object.values(importReports);
   if (entries.length === 0) return null;
-  const retry = async (report: PackImportReport) => {
+  const retry = async (report: PackImportReport, allowModrinthOnce: boolean) => {
     const waiting = needsActionOutcomes(report);
     const retried = await retryPackImportEntries(
       report.instance_id,
       waiting.map((outcome) => outcome.entry),
+      allowModrinthOnce,
     );
-    update(report.instance_id, mergeRetry(report, retried));
+    updateImportReport(report.instance_id, mergeRetry(report, retried));
   };
   return (
     <aside
       aria-label="Pack import results"
-      className="pointer-events-none fixed bottom-4 left-4 z-60 w-[min(26rem,calc(100vw-2rem))] space-y-2"
+      className="mb-4 space-y-2"
     >
       {entries.map((report) => (
         <PackImportSummary
           key={report.instance_id}
           report={report}
-          onEnableModrinth={async () => {
+          onAllowModrinthOnce={() => retry(report, true)}
+          onTurnOnModrinth={async () => {
             await setContentProviderEnabled('modrinth', true);
-            await retry(report);
+            await retry(report, false);
           }}
-          onRetry={() => retry(report)}
+          onRetry={() => retry(report, false)}
           onOpenSettings={() => window.dispatchEvent(new CustomEvent('agora-navigate', { detail: 'settings' }))}
-          onDismiss={() => update(report.instance_id, null)}
+          onDismiss={() => updateImportReport(report.instance_id, null)}
         />
       ))}
     </aside>

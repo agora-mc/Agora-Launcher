@@ -2229,25 +2229,42 @@ fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> 
 }
 
 /// Import an instance from a pack file (.mrpack or .agora-pack.json).
+/// `reviewed_sha256` is the fingerprint the review step recorded; an Agora pack
+/// whose bytes no longer match it is refused.
 #[tauri::command]
 pub async fn import_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     source_path: String,
+    reviewed_sha256: Option<String>,
 ) -> LauncherResult<mod_install::PackImportOutcome> {
-    mod_install::import_instance_pack(&app, &source_path).await
+    mod_install::import_instance_pack(&app, &source_path, reviewed_sha256.as_deref()).await
+}
+
+/// What importing an `.agora-pack.json` would do, shown before anything is
+/// written. Reads the file and settings only.
+#[tauri::command]
+pub async fn plan_pack_import(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    source_path: String,
+) -> LauncherResult<agora_core::agora_pack_import::PackImportPlan> {
+    mod_install::plan_pack_import(&app, &source_path)
 }
 
 /// Retry the entries of an Agora pack import that needed an action (Modrinth
 /// off, say) on the instance it created. Entries already installed are skipped.
+/// `allow_modrinth_once` lets just these entries use Modrinth without turning
+/// the Modrinth setting on.
 #[tauri::command]
 pub async fn retry_pack_import_entries(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     entries: Vec<agora_core::agora_pack_import::AgoraPackEntry>,
+    allow_modrinth_once: bool,
 ) -> LauncherResult<agora_core::agora_pack_import::PackImportReport> {
-    mod_install::retry_pack_import_entries(&app, &instance_id, entries).await
+    mod_install::retry_pack_import_entries(&app, &instance_id, entries, allow_modrinth_once).await
 }
 
 /// Whether the Modrinth integration is currently enabled (Â§6.3 toggle).
