@@ -103,6 +103,7 @@ export function ColorOverlay({ input, onClose }: ColorOverlayProps) {
         ref={rootRef}
         role="dialog"
         aria-modal="true"
+        data-modal-self-managed=""
         aria-label={label}
         className="flex max-h-[85vh] w-[min(30rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
       >

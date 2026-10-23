@@ -2203,7 +2203,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                               <span className="inline-flex items-center gap-1.5">
                                 {v.name || v.version}
                                 {candidateIsPrerelease(v) && (
-                                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                  <span className="whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
                                 )}
                               </span>
                               {versionsTabInstalledEntry?.version === v.version && (
@@ -2212,9 +2212,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                                   : <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
                               )}
                             </td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.mc_versions.join(', ') || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.loaders.join(', ') || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.mc_versions.join(', ') || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.loaders.join(', ') || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
                           </tr>
                         );
                       });
@@ -2377,7 +2377,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                               <span className="inline-flex items-center gap-1.5">
                                 {v.version}
                                 {candidateIsPrerelease(v) && (
-                                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                  <span className="whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
                                 )}
                               </span>
                               {versionsTabInstalledEntry?.version === v.version && (
@@ -2386,9 +2386,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                                   : <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
                               )}
                             </td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.mc_version || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.loader || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.mc_version || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.loader || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
                           </tr>
                         );
                       });

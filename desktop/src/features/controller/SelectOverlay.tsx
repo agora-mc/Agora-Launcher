@@ -83,6 +83,7 @@ export function SelectOverlay({ select, onClose }: SelectOverlayProps) {
         ref={rootRef}
         role="dialog"
         aria-modal="true"
+        data-modal-self-managed=""
         aria-label={label}
         className="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
       >

@@ -289,6 +289,7 @@ export function AppearanceInterfaceSettings() {
           <input
             type="range"
             aria-label="Text scale"
+            aria-valuetext={`${Math.round(preferences.fontScale * 100)}%`}
             min="0.85"
             max="2"
             step="0.05"
@@ -303,6 +304,7 @@ export function AppearanceInterfaceSettings() {
           <input
             type="range"
             aria-label="Border thickness"
+            aria-valuetext={`${Math.round(preferences.borderThickness * 100)}%`}
             min="1"
             max="3"
             step="0.25"

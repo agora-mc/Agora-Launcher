@@ -299,27 +299,27 @@ test('category lists follow the selected content type', async ({ page }) => {
 
   // Default content type is All types, so every source category is offered.
   await expect(page.getByText('Combined categories for all content types.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Technology', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Kitchen Sink', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Adventure', exact: true })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Minigame', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Technology', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Kitchen Sink', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Adventure', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('radio', { name: 'Minigame', exact: true })).toBeVisible();
 
   await page.getByLabel('Content type').selectOption('mod');
   await expect(page.getByText('Categories for mod content.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Technology', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Kitchen Sink', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Minigame', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('radio', { name: 'Technology', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Kitchen Sink', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('radio', { name: 'Minigame', exact: true })).toHaveCount(0);
 
   await page.getByLabel('Content type').selectOption('pack');
 
   await expect(page.getByText('Categories for pack content.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Kitchen Sink', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Adventure', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Technology', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('radio', { name: 'Kitchen Sink', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Adventure', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Technology', exact: true })).toHaveCount(0);
 
   await page.getByLabel('Content type').selectOption('server');
-  await expect(page.getByRole('button', { name: 'Minigame', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Kitchen Sink', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('radio', { name: 'Minigame', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Kitchen Sink', exact: true })).toHaveCount(0);
 });
 
 test('curated category dropdown is searchable and type-aware', async ({ page }) => {

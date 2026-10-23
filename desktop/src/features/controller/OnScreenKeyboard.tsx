@@ -148,6 +148,7 @@ export function OnScreenKeyboard({ field, onClose }: OnScreenKeyboardProps) {
         ref={rootRef}
         role="dialog"
         aria-modal="true"
+        data-modal-self-managed=""
         aria-labelledby="on-screen-keyboard-title"
         className="w-full max-w-5xl rounded-2xl border border-border bg-card/95 p-3 text-card-foreground shadow-2xl sm:p-5"
       >

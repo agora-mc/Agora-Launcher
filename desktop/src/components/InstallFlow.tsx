@@ -749,7 +749,7 @@ export function InstallFlow({
       aria-live="polite"
     >
       {header}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div data-install-review-body className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {renderContent()}
       </div>
     </aside>,
@@ -1114,7 +1114,12 @@ function ReviewView({
       </details>
 
       {/* Actions */}
-      <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-3">
+      {/* Pinned to the bottom of the scrolling body, so at large text sizes the
+          buttons stay on screen and it is the review above them that scrolls. */}
+      <div
+        data-install-review-actions
+        className="sticky bottom-0 z-10 -mx-5 -mb-4 flex flex-wrap justify-end gap-2 border-t border-border bg-card px-5 pb-4 pt-3"
+      >
         {plan.blockingErrors.length > 0 && (
           <button onClick={onRetry} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
             Try Again

@@ -971,7 +971,9 @@ html[data-input-modality="gamepad"] :is(
   align-items: start;
 }
 @media (min-width: 1024px) {
-  .settings-layout { grid-template-columns: 15rem minmax(0, 1fr); }
+  /* The rail grows with the text-size setting (at a third of its rate) so a
+     category name is never cut to "Appearan…" at large text. */
+  .settings-layout { grid-template-columns: calc(15rem * (1 + (var(--font-scale) - 1) * 0.35)) minmax(0, 1fr); }
 }
 
 .settings-hero-badge {
