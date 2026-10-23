@@ -152,12 +152,21 @@ pub async fn rename_instance<R: tauri::Runtime>(
     agora_core::instance_service::InstanceService::new(ctx).rename(instance_id, new_name)
 }
 
-/// Revert an unlocked instance to its lock snapshot (§6.5).
+/// Revert an unlocked instance to its lock snapshot (§6.5). Restores through
+/// core, which takes an undo snapshot first.
 pub async fn revert_instance<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     instance_id: &str,
 ) -> LauncherResult<()> {
-    lock_instance(app, instance_id).await
+    let ctx = crate::core_context(app)?;
+    let instance_id = instance_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        agora_core::snapshot_service::SnapshotService::new(ctx)
+            .revert_to_lock(&instance_id)
+            .map(|_| ())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 /// Launch an instance by delegating to the official Mojang launcher.

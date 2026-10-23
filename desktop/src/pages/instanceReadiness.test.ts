@@ -9,6 +9,7 @@ const base: ReadinessInput = {
   javaMode: 'automatic',
   javaMajor: 21,
   health: { blockers: 0, warnings: 0 },
+  packGaps: 0,
   busy: false,
 };
 
@@ -110,6 +111,34 @@ describe('instanceReadiness', () => {
     const r = instanceReadiness({ ...base, javaMode: null });
     expect(r.details).toContain('Java 21 is needed');
     expect(r.details.join(' ')).not.toMatch(/downloads|download/);
+  });
+
+  it('is not ready while a pack mod is missing, even when the installed mods look healthy', () => {
+    const r = instanceReadiness({ ...base, packGaps: 1 });
+    expect(r.level).toBe('blocked');
+    expect(r.headline).toBe('Not ready: 1 pack mod is not installed');
+    expect(r.details).toContain('1 pack mod not installed');
+    expect(r.details).toContain('Mods look healthy');
+    expect(r.details).not.toContain('Ready to play');
+  });
+
+  it('counts missing pack mods in the plural', () => {
+    const r = instanceReadiness({ ...base, packGaps: 2 });
+    expect(r.headline).toBe('Not ready: 2 pack mods are not installed');
+    expect(r.details).toContain('2 pack mods not installed');
+  });
+
+  it('does not claim ready before the instance record says whether pack mods are missing', () => {
+    const r = instanceReadiness({ ...base, packGaps: null });
+    expect(r.level).toBe('check');
+    expect(r.headline).toBe('Almost ready: pack mods not checked yet');
+    expect(r.details).toContain('Pack mods not checked yet');
+    expect(r.level).not.toBe('ready');
+  });
+
+  it('still reports busy first when a pack mod is also missing', () => {
+    const r = instanceReadiness({ ...base, busy: true, packGaps: 3 });
+    expect(r.headline).toBe('Not ready: something is still running on this instance');
   });
 
   it('treats an empty Java path as no override', () => {

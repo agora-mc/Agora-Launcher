@@ -18,6 +18,7 @@
 //! logic can be tested without a network; [`CoreBackend`] is the real one.
 
 use crate::ctx::Ctx;
+use crate::db::InstancePackGap;
 use crate::error::{LauncherError, LauncherResult};
 use crate::models::{InstanceManifest, ModVersionCandidate, PackOrigin, PackPlatform};
 use async_trait::async_trait;
@@ -1116,7 +1117,56 @@ pub async fn install_agora_pack_mods_with(
              pack: {error}"
         ));
     }
+    let gaps: Vec<InstancePackGap> = outcomes.iter().filter_map(gap_for).collect();
+    if let Err(error) = record_pack_gaps(ctx, instance_id, &gaps) {
+        warnings.push(format!(
+            "The instance could not record which pack mods are missing, so it may read as ready \
+             when it is not: {error}"
+        ));
+    }
     PackImportReport::from_outcomes(instance_id, pack_name, outcomes, warnings)
+}
+
+/// The gap a non-installed outcome leaves in the instance; `None` when it installed.
+fn gap_for(outcome: &PackEntryOutcome) -> Option<InstancePackGap> {
+    let status = match outcome.status {
+        PackEntryStatus::Installed => return None,
+        PackEntryStatus::Failed => "failed",
+        PackEntryStatus::NeedsAction => "needs_action",
+    };
+    Some(InstancePackGap {
+        filename: outcome.entry.filename.clone(),
+        display_name: outcome.name.clone(),
+        status: status.into(),
+        reason: outcome.reason.clone(),
+    })
+}
+
+fn record_pack_gaps(ctx: &Ctx, instance_id: &str, gaps: &[InstancePackGap]) -> Result<(), String> {
+    let conn = crate::db::local_state_connection(&ctx.paths.local_state_db())
+        .map_err(|e| e.to_string())?;
+    crate::db::replace_instance_pack_gaps(&conn, instance_id, gaps).map_err(|e| e.to_string())
+}
+
+/// Take the snapshot a retry needs before it touches the instance. A failed
+/// snapshot stops the retry: nothing is installed without a restore point.
+async fn snapshot_before_retry(ctx: &Ctx, instance_id: &str) -> LauncherResult<()> {
+    let instance_dir = ctx.paths.instance_dir(instance_id)?;
+    tokio::task::spawn_blocking(move || {
+        crate::snapshot::create_snapshot(&instance_dir, Some("Before adding pack mods"))
+    })
+    .await
+    .map_err(|_| LauncherError::Generic {
+        code: "ERR_SNAPSHOT_CREATE".into(),
+        message: "The snapshot task failed, so no pack mods were installed.".into(),
+    })?
+    .map_err(|error| LauncherError::Generic {
+        code: "ERR_SNAPSHOT_CREATE".into(),
+        message: format!(
+            "Could not take a snapshot first, so no pack mods were installed: {error}"
+        ),
+    })?;
+    Ok(())
 }
 
 /// Try the given entries again on an existing instance (after the user turned
@@ -1254,6 +1304,9 @@ pub async fn retry_agora_pack_entries_with(
         .as_ref()
         .map(|o| o.pack_name.clone())
         .unwrap_or_else(|| instance_id.to_string());
+    if !entries.is_empty() {
+        snapshot_before_retry(ctx, instance_id).await?;
+    }
     let outcomes = install_pack_entries(
         backend,
         instance_id,
@@ -1264,6 +1317,29 @@ pub async fn retry_agora_pack_entries_with(
     if let Err(error) = finalize_pack_files(ctx, instance_id, &pack_filenames(&outcomes), None) {
         warnings.push(format!(
             "The mods were installed but could not be marked as part of the pack: {error}"
+        ));
+    }
+    // Entries this retry tried replace their earlier gap; the rest stay as they were.
+    // Matched on filename and display name, the same pair `gap_for` records.
+    let retried: Vec<(String, String)> = outcomes
+        .iter()
+        .map(|o| (o.entry.filename.clone(), o.name.clone()))
+        .collect();
+    let merged = crate::db::local_state_connection(&ctx.paths.local_state_db())
+        .and_then(|conn| crate::db::list_instance_pack_gaps(&conn, instance_id))
+        .map_err(|e| e.to_string())
+        .map(|current| {
+            let mut gaps: Vec<InstancePackGap> = current
+                .into_iter()
+                .filter(|gap| !retried.contains(&(gap.filename.clone(), gap.display_name.clone())))
+                .collect();
+            gaps.extend(outcomes.iter().filter_map(gap_for));
+            gaps
+        });
+    if let Err(error) = merged.and_then(|gaps| record_pack_gaps(ctx, instance_id, &gaps)) {
+        warnings.push(format!(
+            "The instance could not update which pack mods are missing, so it may read as ready \
+             when it is not: {error}"
         ));
     }
     Ok(PackImportReport::from_outcomes(
@@ -1981,6 +2057,21 @@ mod tests {
         }
     }
 
+    // ---- what an import leaves missing, and the snapshot a retry takes first
+
+    fn pack_with(mods: Vec<PackEntryParse>) -> ParsedAgoraPack {
+        ParsedAgoraPack {
+            instance: AgoraPackInstance {
+                id: Some("inst".into()),
+                name: Some("Inst".into()),
+                minecraft_version: "1.21".into(),
+                loader: "fabric".into(),
+                loader_version: "0.16.0".into(),
+            },
+            mods,
+        }
+    }
+
     fn registry_entry(filename: &str, registry_id: &str, sha: Option<&str>) -> PackEntryParse {
         PackEntryParse::Entry(AgoraPackEntry {
             filename: filename.into(),
@@ -2356,6 +2447,183 @@ mod tests {
         let plan = plan_agora_pack_bytes(&ctx, &bytes).unwrap();
         assert_eq!(plan.file_sha256, pack_fingerprint(&bytes));
         assert_eq!(plan.file_size, bytes.len() as u64);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    fn gaps_of(ctx: &Ctx) -> Vec<InstancePackGap> {
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::list_instance_pack_gaps(&conn, "inst").unwrap()
+    }
+
+    fn snapshot_labels(ctx: &Ctx) -> Vec<String> {
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        crate::snapshot::list_snapshots(&dir)
+            .unwrap()
+            .into_iter()
+            .filter_map(|s| s.label)
+            .collect()
+    }
+
+    fn pinned_registry_entry(filename: &str) -> PackEntryParse {
+        PackEntryParse::Entry(AgoraPackEntry {
+            filename: filename.into(),
+            version: Some("1".into()),
+            registry_id: Some("sodium".into()),
+            sha256: Some(GOOD_PIN.into()),
+            ..Default::default()
+        })
+    }
+
+    /// An import with one failed entry (registry down) and one needing Modrinth.
+    fn import_with_two_gaps(ctx: &Ctx) -> PackImportReport {
+        let mut backend = fake();
+        backend.modrinth_on = false;
+        backend.registry = Err(BackendError::Failed("registry down".into()));
+        block_on(install_agora_pack_mods_with(
+            &backend,
+            ctx,
+            "inst",
+            "Inst",
+            pack_with(vec![
+                pinned_registry_entry("sodium.jar"),
+                entry("xaero.jar", "1", Some(GOOD_PIN)),
+            ]),
+        ))
+    }
+
+    #[test]
+    fn import_records_each_entry_that_did_not_install_as_a_gap() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let report = import_with_two_gaps(&ctx);
+        assert_eq!(report.installed, 0);
+        let gaps = gaps_of(&ctx);
+        assert_eq!(gaps.len(), 2, "both missing entries are recorded: {gaps:?}");
+        assert_eq!(gaps[0].filename, "sodium.jar");
+        assert_eq!(gaps[0].status, "failed");
+        assert_eq!(gaps[0].reason.as_deref(), Some("registry down"));
+        assert_eq!(gaps[1].filename, "xaero.jar");
+        assert_eq!(gaps[1].status, "needs_action");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_clean_import_records_no_gaps() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let mut backend = fake();
+        backend.registry = Ok(vec![candidate("1", "sodium.jar")]);
+        block_on(install_agora_pack_mods_with(
+            &backend,
+            &ctx,
+            "inst",
+            "Inst",
+            pack_with(vec![pinned_registry_entry("sodium.jar")]),
+        ));
+        assert!(gaps_of(&ctx).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retry_snapshots_first_and_clears_only_the_gap_it_fixes() {
+        let (ctx, root) = temp_ctx_with_instance();
+        import_with_two_gaps(&ctx);
+        assert!(
+            snapshot_labels(&ctx).is_empty(),
+            "the import itself takes no snapshot"
+        );
+
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("1", "xaero.jar")];
+        let retry = vec![match entry("xaero.jar", "1", Some(GOOD_PIN)) {
+            PackEntryParse::Entry(e) => e,
+            PackEntryParse::Invalid { .. } => unreachable!(),
+        }];
+        let report =
+            block_on(retry_agora_pack_entries_with(&backend, &ctx, "inst", retry)).unwrap();
+        assert_eq!(report.installed, 1);
+
+        assert_eq!(
+            snapshot_labels(&ctx),
+            vec!["Before adding pack mods".to_string()]
+        );
+        let gaps = gaps_of(&ctx);
+        assert_eq!(
+            gaps.len(),
+            1,
+            "the entry that was not retried stays missing: {gaps:?}"
+        );
+        assert_eq!(gaps[0].filename, "sodium.jar");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retry_that_fails_again_keeps_the_gap_with_its_new_reason() {
+        let (ctx, root) = temp_ctx_with_instance();
+        import_with_two_gaps(&ctx);
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("1", "xaero.jar")];
+        backend.install_error = Some(("xaero.jar".into(), "network down".into()));
+        let retry = vec![match entry("xaero.jar", "1", Some(GOOD_PIN)) {
+            PackEntryParse::Entry(e) => e,
+            PackEntryParse::Invalid { .. } => unreachable!(),
+        }];
+        block_on(retry_agora_pack_entries_with(&backend, &ctx, "inst", retry)).unwrap();
+        let gaps = gaps_of(&ctx);
+        let xaero: Vec<_> = gaps.iter().filter(|g| g.filename == "xaero.jar").collect();
+        assert_eq!(
+            xaero.len(),
+            1,
+            "one gap per entry, not one per attempt: {gaps:?}"
+        );
+        assert_eq!(xaero[0].status, "failed");
+        assert!(xaero[0].reason.as_deref().unwrap().contains("network down"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_empty_retry_takes_no_snapshot_and_changes_no_gap() {
+        let (ctx, root) = temp_ctx_with_instance();
+        import_with_two_gaps(&ctx);
+        let before = gaps_of(&ctx);
+        let report = block_on(retry_agora_pack_entries_with(
+            &fake(),
+            &ctx,
+            "inst",
+            Vec::new(),
+        ))
+        .unwrap();
+        assert_eq!(report.total, 0);
+        assert!(snapshot_labels(&ctx).is_empty());
+        assert_eq!(gaps_of(&ctx), before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unnamed_entries_are_each_kept_as_a_gap_without_colliding() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let mut backend = fake();
+        backend.modrinth_on = false;
+        let unnamed = || {
+            PackEntryParse::Entry(AgoraPackEntry {
+                modrinth_id: Some("proj".into()),
+                ..Default::default()
+            })
+        };
+        block_on(install_agora_pack_mods_with(
+            &backend,
+            &ctx,
+            "inst",
+            "Inst",
+            pack_with(vec![unnamed(), unnamed()]),
+        ));
+        assert_eq!(gaps_of(&ctx).len(), 2);
         let _ = std::fs::remove_dir_all(root);
     }
 }

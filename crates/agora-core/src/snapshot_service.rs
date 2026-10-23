@@ -118,6 +118,52 @@ impl SnapshotService {
         let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
         snapshot::restore_scope(&instance_dir, snapshot_id).map_err(snapshot_error)
     }
+
+    /// Return an unlocked instance to the snapshot taken when it was last locked.
+    ///
+    /// Goes through [`restore`](Self::restore), so the undo snapshot and the
+    /// instance lock rules are the same as any other restore. An instance with
+    /// no lock snapshot (locked before they existed) gets a plain refusal, not
+    /// a guess at an older state.
+    pub fn revert_to_lock(&self, instance_id: &str) -> LauncherResult<RestoreOutcome> {
+        let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
+        let conn = crate::db::local_state_connection(&self.ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        let row = crate::db::get_instance(&conn, instance_id)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            })?
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_INSTANCE_NOT_FOUND".into(),
+                message: format!("Instance '{instance_id}' not found"),
+            })?;
+        if row.is_locked {
+            return Err(LauncherError::Generic {
+                code: "ERR_INSTANCE_LOCKED".into(),
+                message: "Unlock the instance before reverting it.".into(),
+            });
+        }
+        let mut dated = Vec::new();
+        for lock in snapshot::lock_snapshots(&instance_dir).map_err(snapshot_error)? {
+            let time = chrono::DateTime::parse_from_rfc3339(&lock.created_at).map_err(|error| {
+                snapshot_error(format!(
+                    "lock snapshot {} has an unreadable time, so Agora will not guess which to revert to: {error}",
+                    lock.id
+                ))
+            })?;
+            dated.push((time, lock));
+        }
+        let newest = dated
+            .into_iter()
+            .max_by_key(|(time, _)| *time)
+            .map(|(_, lock)| lock)
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_NO_LOCK_SNAPSHOT".into(),
+                message: "This instance has no lock snapshot to revert to. Lock it once to take one; Revert then returns to that point.".into(),
+            })?;
+        self.restore(instance_id, &newest.id)
+    }
 }
 
 fn snapshot_error(message: String) -> LauncherError {

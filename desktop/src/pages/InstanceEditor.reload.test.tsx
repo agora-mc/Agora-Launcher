@@ -59,6 +59,7 @@ function detail(rowOverrides: Record<string, unknown> = {}) {
     },
     snapshot_readiness: 'ready',
     snapshot_error: null,
+    pack_gaps: [],
   };
 }
 

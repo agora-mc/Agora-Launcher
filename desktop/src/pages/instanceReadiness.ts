@@ -24,6 +24,11 @@ export interface ReadinessInput {
   javaMajor: number;
   /** Health counts, or null when no health check has run for this instance yet. */
   health: { blockers: number; warnings: number } | null;
+  /**
+   * Pack entries the instance still lacks (failed, or waiting on a user action),
+   * or null while the instance's record has not loaded.
+   */
+  packGaps: number | null;
   /** True while something holds the instance (a pack install, a recovery snapshot). */
   busy: boolean;
 }
@@ -65,6 +70,17 @@ export function instanceReadiness(input: ReadinessInput): Readiness {
     blocker = `the ${LOADER_NAMES[loader] ?? loader} loader version is missing`;
   }
 
+  // A pack mod that failed or still needs an action is content the instance does
+  // not have, so the instance is not ready however healthy its installed mods look.
+  let packLine: string | null = null;
+  if (input.packGaps === null) {
+    check ??= 'pack mods not checked yet';
+    packLine = 'Pack mods not checked yet';
+  } else if (input.packGaps > 0) {
+    blocker ??= `${plural(input.packGaps, 'pack mod is', 'pack mods are')} not installed`;
+    packLine = `${plural(input.packGaps, 'pack mod', 'pack mods')} not installed`;
+  }
+
   const details: string[] = [];
   if (minecraft) {
     if (loader === 'vanilla') {
@@ -85,6 +101,9 @@ export function instanceReadiness(input: ReadinessInput): Readiness {
     details.push(`${plural(input.health.warnings, 'warning', 'warnings')} to review`);
   } else {
     details.push('Mods look healthy');
+  }
+  if (packLine) {
+    details.push(packLine);
   }
 
   const major = input.javaMajor;

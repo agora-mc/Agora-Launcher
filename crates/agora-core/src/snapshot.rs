@@ -121,6 +121,9 @@ pub enum SnapshotOrigin {
     Migration,
     /// Taken by Agora around a launch, install, template, merge or import.
     Automatic,
+    /// Taken when the instance was locked. Revert returns to the newest one.
+    /// Kept until the next lock replaces it.
+    Lock,
 }
 
 impl Snapshot {
@@ -158,12 +161,12 @@ impl Snapshot {
         }
     }
 
-    /// User-created and migration snapshots: the ones automatic snapshots
-    /// must never push out.
+    /// User-created, migration and lock snapshots: the ones automatic
+    /// snapshots must never push out.
     pub fn is_preserved(&self) -> bool {
         matches!(
             self.effective_origin(),
-            SnapshotOrigin::User | SnapshotOrigin::Migration
+            SnapshotOrigin::User | SnapshotOrigin::Migration | SnapshotOrigin::Lock
         )
     }
 }
@@ -1195,7 +1198,8 @@ pub fn create_snapshot_scoped(
     create_snapshot_scoped_with_origin(instance_dir, label, entries, SnapshotOrigin::Automatic)
 }
 
-fn create_snapshot_scoped_with_origin(
+/// [`create_snapshot_scoped`] recording why it was taken.
+pub fn create_snapshot_scoped_with_origin(
     instance_dir: &Path,
     label: Option<&str>,
     entries: &[&str],
@@ -2364,6 +2368,14 @@ fn combine_restore_error(primary: String, rollback: Result<(), String>) -> Strin
         Ok(()) => format!("{primary}; original instance state was restored"),
         Err(rollback_error) => format!("{primary}; {rollback_error}"),
     }
+}
+
+/// The lock snapshots of an instance (taken when it was locked), in no particular order.
+pub fn lock_snapshots(instance_dir: &Path) -> Result<Vec<Snapshot>, String> {
+    Ok(list_snapshots(instance_dir)?
+        .into_iter()
+        .filter(|snapshot| snapshot.effective_origin() == SnapshotOrigin::Lock)
+        .collect())
 }
 
 /// List all snapshots for an instance.
