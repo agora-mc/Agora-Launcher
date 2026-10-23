@@ -38,7 +38,6 @@ import {
   Layers,
   Flame,
   Gem,
-  ArrowLeft,
   Loader2,
   AlertTriangle,
   Info,
@@ -1064,16 +1063,6 @@ export function LauncherImportWizard({ open, onClose, onComplete }: LauncherImpo
       >
         {/* Header bar */}
         <div className="flex items-center gap-2 px-6 pt-6 pb-3 border-b border-border shrink-0">
-          {stage === 'review' && !isLocked && (
-            <button
-              type="button"
-              onClick={handleBackToSelect}
-              className="rounded-md p-1 -ml-1 hover:bg-accent transition-colors"
-              aria-label="Back to selection"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </button>
-          )}
           <DialogTitle ref={headingRef} tabIndex={-1} className="text-base font-semibold outline-hidden">
             {stage === 'detect' && 'Detecting Launchers'}
             {stage === 'select' && 'Import from Other Launchers'}

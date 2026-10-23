@@ -1294,19 +1294,37 @@ impl InstanceService {
         };
         let policy = crate::network::NetworkPolicy::from_db(&conn);
         drop(conn);
+        self.ctx.progress_sink.report(ProgressEvent::new(
+            operation_id.clone(),
+            ProgressPhase::Downloading,
+            format!(
+                "Downloading Minecraft {} metadata",
+                request.minecraft_version
+            ),
+        ));
         if let Err(error) = crate::minecraft_metadata::ensure_base_version_metadata(
             &minecraft_root,
             &request.minecraft_version,
             &policy,
         )
         .await
-        {
+        .map_err(|e| {
+            e.while_attempting(format!(
+                "download Minecraft {} metadata",
+                request.minecraft_version
+            ))
+        }) {
             let _ = std::fs::remove_dir_all(&staging_dir);
             op.fail(error.to_string());
             return Err(error);
         }
 
         if !matches!(request.loader.as_str(), "" | "vanilla") {
+            let loader_label = format!(
+                "{} {}",
+                loader_display_name(&request.loader),
+                request.loader_version
+            );
             if let Err(error) = LoaderService::new(self.ctx.clone())
                 .ensure_installed(
                     &request.loader,
@@ -1315,6 +1333,7 @@ impl InstanceService {
                     false,
                 )
                 .await
+                .map_err(|e| e.while_attempting(format!("download {loader_label}")))
             {
                 let _ = std::fs::remove_dir_all(&staging_dir);
                 op.fail(error.to_string());
@@ -2575,5 +2594,35 @@ $#
         assert_eq!(db_files, live_files);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// The name a player sees for a loader id. The id itself is what the manifest
+/// and the loader catalog key on, so only the label changes.
+fn loader_display_name(loader: &str) -> &str {
+    match loader {
+        "fabric" => "Fabric",
+        "quilt" => "Quilt",
+        "forge" => "Forge",
+        "neoforge" => "NeoForge",
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod loader_label_tests {
+    use super::loader_display_name;
+
+    #[test]
+    fn known_loaders_get_player_facing_names() {
+        assert_eq!(loader_display_name("fabric"), "Fabric");
+        assert_eq!(loader_display_name("neoforge"), "NeoForge");
+    }
+
+    #[test]
+    fn unknown_or_hostile_ids_pass_through_unchanged() {
+        assert_eq!(loader_display_name(""), "");
+        assert_eq!(loader_display_name("Fabric"), "Fabric");
+        assert_eq!(loader_display_name("fabric "), "fabric ");
     }
 }

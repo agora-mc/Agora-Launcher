@@ -892,7 +892,7 @@ fn print_table(columns: &[&str], rows: &[Vec<String>]) {
 fn exit_code_from_launcher_error(err: &agora_core::error::LauncherError) -> i32 {
     use agora_core::error::LauncherError;
     match err {
-        LauncherError::NetworkOffline => 20,
+        LauncherError::NetworkOffline | LauncherError::NetworkUnavailable { .. } => 20,
         LauncherError::RegistryDownloadFailed => 21,
         LauncherError::RegistrySignatureInvalid => 13,
         LauncherError::SchemaTooNew => 13,

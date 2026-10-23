@@ -1076,6 +1076,19 @@ function InstanceCard({
   );
 }
 
+/** Player-facing loader names. The ids (`fabric`, `neoforge`, ...) stay the values. */
+const LOADER_LABELS = new Map<string, string>([
+  ['vanilla', 'Vanilla'],
+  ['fabric', 'Fabric'],
+  ['forge', 'Forge'],
+  ['neoforge', 'NeoForge'],
+  ['quilt', 'Quilt'],
+]);
+
+function loaderLabel(loader: string): string {
+  return LOADER_LABELS.get(loader) ?? loader;
+}
+
 function CreateInstanceDialog({
   onClose,
   onCreated,
@@ -1255,7 +1268,10 @@ function CreateInstanceDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg" data-tour="create-instance-dialog">
+      <DialogContent
+        className="max-w-lg max-h-[90vh] overflow-y-auto"
+        data-tour="create-instance-dialog"
+      >
         <DialogTitle>Create Custom Instance</DialogTitle>
         <DialogDescription>
           {loader === 'vanilla'
@@ -1305,7 +1321,7 @@ function CreateInstanceDialog({
               >
                 {['vanilla', ...loaders.filter((l) => l !== 'vanilla')].map((l) => (
                   <option key={l} value={l}>
-                    {l === 'vanilla' ? 'Vanilla' : l}
+                    {loaderLabel(l)}
                   </option>
                 ))}
               </select>

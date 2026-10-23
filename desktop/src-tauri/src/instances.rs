@@ -21,10 +21,37 @@ pub async fn create_instance<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     req: CreateInstanceRequest,
 ) -> LauncherResult<InstanceRow> {
-    let ctx = crate::core_context(&app)?;
+    let instance_id = req.instance_id.clone();
+    let ctx =
+        crate::core_context(&app)?.with_progress_sink(std::sync::Arc::new(CreateProgressEmitter {
+            app: app.clone(),
+            instance_id,
+        }));
     agora_core::instance_service::InstanceService::new(ctx)
         .create(req)
         .await
+}
+
+/// Forwards the core's create-time progress to the Create dialog, which listens
+/// for `instance:create-progress`. Without this sink the dialog sat on
+/// "Starting..." for the whole download, because nothing was ever emitted.
+struct CreateProgressEmitter<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
+    instance_id: String,
+}
+
+impl<R: tauri::Runtime> agora_core::event_sink::ProgressSink for CreateProgressEmitter<R> {
+    fn report(&self, event: agora_core::event_sink::ProgressEvent) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "instance:create-progress",
+            serde_json::json!({
+                "instance_id": self.instance_id,
+                "stage": format!("{:?}", event.phase).to_lowercase(),
+                "message": event.message,
+            }),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

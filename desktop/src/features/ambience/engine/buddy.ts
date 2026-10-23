@@ -169,9 +169,12 @@ export function buddyStep(s: BuddyState, now: number): boolean {
   return true;
 }
 
+/** The companion's body, in px. Hit-testing uses the same box it is drawn in. */
+export const BUDDY_SIZE = { w: 26, h: 22 } as const;
+
 /** Draw the buddy as blocky rects, matching the world's fillRect-only look. */
 export function drawBuddy(ctx: CanvasRenderingContext2D, s: BuddyState, blink: boolean): void {
-  const W = 26, H = 22;
+  const W = BUDDY_SIZE.w, H = BUDDY_SIZE.h;
   // squash preserves volume: wider when flatter
   const sy = s.squash;
   const sx = 1 / Math.max(0.5, sy);

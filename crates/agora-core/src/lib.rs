@@ -17,6 +17,7 @@ pub mod browse_cache;
 pub mod change_feed;
 pub mod clone;
 pub mod community_image;
+pub mod connectivity;
 pub mod controller_service;
 pub mod crash_diagnostics;
 pub mod crash_evidence;

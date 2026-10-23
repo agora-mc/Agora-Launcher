@@ -1004,6 +1004,7 @@ export function Settings({
         <span className="text-sm">Show advanced settings</span>
         <input
           type="checkbox"
+          aria-label="Show advanced settings"
           checked={advancedMode}
           onChange={toggleAdvanced}
           className="h-5 w-5 accent-primary"
@@ -1720,7 +1721,8 @@ export function Settings({
       </label>
       <p className="text-xs text-muted-foreground">
         Search Modrinth's whole library alongside the curated catalog, and enable live Modrinth
-        features, when permitted by Privacy settings. Off by default. Curated entries that happen to
+        features, when permitted by Privacy settings (turn on Advanced mode in Settings &gt; General to
+        see them). Off by default. Curated entries that happen to
         be Modrinth-sourced are not affected — those are controlled below and stay browsable and
         installable either way.
       </p>

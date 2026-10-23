@@ -1511,6 +1511,16 @@ pub async fn get_registry_status(
     Ok(crate::registry_sync::get_status(&app))
 }
 
+/// What the most recent outbound requests reported: reachable, unreachable, or
+/// nothing tried yet. The Privacy page and offline banner show this instead of
+/// the browser's `navigator.onLine`, which says nothing about whether requests
+/// actually get through.
+#[tauri::command]
+pub async fn get_connectivity_status(
+) -> LauncherResult<agora_core::connectivity::ConnectivitySnapshot> {
+    Ok(agora_core::connectivity::snapshot())
+}
+
 /// Extract a pack override zip into an instance directory with full sanitization.
 ///
 /// Implements Â§7.2: directory whitelist, zip-bomb limits, banned extensions,
