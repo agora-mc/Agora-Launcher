@@ -418,9 +418,49 @@ impl AppPaths {
 ///   like `C:` or UNC prefix like `\\`).
 /// - Must not be longer than 256 bytes.
 ///
+/// Why a name cannot be used as a file or folder name on every OS, if it cannot.
+///
+/// Packs and manifests travel between operating systems, so the Windows rules
+/// apply everywhere: reserved device names (`CON`, `NUL`, `COM1`..., with any
+/// extension, any case) and names ending in a dot or space, which Windows
+/// strips so they land on a different file.
+pub fn non_portable_name_problem(name: &str) -> Option<&'static str> {
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Some("Name must not end with a dot or a space.");
+    }
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.len() == 4
+            && matches!(upper.as_bytes()[3], b'1'..=b'9'));
+    if reserved {
+        return Some("Name is a reserved device name.");
+    }
+    None
+}
+
+/// A name that is safe to join onto a directory as a single file name, on any
+/// OS: non-empty, no separators, drive colons or NULs, no `..`, and portable
+/// (see [`non_portable_name_problem`]). The one check for every pack or
+/// manifest filename that becomes a path.
+pub fn is_safe_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && !name.contains(['/', '\\', '\0', ':'])
+        && !name.contains("..")
+        && non_portable_name_problem(name).is_none()
+}
+
 /// Spaces and Unicode are allowed — they are legitimate in version IDs
 /// (e.g. `"1.21 Release"`) and platform identifiers.
 pub fn validate_path_component(id: &str) -> LauncherResult<()> {
+    if let Some(problem) = non_portable_name_problem(id) {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_PATH_COMPONENT".into(),
+            message: problem.into(),
+        });
+    }
     if id.is_empty() {
         return Err(LauncherError::Generic {
             code: "ERR_INVALID_PATH_COMPONENT".into(),
@@ -761,6 +801,19 @@ mod tests {
     fn test_validate_rejects_separators() {
         assert!(validate_path_component("a/b").is_err());
         assert!(validate_path_component("a\\b").is_err());
+    }
+
+    #[test]
+    fn review_validate_rejects_windows_device_names() {
+        // A pack's instance id reaches this check unchanged (sanitize_id keeps
+        // letters). On Windows "CON" names the console device: mkdir reports
+        // success and nothing persists.
+        for name in ["CON", "nul", "COM1", "lpt9.txt", "AUX.json", "prn"] {
+            assert!(
+                validate_path_component(name).is_err(),
+                "{name} must be refused"
+            );
+        }
     }
 
     #[test]

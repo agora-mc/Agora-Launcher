@@ -1455,6 +1455,21 @@ impl ModrinthService {
         candidate: &RawModrinthVersionCandidate,
         project_type: &str,
     ) -> LauncherResult<InstalledMod> {
+        self.install_raw_modrinth_pinned(instance_id, project_id, candidate, project_type, None)
+            .await
+    }
+
+    /// [`install_raw_modrinth`](Self::install_raw_modrinth) that also requires
+    /// the downloaded bytes to have `required_sha256`, e.g. the hash a shared
+    /// pack file pinned for this exact file. Checked before anything is written.
+    pub async fn install_raw_modrinth_pinned(
+        &self,
+        instance_id: &str,
+        project_id: &str,
+        candidate: &RawModrinthVersionCandidate,
+        project_type: &str,
+        required_sha256: Option<&str>,
+    ) -> LauncherResult<InstalledMod> {
         self.check_enabled()?;
 
         if project_type == "modpack" {
@@ -1483,7 +1498,7 @@ impl ModrinthService {
         };
 
         let svc = InstallService::new(self.ctx.clone());
-        svc.install_artifact(
+        svc.install_artifact_pinned(
             instance_id,
             &candidate.filename,
             content_type,
@@ -1494,6 +1509,8 @@ impl ModrinthService {
             Some(&candidate.version),
             Some(&expected_sha1),
             None,
+            required_sha256,
+            candidate.sha512.as_deref(),
         )
         .await
     }

@@ -5,7 +5,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 async function installMock(
   page: Page,
-  options: { instances: Record<string, unknown>[]; pickedPath: string | null },
+  options: { instances: Record<string, unknown>[]; pickedPath: string | null; report?: unknown },
 ) {
   await page.addInitScript(({ options }) => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
@@ -48,7 +48,19 @@ async function installMock(
         if (command === 'pick_open_file') return Promise.resolve(options.pickedPath);
         if (command === 'import_instance_pack') {
           imported = true;
-          return Promise.resolve('imported-pack');
+          return Promise.resolve({ instance_id: 'imported-pack', report: options.report ?? null });
+        }
+        if (command === 'set_content_provider_enabled') return Promise.resolve([]);
+        if (command === 'retry_pack_import_entries') {
+          const entries = args.entries as { filename: string }[];
+          return Promise.resolve({
+            instance_id: 'imported-pack', instance_name: 'Imported Pack', total: entries.length,
+            installed: entries.length, warnings: [],
+            outcomes: entries.map((entry) => ({
+              name: entry.filename, status: 'installed', verified_against_pack: true,
+              reason: null, action: null, entry,
+            })),
+          });
         }
         if (command === 'plugin:event|listen') return Promise.resolve(1);
         if (command.startsWith('plugin:event|')) return Promise.resolve(1);
@@ -82,11 +94,54 @@ test.describe('My Instances: import a pack file', () => {
     await expect(page.getByRole('button', { name: 'Import pack file' })).toHaveCount(2);
     await page.getByRole('button', { name: 'Import pack file' }).last().click();
 
-    await expect(page.getByRole('status').filter({ hasText: 'new instance' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Imported Pack' })).toBeVisible();
+    // The "importing" banner goes away once the import has finished.
+    await expect(page.getByRole('status').filter({ hasText: 'new instance' })).toHaveCount(0);
     const imports = await calls(page, 'import_instance_pack');
     expect(imports).toHaveLength(1);
     expect((imports[0].args as Record<string, unknown>).sourcePath).toBe('C:\\packs\\my.agora-pack.json');
+  });
+
+  test('a partial import says which mod is missing and retries it after Modrinth is turned on', async ({ page }) => {
+    const entry = (filename: string, registry: string | null) => ({
+      filename, version: '1', registry_id: registry, modrinth_id: registry ? null : 'xaero',
+      sha256: 'a'.repeat(64), source: registry ? 'registry' : 'modrinth_raw',
+    });
+    const done = (filename: string) => ({
+      name: filename, status: 'installed', verified_against_pack: true, reason: null, action: null,
+      entry: entry(filename, 'sodium'),
+    });
+    await installMock(page, {
+      instances: [],
+      pickedPath: 'C:\\packs\\friend.agora-pack.json',
+      report: {
+        instance_id: 'imported-pack', instance_name: 'Imported Pack', total: 5, installed: 4, warnings: [],
+        outcomes: [
+          {
+            name: 'xaero.jar', status: 'needs_action', verified_against_pack: false, action: 'enable_modrinth',
+            reason: 'Needs Modrinth, which is off. Turning it on sends requests for this mod to Modrinth.',
+            entry: entry('xaero.jar', null),
+          },
+          done('a.jar'), done('b.jar'), done('c.jar'), done('d.jar'),
+        ],
+      },
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'My Instances' }).click();
+    await page.getByRole('button', { name: 'Import pack file' }).last().click();
+
+    const summary = page.getByTestId('pack-import-summary');
+    await expect(summary.getByText('4 of 5 mods installed.')).toBeVisible();
+    await expect(summary.getByText(/xaero\.jar/)).toBeVisible();
+    await expect(summary.getByText(/Needs Modrinth, which is off/)).toBeVisible();
+
+    await summary.getByRole('button', { name: 'Turn on Modrinth for this' }).click();
+    await expect(summary.getByText('5 of 5 mods installed.')).toBeVisible();
+    const retries = await calls(page, 'retry_pack_import_entries');
+    expect(retries).toHaveLength(1);
+    const sent = (retries[0].args as { entries: { filename: string }[] }).entries;
+    expect(sent.map((e) => e.filename)).toEqual(['xaero.jar']);
+    expect((await calls(page, 'set_content_provider_enabled'))[0].args).toEqual({ providerId: 'modrinth', enabled: true });
   });
 
   test('header button works with existing instances and cancelling imports nothing', async ({ page }) => {

@@ -1427,7 +1427,7 @@ fn apply_template_jvm_to_request(
     }
 }
 
-fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRow {
+pub(crate) fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRow {
     InstanceRow {
         instance_id: instance_id.into(),
         name: request.name.clone(),
