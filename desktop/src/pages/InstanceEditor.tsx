@@ -120,6 +120,7 @@ import { InstanceIntegrationPanel } from '../components/InstanceIntegrationPanel
 import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
+import { instanceReadiness, type JavaRuntimeMode } from './instanceReadiness';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
 import { LoaderChooser } from '../components/LoaderChooser';
 import {
@@ -257,6 +258,9 @@ function wrapperCommandOf(detail: InstanceDetail): string {
   const value = detail.manifest?.user_preferences?.agora_wrapper_command;
   return typeof value === 'string' ? value : '';
 }
+
+/** What the Lock control does, shown as a tooltip on Lock, Unlock and the status. */
+const LOCK_HELP = 'Locking stops mod changes (installing, updating, removing, or turning mods on and off) until you unlock. Launching still works.';
 
 function previewJavaMajor(version: string | undefined): number {
   const parts = (version ?? '').split('.');
@@ -689,11 +693,20 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   /** Updates awaiting the changelog review step; null when nothing is pending. */
   const [pendingUpdates, setPendingUpdates] = useState<UpdateInfo[] | null>(null);
   const [showUpdateChangelogs, setShowUpdateChangelogs] = useState(true);
+  // Global Java mode, read for the readiness line. Null while unknown: the line
+  // then makes no promise about a download.
+  const [javaRuntimeMode, setJavaRuntimeMode] = useState<JavaRuntimeMode | null>(null);
 
   useEffect(() => {
     void getSetting(SETTINGS.showUpdateChangelogs.key)
       .then((raw) => setShowUpdateChangelogs(SETTINGS.showUpdateChangelogs.parse(raw)))
       .catch(() => { /* Default to showing it; a preview is never harmful. */ });
+  }, []);
+
+  useEffect(() => {
+    void getSetting(SETTINGS.javaRuntimeMode.key)
+      .then((raw) => setJavaRuntimeMode(SETTINGS.javaRuntimeMode.parse(raw)))
+      .catch(() => setJavaRuntimeMode(null));
   }, []);
 
   useEffect(() => {
@@ -1588,6 +1601,18 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     ? healthReport.blockers.length + healthReport.warnings.length
     : 0;
   const healthBlocked = (healthReport?.blockers.length ?? 0) > 0;
+  const readiness = row ? instanceReadiness({
+    minecraftVersion: row.minecraft_version,
+    loader: manifest?.loader ?? row.loader,
+    loaderVersion: manifest?.loader_version ?? row.loader_version,
+    javaPath: row.java_path,
+    javaMode: javaRuntimeMode,
+    javaMajor: previewJavaMajor(row.minecraft_version),
+    health: healthReport
+      ? { blockers: healthReport.blockers.length, warnings: healthReport.warnings.length }
+      : null,
+    busy: operationHeld,
+  }) : null;
 
   useEffect(() => {
     if (packInstall?.status === 'failed' && packInstall.error) {
@@ -1948,11 +1973,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 </div>
               )}
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>{row?.is_locked ? '🔒 Locked' : '🔓 Unlocked'}</span>
+                <span title={LOCK_HELP}>{row?.is_locked ? '🔒 Locked' : '🔓 Unlocked'}</span>
                 {row?.is_locked ? (
                   <button
                     onClick={handleUnlock}
                     disabled={recoveryBlocked}
+                    title={LOCK_HELP}
                     className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                   >
                     Unlock
@@ -1962,6 +1988,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     <button
                       onClick={handleLock}
                       disabled={recoveryBlocked}
+                      title={LOCK_HELP}
                       className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                     >
                       Lock
@@ -2024,9 +2051,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               <button
                 onClick={() => onInvestigate?.(instanceId)}
                 className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
-                title="Analyze the latest instance logs"
+                title="Open Crash Doctor to look through the latest logs for what went wrong"
               >
-                Investigate
+                Find problems
               </button>
               </div>
               {processRunning ? (
@@ -2061,6 +2088,20 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <Play className="h-5 w-5 fill-current" aria-hidden="true" />
                   {processLaunching || playBusy ? 'Starting…' : processStopping ? 'Stopping…' : processDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : 'Play'}
                 </button>
+              )}
+              {readiness && !gameActive && (
+                <div className="max-w-sm text-right text-xs" data-testid="instance-readiness">
+                  <p className={`font-medium ${
+                    readiness.level === 'blocked'
+                      ? 'text-destructive'
+                      : readiness.level === 'check'
+                        ? 'text-amber-700 dark:text-amber-300'
+                        : 'text-green-700 dark:text-green-400'
+                  }`}>
+                    {readiness.headline}
+                  </p>
+                  <p className="text-muted-foreground">{readiness.details.join(' · ')}</p>
+                </div>
               )}
             </div>
           </div>
@@ -2146,7 +2187,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             data-active={activeTab === tab}
             className="agora-tab text-sm"
           >
-            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'migrate' ? 'Version Move' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
+            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'migrate' ? 'Version Move' : tab === 'import' ? 'Other launchers & files' : tab === 'export' ? 'Export' : 'Console'}
           </button>
         ))}
         <button
@@ -2184,7 +2225,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onError={setError}
           onDrop={handleDrop}
           extraActions={<>
-            <button type="button" onClick={() => setOptionalDepsOpen(true)} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent" title="See which installed mods recommend optional add-ons" data-testid="optional-deps-button" aria-busy={optionalEdgesLoading}>Optional dependencies{optionalEdgesLoading ? <span className="animate-pulse text-muted-foreground"> (…)<span className="sr-only"> loading</span></span> : optionalDepsCount > 0 ? ` (${optionalDepsCount})` : ''}</button>
+            <button type="button" onClick={() => setOptionalDepsOpen(true)} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent" title="See which installed mods recommend optional add-ons" data-testid="optional-deps-button" aria-busy={optionalEdgesLoading}>Optional add-ons{optionalEdgesLoading ? <span className="animate-pulse text-muted-foreground"> (…)<span className="sr-only"> loading</span></span> : optionalDepsCount > 0 ? ' · all installed' : ''}</button>
             <button type="button" onClick={() => onOpenBrowseForInstance?.(instanceId)} disabled={!!row?.is_locked || recoveryBlocked} className="rounded-lg border border-dashed border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={recoveryBlocked ? 'Wait for the recovery snapshot to finish.' : row?.is_locked ? 'Unlock the instance to add mods.' : undefined}>+ Add Mod</button>
           </>}
           iconForRow={(content) => {
@@ -2429,10 +2470,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                         <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>
                       )}
                       {snap.is_current_lkg && (
-                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-700 dark:text-green-300">Current LKG</span>
+                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-700 dark:text-green-300" title="The last setup that launched and played fine. Agora can restore it if a change breaks the game.">Last setup that launched fine</span>
                       )}
                       {!snap.is_current_lkg && snap.is_lkg && (
-                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">Known good</span>
+                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary" title="A setup that launched fine before the current one.">Launched fine before</span>
                       )}
                       {snap.is_pre_restore && (
                         <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">Undo restore</span>
@@ -2926,8 +2967,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
             <p className="text-xs text-muted-foreground">
               A privacy-preserving lockfile recording SHA-256 hashes, exact download sources,
-              mod versions, and all settings. Any installation with the same lockfile reproduces
-              identical artifacts. Private config contents are never included.
+              mod versions, and the game and loader versions. It also fingerprints your config
+              files without copying them. Any installation with the same lockfile reproduces
+              identical artifacts.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Not included:</span> config file
+              contents, memory and Java settings.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Best for:</span> forensic
@@ -3501,7 +3547,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onOpenChange={(open) => { if (!open) setOptionalDepsOpen(false); }}
         >
           <DialogContent className="max-h-[85vh] max-w-xl overflow-hidden flex flex-col gap-3">
-            <DialogTitle className="shrink-0">Optional dependencies</DialogTitle>
+            <DialogTitle className="shrink-0">Optional add-ons</DialogTitle>
             <DialogDescription className="shrink-0">
               A few installed mods can use extra add-ons. They're never required — this lists the ones that are already here.
             </DialogDescription>

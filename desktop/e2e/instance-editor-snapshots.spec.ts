@@ -239,24 +239,24 @@ async function openSnapshotsTab(page: Page) {
 
 test.describe('InstanceEditor — Snapshots tab: badges', () => {
 
-  test('shows Current LKG badge on the current known-good snapshot', async ({ page }) => {
+  test('shows Last setup that launched fine badge on the current snapshot', async ({ page }) => {
     await installSnapshotEditorMock(page, { snapshots: DEFAULT_SNAPSHOTS });
     await navigateToInstanceEditor(page);
     await openSnapshotsTab(page);
 
-    // The snapshot with is_current_lkg=true shows "Current LKG"
+    // The snapshot with is_current_lkg=true shows "Last setup that launched fine"
     const currentLkgRow = page.getByText('Before session 2026-07-12').locator('..');
-    await expect(currentLkgRow.getByText('Current LKG')).toBeVisible();
+    await expect(currentLkgRow.getByText('Last setup that launched fine')).toBeVisible();
   });
 
-  test('shows Known good badge on LKG snapshots that are not current', async ({ page }) => {
+  test('shows Launched fine before badge on LKG snapshots that are not current', async ({ page }) => {
     await installSnapshotEditorMock(page, { snapshots: DEFAULT_SNAPSHOTS });
     await navigateToInstanceEditor(page);
     await openSnapshotsTab(page);
 
-    // The snapshot with is_lkg=true but is_current_lkg=false shows "Known good"
+    // The snapshot with is_lkg=true but is_current_lkg=false shows "Launched fine before"
     const knownGoodRow = page.getByText('Checkpoint before update').locator('..');
-    await expect(knownGoodRow.getByText('Known good')).toBeVisible();
+    await expect(knownGoodRow.getByText('Launched fine before')).toBeVisible();
   });
 
   test('shows Undo restore badge on pre-restore snapshots', async ({ page }) => {
@@ -276,8 +276,8 @@ test.describe('InstanceEditor — Snapshots tab: badges', () => {
 
     // Plain snapshot has neither LKG nor restore badges
     const plainRow = page.getByText('Manual backup').locator('..');
-    await expect(plainRow.getByText('Current LKG')).toHaveCount(0);
-    await expect(plainRow.getByText('Known good')).toHaveCount(0);
+    await expect(plainRow.getByText('Last setup that launched fine')).toHaveCount(0);
+    await expect(plainRow.getByText('Launched fine before')).toHaveCount(0);
     await expect(plainRow.getByText('Undo restore')).toHaveCount(0);
   });
 
