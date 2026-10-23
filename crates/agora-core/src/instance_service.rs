@@ -3373,6 +3373,7 @@ $#
                 "instance_import_jobs",
                 "instance_imports",
                 "instance_pack_files",
+                "instance_pack_gaps",
                 "instance_update_cache",
                 "launch_history",
                 "mcp_approval_grants",
