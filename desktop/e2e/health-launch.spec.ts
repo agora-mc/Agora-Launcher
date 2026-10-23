@@ -68,6 +68,7 @@ async function installHealthMock(page: Page, options: {
             },
             snapshot_readiness: 'ready',
             snapshot_error: null,
+            pack_gaps: [],
           });
         }
         if (command === 'check_instance_crash') return Promise.resolve(null);

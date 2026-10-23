@@ -30,6 +30,7 @@ function detail(id: string) {
     },
     snapshot_readiness: 'ready',
     snapshot_error: null,
+    pack_gaps: [],
   };
 }
 
@@ -128,6 +129,19 @@ describe('readiness line', () => {
     expect(line.textContent).not.toContain('Ready to play');
   });
 
+  it('is not ready while a pack mod is missing, even when every installed mod is healthy', async () => {
+    const previous = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (command: string, args: { instanceId?: string } = {}) =>
+      command === 'get_instance_detail'
+        ? { ...detail(args.instanceId ?? 'alpha'), pack_gaps: [{ filename: 'xaero.jar', display_name: 'xaero.jar', status: 'needs_action', reason: 'Needs Modrinth' }] }
+        : previous?.(command, args));
+    renderWith(cleanHealth);
+    const line = await screen.findByTestId('instance-readiness');
+    await waitFor(() => expect(within(line).getByText('Not ready: 1 pack mod is not installed')).toBeTruthy());
+    expect(line.textContent).toContain('Mods look healthy');
+    expect(line.textContent).not.toContain('Ready to play');
+  });
+
   it('makes no download promise when automatic Java is switched off in Settings', async () => {
     const previous = invokeMock.getMockImplementation();
     invokeMock.mockImplementation(async (command: string, args: { key?: string } = {}) =>
@@ -136,6 +150,22 @@ describe('readiness line', () => {
     const line = await screen.findByTestId('instance-readiness');
     await waitFor(() => expect(line.textContent).toContain('automatic downloads are off'));
     expect(line.textContent).not.toContain('downloads on first launch');
+  });
+});
+
+describe('instance header controls', () => {
+  it('tells the user what Revert does today, rather than promising a restore', async () => {
+    render(editor('alpha'));
+    const revert = await screen.findByRole('button', { name: 'Revert' });
+    const title = revert.getAttribute('title') ?? '';
+    expect(title).toContain('only locks the instance');
+    expect(title).not.toMatch(/restores? (your )?mods/i);
+  });
+
+  it('explains Lock on the button itself, where a hover reaches it', async () => {
+    render(editor('alpha'));
+    const lock = await screen.findByRole('button', { name: 'Lock' });
+    expect(lock.getAttribute('title')).toContain('stops mod changes');
   });
 });
 

@@ -107,6 +107,7 @@ const INSTANCE_DETAIL: Record<string, unknown> = {
     worlds: [],
     user_preferences: {},
   },
+  pack_gaps: [],
 };
 
 // ---------------------------------------------------------------------------

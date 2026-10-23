@@ -407,11 +407,20 @@ export interface InstanceManifest {
   user_preferences: Record<string, unknown>;
 }
 
+/** A pack entry the instance still lacks: it failed, or needs an action from the user. */
+export interface InstancePackGap {
+  filename: string;
+  display_name: string;
+  status: 'failed' | 'needs_action';
+  reason: string | null;
+}
+
 export interface InstanceDetail {
   row: InstanceRow;
   manifest: InstanceManifest | null;
   snapshot_readiness: 'ready' | 'pending' | 'failed';
   snapshot_error: string | null;
+  pack_gaps: InstancePackGap[];
 }
 
 export type CurationStatus = 'curated' | 'under_review' | 'uncurated' | 'archived' | 'unknown';

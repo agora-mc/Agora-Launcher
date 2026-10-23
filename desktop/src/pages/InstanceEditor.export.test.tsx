@@ -28,6 +28,7 @@ function detail(id: string) {
     },
     snapshot_readiness: 'ready',
     snapshot_error: null,
+    pack_gaps: [],
   };
 }
 

@@ -1611,6 +1611,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     health: healthReport
       ? { blockers: healthReport.blockers.length, warnings: healthReport.warnings.length }
       : null,
+    packGaps: detail ? detail.pack_gaps.length : null,
     busy: operationHeld,
   }) : null;
 
@@ -1996,6 +1997,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     <button
                       onClick={handleRevert}
                       disabled={recoveryBlocked}
+                      title="Revert is not wired up yet: it only locks the instance and restores no files."
                       className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                     >
                       Revert
@@ -2450,7 +2452,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             A snapshot is a restore point. It copies your mods, configs, resource packs, shader packs, data packs and options.txt. Worlds are included in full snapshots, but not in the quick ones taken before each launch. Logs, screenshots and other files are not included.
           </p>
           <p className="text-xs text-muted-foreground">
-            Agora takes an automatic snapshot before changes such as launches, installs and templates, and keeps the last 5 of those. Snapshots you create yourself, and ones from version moves, are kept until you delete them.
+            Agora takes an automatic snapshot before changes to an existing instance: launches, mod installs, updates and removals, pack updates, templates, and pack mods added after an import. It keeps the last 5 of those. Turning a mod on or off takes none, and neither does importing a pack into a new instance, since there is nothing to go back to. Snapshots you create yourself, and ones from version moves, are kept until you delete them.
           </p>
           {snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground">

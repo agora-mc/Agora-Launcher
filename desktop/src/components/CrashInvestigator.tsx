@@ -934,7 +934,10 @@ export function CrashInvestigator({
                 <p className="text-sm font-semibold">What we checked</p>
                 <p className="text-xs text-muted-foreground">
                   {evidence
-                    ? `We checked ${evidence.evidence.sources.length} file${evidence.evidence.sources.length === 1 ? '' : 's'} from your game folder — nothing was sent online`
+                    ? evidence.evidence.sources.length > 0
+                      ? `We checked ${evidence.evidence.sources.length} file${evidence.evidence.sources.length === 1 ? '' : 's'} from your game folder — nothing was sent online`
+                      // Zero files read is not a clean bill of health: this only reads crash logs.
+                      : 'No crash logs yet: this checks what happened in a crashed game, not whether the setup is ready'
                     : manualLogText || crashFilename
                       ? 'Using the crash info you shared'
                       : 'No recent crash files were found'}

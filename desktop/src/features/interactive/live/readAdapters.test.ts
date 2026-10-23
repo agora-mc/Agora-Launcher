@@ -67,6 +67,7 @@ function detail(overrides: Partial<InstanceDetail> = {}): InstanceDetail {
     },
     snapshot_readiness: 'ready',
     snapshot_error: null,
+    pack_gaps: [],
     ...overrides,
   };
 }

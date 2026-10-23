@@ -60,6 +60,8 @@ pub struct InstanceDetail {
     pub manifest: Option<InstanceManifest>,
     pub snapshot_readiness: String,
     pub snapshot_error: Option<String>,
+    /// Pack entries still missing from the instance; empty when none are known missing.
+    pub pack_gaps: Vec<crate::db::InstancePackGap>,
 }
 
 /// What applying a template to an existing instance actually did.
@@ -138,11 +140,29 @@ impl InstanceService {
         let manifest = read_manifest(&self.ctx.paths.instance_manifest(&instance_id)?)?;
         let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
         let readiness = crate::snapshot::snapshot_readiness(&instance_dir);
+        let pack_gaps =
+            crate::db::list_instance_pack_gaps(&conn, &instance_id).map_err(|error| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
+                    message: error.to_string(),
+                }
+            })?;
+        // A gap is over once the file is in the instance by any route (a retry,
+        // or the user adding the same jar by hand). Without a manifest we cannot
+        // tell, so every recorded gap stays.
+        let pack_gaps = match &manifest {
+            Some(manifest) => pack_gaps
+                .into_iter()
+                .filter(|gap| !manifest_has_file(manifest, &gap.filename))
+                .collect(),
+            None => pack_gaps,
+        };
         Ok(Some(InstanceDetail {
             row,
             manifest,
             snapshot_readiness: readiness.as_str().into(),
             snapshot_error: crate::snapshot::snapshot_readiness_error(&instance_dir),
+            pack_gaps,
         }))
     }
 
@@ -1403,6 +1423,20 @@ impl InstanceService {
     }
 }
 
+/// Whether the manifest lists a content file with this name. An empty name
+/// never matches, so an unnamed pack entry stays a known gap.
+fn manifest_has_file(manifest: &InstanceManifest, filename: &str) -> bool {
+    !filename.is_empty()
+        && manifest
+            .mods
+            .iter()
+            .chain(&manifest.resourcepacks)
+            .chain(&manifest.shaders)
+            .chain(&manifest.datapacks)
+            .chain(&manifest.worlds)
+            .any(|entry| entry.filename == filename)
+}
+
 /// Fill unset JVM fields on a create request from a template.
 ///
 /// One-directional on purpose: the template is a default, never an override.
@@ -1542,6 +1576,96 @@ mod tests {
         let ctx = Ctx::for_testing(root.clone());
         crate::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
         (ctx, root)
+    }
+
+    #[test]
+    fn a_pack_gap_is_over_once_the_file_is_in_the_manifest_by_any_route() {
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "inst", "name": "Inst", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.16.0", "is_locked": false,
+            "mods": [{
+                "filename": "sodium.jar", "registry_id": null, "modrinth_id": null,
+                "source": "manual", "version": null, "sha256": "", "installed_at": "now"
+            }],
+            "resourcepacks": [], "shaders": [], "datapacks": [], "worlds": [],
+            "user_preferences": {}
+        }))
+        .unwrap();
+        assert!(manifest_has_file(&manifest, "sodium.jar"));
+        assert!(!manifest_has_file(&manifest, "xaero.jar"));
+        // Case and whitespace are not forgiven: a different file is a different file.
+        assert!(!manifest_has_file(&manifest, "Sodium.jar"));
+        assert!(!manifest_has_file(&manifest, " sodium.jar"));
+        // An unnamed gap must never be cleared by an unnamed installed entry.
+        assert!(!manifest_has_file(&manifest, ""));
+    }
+
+    #[test]
+    fn get_reports_only_the_pack_gaps_still_missing() {
+        let (ctx, root) = context();
+        let request = CreateInstanceRequest {
+            name: "Inst".into(),
+            instance_id: "inst".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &prepare_row("inst", &request)).unwrap();
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "inst", "name": "Inst", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.16.0", "is_locked": false,
+            "mods": [{
+                "filename": "sodium.jar", "registry_id": null, "modrinth_id": null,
+                "source": "manual", "version": null, "sha256": "", "installed_at": "now"
+            }],
+            "resourcepacks": [], "shaders": [], "datapacks": [], "worlds": [],
+            "user_preferences": {}, "manifest_version": crate::models::CURRENT_MANIFEST_VERSION
+        }))
+        .unwrap();
+        std::fs::create_dir_all(ctx.paths.instance_dir("inst").unwrap()).unwrap();
+        crate::helpers::atomic_write_manifest(
+            &ctx.paths.instance_manifest("inst").unwrap(),
+            &manifest,
+        )
+        .unwrap();
+        let gap = |filename: &str| crate::db::InstancePackGap {
+            filename: filename.into(),
+            display_name: filename.into(),
+            status: "failed".into(),
+            reason: None,
+        };
+        crate::db::replace_instance_pack_gaps(
+            &conn,
+            "inst",
+            &[gap("sodium.jar"), gap("xaero.jar")],
+        )
+        .unwrap();
+        drop(conn);
+
+        let detail = InstanceService::new(ctx.clone())
+            .get("inst")
+            .unwrap()
+            .unwrap();
+        let missing: Vec<&str> = detail
+            .pack_gaps
+            .iter()
+            .map(|g| g.filename.as_str())
+            .collect();
+        assert_eq!(
+            missing,
+            vec!["xaero.jar"],
+            "sodium.jar is in the manifest now"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
