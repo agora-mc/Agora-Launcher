@@ -219,6 +219,13 @@ test.describe('Home — zone B: Hero / Continue Playing', () => {
     await expect(page.getByRole('button', { name: 'Play Test Instance', exact: true })).toBeVisible();
   });
 
+  test('header points newcomers at the Ctrl K command palette', async ({ page }) => {
+    await installHomeMock(page, { instances: [DEFAULT_INSTANCE] });
+    await page.goto('/');
+
+    await expect(page.getByText('to search and jump anywhere.')).toBeVisible();
+  });
+
 });
 
 test.describe('Home — zone A: Alerts', () => {

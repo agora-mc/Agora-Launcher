@@ -174,6 +174,17 @@ describe('live readAdapters — DTO redaction (SOL-2 §14.3.6)', () => {
     expect(visuals[1].sizeLabel).toContain('MB');
   });
 
+  it('snapshotsToVisual labels launch-verified snapshots in plain words', () => {
+    const rows: Snapshot[] = [
+      { id: 'cur', label: null, created_at: '2026-08-08T10:00:00Z', file_count: 1, size_estimate: 1024 * 1024, effective_origin: 'automatic', is_lkg: true, is_current_lkg: true, is_pre_restore: false },
+      { id: 'old', label: null, created_at: '2026-08-07T10:00:00Z', file_count: 1, size_estimate: 1024 * 1024, effective_origin: 'automatic', is_lkg: true, is_current_lkg: false, is_pre_restore: false },
+    ];
+    const visuals = snapshotsToVisual(rows);
+    expect(visuals[0].label).toBe('Last setup that launched fine');
+    expect(visuals[1].label).toBe('Launched fine before');
+    expect(JSON.stringify(visuals)).not.toMatch(/known good/i);
+  });
+
   it('crashToVisual redacts full logs, fingerprints, and suspect breakdowns', () => {
     const visual = crashToVisual(investigation);
     expect(JSON.stringify(visual)).not.toContain('FULL SECRET LOG');

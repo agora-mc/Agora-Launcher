@@ -23,6 +23,8 @@ export interface AmbienceContextValue {
   profile: AmbienceProfile;
   /** True when ambience is on at all (profile !== 'off'). */
   enabled: boolean;
+  /** Motion is reduced (Motion setting or OS): the world is on but held as one still picture. */
+  reducedMotion: boolean;
   setEnabled: (on: boolean) => void;
   soundOn: boolean;
   setSoundOn: (on: boolean) => void;
@@ -204,6 +206,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AmbienceContextValue>(() => ({
     profile: effectiveProfile,
     enabled: effectiveProfile !== 'off',
+    reducedMotion,
     // Turning the world off takes background removal with it: the setting only
     // exists to reveal the world, and it is the one ambience option that keeps
     // changing the page after the world stops rendering.
@@ -237,7 +240,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     setMusicAuto: (on) => engine?.setMusicAuto(on),
     shuffleMusic: () => engine?.shuffleNow(),
     ready: settings !== null,
-  }), [effectiveProfile, settings, journal, lastEvent, persist, engine]);
+  }), [effectiveProfile, settings, journal, lastEvent, persist, engine, reducedMotion]);
 
   // Music rides along with the full profile (optional in calm).
   const musicOn = (settings?.musicOn !== false) && effectiveProfile === 'full';

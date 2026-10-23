@@ -276,6 +276,9 @@ export function Home({
       <section className="agora-hero compact">
         <h2 className="text-2xl font-bold mb-2">Home</h2>
         <p className="text-muted-foreground">Your modding dashboard.</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Press <kbd className="rounded-sm border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">Ctrl K</kbd> to search and jump anywhere.
+        </p>
       </section>
 
       {/* Zone A: Alerts — compact warnings */}

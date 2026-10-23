@@ -2470,7 +2470,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                         <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>
                       )}
                       {snap.is_current_lkg && (
-                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-700 dark:text-green-300" title="The last setup that launched and played fine. Agora can restore it if a change breaks the game.">Last setup that launched fine</span>
+                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-700 dark:text-green-300" title="The last setup that launched fine. Agora can restore it if a change breaks the game.">Last setup that launched fine</span>
                       )}
                       {!snap.is_current_lkg && snap.is_lkg && (
                         <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary" title="A setup that launched fine before the current one.">Launched fine before</span>

@@ -200,7 +200,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Change one variable at a time',
           body: 'For large instances, treat changes as experiments. Create a snapshot, install one coherent group, launch, and confirm stability before continuing. Loadout profiles can isolate feature groups without deleting files.',
           steps: [
-            'Start from a known-good snapshot.',
+            'Start from a snapshot of a setup that launched fine.',
             'Apply a reviewed install plan.',
             'Launch and exercise the affected game area.',
             'If stable, name a new snapshot or let a successful session mark the last setup that launched fine (Last Known Good).',
@@ -354,7 +354,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Separate by compatibility boundary',
           body: 'Create a new instance when changing Minecraft major/minor versions, switching loaders, evaluating an uncertain pack, or maintaining distinct server requirements. Reusing one instance across those boundaries makes rollback and diagnosis harder.',
           bullets: [
-            'Keep a locked, known-good play instance.',
+            'Keep a locked play instance that is known to work.',
             'Use a disposable test instance for major updates and unverified manual files.',
             'Clone from a lockfile when exact reproducibility matters.',
           ],
@@ -542,7 +542,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Batch changes strategically',
           body: 'Group updates that belong to one compatibility family, such as a library and its dependents. Avoid updating every subsystem at once on a large instance. Smaller batches produce clearer diffs and make crash investigation more decisive.',
           steps: [
-            'Snapshot the known-good baseline.',
+            'Snapshot the working setup as a baseline.',
             'Select one coherent update group.',
             'Review changed artifacts and hashes.',
             'Apply, launch, and test.',
