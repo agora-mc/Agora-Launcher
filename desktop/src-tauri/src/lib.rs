@@ -222,6 +222,9 @@ pub fn run() {
             commands::get_instance_detail,
             commands::create_instance,
             commands::delete_instance,
+            commands::list_recently_deleted,
+            commands::restore_deleted_instance,
+            commands::purge_deleted_instance,
             commands::unlock_instance,
             commands::lock_instance,
             commands::rename_instance,
@@ -494,6 +497,26 @@ pub fn run() {
                             Ok(_) => {}
                             Err(error) => {
                                 eprintln!("[core] startup cache warmup unavailable: {error}")
+                            }
+                        }
+                    });
+                    // Recently deleted: entries past 30 days (or over the size
+                    // budget) go to the OS trash; failures leave them in place.
+                    let cleanup_ctx = ctx.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match agora_core::maintenance::cleanup_recently_deleted(
+                            cleanup_ctx,
+                            crate::instances::trash_adapter(),
+                        )
+                        .await
+                        {
+                            Ok(summary) if summary.purged > 0 || summary.failed > 0 => eprintln!(
+                                "[core] recently deleted: {} purged, {} could not be purged (left in place)",
+                                summary.purged, summary.failed
+                            ),
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("[core] recently deleted cleanup unavailable: {error}")
                             }
                         }
                     });

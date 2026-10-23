@@ -102,6 +102,7 @@ pub mod process_session_manager;
 pub mod providers;
 pub mod prune_service;
 pub mod ranking;
+pub mod recently_deleted;
 pub mod registry;
 pub mod registry_sync;
 pub mod resolver;

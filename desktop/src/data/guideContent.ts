@@ -320,11 +320,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Use instance cards',
-          body: 'Each card shows the instance name, loader, Minecraft version, last launch, and lock state. Launch starts the game, Edit opens the full editor, Troubleshoot opens diagnostic tools, and Delete permanently removes the instance after confirmation.',
+          body: 'Each card shows the instance name, loader, Minecraft version, last launch, and lock state. Launch starts the game, Edit opens the full editor, Troubleshoot opens diagnostic tools, and Delete removes the Agora copy of the instance after confirmation. Anything you imported from another launcher is left alone, and the deleted instance waits in Recently deleted (below the cards) for 30 days, where you can Restore it or Delete it now.',
           callout: {
             tone: 'warning',
             title: 'Export before deleting',
-            text: 'Snapshots are local recovery points, not an external backup. Export anything you need before deleting an instance.',
+            text: 'Snapshots are local recovery points, not an external backup. Recently deleted keeps an instance for 30 days, then moves it to your Recycle Bin; export anything you need to keep for good.',
           },
         },
         {

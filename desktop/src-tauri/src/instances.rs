@@ -103,19 +103,45 @@ pub fn get_instance_detail<R: tauri::Runtime>(
     agora_core::instance_service::InstanceService::new(ctx).get(instance_id)
 }
 
-/// Delete an instance: delegates to core `InstanceService::delete` with the
-/// OS-trash adapter so files land in the Recycle Bin (not hard-removed).
+/// Delete an instance: delegates to core `InstanceService::delete`, which
+/// moves it into Agora's "Recently deleted" area (restorable for 30 days).
 pub fn delete_instance<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     instance_id: &str,
 ) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
     let service = agora_core::instance_service::InstanceService::new(ctx);
-    service.delete(instance_id, Some(trash_adapter()))
+    service.delete(instance_id)
 }
 
-/// Build the OS-trash adapter that core calls on the quarantined directory.
-fn trash_adapter() -> agora_core::instance_service::TrashFn {
+pub fn list_recently_deleted<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> LauncherResult<Vec<agora_core::recently_deleted::RecentlyDeletedEntry>> {
+    let ctx = crate::core_context(app)?;
+    agora_core::instance_service::InstanceService::new(ctx).list_recently_deleted()
+}
+
+pub fn restore_deleted_instance<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    entry_id: &str,
+) -> LauncherResult<agora_core::recently_deleted::RestoreOutcome> {
+    let ctx = crate::core_context(app)?;
+    agora_core::instance_service::InstanceService::new(ctx).restore_deleted(entry_id)
+}
+
+/// "Delete now": hand the entry to the OS trash.
+pub fn purge_deleted_instance<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    entry_id: &str,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(app)?;
+    agora_core::instance_service::InstanceService::new(ctx)
+        .purge_deleted(entry_id, &trash_adapter())
+}
+
+/// Build the OS-trash adapter that core calls when an entry leaves
+/// "Recently deleted".
+pub fn trash_adapter() -> agora_core::instance_service::TrashFn {
     std::sync::Arc::new(|path| {
         trash::delete(path).map_err(|e| LauncherError::Generic {
             code: "ERR_INSTANCE_DELETE".into(),

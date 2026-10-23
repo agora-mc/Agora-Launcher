@@ -340,7 +340,7 @@ pub async fn create_instance(
     instances::create_instance(app, request).await
 }
 
-/// Delete an instance, moving its directory to the OS trash.
+/// Delete an instance, moving it to Recently deleted (restorable for 30 days).
 #[tauri::command]
 pub async fn delete_instance(
     app: tauri::AppHandle,
@@ -348,6 +348,35 @@ pub async fn delete_instance(
     instance_id: String,
 ) -> LauncherResult<()> {
     tokio::task::spawn_blocking(move || instances::delete_instance(&app, &instance_id))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Instances deleted within the last 30 days, newest first.
+#[tauri::command]
+pub async fn list_recently_deleted(
+    app: tauri::AppHandle,
+) -> LauncherResult<Vec<agora_core::recently_deleted::RecentlyDeletedEntry>> {
+    tokio::task::spawn_blocking(move || instances::list_recently_deleted(&app))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Put a deleted instance back (under a free name if its id was reused).
+#[tauri::command]
+pub async fn restore_deleted_instance(
+    app: tauri::AppHandle,
+    entry_id: String,
+) -> LauncherResult<agora_core::recently_deleted::RestoreOutcome> {
+    tokio::task::spawn_blocking(move || instances::restore_deleted_instance(&app, &entry_id))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// "Delete now": send a deleted instance to the OS trash.
+#[tauri::command]
+pub async fn purge_deleted_instance(app: tauri::AppHandle, entry_id: String) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || instances::purge_deleted_instance(&app, &entry_id))
         .await
         .map_err(|_| LauncherError::LocalStateFailed)?
 }

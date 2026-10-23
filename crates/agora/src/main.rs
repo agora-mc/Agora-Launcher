@@ -2618,14 +2618,21 @@ async fn run_instance_command(
             }
         }
         InstanceCmd::Delete { id } => {
-            InstanceService::new(ctx.clone()).delete(&id, None)?;
+            InstanceService::new(ctx.clone()).delete(&id)?;
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({"status": "deleted", "instanceId": id})
+                    serde_json::json!({
+                        "status": "deleted",
+                        "instanceId": id,
+                        "recoverableDays": 30
+                    })
                 );
             } else {
-                println!("Deleted instance '{}'", id);
+                println!(
+                    "Deleted instance '{}'. Agora keeps a copy in Recently deleted for 30 days;                      restore it from My Instances in the desktop app.",
+                    id
+                );
             }
         }
         InstanceCmd::Rename { id, name } => {

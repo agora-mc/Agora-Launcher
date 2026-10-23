@@ -693,6 +693,28 @@ export const createInstance = (request: CreateInstanceRequest) =>
   invoke<InstanceRow>('create_instance', { request });
 export const deleteInstance = (instanceId: string) =>
   invoke<void>('delete_instance', { instanceId });
+export interface RecentlyDeletedEntry {
+  entry_id: string;
+  instance_id: string;
+  name: string;
+  minecraft_version: string;
+  loader: string;
+  import_source: string | null;
+  deleted_at: string;
+  expires_at: string;
+  size_bytes: number;
+}
+export interface RestoreOutcome {
+  instance_id: string;
+  original_instance_id: string;
+  renamed: boolean;
+}
+export const listRecentlyDeleted = () =>
+  invoke<RecentlyDeletedEntry[]>('list_recently_deleted');
+export const restoreDeletedInstance = (entryId: string) =>
+  invoke<RestoreOutcome>('restore_deleted_instance', { entryId });
+export const purgeDeletedInstance = (entryId: string) =>
+  invoke<void>('purge_deleted_instance', { entryId });
 export const unlockInstance = (instanceId: string) =>
   invoke<void>('unlock_instance', { instanceId });
 export const lockInstance = (instanceId: string) =>
