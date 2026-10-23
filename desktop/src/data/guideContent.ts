@@ -923,7 +923,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     shortTitle: 'Packs & sharing',
     category: 'Manage',
     description: 'Move complete instances between machines and verify that another instance matches.',
-    keywords: ['pack', 'mrpack', 'import', 'export', 'lockfile', 'clone', 'repair'],
+    keywords: ['pack', 'mrpack', 'import', 'export', 'lockfile', 'clone', 'repair', 'friend', 'another computer', 'transfer', 'share', 'send'],
     basic: {
       summary: 'Packs are the easiest way to distribute a coordinated instance. Agora supports Modrinth packs and its native pack format, while reproduction lockfiles focus on proving exact file state.',
       outcomes: [
@@ -956,6 +956,21 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             tone: 'note',
             title: 'Your edits are the ones that need a decision',
             text: 'A conflict means the author changed a file you had also changed. Keeping yours means missing their fix; taking theirs means losing your edit. Only you know which matters, so Agora refuses to guess.',
+          },
+        },
+        {
+          title: 'Send a setup to a friend or another computer',
+          body: 'Open the instance with Edit, go to the Export tab, and choose Export as Modrinth Pack (.mrpack). It works for any setup: mods Agora can find on Modrinth are listed with download links, and every other mod is included as a file inside the pack, so nothing is missing on the other end. Disabled mods are included and arrive disabled. Send the saved file however you like. Configs, keybinds, and settings are not included, and neither are saves or snapshots.',
+          steps: [
+            'On the Export tab, pick Export as Modrinth Pack (.mrpack) and choose where to save it.',
+            'Send the file to your friend, or copy it to the other computer.',
+            'In Agora there, open an instance with Edit and use "Import pack as new instance" on the Mods tab (or Select File & Import on the Other launchers & files tab), then pick the file. Prism, Modrinth App and other launchers can open a .mrpack too.',
+            'Review the name, let Agora finish preparing, then launch once to check it.',
+          ],
+          callout: {
+            tone: 'note',
+            title: 'The Agora pack (.json) is lighter but needs sources',
+            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along. The pack carries the instance name you see in Agora.',
           },
         },
         {

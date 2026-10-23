@@ -281,13 +281,15 @@ pub async fn add_manual_mod(
     })?
 }
 
-/// Export pack via core ExportService, to the file the user chose in the save dialog.
-pub async fn export_instance_pack(
+/// The manifest an export is built from, plus its instance folder.
+///
+/// Carries the name the user sees (older renames only reached the database),
+/// and, where the user allows Modrinth, a download source for mods that were
+/// copied in from another launcher without one (one batched hash lookup).
+async fn manifest_for_export(
     app: &tauri::AppHandle,
     instance_id: &str,
-    format: &str,
-    out_path: &Path,
-) -> LauncherResult<String> {
+) -> LauncherResult<(InstanceManifest, std::path::PathBuf)> {
     let ctx = crate::core_context(app)?;
     let manifest_path = paths::instance_manifest_path(app, instance_id)
         .map_err(|_| LauncherError::InstanceCreateFailed)?;
@@ -297,12 +299,52 @@ pub async fn export_instance_pack(
             message: "Instance manifest not found.".into(),
         });
     }
-    let manifest: InstanceManifest = {
+    let mut manifest: InstanceManifest = {
         let text = std::fs::read_to_string(&manifest_path)
             .map_err(|_| LauncherError::InstanceCreateFailed)?;
         serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?
     };
+    // Instances renamed before the manifest followed renames still carry the
+    // old name there; the exported pack must carry the one the user sees.
+    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+        if let Ok(Some(row)) = agora_core::db::get_instance(&conn, instance_id) {
+            manifest.name = row.name;
+        }
+    }
     let instance_dir = ctx.paths.instance_dir(instance_id)?;
+    if agora_core::modrinth::ModrinthService::new(ctx)
+        .check_enabled()
+        .is_ok()
+    {
+        agora_core::source_identify::identify_mods_on_modrinth(&instance_dir, &mut manifest.mods)
+            .await;
+    }
+    Ok((manifest, instance_dir))
+}
+
+/// Names of the mods an export in `format` would leave a friend unable to
+/// install: the Agora pack only lists mods, so a mod with no catalog or
+/// Modrinth id has nowhere to come from. A `.mrpack` bundles those files.
+pub async fn export_sourceless_mods(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    format: &str,
+) -> LauncherResult<Vec<String>> {
+    if format != "json" {
+        return Ok(Vec::new());
+    }
+    let (manifest, _) = manifest_for_export(app, instance_id).await?;
+    Ok(agora_core::source_identify::sourceless_mod_names(&manifest))
+}
+
+/// Export pack via core ExportService, to the file the user chose in the save dialog.
+pub async fn export_instance_pack(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    format: &str,
+    out_path: &Path,
+) -> LauncherResult<String> {
+    let (manifest, instance_dir) = manifest_for_export(app, instance_id).await?;
     agora_core::export_service::export_instance_pack_to(&instance_dir, &manifest, out_path, format)
         .await
 }

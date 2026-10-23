@@ -1379,6 +1379,13 @@ export const syncInstanceDatapacks = (instanceId: string) =>
 export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack') =>
   invoke<string | null>('export_instance_pack', { instanceId, format });
 
+/**
+ * Mods an export in this format could not carry to a friend: no catalog or Modrinth
+ * source, and the format only lists mods. Empty for `.mrpack`, which bundles them.
+ */
+export const exportSourcelessMods = (instanceId: string, format: 'json' | 'mrpack') =>
+  invoke<string[] | null>('export_sourceless_mods', { instanceId, format });
+
 export const pickOpenFile = (title: string, extensions: string[]) =>
   invoke<string | null>('pick_open_file', { title, extensions });
 export const setCustomInstanceIcon = (instanceId: string, sourcePath: string) =>

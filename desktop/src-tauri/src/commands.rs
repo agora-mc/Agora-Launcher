@@ -2266,6 +2266,19 @@ pub async fn export_instance_pack(
         .map(Some)
 }
 
+/// Mods an export in `format` could not carry to a friend (no catalog or
+/// Modrinth source, and the format does not bundle files). The UI names them
+/// before the save dialog opens.
+#[tauri::command]
+pub async fn export_sourceless_mods(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    format: String,
+) -> LauncherResult<Vec<String>> {
+    mod_install::export_sourceless_mods(&app, &instance_id, &format).await
+}
+
 /// The folder exports are offered in by default. Created first so the save dialog can open there.
 fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> {
     let dir = crate::core_context(app)?.paths.root().join("exports");
