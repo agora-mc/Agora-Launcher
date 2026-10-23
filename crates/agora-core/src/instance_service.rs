@@ -2830,5 +2830,124 @@ $#
             assert_eq!(found.instance_id, "pack");
             let _ = std::fs::remove_dir_all(root);
         }
+
+        /// review: rows keyed by instance_id but not reached by a foreign key
+        /// (mcp_approval_grants, crash_events) are neither captured nor deleted,
+        /// so a deleted instance's rows stay behind and attach to whatever
+        /// instance later takes its id.
+        #[test]
+        fn review_rows_outside_the_cascade_do_not_follow_a_reused_id() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            {
+                let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                conn.execute(
+                    "INSERT INTO mcp_approval_grants (tool_name, instance_id, state, granted_at)
+                     VALUES ('tool.x', 'pack', 'granted', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO crash_events (instance_id, fingerprint, exception_class, top_frames_json, occurred_at)
+                     VALUES ('pack', 'fp', 'E', '[]', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+            }
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            // A brand-new instance takes the id.
+            seed(&ctx, "pack");
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            for table in ["mcp_approval_grants", "crash_events"] {
+                let leaked: i64 = conn
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE instance_id = 'pack'"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    leaked, 0,
+                    "{table} rows of the deleted 'pack' now belong to the new 'pack'"
+                );
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        /// review: a failed "Delete now" must leave the entry exactly as it was.
+        /// Today detach_links removes the instance's links before the trash
+        /// call, so a trash failure still costs the user their links.
+        #[test]
+        fn review_failed_delete_now_keeps_the_instances_links() {
+            let (ctx, root) = context();
+            seed(&ctx, "linked");
+            let outside = root.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("precious.txt"), b"keep me").unwrap();
+            make_link(
+                &outside,
+                &ctx.paths.instance_dir("linked").unwrap().join("shared"),
+            );
+            let service = InstanceService::new(ctx.clone());
+            service.delete("linked").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let link = ctx
+                .paths
+                .recently_deleted_root()
+                .join(&entry.entry_id)
+                .join("instance")
+                .join("shared");
+
+            assert!(service
+                .purge_deleted(&entry.entry_id, &failing_trash())
+                .is_err());
+            assert!(
+                std::fs::symlink_metadata(&link).is_ok(),
+                "a failed Delete now removed the instance's link"
+            );
+            assert_eq!(
+                std::fs::read(outside.join("precious.txt")).unwrap(),
+                b"keep me"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        /// review: if the clone's provenance write fails, the clone must not
+        /// quietly succeed without its badge (either failing or the badge is fine).
+        #[test]
+        fn review_clone_provenance_write_failure_is_not_silent() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            {
+                let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                conn.execute_batch(
+                    "CREATE TRIGGER review_block_clone_import BEFORE INSERT ON instance_imports
+                     WHEN NEW.installation_key = 'clone'
+                     BEGIN SELECT RAISE(ABORT, 'blocked for review'); END;",
+                )
+                .unwrap();
+            }
+            let service = InstanceService::new(ctx.clone());
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(service.clone(CloneRequest {
+                source_instance_id: "pack".into(),
+                new_name: "Copy".into(),
+                prefs: ClonePrefs::default(),
+            }));
+            if let Ok(clone) = result {
+                let row = service
+                    .list()
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.instance_id == clone.instance_id)
+                    .unwrap();
+                assert!(
+                    row.import_source.is_some(),
+                    "clone succeeded without its import badge and nothing reported it"
+                );
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 }
