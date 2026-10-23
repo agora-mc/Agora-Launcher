@@ -5,11 +5,31 @@ use std::path::Path;
 
 use crate::models::{InstalledMod, InstanceManifest};
 
+/// Label of the undo snapshot `apply_loadout_profile` takes before it changes
+/// anything. Retention keeps only the newest one, in its own slot, so these
+/// never push out install or manual restore points (see `lkg::run_retention`).
+pub const UNDO_SNAPSHOT_LABEL: &str = "before-loadout";
+
+/// How many enabled items of each kind a profile holds, counted when it was
+/// saved. Apply sets every item of every kind on or off to match the profile.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadoutCoverage {
+    pub mods: usize,
+    pub resourcepacks: usize,
+    pub shaders: usize,
+    pub datapacks: usize,
+    pub worlds: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadoutProfile {
     pub name: String,
     pub enabled_mods: Vec<String>,
     pub created_at: String,
+    /// Recorded at save time. Profiles saved before this field existed have
+    /// none, so their per-kind counts are unknown.
+    #[serde(default)]
+    pub covers: Option<LoadoutCoverage>,
 }
 
 fn loadouts_dir(instance_dir: &Path) -> std::path::PathBuf {
@@ -73,17 +93,30 @@ fn all_content_entries_mut(
 
 /// Create a new loadout profile from the current enabled state in the manifest.
 pub fn create_profile(instance_dir: &Path, name: &str) -> Result<LoadoutProfile, String> {
+    // A blank name would save as ".json", which list and apply cannot name.
+    if name.trim().is_empty() {
+        return Err("A loadout profile needs a name".into());
+    }
     let manifest = read_manifest(instance_dir)?;
 
-    let enabled_mods: Vec<String> = all_content_entries(&manifest)
-        .filter(|m| m.enabled)
-        .map(|m| m.filename.clone())
-        .collect();
+    let mut covers = LoadoutCoverage::default();
+    let mut enabled_mods: Vec<String> = Vec::new();
+    for entry in all_content_entries(&manifest).filter(|m| m.enabled) {
+        enabled_mods.push(entry.filename.clone());
+        match entry.content_type.as_str() {
+            "resourcepack" => covers.resourcepacks += 1,
+            "shader" => covers.shaders += 1,
+            "datapack" => covers.datapacks += 1,
+            "world" => covers.worlds += 1,
+            _ => covers.mods += 1,
+        }
+    }
 
     let profile = LoadoutProfile {
         name: name.to_string(),
         enabled_mods,
         created_at: Utc::now().to_rfc3339(),
+        covers: Some(covers),
     };
 
     let profiles_dir = loadouts_dir(instance_dir);
@@ -336,6 +369,7 @@ mod tests {
             name: "minimal".to_string(),
             enabled_mods: vec!["sodium.jar".to_string()],
             created_at: Utc::now().to_rfc3339(),
+            covers: None,
         };
         let profiles_dir = loadouts_dir(&dir);
         fs::create_dir_all(&profiles_dir).unwrap();
@@ -401,6 +435,7 @@ mod tests {
                 "phosphor.jar".to_string(),
             ],
             created_at: Utc::now().to_rfc3339(),
+            covers: None,
         };
         let profiles_dir = loadouts_dir(&dir);
         fs::create_dir_all(&profiles_dir).unwrap();
@@ -513,6 +548,7 @@ mod tests {
             name: "no-shaders".to_string(),
             enabled_mods: vec!["sodium.jar".to_string()],
             created_at: Utc::now().to_rfc3339(),
+            covers: None,
         };
         let profiles_dir = loadouts_dir(&dir);
         fs::create_dir_all(&profiles_dir).unwrap();
@@ -566,6 +602,87 @@ mod tests {
         delete_profile(&dir, "beta").unwrap();
         let profiles = list_profiles(&dir).unwrap();
         assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn create_profile_records_enabled_items_per_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("test-instance");
+        fs::create_dir_all(dir.join("mods")).unwrap();
+        fs::create_dir_all(dir.join("shaderpacks")).unwrap();
+        fs::create_dir_all(dir.join("resourcepacks")).unwrap();
+
+        let mut manifest = make_manifest(&dir, &["sodium.jar", "iris.jar"]);
+        manifest.mods[1].enabled = false;
+        let extra = |filename: &str, content_type: &str, enabled: bool| {
+            let mut item = manifest.mods[0].clone();
+            item.filename = filename.to_string();
+            item.content_type = content_type.to_string();
+            item.enabled = enabled;
+            item
+        };
+        manifest.shaders.push(extra("bsl.zip", "shader", true));
+        manifest.shaders.push(extra("off.zip", "shader", false));
+        manifest
+            .resourcepacks
+            .push(extra("faithful.zip", "resourcepack", true));
+        manifest.worlds.push(extra("Survival", "world", true));
+        write_manifest(&dir, &manifest).unwrap();
+
+        let profile = create_profile(&dir, "kinds").unwrap();
+
+        let covers = profile.covers.expect("new profiles record coverage");
+        assert_eq!(
+            covers,
+            LoadoutCoverage {
+                mods: 1,
+                resourcepacks: 1,
+                shaders: 1,
+                datapacks: 0,
+                worlds: 1,
+            }
+        );
+        assert_eq!(
+            profile.enabled_mods.len(),
+            4,
+            "disabled items are not stored"
+        );
+        assert!(!profile.enabled_mods.contains(&"iris.jar".to_string()));
+        assert!(!profile.enabled_mods.contains(&"off.zip".to_string()));
+    }
+
+    #[test]
+    fn profile_saved_before_coverage_loads_with_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("legacy");
+        let profiles_dir = loadouts_dir(&dir);
+        fs::create_dir_all(&profiles_dir).unwrap();
+        fs::write(
+            profiles_dir.join("old.json"),
+            r#"{"name":"old","enabled_mods":["a.jar"],"created_at":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let profiles = list_profiles(&dir).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].enabled_mods, vec!["a.jar".to_string()]);
+        assert!(profiles[0].covers.is_none(), "unknown counts stay unknown");
+    }
+
+    #[test]
+    fn create_profile_rejects_blank_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["sodium.jar"]);
+
+        for blank in ["", "   ", "\t"] {
+            let err = create_profile(&dir, blank).expect_err("blank name must be refused");
+            assert!(err.contains("needs a name"), "unexpected error: {err}");
+        }
+        assert!(list_profiles(&dir).unwrap().is_empty());
+        assert!(
+            !loadouts_dir(&dir).exists(),
+            "a refused profile must not leave a loadouts folder behind"
+        );
     }
 
     #[test]

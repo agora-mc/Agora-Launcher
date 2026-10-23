@@ -4949,7 +4949,10 @@ pub async fn apply_loadout_profile(
             message: e.to_string(),
         })?;
     tokio::task::spawn_blocking(move || {
-        let snapshot = agora_core::snapshot::create_snapshot(&instance_dir, Some("before-loadout"))
+        let snapshot = agora_core::snapshot::create_snapshot(
+            &instance_dir,
+            Some(agora_core::loadout::UNDO_SNAPSHOT_LABEL),
+        )
             .map_err(|error| LauncherError::Generic {
                 code: "ERR_SNAPSHOT_REQUIRED".into(),
                 message: format!("Could not create the required recovery snapshot: {error}"),

@@ -2264,10 +2264,21 @@ export interface Snapshot {
   is_pre_restore: boolean;
 }
 
+/** Enabled items per kind, counted when the profile was saved. */
+export interface LoadoutCoverage {
+  mods: number;
+  resourcepacks: number;
+  shaders: number;
+  datapacks: number;
+  worlds: number;
+}
+
 export interface LoadoutProfile {
   name: string;
   enabled_mods: string[];
   created_at: string;
+  /** Null for profiles saved before counts were recorded. */
+  covers?: LoadoutCoverage | null;
 }
 
 export interface ImportResult {

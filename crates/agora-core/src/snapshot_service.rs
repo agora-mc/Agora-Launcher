@@ -68,7 +68,7 @@ impl SnapshotService {
         // The undo snapshot covers exactly what the restore will replace.
         // Matching the scope means undoing a configuration-only restore does
         // not copy gigabytes of world data it was never going to touch.
-        let label = format!("pre-restore-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+        let label = pre_restore_label(chrono::Utc::now());
         let scope_refs: Vec<&str> = scope.iter().map(String::as_str).collect();
         snapshot::create_snapshot_scoped(&instance_dir, Some(&label), &scope_refs).map_err(
             |error| LauncherError::Generic {
@@ -173,10 +173,34 @@ fn snapshot_error(message: String) -> LauncherError {
     }
 }
 
+/// Label for the undo snapshot a restore takes. The stamp is local time because
+/// the Snapshots list shows each snapshot's time in local time, and the label
+/// is the name a person reads next to it.
+fn pre_restore_label(at: chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "pre-restore-{}",
+        at.with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn pre_restore_label_stamps_the_local_clock_the_list_shows() {
+        use chrono::TimeZone;
+        let at = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 24, 5, 11, 23)
+            .unwrap();
+        let local = at.with_timezone(&chrono::Local);
+
+        assert_eq!(
+            pre_restore_label(at),
+            format!("pre-restore-{}", local.format("%Y%m%d-%H%M%S"))
+        );
+    }
 
     fn service() -> (SnapshotService, Ctx, String) {
         let root = std::env::temp_dir().join(format!(
