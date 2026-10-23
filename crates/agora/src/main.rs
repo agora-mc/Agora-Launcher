@@ -157,7 +157,7 @@ enum Commands {
     Paths,
     /// Print one instance by ID.
     GetInstance { id: String },
-    /// Create, clone, lock, rename, repair, or delete instances.
+    /// Create, clone, lock, rename, repair, delete, or restore instances.
     Instance {
         #[command(subcommand)]
         action: InstanceCmd,
@@ -336,8 +336,22 @@ enum InstanceCmd {
     Lock { id: String },
     /// Unlock a locked instance.
     Unlock { id: String },
-    /// Delete an instance and its directory.
+    /// Delete an instance. It stays in Recently deleted for 30 days.
     Delete { id: String },
+    /// List instances in Recently deleted (ID, name, deleted when, size).
+    Deleted,
+    /// Restore an instance from Recently deleted, using its entry ID.
+    Restore {
+        /// Entry ID, from `agora instance deleted`.
+        entry: String,
+    },
+    /// Send a deleted instance to the OS trash now. Agora cannot restore it after this.
+    Purge {
+        /// Entry ID, from `agora instance deleted`.
+        entry: String,
+        #[arg(long, help = "Skip the confirmation prompt")]
+        yes: bool,
+    },
     /// Rename an instance.
     Rename { id: String, name: String },
     /// Reinstall the mod loader for an instance.
@@ -1054,6 +1068,7 @@ async fn main() {
         progress.log("warning", &warning);
         eprintln!("Warning: {warning}");
     }
+    cleanup_before_command(&cli.command, &ctx, &trash_adapter(), &progress, json);
     let data_dir = paths.root().to_path_buf();
     let result = run_command(cli, &paths, &data_dir, &ctx, output_fmt).await;
     if let Err(e) = result {
@@ -1303,6 +1318,114 @@ fn sign_update_document(
     }];
     std::fs::write(document, serde_json::to_string_pretty(&parsed)?)?;
     Ok(key_id)
+}
+
+/// Commands that read or change instances. The Recently deleted cleanup pass
+/// runs before these; settings, registry, auth and the like leave it alone.
+fn touches_instances(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::ListInstances
+            | Commands::GetInstance { .. }
+            | Commands::Instance { .. }
+            | Commands::Mods { .. }
+            | Commands::Health { .. }
+            | Commands::Inventory { .. }
+            | Commands::Snapshots { .. }
+            | Commands::Import { .. }
+            | Commands::Launch { .. }
+            | Commands::Mcp { .. }
+            | Commands::Pack { .. }
+            | Commands::Export { .. }
+            | Commands::Loadout { .. }
+            | Commands::Lockfile { .. }
+    )
+}
+
+/// The OS-trash adapter core calls when a Recently deleted entry leaves Agora.
+/// Core does not depend on the `trash` crate, so each host supplies one; the
+/// desktop app has the same adapter.
+fn trash_adapter() -> agora_core::instance_service::TrashFn {
+    Arc::new(|path: &Path| {
+        trash::delete(path).map_err(|error| agora_core::error::LauncherError::Generic {
+            code: "ERR_INSTANCE_DELETE".into(),
+            message: format!("Failed to trash directory: {error}"),
+        })
+    })
+}
+
+/// The desktop app runs the Recently deleted cleanup only at startup, so a
+/// CLI-only user would otherwise keep expired entries forever. Runs it before
+/// a command that touches instances, and never fails that command.
+fn cleanup_before_command(
+    command: &Commands,
+    ctx: &agora_core::ctx::Ctx,
+    trash: &agora_core::instance_service::TrashFn,
+    progress: &CliProgressSink,
+    json: bool,
+) {
+    if touches_instances(command) {
+        run_recently_deleted_cleanup(ctx, trash, progress, json);
+    }
+}
+
+/// Sends expired (or over-budget) Recently deleted entries to the OS trash.
+/// A failure is logged and the entry stays where it is. Never fails the
+/// command that asked for it.
+fn run_recently_deleted_cleanup(
+    ctx: &agora_core::ctx::Ctx,
+    trash: &agora_core::instance_service::TrashFn,
+    progress: &CliProgressSink,
+    json: bool,
+) -> agora_core::recently_deleted::CleanupSummary {
+    let summary = agora_core::instance_service::InstanceService::new(ctx.clone())
+        .cleanup_recently_deleted(trash);
+    if summary.purged > 0 || summary.failed > 0 {
+        let message = format!(
+            "Recently deleted: {} sent to the OS trash, {} could not be (left in place)",
+            summary.purged, summary.failed
+        );
+        progress.log("warning", &message);
+        if !json {
+            eprintln!("{message}.");
+        }
+    }
+    summary
+}
+
+/// Human-readable size for the Recently deleted list.
+fn format_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let value = bytes as f64;
+    if value >= GIB {
+        format!("{:.1} GiB", value / GIB)
+    } else if value >= MIB {
+        format!("{:.1} MiB", value / MIB)
+    } else if value >= KIB {
+        format!("{:.1} KiB", value / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Ask before a purge, which Agora cannot undo. Refuses outright without a
+/// terminal, so a script has to say `--yes` on purpose.
+fn confirm_purge(name: &str) -> anyhow::Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "Purging '{name}' needs confirmation. Run it in an interactive terminal, or pass --yes once the person using this computer has agreed."
+        );
+    }
+    eprint!("Send '{name}' to the OS trash now? Agora cannot restore it afterwards. [y/N]: ");
+    std::io::stderr().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// Ask before discarding data. Returns false in a non-interactive session,
@@ -2630,11 +2753,87 @@ async fn run_instance_command(
                 );
             } else {
                 println!(
-                    "Deleted instance '{}'. Agora keeps a copy in Recently deleted for 30 days;                      restore it from My Instances in the desktop app.",
+                    "Deleted instance '{}'. Agora keeps a copy in Recently deleted for 30 days: run `agora instance deleted` to find it and `agora instance restore <ENTRY>` to bring it back.",
                     id
                 );
             }
         }
+        InstanceCmd::Deleted => {
+            let entries = InstanceService::new(ctx.clone()).list_recently_deleted()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else if entries.is_empty() {
+                println!("Recently deleted is empty.");
+            } else {
+                let rows: Vec<Vec<String>> = entries
+                    .iter()
+                    .map(|e| {
+                        vec![
+                            e.entry_id.clone(),
+                            e.name.clone(),
+                            e.deleted_at.clone(),
+                            format_size(e.size_bytes),
+                        ]
+                    })
+                    .collect();
+                print_table(&["ID", "Name", "Deleted", "Size"], &rows);
+            }
+        }
+        InstanceCmd::Restore { entry } => {
+            let outcome = InstanceService::new(ctx.clone()).restore_deleted(&entry)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "restored",
+                        "entryId": entry,
+                        "instanceId": outcome.instance_id,
+                        "originalInstanceId": outcome.original_instance_id,
+                        "renamed": outcome.renamed,
+                    })
+                );
+            } else if outcome.renamed {
+                println!(
+                    "Restored '{}' as '{}', because its original ID is taken.",
+                    outcome.original_instance_id, outcome.instance_id
+                );
+            } else {
+                println!("Restored instance '{}'", outcome.instance_id);
+            }
+        }
+        InstanceCmd::Purge { entry, yes } => {
+            let svc = InstanceService::new(ctx.clone());
+            let listed = svc.list_recently_deleted()?;
+            let Some(found) = listed.iter().find(|e| e.entry_id == entry) else {
+                anyhow::bail!(
+                    "No deleted instance with ID '{entry}'. Run `agora instance deleted` to see them."
+                );
+            };
+            if !yes && !confirm_purge(&found.name)? {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"status": "kept", "entryId": entry})
+                    );
+                } else {
+                    println!("Left as it is.");
+                }
+                return Ok(());
+            }
+            svc.purge_deleted(&entry, &trash_adapter())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"status": "purged", "entryId": entry})
+                );
+            } else {
+                println!(
+                    "Sent '{}' to the OS trash. Agora cannot restore it now.",
+                    found.name
+                );
+            }
+        }
+
         InstanceCmd::Rename { id, name } => {
             InstanceService::new(ctx.clone()).rename(&id, &name)?;
             if json {
@@ -6291,5 +6490,190 @@ mod tests {
             exit_code_from_launcher_error(&LauncherError::UserDecisionRequired),
             71
         );
+    }
+
+    #[test]
+    fn instance_deleted_restore_and_purge_parse() {
+        let cli = Cli::try_parse_from(["agora", "instance", "deleted"]).expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Instance {
+                action: super::InstanceCmd::Deleted
+            }
+        ));
+
+        let cli =
+            Cli::try_parse_from(["agora", "instance", "restore", "entry-1"]).expect("should parse");
+        match cli.command {
+            Commands::Instance {
+                action: super::InstanceCmd::Restore { entry },
+            } => assert_eq!(entry, "entry-1"),
+            _ => panic!("instance restore did not parse"),
+        }
+        assert!(Cli::try_parse_from(["agora", "instance", "restore"]).is_err());
+
+        let cli =
+            Cli::try_parse_from(["agora", "instance", "purge", "entry-1"]).expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Instance {
+                action: super::InstanceCmd::Purge { yes: false, .. }
+            }
+        ));
+        let cli = Cli::try_parse_from(["agora", "instance", "purge", "entry-1", "--yes"])
+            .expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Instance {
+                action: super::InstanceCmd::Purge { yes: true, .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn only_instance_facing_commands_run_the_cleanup_pass() {
+        let parse = |args: &[&str]| Cli::try_parse_from(args).expect("should parse").command;
+        assert!(super::touches_instances(&parse(&[
+            "agora",
+            "list-instances"
+        ])));
+        assert!(super::touches_instances(&parse(&[
+            "agora", "instance", "deleted"
+        ])));
+        assert!(super::touches_instances(&parse(&[
+            "agora", "instance", "purge", "entry-1", "--yes"
+        ])));
+        assert!(!super::touches_instances(&parse(&["agora", "paths"])));
+        assert!(!super::touches_instances(&parse(&[
+            "agora", "settings", "list"
+        ])));
+        assert!(!super::touches_instances(&parse(&[
+            "agora", "registry", "status"
+        ])));
+    }
+
+    #[test]
+    fn size_labels_pick_the_right_unit() {
+        assert_eq!(super::format_size(0), "0 B");
+        assert_eq!(super::format_size(3), "3 B");
+        assert_eq!(super::format_size(1023), "1023 B");
+        assert_eq!(super::format_size(1024), "1.0 KiB");
+        assert_eq!(super::format_size(1024 * 1024), "1.0 MiB");
+        assert_eq!(super::format_size(3 * 1024 * 1024 * 1024 / 2), "1.5 GiB");
+        assert_eq!(super::format_size(20 * 1024 * 1024 * 1024), "20.0 GiB");
+        assert_eq!(super::format_size(u64::MAX), "17179869184.0 GiB");
+    }
+
+    /// A fresh data root with one Recently deleted entry written by hand, so
+    /// the test controls `deleted_at` (and therefore whether it is expired).
+    fn cleanup_fixture(
+        deleted_at: &str,
+    ) -> (
+        agora_core::ctx::Ctx,
+        super::CliProgressSink,
+        std::path::PathBuf,
+    ) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let root =
+            std::env::temp_dir().join(format!("agora-cli-cleanup-{}-{nanos}", std::process::id()));
+        let paths = agora_core::app_paths::AppPaths::from_root(root.clone());
+        let (ctx, _) = agora_core::ctx::CoreContext::initialize(paths.clone()).unwrap();
+        let progress = super::CliProgressSink::new(&root.join("cli.log"), false).unwrap();
+
+        let entry_id = "20200101T000000Z-test";
+        let dir = paths.recently_deleted_root().join(entry_id);
+        std::fs::create_dir_all(dir.join("instance")).unwrap();
+        std::fs::write(dir.join("instance").join("a.jar"), b"mod").unwrap();
+        let record = serde_json::json!({
+            "version": 1,
+            "entry_id": entry_id,
+            "instance_id": "old-pack",
+            "name": "Old Pack",
+            "minecraft_version": "1.20.1",
+            "loader": "vanilla",
+            "import_source": null,
+            "deleted_at": deleted_at,
+            "expires_at": "",
+            "size_bytes": 3,
+            "db": []
+        });
+        std::fs::write(dir.join("entry.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+        (ctx, progress, dir)
+    }
+
+    fn failing_trash() -> agora_core::instance_service::TrashFn {
+        std::sync::Arc::new(|_path: &std::path::Path| {
+            Err(agora_core::error::LauncherError::Generic {
+                code: "ERR_INSTANCE_DELETE".into(),
+                message: "trash unavailable".into(),
+            })
+        })
+    }
+
+    #[test]
+    fn expired_entry_is_sent_to_trash_by_the_cleanup_pass() {
+        let (ctx, progress, dir) = cleanup_fixture("2020-01-01T00:00:00+00:00");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<std::path::PathBuf>::new()));
+        let recorder = seen.clone();
+        let trash: agora_core::instance_service::TrashFn =
+            std::sync::Arc::new(move |path: &std::path::Path| {
+                recorder.lock().unwrap().push(path.to_path_buf());
+                Ok(())
+            });
+        let summary = super::run_recently_deleted_cleanup(&ctx, &trash, &progress, true);
+        assert_eq!(summary.purged, 1, "an expired entry should be purged");
+        assert_eq!(seen.lock().unwrap().as_slice(), &[dir]);
+    }
+
+    #[test]
+    fn failed_cleanup_leaves_the_entry_and_does_not_fail_the_command() {
+        let (ctx, progress, dir) = cleanup_fixture("2020-01-01T00:00:00+00:00");
+        // Returns normally: the caller has no error path to turn into a failure.
+        let summary = super::run_recently_deleted_cleanup(&ctx, &failing_trash(), &progress, true);
+        assert_eq!(summary.purged, 0);
+        assert_eq!(summary.failed, 1);
+        assert!(dir.join("entry.json").is_file(), "the entry must stay");
+        assert!(dir.join("instance").join("a.jar").is_file());
+    }
+
+    #[test]
+    fn cleanup_runs_only_before_instance_facing_commands() {
+        let parse = |args: &[&str]| Cli::try_parse_from(args).expect("should parse").command;
+        let cases: [(&[&str], usize); 4] = [
+            (&["agora", "list-instances"], 1),
+            (&["agora", "instance", "deleted"], 1),
+            (&["agora", "paths"], 0),
+            (&["agora", "settings", "list"], 0),
+        ];
+        for (args, expected_trash_calls) in cases {
+            let (ctx, progress, _dir) = cleanup_fixture("2020-01-01T00:00:00+00:00");
+            let calls = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+            let counter = calls.clone();
+            let trash: agora_core::instance_service::TrashFn =
+                std::sync::Arc::new(move |_path: &std::path::Path| {
+                    *counter.lock().unwrap() += 1;
+                    Ok(())
+                });
+            super::cleanup_before_command(&parse(args), &ctx, &trash, &progress, true);
+            assert_eq!(
+                *calls.lock().unwrap(),
+                expected_trash_calls,
+                "trash calls for {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recent_entry_is_kept_and_never_sent_to_trash() {
+        let now = chrono::Utc::now().to_rfc3339();
+        let (ctx, progress, dir) = cleanup_fixture(&now);
+        // A trash that fails loudly: any call here would show up as `failed`.
+        let summary = super::run_recently_deleted_cleanup(&ctx, &failing_trash(), &progress, true);
+        assert_eq!(summary.kept, 1);
+        assert_eq!(summary.purged + summary.failed, 0);
+        assert!(dir.join("entry.json").is_file());
     }
 }

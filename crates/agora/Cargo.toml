@@ -27,6 +27,9 @@ anyhow = { workspace = true }
 ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
+# OS-trash adapter for "Recently deleted" purges and the cleanup pass. Core
+# takes it as a callback; the desktop app uses the same crate (already locked).
+trash = "3"
 
 [dev-dependencies]
 agora-core = { path = "../agora-core", features = ["test-support"] }

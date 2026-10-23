@@ -209,6 +209,9 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["instance", "repair-loader"],
     &["instance", "recommend-memory"],
     &["instance", "delete"],
+    &["instance", "deleted"],
+    &["instance", "restore"],
+    &["instance", "purge"],
     &["mod", "list"],
     &["mod", "search"],
     &["mod", "install"],
@@ -938,6 +941,146 @@ fn instance_delete_json_output() {
     let parsed = assert_json_stdout(&output);
     assert_eq!(parsed["status"], "deleted");
     assert_eq!(parsed["instanceId"], "json-delete");
+}
+
+// ---------------------------------------------------------------------------
+// Recently deleted: list, restore, purge
+// ---------------------------------------------------------------------------
+
+/// Import a small instance, delete it, and return its Recently deleted entry ID.
+fn import_and_delete(data_dir: &Path, name: &str) -> String {
+    let src = tempdir();
+    let instance_src = src.path().join(name);
+    std::fs::create_dir_all(instance_src.join("mods")).unwrap();
+    std::fs::write(instance_src.join("mods").join("a.jar"), b"mod").unwrap();
+    let import = run_agora(data_dir, &["import", &instance_src.to_string_lossy()]);
+    assert!(import.status.success(), "import should succeed");
+    let delete = run_agora(data_dir, &["instance", "delete", name]);
+    assert!(delete.status.success(), "delete should succeed");
+    let listed = assert_json_stdout(&run_agora_json(data_dir, &["instance", "deleted"]));
+    listed
+        .as_array()
+        .expect("instance deleted --json is an array")
+        .iter()
+        .find(|entry| entry["instance_id"] == name)
+        .unwrap_or_else(|| panic!("{name} is not in Recently deleted: {listed}"))["entry_id"]
+        .as_str()
+        .expect("entry_id is a string")
+        .to_string()
+}
+
+#[test]
+fn instance_deleted_lists_nothing_on_a_fresh_data_root() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let json = run_agora_json(&data_dir, &["instance", "deleted"]);
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    assert_eq!(assert_json_stdout(&json), serde_json::json!([]));
+    let human = run_agora(&data_dir, &["instance", "deleted"]);
+    assert!(human.status.success());
+    assert!(String::from_utf8_lossy(&human.stdout).contains("empty"));
+}
+
+#[test]
+fn deleted_instance_is_listed_with_id_name_time_and_size() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "listed-pack");
+
+    let parsed = assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"]));
+    let entry = &parsed[0];
+    assert_eq!(entry["entry_id"], entry_id.as_str());
+    assert_eq!(entry["name"], "listed-pack");
+    assert!(entry["deleted_at"].is_string(), "{entry}");
+    assert!(entry["size_bytes"].as_u64().unwrap_or(0) >= 3, "{entry}");
+
+    let human = run_agora(&data_dir, &["instance", "deleted"]);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains(&entry_id), "{stdout}");
+    assert!(stdout.contains("listed-pack"), "{stdout}");
+    let row = stdout
+        .lines()
+        .find(|line| line.contains("listed-pack"))
+        .unwrap_or_else(|| panic!("no row for listed-pack:\n{stdout}"));
+    assert!(
+        row.trim_end().ends_with(" B") || row.trim_end().ends_with(" KiB"),
+        "a small instance should show its size in B or KiB: {row}"
+    );
+}
+
+#[test]
+fn restore_brings_a_deleted_instance_back_and_empties_the_list() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "restore-me");
+    assert!(!run_agora(&data_dir, &["get-instance", "restore-me"])
+        .status
+        .success());
+
+    let restore = run_agora_json(&data_dir, &["instance", "restore", &entry_id]);
+    assert!(
+        restore.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restore.stderr)
+    );
+    let parsed = assert_json_stdout(&restore);
+    assert_eq!(parsed["status"], "restored");
+    assert_eq!(parsed["entryId"], entry_id.as_str());
+    assert_eq!(parsed["instanceId"], "restore-me");
+    assert_eq!(parsed["renamed"], false);
+
+    assert!(run_agora(&data_dir, &["get-instance", "restore-me"])
+        .status
+        .success());
+    let paths = assert_json_stdout(&run_agora_json(&data_dir, &["paths"]));
+    let mod_file = Path::new(paths["instances"].as_str().unwrap())
+        .join("restore-me")
+        .join("mods")
+        .join("a.jar");
+    assert!(
+        mod_file.is_file(),
+        "the mod file came back with the instance"
+    );
+    assert_eq!(
+        assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"])),
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn restore_refuses_unknown_and_traversal_entry_ids() {
+    let (_tmp, data_dir) = temp_data_dir();
+    for entry in ["no-such-entry", "../../outside", "..\\..\\outside"] {
+        let output = run_agora(&data_dir, &["instance", "restore", entry]);
+        assert!(!output.status.success(), "restore {entry} should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("no longer available"), "{stderr}");
+    }
+}
+
+#[test]
+fn purge_without_yes_refuses_without_a_terminal_and_keeps_the_entry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "keep-me");
+
+    // The test harness gives the child no terminal, so the prompt cannot run.
+    let output = run_agora(&data_dir, &["instance", "purge", &entry_id]);
+    assert!(!output.status.success(), "purge must not run unconfirmed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--yes"), "{stderr}");
+
+    let listed = assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"]));
+    assert_eq!(listed[0]["entry_id"], entry_id.as_str());
+}
+
+#[test]
+fn purge_unknown_entry_fails_even_with_yes() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["instance", "purge", "no-such-entry", "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No deleted instance"), "{stderr}");
 }
 
 // ---------------------------------------------------------------------------
