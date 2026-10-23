@@ -2275,6 +2275,35 @@ fn loadout_apply_json_output() {
 }
 
 #[test]
+fn loadout_apply_saves_an_undo_point_the_snapshot_list_shows() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_minimal_instance(&data_dir, "loadout-undo");
+    run_agora(&data_dir, &["loadout", "create", "loadout-undo", "full"]);
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-undo", "full"]);
+    assert!(
+        output.status.success(),
+        "loadout apply should succeed:
+{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("before-loadout"),
+        "stdout should name the undo point:
+{stdout}"
+    );
+
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-undo"]);
+    let parsed = assert_json_stdout(&list);
+    let snapshots: Vec<serde_json::Value> = serde_json::from_value(parsed).unwrap();
+    assert!(
+        snapshots.iter().any(|s| s["label"] == "before-loadout"),
+        "apply from the CLI must save an undo point: {snapshots:?}"
+    );
+}
+
+#[test]
 fn loadout_delete_succeeds() {
     let (_tmp, data_dir) = temp_data_dir();
     create_minimal_instance(&data_dir, "loadout-del");

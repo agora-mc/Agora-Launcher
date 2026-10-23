@@ -2264,6 +2264,13 @@ export interface Snapshot {
   is_pre_restore: boolean;
 }
 
+/** One item a profile records, with the on/off state it was saved in. */
+export interface LoadoutItem {
+  filename: string;
+  content_type: string;
+  enabled: boolean;
+}
+
 /** Enabled items per kind, counted when the profile was saved. */
 export interface LoadoutCoverage {
   mods: number;
@@ -2279,6 +2286,8 @@ export interface LoadoutProfile {
   created_at: string;
   /** Null for profiles saved before counts were recorded. */
   covers?: LoadoutCoverage | null;
+  /** Every item the profile records, on and off. Null for profiles saved before this. */
+  items?: LoadoutItem[] | null;
 }
 
 export interface ImportResult {

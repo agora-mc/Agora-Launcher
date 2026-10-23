@@ -109,7 +109,7 @@ describe('loadout profile coverage', () => {
     await openLoadoutTab();
 
     expect(await screen.findByText(
-      'Switches on: 1 mod, 1 resource pack, 0 shader packs, 0 data packs, 0 worlds. Everything else of these kinds is switched off.',
+      'Switches on: 1 mod, 1 resource pack, 0 shader packs, 0 data packs, 0 worlds. Mods it does not list are switched off; other items it does not list are left alone.',
     )).toBeTruthy();
   });
 
@@ -120,9 +120,10 @@ describe('loadout profile coverage', () => {
     expect(await screen.findByText(/Saved before counts were recorded: 2 items switched on\./)).toBeTruthy();
   });
 
-  it('explains that Apply also switches off anything not in the profile', async () => {
+  it('explains that Apply switches off unlisted mods but leaves unlisted packs and worlds alone', async () => {
     await openLoadoutTab();
-    expect(screen.getByText(/anything not in the profile is switched off/)).toBeTruthy();
+    expect(screen.getByText(/A mod it does not list is switched off\./)).toBeTruthy();
+    expect(screen.getByText(/Packs and worlds it does not list, such as ones added since it was saved, are left as they are\./)).toBeTruthy();
   });
 });
 

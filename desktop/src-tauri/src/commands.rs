@@ -4949,30 +4949,21 @@ pub async fn apply_loadout_profile(
             message: e.to_string(),
         })?;
     tokio::task::spawn_blocking(move || {
-        let snapshot = agora_core::snapshot::create_snapshot(
-            &instance_dir,
-            Some(agora_core::loadout::UNDO_SNAPSHOT_LABEL),
+        // Core takes the undo point, applies, and rolls back on failure.
+        agora_core::loadout::apply_profile_with_undo(&instance_dir, &profile_name).map_err(
+            |error| {
+                let code = match &error {
+                    agora_core::loadout::LoadoutApplyError::UndoPoint(_) => "ERR_SNAPSHOT_REQUIRED",
+                    agora_core::loadout::LoadoutApplyError::Retention(_) => "ERR_RETENTION",
+                    agora_core::loadout::LoadoutApplyError::Profile(_)
+                    | agora_core::loadout::LoadoutApplyError::Apply { .. } => "ERR_LOADOUT",
+                };
+                LauncherError::Generic {
+                    code: code.into(),
+                    message: error.to_string(),
+                }
+            },
         )
-            .map_err(|error| LauncherError::Generic {
-                code: "ERR_SNAPSHOT_REQUIRED".into(),
-                message: format!("Could not create the required recovery snapshot: {error}"),
-            })?;
-        if let Err(error) = agora_core::loadout::apply_profile(&instance_dir, &profile_name) {
-            let restored = agora_core::snapshot::restore_snapshot(&instance_dir, &snapshot.id);
-            return Err(LauncherError::Generic {
-                code: "ERR_LOADOUT".into(),
-                message: match restored {
-                    Ok(_) => format!("Loadout application failed and was rolled back: {error}"),
-                    Err(restore_error) => format!(
-                        "Loadout application failed and rollback also failed: {error}; {restore_error}"
-                    ),
-                },
-            });
-        }
-        agora_core::lkg::run_retention(&instance_dir).map_err(|error| LauncherError::Generic {
-            code: "ERR_RETENTION".into(),
-            message: error,
-        })
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?

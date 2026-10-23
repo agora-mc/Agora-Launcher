@@ -272,7 +272,7 @@ function countOf(count: number, one: string, many: string): string {
 function describeLoadoutCoverage(prof: LoadoutProfile): string {
   const covers = prof.covers;
   if (!covers) {
-    return `Saved before counts were recorded: ${countOf(prof.enabled_mods.length, 'item', 'items')} switched on. Apply still switches each mod, resource pack, shader pack, data pack and world to match.`;
+    return `Saved before counts were recorded: ${countOf(prof.enabled_mods.length, 'item', 'items')} switched on. Mods it does not list are switched off; other items it does not list are left alone.`;
   }
   const parts = [
     countOf(covers.mods, 'mod', 'mods'),
@@ -281,7 +281,7 @@ function describeLoadoutCoverage(prof: LoadoutProfile): string {
     countOf(covers.datapacks, 'data pack', 'data packs'),
     countOf(covers.worlds, 'world', 'worlds'),
   ];
-  return `Switches on: ${parts.join(', ')}. Everything else of these kinds is switched off.`;
+  return `Switches on: ${parts.join(', ')}. Mods it does not list are switched off; other items it does not list are left alone.`;
 }
 
 function previewJavaMajor(version: string | undefined): number {
@@ -2713,7 +2713,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           </div>
 
           <p className="text-xs text-muted-foreground">
-            A profile records which mods, resource packs, shader packs, data packs and worlds are switched on. Apply switches every one of those items to match it, so anything not in the profile is switched off, including items added after it was saved. Configs, versions and the loader are not part of a profile.
+            A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off. Apply sets each item it records to that state. A mod it does not list is switched off. Packs and worlds it does not list, such as ones added since it was saved, are left as they are. Configs, versions and the loader are not part of a profile.
           </p>
 
           {profiles.length === 0 ? (

@@ -3712,7 +3712,7 @@ async fn run_loadout_command(
             if !instance_dir.exists() {
                 anyhow::bail!("Instance '{}' not found", instance);
             }
-            agora_core::loadout::apply_profile(&instance_dir, &name)
+            agora_core::loadout::apply_profile_with_undo(&instance_dir, &name)
                 .map_err(|e| anyhow::anyhow!("Failed to apply loadout: {e}"))?;
             if json {
                 println!(
@@ -3720,7 +3720,12 @@ async fn run_loadout_command(
                     serde_json::json!({"status": "applied", "instanceId": instance, "profile": name})
                 );
             } else {
-                println!("Applied loadout '{}' to '{}'", name, instance);
+                println!(
+                    "Applied loadout '{}' to '{}'. An undo point labelled '{}' was saved first (see `agora snapshots list`).",
+                    name,
+                    instance,
+                    agora_core::loadout::UNDO_SNAPSHOT_LABEL
+                );
             }
         }
         LoadoutCmd::Delete { instance, name } => {
