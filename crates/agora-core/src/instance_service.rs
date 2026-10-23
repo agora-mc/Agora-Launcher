@@ -829,6 +829,14 @@ impl InstanceService {
         &self,
         trash: &TrashFn,
     ) -> crate::recently_deleted::CleanupSummary {
+        // First repair anything a crash left half-done.
+        if let Ok(mut conn) = self.connection() {
+            crate::recently_deleted::reconcile(
+                &self.ctx.paths.recently_deleted_root(),
+                &mut conn,
+                &self.ctx.paths.instances_root(),
+            );
+        }
         crate::recently_deleted::cleanup(
             &self.ctx.paths.recently_deleted_root(),
             chrono::DateTime::<chrono::Utc>::from(self.ctx.clock.now()),
@@ -1137,7 +1145,18 @@ impl InstanceService {
                 last_result: "cloned".into(),
                 launcher_kind: source_import.launcher_kind,
             };
-            let _ = crate::db::replace_instance_import(&conn, &record, &[]);
+            // Fail the clone rather than hand back one that quietly lost its
+            // provenance: roll the new instance back completely.
+            if let Err(error) = crate::db::replace_instance_import(&conn, &record, &[]) {
+                let _ = crate::db::delete_instance(&conn, &new_row.instance_id);
+                let _ = std::fs::remove_dir_all(&dest_dir);
+                let message = format!("Cannot record where the clone came from: {error}");
+                op.fail(message.clone());
+                return Err(LauncherError::Generic {
+                    code: "ERR_CLONE".into(),
+                    message,
+                });
+            }
         }
 
         // Persist pack file inventory for the clone — recomputed from the
@@ -2948,6 +2967,262 @@ $#
                 );
             }
             let _ = std::fs::remove_dir_all(root);
+        }
+
+        /// Every table carrying an instance_id is captured. When a new one is
+        /// added this fails until someone decides how it behaves on delete
+        /// (and, if it holds permissions, adds it to PERMISSION_TABLES).
+        #[test]
+        fn every_instance_id_table_is_covered() {
+            let (ctx, root) = context();
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            let mut covered: Vec<String> = crate::recently_deleted::instance_tables(&conn)
+                .unwrap()
+                .into_iter()
+                .map(|s| s.table)
+                .collect();
+            covered.sort();
+            let mut with_column: Vec<String> = Vec::new();
+            let mut stmt = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+                .unwrap();
+            let names: Vec<String> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            for name in names {
+                let mut info = conn
+                    .prepare(&format!("PRAGMA table_info(\"{name}\")"))
+                    .unwrap();
+                let has = info
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .unwrap()
+                    .any(|c| c.unwrap() == "instance_id");
+                if has {
+                    with_column.push(name);
+                }
+            }
+            for t in &with_column {
+                assert!(
+                    covered.contains(t),
+                    "{t} has instance_id but is not captured"
+                );
+            }
+            // Reviewed list: a new table must be added here on purpose.
+            let mut reviewed: Vec<&str> = vec![
+                "crash_events",
+                "crash_survivals",
+                "instance_import_files",
+                "instance_import_jobs",
+                "instance_imports",
+                "instance_pack_files",
+                "instance_update_cache",
+                "launch_history",
+                "mcp_approval_grants",
+                "plugin_storage",
+                "user_instances",
+            ];
+            reviewed.sort();
+            let mut direct = with_column.clone();
+            direct.sort();
+            assert_eq!(
+                direct, reviewed,
+                "a table with an instance_id column was added or removed: review its delete/restore behaviour"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn permission_rows_do_not_carry_to_a_renamed_restore_but_do_to_the_same_id() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            {
+                let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                conn.execute(
+                    "INSERT INTO mcp_approval_grants (tool_name, instance_id, state, granted_at)
+                     VALUES ('tool.x', 'pack', 'granted', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+                // A child table without instance_id, reached through a foreign key.
+                conn.execute(
+                    "INSERT INTO crash_survivals (instance_id, occurred_at) VALUES ('pack', 't')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO crash_survival_mods (survival_id, mod_id) VALUES (last_insert_rowid(), 'm')",
+                    [],
+                )
+                .unwrap();
+            }
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+            assert_eq!(count("SELECT COUNT(*) FROM crash_survival_mods"), 0);
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+
+            // Same id: everything comes back, grants and linked rows included.
+            service.restore_deleted(&entry.entry_id).unwrap();
+            assert_eq!(
+                count("SELECT COUNT(*) FROM mcp_approval_grants WHERE instance_id='pack'"),
+                1
+            );
+            assert_eq!(count("SELECT COUNT(*) FROM crash_survival_mods"), 1);
+
+            // Renamed restore: no grant for the new id.
+            service.delete("pack").unwrap();
+            seed(&ctx, "pack");
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let outcome = service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(outcome.renamed);
+            assert_eq!(count("SELECT COUNT(*) FROM mcp_approval_grants"), 0);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn reconcile_finishes_a_delete_that_crashed_before_the_rows_went() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let before = {
+                let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                crate::recently_deleted::capture_db_state(&conn, "pack").unwrap()
+            };
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            // Crash simulation: the folder is in the entry but the rows are back.
+            {
+                let mut conn =
+                    crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                crate::recently_deleted::replay_db_state(&mut conn, &before, "pack", "pack", None)
+                    .unwrap();
+            }
+            assert_eq!(service.list().unwrap().len(), 1);
+            let (trash, _) = fake_trash(root.join("bin"));
+            service.cleanup_recently_deleted(&trash);
+            assert!(service.list().unwrap().is_empty());
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(ctx
+                .paths
+                .instance_dir("pack")
+                .unwrap()
+                .join("mods/a.jar")
+                .is_file());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn reconcile_leaves_a_different_instance_with_a_reused_id_alone() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            // A new instance (different created_at) took the id, then lost its folder.
+            seed(&ctx, "pack");
+            {
+                let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                conn.execute(
+                    "UPDATE user_instances SET created_at = 'other' WHERE instance_id='pack'",
+                    [],
+                )
+                .unwrap();
+            }
+            std::fs::remove_dir_all(ctx.paths.instance_dir("pack").unwrap()).unwrap();
+            let (trash, _) = fake_trash(root.join("bin"));
+            service.cleanup_recently_deleted(&trash);
+            assert_eq!(service.list().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn reconcile_finishes_a_restore_that_crashed_before_the_rows_came_back() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            // Crash simulation: folder moved back, rows not restored.
+            std::fs::rename(
+                ctx.paths
+                    .recently_deleted_root()
+                    .join(&entry.entry_id)
+                    .join("instance"),
+                ctx.paths.instance_dir("pack").unwrap(),
+            )
+            .unwrap();
+            assert!(service.list().unwrap().is_empty());
+            let (trash, _) = fake_trash(root.join("bin"));
+            service.cleanup_recently_deleted(&trash);
+            assert_eq!(service.list().unwrap().len(), 1);
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn hostile_entry_contents_are_refused_on_restore() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let json_path = ctx
+                .paths
+                .recently_deleted_root()
+                .join(&entry.entry_id)
+                .join("entry.json");
+            let original = std::fs::read_to_string(&json_path).unwrap();
+            let tamper = |f: &dyn Fn(&mut serde_json::Value)| {
+                let mut v: serde_json::Value = serde_json::from_str(&original).unwrap();
+                f(&mut v);
+                std::fs::write(&json_path, serde_json::to_vec(&v).unwrap()).unwrap();
+            };
+            // Unknown table.
+            tamper(&|v| v["db"][0]["table"] = "sqlite_master".into());
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Unknown column.
+            tamper(&|v| {
+                v["db"][0]["columns"][0] = "evil\" TEXT); DROP TABLE user_instances; --".into()
+            });
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Rows for another instance.
+            tamper(&|v| {
+                let t = v["db"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|d| d["table"] == "launch_history")
+                    .unwrap();
+                let col = t["columns"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .position(|c| c == "instance_id")
+                    .unwrap();
+                t["rows"][0][col] = "victim".into();
+            });
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Instance id that escapes the instances folder.
+            tamper(&|v| v["instance_id"] = "..\\..\\x".into());
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            tamper(&|v| v["instance_id"] = "pack:stream".into());
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Nothing was written anywhere.
+            assert!(service.list().unwrap().is_empty());
+            assert!(!ctx.paths.instance_dir("pack").unwrap().exists());
+            // The untampered entry still restores.
+            std::fs::write(&json_path, &original).unwrap();
+            service.restore_deleted(&entry.entry_id).unwrap();
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn instance_ids_with_a_colon_are_refused() {
+            assert!(crate::app_paths::validate_path_component("pack:stream").is_err());
+            assert!(crate::app_paths::validate_path_component("C:pack").is_err());
+            assert!(crate::app_paths::validate_path_component("pack").is_ok());
         }
     }
 }
