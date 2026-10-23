@@ -31,9 +31,11 @@ describe('BrowseStats score line on a card', () => {
   it('shows the numbers as plain, read-only text', () => {
     const { container } = render(<BrowseStats item={curated()} />);
 
-    expect(screen.getByText('Score 5')).toBeInTheDocument();
     expect(screen.getByText('7 up')).toBeInTheDocument();
     expect(screen.getByText('2 down')).toBeInTheDocument();
+    // The net score is kept out of the card face (jargon) and into the tooltip.
+    expect(screen.queryByText(/Score/)).toBeNull();
+    expect(container.querySelector('.browse-stats')).toHaveAttribute('title', expect.stringContaining('Net score 5'));
     // The vote arrows were the things that looked clickable.
     expect(container.querySelectorAll('svg')).toHaveLength(0);
     expect(screen.queryByRole('button')).toBeNull();
@@ -43,7 +45,7 @@ describe('BrowseStats score line on a card', () => {
   it('falls back to zero when a vote count is missing', () => {
     render(<BrowseStats item={curated({ upvotes: null, downvotes: null, netScore: 0 })} />);
     expect(screen.getByText('0 up')).toBeInTheDocument();
-    expect(screen.getByText('Score 0')).toBeInTheDocument();
+    expect(screen.queryByText(/Score/)).toBeNull();
   });
 
   it('keeps the download and follower line for other sources', () => {
