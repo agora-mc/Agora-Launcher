@@ -110,6 +110,83 @@ If the catalog is missing or stale, `agora registry sync` downloads and verifies
 If nothing implicates a mod, consider the Java version, graphics drivers, allocated memory
 (`agora --json instance recommend-memory <ID>`), shaders, or a damaged world.
 
+## Bisecting a crash
+
+When the investigation does not name one mod, bisect: it turns half the enabled mods off per
+round and the person says whether the game still crashes.
+
+```bash
+agora bisect start <ID> [--suspect <FILENAME>]
+agora bisect apply <ID>
+agora bisect status <ID>
+agora bisect good <ID>
+agora bisect bad <ID>
+agora bisect back <ID>
+agora bisect cancel <ID>
+```
+
+`start` plans the session and moves nothing. `apply` switches the round's mods off, so ask first.
+The person launches the game themselves, then `good` or `bad` narrows the suspects. `cancel` at
+any point puts every mod back, and it also works on a locked instance. `bisect run` is an
+interactive loop for a person at a terminal, so prefer the single steps here. The CLI never
+launches the game, and `start` and `apply` refuse a locked or running instance.
+
+## Mod dependencies, updates and pins
+
+```bash
+agora --json mod graph <ID>
+agora mod orphans <ID>
+agora mod why <ID> <FILE>
+agora mod disable-plan <ID> <FILE>
+agora mod enable <ID> <FILE> --with-deps
+agora instance updates <ID>
+agora instance updates <ID> --apply
+agora instance updates <ID> --apply --yes
+agora mod pin <ID> <FILE>
+agora mod unpin <ID> <FILE>
+agora mod changelog <ID> <FILE>
+agora pack update-preview <ID> <MRPACK>
+agora pack update <ID> <MRPACK> --yes
+```
+
+The graph, orphans, why, disable-plan, changelog and check commands only read. Use `disable-plan`
+before a disable so the person sees what else goes with it. `instance updates --apply` and
+`pack update` print their plan and change nothing until `--yes`. Every conflict in a pack update
+needs `--keep-ours` or `--take-theirs`, and the person should choose. A pin keeps a file out of
+update checks until it is unpinned.
+
+## Instance maintenance and templates
+
+```bash
+agora instance health --all
+agora instance revert <ID>
+agora instance loader-version <ID> <VERSION>
+agora instance java <ID> [--memory <MB>] [--jvm-args <ARGS>]
+agora instance wrapper <ID> [<COMMAND> | --clear]
+agora template list
+agora template create <NAME> --from <ID> --include <FILE>...
+agora template apply <TEMPLATE_ID> <ID>
+agora template delete <TEMPLATE_ID>
+```
+
+`revert` puts an unlocked instance back to its lock snapshot, so confirm first. `loader-version`
+shows its plan and asks; pass `--yes` only once the person agrees. `template apply` takes an undo
+snapshot first, and `template delete` asks unless given `--yes`.
+
+## Packs, launcher imports and backups
+
+- **Export:** `agora pack export <ID> --format mrpack|agora|lockfile --out <FILE>`. An Agora pack
+  can leave out mods with no catalog or Modrinth source, and the CLI asks before exporting them.
+- **Review, then import:** `agora pack review <FILE>` prints the plan and a review id. Hard
+  problems always refuse. Import only what the person has read, with
+  `agora pack import <REVIEW_ID>`. Do not add `--import-anyway` unless they accept what is left out.
+- **Launchers:** `agora import launchers` lists what can be imported, `agora import plan <KEY>...`
+  shows what would be copied and prints a fingerprint, and `agora import run <KEY>... --fingerprint <HASH>`
+  imports. Run it only with the fingerprint from the plan the person saw.
+- **Backups:** `agora backup export <ID> --out <DIR>` writes a snapshot as one zip, and
+  `agora backup import <FILE>` restores it as a snapshot without touching the live instance.
+  `agora backup prune <ID> --keep <N>` deletes old snapshots, so it needs the person's yes.
+
 ## Finding and installing content
 
 ```bash
