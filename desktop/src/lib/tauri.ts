@@ -1007,6 +1007,8 @@ export interface HealthBlocker {
   suggested_action: string | null;
   /** Present when this blocker is a loader requirement finding. */
   loader_compatibility?: LoaderCompatibilityIssue | null;
+  /** The tracked jar that would satisfy this blocker, when its file is missing from mods/ (Rust: missing_file). */
+  missing_file?: string | null;
 }
 
 export interface HealthRecommendation {

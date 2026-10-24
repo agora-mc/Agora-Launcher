@@ -208,7 +208,15 @@ export interface DepConflict {
 export type ConflictKind = 'version-conflict' | 'duplicate-mod' | 'loader-mismatch' | 'game-version-mismatch' | 'incompatible-mod' | 'broken-reverse-dep';
 export type ConflictResolution = 'replace' | 'skip' | 'disable-existing' | 'abort' | 'remove-anyway';
 
-export interface FileAdd { targetFilename: string; stagingFilename: string; artifact: ResolvedArtifact; hashes: HashSpec; size: number; }
+export interface FileAdd {
+  targetFilename: string;
+  stagingFilename: string;
+  artifact: ResolvedArtifact;
+  hashes: HashSpec;
+  size: number;
+  /** The instance already records this file and it is missing from disk: the add restores it. */
+  replacesMissingFile?: boolean;
+}
 export interface FileRemove { filename: string; }
 export interface FileDisable { filename: string; }
 

@@ -990,6 +990,7 @@ mod curated_conflict_tests {
             hashes: HashSpec { values: vec![] },
             size: 0,
             installed_as_dependency: false,
+            replaces_missing_file: false,
         }
     }
 

@@ -601,6 +601,24 @@ impl Resolver {
     /// `root_artifact` is the curated file being installed. Its own jar is
     /// read for the mods it requires, so a requirement the registry does not
     /// declare still shows up in the review.
+    /// The manifest as dependency resolution judges it: a mod that cannot
+    /// satisfy a dependency (disabled, or its jar is not in `mods/`) is dropped,
+    /// so its requirement is planned again instead of reported as installed.
+    /// The install planner still sees the real manifest and handles the file.
+    ///
+    /// When the instance folder cannot be read, nothing counts as present. That
+    /// plans more installs, and the planner then checks each one against the disk.
+    fn dependency_view(&self, manifest: &InstanceManifest) -> InstanceManifest {
+        let on_disk = match self.ctx.paths.instance_dir(&manifest.instance_id) {
+            Ok(dir) => crate::dependency_ops::mod_jars_on_disk(&dir),
+            Err(_) => std::collections::HashSet::new(),
+        };
+        let mut view = manifest.clone();
+        view.mods
+            .retain(|item| crate::dependency_ops::satisfies_dependency(item, &on_disk));
+        view
+    }
+
     async fn resolve_curated_dependencies(
         &self,
         manifest: &InstanceManifest,
@@ -608,6 +626,7 @@ impl Resolver {
         batch: Option<&BatchContext>,
         root_artifact: Option<&ResolvedArtifact>,
     ) -> LauncherResult<(Vec<ResolvedDep>, Vec<DepConflict>)> {
+        let dependency_view = self.dependency_view(manifest);
         let (dependency_map, aliases, known_conflicts, dep_display) = {
             let conn = open_registry_db(&self.ctx.paths.registry_db())?;
             let dependency_map = registry::get_all_manifest_dependencies(&conn)?;
@@ -639,7 +658,7 @@ impl Resolver {
             )
         };
 
-        let installed: Vec<&InstalledMod> = all_installed(manifest).collect();
+        let installed: Vec<&InstalledMod> = all_installed(&dependency_view).collect();
         let installed_ids: BTreeMap<String, &&InstalledMod> = installed
             .iter()
             .flat_map(|item| {
@@ -1807,11 +1826,12 @@ impl Resolver {
         batch: Option<&BatchContext>,
         allow_closest_version: bool,
     ) -> Vec<ResolvedDep> {
-        let installed_ids: HashSet<String> = all_installed(manifest)
+        let dependency_view = self.dependency_view(manifest);
+        let installed_ids: HashSet<String> = all_installed(&dependency_view)
             .filter_map(|item| item.modrinth_id.as_ref())
             .map(|id| id.to_ascii_lowercase())
             .collect();
-        let installed_loader_ids: HashSet<String> = all_installed(manifest)
+        let installed_loader_ids: HashSet<String> = all_installed(&dependency_view)
             .flat_map(|item| {
                 item.mod_jar_id
                     .iter()
@@ -1858,7 +1878,7 @@ impl Resolver {
                 if let Some(loader_id) = identity.strip_prefix("loader-id:") {
                     let loader_key = loader_id.to_ascii_lowercase();
                     if installed_loader_ids.contains(&loader_key) {
-                        let installed = all_installed(manifest).find(|item| {
+                        let installed = all_installed(&dependency_view).find(|item| {
                             item.mod_jar_id
                                 .iter()
                                 .chain(item.provided_mod_ids.iter())
@@ -1976,7 +1996,7 @@ pinned_version: None,
             expanded.insert(key.clone(), requirement);
 
             if installed_ids.contains(&key) {
-                let installed = all_installed(manifest).find(|item| {
+                let installed = all_installed(&dependency_view).find(|item| {
                     item.modrinth_id
                         .as_deref()
                         .map(str::to_ascii_lowercase)
@@ -5898,5 +5918,98 @@ modId=\"xaerominimap\"
             dependency_version_reason(error, &manifest),
             "the registry is offline"
         );
+    }
+
+    fn view_entry(filename: &str, enabled: bool) -> crate::models::InstalledMod {
+        crate::models::InstalledMod {
+            provider: None,
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            filename: filename.to_string(),
+            registry_id: Some(filename.trim_end_matches(".jar").to_string()),
+            modrinth_id: None,
+            source: "registry".into(),
+            source_url: None,
+            version: Some("1.0".into()),
+            sha256: String::new(),
+            installed_at: String::new(),
+            java_packages: vec![],
+            mod_jar_id: Some(filename.trim_end_matches(".jar").to_string()),
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+            provided_mod_ids: vec![],
+            enabled,
+            content_type: "mod".into(),
+        }
+    }
+
+    #[test]
+    fn dependency_view_keeps_only_mods_that_can_satisfy_a_dependency() {
+        // Real folder shapes: a present jar, a disabled one (`.jar.disabled`),
+        // and a tracked enabled entry whose jar is gone. Only the first may
+        // count as already installed when a dependency is resolved.
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = crate::ctx::Ctx::for_testing(tmp.path().to_path_buf());
+        let instance_dir = ctx.paths.instance_dir("inst").unwrap();
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        std::fs::write(instance_dir.join("mods").join("present.jar"), b"jar").unwrap();
+        std::fs::write(instance_dir.join("mods").join("off.jar.disabled"), b"jar").unwrap();
+        let resolver = Resolver::new(ctx);
+        let manifest = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "inst".into(),
+            name: "Test".into(),
+            created_from_pack: None,
+            minecraft_version: "1.20.4".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.11".into(),
+            is_locked: false,
+            mods: vec![
+                view_entry("present.jar", true),
+                view_entry("off.jar", false),
+                view_entry("gone.jar", true),
+            ],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+        let view = resolver.dependency_view(&manifest);
+        let kept: Vec<&str> = view.mods.iter().map(|m| m.filename.as_str()).collect();
+        assert_eq!(kept, vec!["present.jar"]);
+        // The planner still gets the real manifest; the view is only a copy.
+        assert_eq!(manifest.mods.len(), 3);
+    }
+
+    #[test]
+    fn dependency_view_of_an_unknown_instance_keeps_nothing() {
+        // An instance folder that cannot be resolved counts as empty, so every
+        // dependency is planned again rather than assumed present.
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = crate::ctx::Ctx::for_testing(tmp.path().to_path_buf());
+        let resolver = Resolver::new(ctx);
+        let manifest = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "../escape".into(),
+            name: "Test".into(),
+            created_from_pack: None,
+            minecraft_version: "1.20.4".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.11".into(),
+            is_locked: false,
+            mods: vec![view_entry("present.jar", true)],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+        let view = resolver.dependency_view(&manifest);
+        assert!(view.mods.is_empty());
     }
 }

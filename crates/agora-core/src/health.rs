@@ -101,6 +101,11 @@ pub struct Blocker {
     pub filename: Option<String>,
     pub message: String,
     pub suggested_action: Option<String>,
+    /// The tracked jar that would satisfy this requirement if it were back in
+    /// `mods/`. Set only when that file is known to be missing, so the desktop
+    /// can offer Reinstall without parsing the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_file: Option<String>,
     /// Structured loader-compatibility evidence when this blocker is a loader
     /// requirement finding. Absent for every other blocker kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,7 +206,10 @@ const HEALTH_CACHE_CAPACITY: usize = 64;
 /// matching parser cache schema can retain literal `${...}` constraints.
 /// v7: reports carry `missing_files`. A v6 report would deserialize with an
 /// empty list, which would read as "nothing is missing" to the desktop.
-const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 7;
+/// v8: a requirement supplied only by a missing tracked file is a blocker with
+/// `missing_file` set. In v7 the same finding was a warning (or absent), so a
+/// v7 report would understate it.
+const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 8;
 const JAR_METADATA_CACHE_SCHEMA_VERSION: u32 = 1;
 // v2 resolves Forge/NeoForge TOML variables and distinguishes third-party
 // language-provider mods from built-in FML loader capabilities.
@@ -969,6 +977,15 @@ fn is_fabric_api_module(id: &str) -> bool {
     id.starts_with("fabric-") || id.starts_with("fabric_")
 }
 
+/// Whether a manifest entry declares itself as `dep_resolved` (its primary id
+/// or a module id it provides), with aliases applied on both sides.
+fn entry_supplies_id(item: &InstalledMod, dep_resolved: &str, aliases: &AliasMap) -> bool {
+    item.mod_jar_id
+        .iter()
+        .chain(item.provided_mod_ids.iter())
+        .any(|id| aliases.resolve_or_self(id).to_lowercase() == dep_resolved)
+}
+
 /// Registry-derived inputs for one health scan: JAR alias pairs, curated
 /// dependency overrides keyed by registry id, and `(item_id, display_name)`
 /// for every active catalog mod. All three degrade to empty when `registry.db`
@@ -1219,6 +1236,20 @@ fn health_from_inventory(
     }
 
     // 5. Required dependency checks (alias-aware)
+    //
+    // Presence is judged from files on disk only, so a tracked entry whose file
+    // is gone satisfies nothing. When such an entry is the only thing that
+    // would supply a requirement, name it: the user needs to reinstall it.
+    let missing_entries: Vec<&InstalledMod> = manifest
+        .mods
+        .iter()
+        .filter(|item| {
+            item.enabled
+                && item.content_type == "mod"
+                && missing_enabled_manifest_files.contains(&item.filename)
+        })
+        .collect();
+    let mut reported_missing_providers: HashSet<(String, String)> = HashSet::new();
     for ij in &jars {
         let source = &ij.filename;
         for dep in &ij.metadata.depends_on {
@@ -1233,6 +1264,44 @@ fn health_from_inventory(
                 // new enough Fabric or NeoForge), so no jar has to.
                 || is_platform_dependency(dep, &manifest.loader, &manifest.loader_version);
             if !dep_present {
+                if let Some(provider) = missing_entries
+                    .iter()
+                    .find(|item| entry_supplies_id(item, &dep_resolved, &aliases))
+                {
+                    // The tracked file is known to be gone, so this is a
+                    // definite gap, not an unreadable-JAR maybe: it blocks
+                    // whatever the inventory state.
+                    let provider_id = provider
+                        .registry_id
+                        .clone()
+                        .or_else(|| provider.mod_jar_id.clone())
+                        .unwrap_or_else(|| player_mod_label(&provider.filename));
+                    let provider_name = catalog_names
+                        .get(&provider_id.to_lowercase())
+                        .cloned()
+                        .unwrap_or_else(|| provider_id.clone());
+                    if reported_missing_providers
+                        .insert((source.clone(), provider.filename.clone()))
+                    {
+                        blockers.push(Blocker {
+                            kind: BlockerKind::MissingRequiredDependency,
+                            mod_id: Some(provider_id),
+                            filename: Some(source.clone()),
+                            message: format!(
+                                "{} needs {}, whose file is missing.",
+                                player_mod_label(source),
+                                provider_name
+                            ),
+                            suggested_action: Some(format!(
+                                "Reinstall {} from the Health Check, or put {} back in this instance's mods folder.",
+                                provider_name, provider.filename
+                            )),
+                            loader_compatibility: None,
+                            missing_file: Some(provider.filename.clone()),
+                        });
+                    }
+                    continue;
+                }
                 let display_name = if dep_resolved != dep.to_lowercase() {
                     dep_resolved.clone()
                 } else {
@@ -1279,6 +1348,7 @@ fn health_from_inventory(
                         ),
                         suggested_action: Some(guidance),
                         loader_compatibility: None,
+                        missing_file: None,
                     });
                 }
             }
@@ -1478,6 +1548,7 @@ fn health_from_inventory(
                             source, target_provider.owner_filename
                         )),
                         loader_compatibility: None,
+                        missing_file: None,
                     });
                     }
                     version_match::VersionMatch::Matched
@@ -1555,6 +1626,7 @@ fn health_from_inventory(
                                     message,
                                     suggested_action: Some(mitigation),
                                     loader_compatibility: None,
+                                    missing_file: None,
                                 });
                             } else {
                                 // Non-hard (or unrecognized/missing) severity:
@@ -1690,6 +1762,7 @@ fn health_from_inventory(
                     message: loader_mismatch_message(manifest, &report),
                     suggested_action: loader_mismatch_action(manifest, &report),
                     loader_compatibility: Some(issue),
+                    missing_file: None,
                 });
             }
             CurrentLoaderStatus::Indeterminate => {
@@ -1706,6 +1779,7 @@ fn health_from_inventory(
                             .into(),
                     ),
                     loader_compatibility: Some(issue),
+                    missing_file: None,
                 });
             }
         }
@@ -3922,6 +3996,105 @@ type="required"
     fn invalidate_health_cache_is_ok_when_caches_absent() {
         let dir = fresh_instance("invalidate_health_absent");
         invalidate_health_cache(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Real-shaped Fabric data: Fabric API is tracked in the manifest (with the
+    /// module ids its jar provides) but its file is gone from mods/. Sodium needs
+    /// one of those modules, so it must not count as satisfied.
+    #[test]
+    fn health_missing_provider_file_does_not_satisfy_its_modules() {
+        let dir = fresh_instance("missing_provider_modules");
+        write_jar(
+            &dir.join("mods"),
+            "sodium-fabric-0.5.8+mc1.20.4.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"schemaVersion":1,"id":"sodium","version":"0.5.8+mc1.20.4","depends":{"fabricloader":">=0.14.22","minecraft":"~1.20.4","fabric-rendering-data-attachment-v1":"*"}}"#,
+            )],
+        );
+        let mut manifest = tracked_manifest_for_loader(
+            "fabric",
+            &[
+                ("sodium-fabric-0.5.8+mc1.20.4.jar", "sodium"),
+                ("fabric-api-0.97.3+1.20.4.jar", "fabric-api"),
+            ],
+        );
+        manifest.mods[1].provided_mod_ids = vec!["fabric-rendering-data-attachment-v1".into()];
+        let report = health(&dir, &manifest, None);
+        assert_eq!(
+            report.missing_files,
+            vec!["fabric-api-0.97.3+1.20.4.jar".to_string()]
+        );
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
+            .expect("a module supplied only by a missing file must block");
+        assert_eq!(
+            blocker.filename.as_deref(),
+            Some("sodium-fabric-0.5.8+mc1.20.4.jar")
+        );
+        assert_eq!(
+            blocker.missing_file.as_deref(),
+            Some("fabric-api-0.97.3+1.20.4.jar")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An unreadable JAR elsewhere in mods/ used to downgrade every missing
+    /// requirement to "can't tell whether it is installed", even when the
+    /// tracked provider's file is known to be gone. That is the "1 warning"
+    /// the user saw for a definite gap.
+    #[test]
+    fn missing_provider_stays_a_blocker_when_an_unrelated_jar_is_unreadable() {
+        let dir = fresh_instance("missing_provider_unreadable");
+        write_jar(
+            &dir.join("mods"),
+            "sodium-fabric-0.5.8+mc1.20.4.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"schemaVersion":1,"id":"sodium","version":"0.5.8+mc1.20.4","depends":{"fabric-rendering-data-attachment-v1":"*"}}"#,
+            )],
+        );
+        std::fs::write(dir.join("mods/unreadable.jar"), b"not a zip").unwrap();
+        let mut manifest = tracked_manifest_for_loader(
+            "fabric",
+            &[
+                ("sodium-fabric-0.5.8+mc1.20.4.jar", "sodium"),
+                ("unreadable.jar", "unreadable"),
+                ("fabric-api-0.97.3+1.20.4.jar", "fabric-api"),
+            ],
+        );
+        manifest.mods[2].provided_mod_ids = vec!["fabric-rendering-data-attachment-v1".into()];
+        let report = health(&dir, &manifest, None);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == WarningKind::InventoryIncomplete));
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.kind == WarningKind::MissingRequiredDependencyUnverified),
+            "{:?}",
+            report.warnings
+        );
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
+            .expect("a known-missing provider must block");
+        assert!(
+            blocker.message.contains("whose file is missing"),
+            "{}",
+            blocker.message
+        );
+        assert!(
+            blocker.message.contains("fabric-api"),
+            "{}",
+            blocker.message
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

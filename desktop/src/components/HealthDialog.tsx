@@ -531,6 +531,36 @@ export function HealthDialog({
                           <span className="text-xs text-muted-foreground">{b.suggested_action}</span>
                         )}
                       </div>
+                      {b.missing_file && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                          {manifestMods === 'loading' ? (
+                            <span className="text-muted-foreground">Checking where {b.missing_file} came from…</span>
+                          ) : (() => {
+                            const entry = Array.isArray(manifestMods)
+                              ? manifestMods.find((mod) => mod.filename === b.missing_file) ?? null
+                              : null;
+                            const source = entry ? reinstallSourceFor(entry) : null;
+                            return entry && source ? (
+                              <>
+                                <span className="break-all font-mono">{b.missing_file}</span>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={reinstallBusy !== null}
+                                  title="Review a reinstall of this version"
+                                  onClick={() => void startReinstall(entry, source)}
+                                >
+                                  {reinstallBusy === entry.filename ? 'Preparing…' : 'Reinstall'}
+                                </Button>
+                              </>
+                            ) : (
+                              <span className="text-muted-foreground">
+                                {b.missing_file} is missing from mods/. Find it in Browse.
+                              </span>
+                            );
+                          })()}
+                        </div>
+                      )}
                       <div className="flex items-center gap-3 mt-2">
                         {onFindMod && b.kind === 'missing_required_dependency' && b.mod_id && (
                           <Button

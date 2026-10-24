@@ -2909,7 +2909,18 @@ pub async fn get_dependency_graph(
     tokio::task::spawn_blocking(move || {
         let mut manifest = load_manifest(&app, &instance_id)?;
         dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        Ok(dependency_ops::build_dependency_graph(&manifest.mods))
+        // Only entries that can satisfy a dependency are nodes: a disabled or
+        // missing mod neither needs nor supplies anything right now.
+        let instance_dir = paths::instance_dir(&app, &instance_id)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
+        let usable: Vec<_> = manifest
+            .mods
+            .iter()
+            .filter(|m| agora_core::dependency_ops::satisfies_dependency(m, &on_disk))
+            .cloned()
+            .collect();
+        Ok(dependency_ops::build_dependency_graph(&usable))
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2948,9 +2959,13 @@ pub async fn explain_mod_presence(
     tokio::task::spawn_blocking(move || {
         let mut manifest = load_manifest(&app, &instance_id)?;
         dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
+        let instance_dir = paths::instance_dir(&app, &instance_id)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
         Ok(agora_core::dependency_ops::explain_presence(
             &manifest.mods,
             &filename,
+            &on_disk,
         ))
     })
     .await
@@ -3043,6 +3058,9 @@ pub async fn get_install_plan(
         dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
 
         let aliases = svc.get_all_mod_aliases()?;
+        let instance_dir = paths::instance_dir(&app, &instance_id)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
         Ok(dependency_ops::build_install_plan_with_aliases(
             manifest_deps,
             &jar_metadata,
@@ -3050,6 +3068,7 @@ pub async fn get_install_plan(
             &dependency_ops::AliasMap::from_pairs(&aliases),
             &manifest.loader,
             &manifest.loader_version,
+            &on_disk,
         ))
     })
     .await

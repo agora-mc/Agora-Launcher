@@ -378,6 +378,10 @@ pub struct FileAdd {
     pub size: u64,
     #[serde(default)]
     pub installed_as_dependency: bool,
+    /// The instance already records this file, but it is missing from disk, so
+    /// the add restores it. The review says so, rather than listing a removal.
+    #[serde(default)]
+    pub replaces_missing_file: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2331,6 +2335,7 @@ fn plan_artifact_change(
     let same_identity = installed
         .iter()
         .find(|item| artifact_matches_installed(artifact, item));
+    let mut replaces_missing_file = false;
     if require_existing && same_identity.is_none() {
         blocking_errors.push(PlanError {
             code: "ERR_UPDATE_TARGET_MISSING".into(),
@@ -2365,7 +2370,9 @@ fn plan_artifact_change(
                 .try_exists(),
             Ok(false)
         );
-        if same_content && same_version && !file_missing {
+        // A disabled entry is not installed for dependency purposes: it cannot
+        // satisfy a requirement, so it is replaced by an enabled copy.
+        if same_content && same_version && !file_missing && existing.enabled {
             if !installed_as_dependency && existing.installed_as_dependency {
                 promotions.push(FilePromote {
                     filename: existing.filename.clone(),
@@ -2382,6 +2389,7 @@ fn plan_artifact_change(
             });
             return;
         }
+        replaces_missing_file = file_missing;
         if file_missing {
             // The other on-disk name for this entry: `x.jar.disabled` for an
             // enabled entry, plain `x.jar` for a disabled one. An enabled entry
@@ -2426,10 +2434,14 @@ fn plan_artifact_change(
                 add_target = format!("{filename}.disabled");
             }
         }
-        files_to_remove.push(FileRemove {
-            filename: effective_installed_filename(existing),
-            content_type: Some(existing.content_type.clone()),
-        });
+        // A missing file has nothing to remove. Listing it as "will be removed"
+        // is what made a Reinstall read as an add and a removal of one jar.
+        if !file_missing {
+            files_to_remove.push(FileRemove {
+                filename: effective_installed_filename(existing),
+                content_type: Some(existing.content_type.clone()),
+            });
+        }
     }
 
     if let Some(collision) = installed.iter().find(|item| {
@@ -2493,6 +2505,7 @@ fn plan_artifact_change(
         hashes: artifact_hashes(artifact).clone(),
         size: artifact_size(artifact),
         installed_as_dependency,
+        replaces_missing_file,
     });
 }
 
@@ -4200,14 +4213,17 @@ mod tests {
             .iter()
             .any(|w| w.code == "ALREADY_INSTALLED"));
 
-        // The file is gone: the plan must add it back and drop the stale entry.
+        // The file is gone: the plan adds it back. Nothing is listed for removal,
+        // because there is no file to remove; the add replaces the missing one.
         std::fs::remove_file(instance_dir.join("mods").join("fabric-api.jar")).unwrap();
         let missing = plan_now();
         assert_eq!(missing.files_to_add.len(), 1);
-        assert!(missing
-            .files_to_remove
-            .iter()
-            .any(|remove| remove.filename == "fabric-api.jar"));
+        assert!(missing.files_to_add[0].replaces_missing_file);
+        assert!(
+            missing.files_to_remove.is_empty(),
+            "a missing file is restored, not removed: {:?}",
+            missing.files_to_remove
+        );
         assert!(!missing
             .warnings
             .iter()
@@ -4314,6 +4330,67 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["filename"], "fabric-api.jar");
         assert_eq!(entries[0]["enabled"], true);
+    }
+
+    /// Writes the curated fabric-api entry with the real hash of REINSTALL_BYTES,
+    /// so the planner's "same content" check can actually succeed.
+    fn write_matching_fabric_api_entry(instance_dir: &Path, enabled: bool) {
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["mods"] = serde_json::json!([{
+            "filename": "fabric-api.jar",
+            "registry_id": "fabric-api",
+            "source": "curated",
+            "sha256": crate::download::sha256_hex(REINSTALL_BYTES),
+            "installed_at": "2026-01-01T00:00:00Z",
+            "version": "1.0",
+            "enabled": enabled,
+        }]);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_disabled_entry_is_replaced_by_an_enabled_copy_not_reported_installed() {
+        // Control: the same entry, enabled with its file present, is installed.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, true);
+        std::fs::write(
+            instance_dir.join("mods").join("fabric-api.jar"),
+            REINSTALL_BYTES,
+        )
+        .unwrap();
+        let installed = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert!(installed.files_to_add.is_empty());
+        assert!(installed
+            .warnings
+            .iter()
+            .any(|w| w.code == "ALREADY_INSTALLED"));
+
+        // Disabled: it cannot satisfy anyone, so the planner brings back an
+        // enabled copy and removes the disabled one.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        std::fs::write(
+            instance_dir.join("mods").join("fabric-api.jar.disabled"),
+            REINSTALL_BYTES,
+        )
+        .unwrap();
+        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert!(!plan.warnings.iter().any(|w| w.code == "ALREADY_INSTALLED"));
+        assert_eq!(plan.files_to_add.len(), 1);
+        assert_eq!(plan.files_to_add[0].target_filename, "fabric-api.jar");
+        assert!(!plan.files_to_add[0].replaces_missing_file);
+        assert!(plan
+            .files_to_remove
+            .iter()
+            .any(|remove| remove.filename == "fabric-api.jar.disabled"));
     }
 
     #[test]
@@ -6333,6 +6410,7 @@ mod tests {
             hashes,
             size: 0,
             installed_as_dependency: false,
+            replaces_missing_file: false,
         }
     }
 

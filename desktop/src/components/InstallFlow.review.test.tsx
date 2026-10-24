@@ -197,6 +197,33 @@ describe('install review: restore point copy', () => {
   });
 });
 
+describe('install review: restoring a missing file', () => {
+  it('says the jar is restored, and does not list it as removed', async () => {
+    const restoring = planWith([]);
+    restoring.operation = {
+      type: 'install',
+      artifact: { filename: 'fabric-api.jar', metadata: { version: '0.97.3' } } as never,
+    };
+    restoring.filesToAdd = [{
+      targetFilename: 'fabric-api.jar',
+      stagingFilename: 'fabric-api.jar',
+      artifact: {} as never,
+      hashes: { values: [] } as never,
+      size: 0,
+      replacesMissingFile: true,
+    }];
+    installFlowMocks.resolveInstallPlan.mockResolvedValue(restoring);
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+    const review = panel();
+
+    expect(await within(review).findByText('Restores 1 missing file')).toBeInTheDocument();
+    expect(within(review).getByText('restores missing file')).toBeInTheDocument();
+    expect(within(review).queryByText(/will be removed/)).not.toBeInTheDocument();
+    expect(within(review).queryByText(/1 file added/)).not.toBeInTheDocument();
+  });
+});
+
 describe('install review: a required mod the jar declares', () => {
   const missing = (): ResolvedDep => dep('fabric-api', { type: 'unresolved', reason: 'it is not in the Agora catalog' }, {
     source: 'jar',
