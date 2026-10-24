@@ -1,7 +1,7 @@
 use crate::auth;
 use crate::error::{LauncherError, LauncherResult};
 use crate::instances;
-use crate::models::{InstalledMod, InstanceManifest, InstanceRow, ModVersionCandidate};
+use crate::models::{InstalledMod, InstanceRow, ModVersionCandidate};
 use crate::paths;
 use crate::registry;
 use std::path::Path;
@@ -281,60 +281,16 @@ pub async fn add_manual_mod(
     })?
 }
 
-/// The manifest an export is built from, plus its instance folder.
-///
-/// Carries the name the user sees (older renames only reached the database),
-/// and, where the user allows Modrinth, a download source for mods that were
-/// copied in from another launcher without one (one batched hash lookup).
-async fn manifest_for_export(
-    app: &tauri::AppHandle,
-    instance_id: &str,
-) -> LauncherResult<(InstanceManifest, std::path::PathBuf)> {
-    let ctx = crate::core_context(app)?;
-    let manifest_path = paths::instance_manifest_path(app, instance_id)
-        .map_err(|_| LauncherError::InstanceCreateFailed)?;
-    if !manifest_path.exists() {
-        return Err(LauncherError::Generic {
-            code: "ERR_MANIFEST_MISSING".into(),
-            message: "Instance manifest not found.".into(),
-        });
-    }
-    let mut manifest: InstanceManifest = {
-        let text = std::fs::read_to_string(&manifest_path)
-            .map_err(|_| LauncherError::InstanceCreateFailed)?;
-        serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?
-    };
-    // Instances renamed before the manifest followed renames still carry the
-    // old name there; the exported pack must carry the one the user sees.
-    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
-        if let Ok(Some(row)) = agora_core::db::get_instance(&conn, instance_id) {
-            manifest.name = row.name;
-        }
-    }
-    let instance_dir = ctx.paths.instance_dir(instance_id)?;
-    if agora_core::modrinth::ModrinthService::new(ctx)
-        .check_enabled()
-        .is_ok()
-    {
-        agora_core::source_identify::identify_mods_on_modrinth(&instance_dir, &mut manifest.mods)
-            .await;
-    }
-    Ok((manifest, instance_dir))
-}
-
 /// Names of the mods an export in `format` would leave a friend unable to
-/// install: the Agora pack only lists mods, so a mod with no catalog or
-/// Modrinth id has nowhere to come from. A `.mrpack` bundles those files.
+/// install. The logic lives in core, so the desktop and any other front end
+/// give the same answer.
 pub async fn export_sourceless_mods(
     app: &tauri::AppHandle,
     instance_id: &str,
     format: &str,
 ) -> LauncherResult<Vec<String>> {
-    if format != "json" {
-        return Ok(Vec::new());
-    }
-    let (manifest, _) = manifest_for_export(app, instance_id).await?;
-    Ok(agora_core::source_identify::sourceless_mod_names(&manifest))
+    let ctx = crate::core_context(app)?;
+    agora_core::export_service::sourceless_mods_of_instance(&ctx, instance_id, format).await
 }
 
 /// Export pack via core ExportService, to the file the user chose in the save dialog.
@@ -344,34 +300,8 @@ pub async fn export_instance_pack(
     format: &str,
     out_path: &Path,
 ) -> LauncherResult<String> {
-    let (manifest, instance_dir) = manifest_for_export(app, instance_id).await?;
-    // Resource and shader packs Modrinth hosts are linked rather than bundled,
-    // when the user allows Modrinth lookups; otherwise they are bundled.
-    let hosted = if format == "mrpack" && modrinth_lookups_allowed(app) {
-        agora_core::source_identify::find_hosted_pack_content(&instance_dir).await
-    } else {
-        Default::default()
-    };
-    agora_core::export_service::export_instance_pack_with_hosted(
-        &instance_dir,
-        &manifest,
-        out_path,
-        format,
-        &hosted,
-    )
-    .await
-}
-
-/// Whether Modrinth may be asked about this user's files (the same switch
-/// that lets an export look up sources for mods).
-fn modrinth_lookups_allowed(app: &tauri::AppHandle) -> bool {
-    crate::core_context(app)
-        .map(|ctx| {
-            agora_core::modrinth::ModrinthService::new(ctx)
-                .check_enabled()
-                .is_ok()
-        })
-        .unwrap_or(false)
+    let ctx = crate::core_context(app)?;
+    agora_core::export_service::export_pack_of_instance(&ctx, instance_id, format, out_path).await
 }
 
 /// What an import produced: the new instance, and for an Agora pack the

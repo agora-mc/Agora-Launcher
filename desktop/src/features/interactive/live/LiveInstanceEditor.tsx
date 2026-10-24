@@ -1052,7 +1052,7 @@ export function LiveInstanceEditor({
             </div>
           )}
           <div className="inst-pf-actions">
-            <button type="button" className="inst-btn" onClick={() => setOptionalOpen(false)}>Done</button>
+            <button type="button" className="inst-btn" data-modal-close="" onClick={() => setOptionalOpen(false)}>Done</button>
           </div>
         </div>
       </div>,

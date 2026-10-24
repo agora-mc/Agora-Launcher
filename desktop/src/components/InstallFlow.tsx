@@ -712,6 +712,7 @@ export function InstallFlow({
       </div>
       <button
         onClick={handleCancel}
+        data-modal-close=""
         className="shrink-0 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
         aria-label="Close install panel"
       >

@@ -53,7 +53,13 @@ const TABBABLE_SELECTOR = [
   '[contenteditable="true"]',
 ].join(',');
 
-const CLOSE_LABEL = /^(×|✕|x$|close\b|cancel\b|not now\b|dismiss\b)/i;
+/**
+ * A label that is only a pure dismissal, matched whole. "Cancel download" or
+ * "Close instance" is an action that shares the dialog, so Escape must not
+ * press it. Dialogs whose dismiss control is worded differently mark it with
+ * `data-modal-close`.
+ */
+const CLOSE_LABEL = /^\s*(×|✕|x|close|cancel|not now|dismiss)\s*$/i;
 
 function isDisplayed(el: HTMLElement): boolean {
   if (el.closest('[inert],[hidden],[aria-hidden="true"]')) return false;
@@ -164,6 +170,20 @@ interface Tracked {
 export function installModalFocus(doc: Document = document): () => void {
   const tracked = new Map<HTMLElement, Tracked>();
   let scheduled = false;
+  // The last element outside any modal that had focus. A dialog can focus its
+  // own control before `sync` runs, so by then the opener no longer has focus.
+  let lastOutside: HTMLElement | null = null;
+
+  const onFocusIn = (event: FocusEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || target === doc.body) return;
+    if (target.closest('[aria-modal="true"]')) return;
+    lastOutside = target;
+  };
+  // Focus that went nowhere (a click on bare page) means no opener to return to.
+  const onFocusOut = (event: FocusEvent) => {
+    if (event.relatedTarget === null && event.target === lastOutside) lastOutside = null;
+  };
 
   const sync = () => {
     scheduled = false;
@@ -172,10 +192,10 @@ export function installModalFocus(doc: Document = document): () => void {
     for (const dialog of open) {
       if (tracked.has(dialog)) continue;
       const active = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
-      // Focus already inside (the dialog focused something itself): keep it,
-      // and remember what had focus only if that was something real.
-      const opener = active && active !== doc.body && !dialog.contains(active) ? active : null;
-      tracked.set(dialog, { opener });
+      // Focus outside the dialog is the opener. Focus already inside (the
+      // dialog focused something itself) falls back to what had focus before.
+      const outside = active && active !== doc.body && !dialog.contains(active) ? active : null;
+      tracked.set(dialog, { opener: outside ?? lastOutside });
       focusInto(dialog);
     }
 
@@ -196,20 +216,28 @@ export function installModalFocus(doc: Document = document): () => void {
     queueMicrotask(sync);
   };
 
+  // Open and closed is `inert` / `hidden` / `aria-hidden` (set by the
+  // component) or mounting. `class` and `style` change on every animation
+  // frame of a progress bar, and watching them re-ran the query each time.
   const observer = new MutationObserver(schedule);
   observer.observe(doc.documentElement, {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['inert', 'hidden', 'aria-hidden', 'aria-modal', 'role', 'class', 'style'],
+    attributeFilter: ['inert', 'hidden', 'aria-hidden', 'aria-modal', 'role'],
   });
   const onKeyDown = (event: KeyboardEvent) => handleModalKeyDown(event, doc);
   doc.addEventListener('keydown', onKeyDown);
+  doc.addEventListener('focusin', onFocusIn);
+  doc.addEventListener('focusout', onFocusOut);
   schedule();
 
   return () => {
     observer.disconnect();
     doc.removeEventListener('keydown', onKeyDown);
+    doc.removeEventListener('focusin', onFocusIn);
+    doc.removeEventListener('focusout', onFocusOut);
+    lastOutside = null;
     tracked.clear();
   };
 }

@@ -101,12 +101,25 @@ fn is_loader_bundled_mod(dependency: &str, loader: &str, loader_version: &str) -
     LOADER_BUNDLED_MODS.iter().any(|(bundler, id, since)| {
         bundler.eq_ignore_ascii_case(loader)
             && id.eq_ignore_ascii_case(dependency)
-            && loader_version_at_least(loader_version, since)
+            && loader_version_at_least(release_part_of(loader, loader_version), since)
     })
 }
 
+/// The release number a loader version is a build of. NeoForge publishes its
+/// betas as `<release>-beta` (e.g. `21.3.20-beta`), and a beta of a release
+/// ships what that release ships, so the suffix is dropped for NeoForge only.
+/// Fabric's published versions carry no such suffix (checked against
+/// https://maven.fabricmc.net/net/fabricmc/fabric-loader/maven-metadata.xml),
+/// so for any other loader the version is left alone and refused as before.
+fn release_part_of<'a>(loader: &str, version: &'a str) -> &'a str {
+    match version.strip_suffix("-beta") {
+        Some(release) if loader.eq_ignore_ascii_case("neoforge") => release,
+        _ => version,
+    }
+}
+
 /// Whether `version` is a plain dotted-number release at or after `since`.
-/// Anything else (empty, pre-release like `0.20.1-beta`, build metadata,
+/// Anything else (empty, pre-release like `0.20.1-alpha`, build metadata,
 /// surrounding spaces) is not trusted, so the dependency stays a normal jar
 /// requirement and is reported as missing if no jar provides it.
 fn loader_version_at_least(version: &str, since: &str) -> bool {
@@ -3636,6 +3649,65 @@ Embedded-Dependencies-Mod: a.jar
             "20.2.83"
         ));
         assert!(!is_platform_dependency("mixinextras", "neoforge", "20.1.0"));
+    }
+
+    #[test]
+    fn a_neoforge_beta_of_a_release_that_ships_mixinextras_counts() {
+        // NeoForge publishes betas as `<release>-beta`; `21.3.20-beta` is a
+        // build of the 21.3.20 line, which is past the 20.2.84 threshold.
+        assert!(is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20-beta"
+        ));
+        assert!(is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "20.2.84-beta"
+        ));
+        assert!(is_platform_dependency(
+            "mixinextras",
+            "NeoForge",
+            "21.3.20-beta"
+        ));
+        // Below the threshold a beta is still below it.
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "20.2.83-beta"
+        ));
+    }
+
+    #[test]
+    fn a_beta_suffix_is_only_stripped_for_neoforge_and_garbage_stays_refused() {
+        // Fabric publishes no `-beta` versions, so its suffix is not trusted.
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "fabric",
+            "0.16.10-beta"
+        ));
+        assert!(!is_platform_dependency("mixinextras", "neoforge", "-beta"));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20-beta-beta"
+        ));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20 -beta"
+        ));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20-alpha"
+        ));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20-beta.2"
+        ));
+        assert!(!is_platform_dependency("mixinextras", "neoforge", ""));
     }
 
     #[test]

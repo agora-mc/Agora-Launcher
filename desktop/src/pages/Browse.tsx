@@ -1317,6 +1317,7 @@ function BrowseContent({
             </div>
             <button
               onClick={() => setPickerOpen(false)}
+              data-modal-close=""
               className="shrink-0 rounded-sm border border-input px-2 py-1 text-xs hover:bg-accent"
               aria-label="Close picker"
             >
