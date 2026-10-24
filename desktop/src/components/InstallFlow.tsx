@@ -291,6 +291,10 @@ export function InstallFlow({
   const forceFinalReviewRef = useRef(false);
   const [newlyAddedFiles, setNewlyAddedFiles] = useState<Set<string>>(new Set());
   const [reviewNotice, setReviewNotice] = useState<string | null>(null);
+  // Whether focus was inside the panel when the install outcome arrived. The
+  // result replaces the corner panel with the modal, so that focus would
+  // otherwise fall to the page; the result moves it to its primary action.
+  const [resultFocusInPanel, setResultFocusInPanel] = useState(false);
 
   useEffect(() => {
     if (!background) return;
@@ -405,6 +409,7 @@ export function InstallFlow({
         });
         const outcome = await applyInstallPlan(state.plan);
         if (!cancelled) {
+          setResultFocusInPanel(panelRef.current?.contains(document.activeElement) ?? false);
           dispatch({ type: 'outcome', outcome });
           // The guided walkthrough waits on the install actually landing, which
           // the dialog closing cannot distinguish from a cancel.
@@ -437,7 +442,9 @@ export function InstallFlow({
       onClose?.();
       return;
     }
-    if (state.phase === 'resolving' || state.phase === 'error') {
+    // The result is a dismissal too: its header Close is this same handler, and
+    // Escape on the modal result presses that Close.
+    if (state.phase === 'resolving' || state.phase === 'error' || state.phase === 'result') {
       dispatch({ type: 'close' });
       onClose?.();
     }
@@ -637,6 +644,7 @@ export function InstallFlow({
           instanceId={intent.targetInstance}
           onOpenInstance={() => onOpenInstance?.(intent.targetInstance)}
           onClose={handleClose}
+          focusPrimary={resultFocusInPanel}
         />;
       case 'error':
         {
@@ -739,14 +747,24 @@ export function InstallFlow({
   // z-61 keeps it above the pack-indicator stacking context when both are
   // visible; pack progress remains readable alongside via vertical stacking.
   // `aria-modal="false"` states that the rest of the app stays live behind it.
+  // Escape closes the corner panel while focus is inside it. It is not modal,
+  // so the page-wide modal handler does not see it, and nothing else would.
   return createPortal(
     <aside
+      ref={panelRef}
       className="fixed bottom-4 right-4 z-61 flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
       data-tour="install-review-dialog"
       role="dialog"
       aria-modal="false"
       aria-labelledby="install-review-title"
       aria-live="polite"
+      onKeyDown={(event) => {
+        // Not while an install runs: there Escape would only send a cancel
+        // request that the panel keeps waiting on, so a stray key must not start one.
+        if (event.key !== 'Escape' || event.defaultPrevented || state.phase === 'executing') return;
+        event.preventDefault();
+        handleCancel();
+      }}
     >
       {header}
       <div data-install-review-body className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -1457,12 +1475,15 @@ function installPhaseLabel(phase: ProgressEvent['phase']): string {
   }
 }
 
-function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
+function ResultView({ outcome, instanceId, onOpenInstance, onClose, focusPrimary }: {
   outcome: InstallOutcome;
   instanceId: string;
   onOpenInstance: () => void;
   onClose: () => void;
+  /** Focus was in the panel the install ran in: keep it there, on the primary action. */
+  focusPrimary: boolean;
 }) {
+  const primaryRef = useRef<HTMLButtonElement>(null);
   const [rollbackState, setRollbackState] = useState<'idle' | 'restoring' | 'restored'>('idle');
   const [rollbackError, setRollbackError] = useState<string | null>(null);
   const [rollbackNote, setRollbackNote] = useState<string | null>(null);
@@ -1493,6 +1514,12 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
       || outcome.type === 'health-rollback'
       || (outcome.type === 'failed' && Boolean(outcome.snapshotId) && !outcome.rollbackPerformed)
     );
+  // Open Instance is the way forward when the install landed; otherwise Close is.
+  const showOpenInstance = outcome.type === 'success' || outcome.type === 'health-rollback' || rollbackState === 'restored';
+
+  useEffect(() => {
+    if (focusPrimary) primaryRef.current?.focus();
+  }, [focusPrimary]);
 
   const rollback = async () => {
     if (!snapshotId) return;
@@ -1589,7 +1616,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
         </div>
       )}
       <div className="flex justify-end gap-2">
-        <button onClick={onClose} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
+        <button ref={showOpenInstance ? undefined : primaryRef} onClick={onClose} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
           Close
         </button>
         {canRestore && (
@@ -1601,8 +1628,8 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
             {rollbackState === 'restoring' ? 'Restoring…' : 'Roll Back'}
           </button>
         )}
-        {(outcome.type === 'success' || outcome.type === 'health-rollback' || rollbackState === 'restored') && (
-          <button onClick={onOpenInstance} data-tour="install-open-instance" className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+        {showOpenInstance && (
+          <button ref={primaryRef} onClick={onOpenInstance} data-tour="install-open-instance" className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
             Open Instance
           </button>
         )}

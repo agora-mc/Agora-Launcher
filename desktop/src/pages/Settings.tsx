@@ -81,6 +81,11 @@ import { PluginManager } from '../features/plugins/PluginManager';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
 import type { Tab } from '../lib/useDestination';
+import {
+  SETTINGS_SECTION_EVENT,
+  peekPendingSettingsSection,
+  takePendingSettingsSection,
+} from '../lib/settingsSection';
 import { useConfirm } from '@/components/ui/confirm';
 import { ContentProvidersList } from '../components/ContentProvidersList';
 import { UpdateCenter } from '../features/updates/UpdateCenter';
@@ -180,8 +185,23 @@ export function Settings({
   const ts = useTypedSettings();
   const { confirm } = useConfirm();
 
-  const [activeTabId, setActiveTabId] = useState<string>(() => readStoredSettingsTab() ?? 'general');
-  const [activePageId, setActivePageId] = useState<string | null>(null);
+  const [activeTabId, setActiveTabId] = useState<string>(() => peekPendingSettingsSection()?.tab ?? readStoredSettingsTab() ?? 'general');
+  const [activePageId, setActivePageId] = useState<string | null>(() => peekPendingSettingsSection()?.page ?? null);
+
+  // The command palette can open a named section. Take that request on mount
+  // (Settings was not open) and again whenever one is announced (it was).
+  useEffect(() => {
+    const apply = () => {
+      const target = takePendingSettingsSection();
+      if (!target) return;
+      setActiveTabId(target.tab);
+      setActivePageId(target.page);
+      storeSettingsTab(target.tab);
+    };
+    apply();
+    window.addEventListener(SETTINGS_SECTION_EVENT, apply);
+    return () => window.removeEventListener(SETTINGS_SECTION_EVENT, apply);
+  }, []);
 
   const [modrinth, setModrinth] = useState(false);
   const [curatedSources, setCuratedSources] = useState<Record<string, boolean>>({

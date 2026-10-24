@@ -1482,3 +1482,10 @@ main h1[tabindex="-1"]:focus,
 main h2[tabindex="-1"]:focus {
   outline: none;
 }
+
+/* A "Skip to ..." control asked for this landing, so it shows where focus
+   went. It out-specifies the heading rule above, which is for route changes. */
+main [data-skip-landing][tabindex="-1"]:focus {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 4px;
+}

@@ -71,3 +71,26 @@ test('choosing a page in the sidebar moves focus to the new page heading', async
   expect(focused.inMain).toBe(true);
   expect(focused.text).toBe('My Instances');
 });
+
+test('"Skip to content" leaves a visible focus ring on the heading it lands on', async ({ page }) => {
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Skip to content' })).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  const ring = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement;
+    const style = getComputedStyle(el);
+    return { tag: el.tagName, outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+  });
+  expect(ring.tag === 'H1' || ring.tag === 'H2').toBe(true);
+  expect(ring.outlineStyle).not.toBe('none');
+  expect(parseFloat(ring.outlineWidth)).toBeGreaterThan(0);
+});
+
+test('a page change does not leave a ring on the new heading', async ({ page }) => {
+  await page.getByRole('button', { name: 'My Instances' }).click();
+  await expect(page.getByRole('heading', { name: 'My Instances' })).toBeVisible();
+
+  const outline = await page.evaluate(() => getComputedStyle(document.activeElement as HTMLElement).outlineStyle);
+  expect(outline).toBe('none');
+});

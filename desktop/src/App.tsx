@@ -60,6 +60,7 @@ import { useController } from './features/controller/ControllerProvider';
 import { ControllerRootBindings, cycleTab } from './features/controller/ControllerRootBindings';
 import { focusMemoryKey, useFocusMemory } from './features/controller/useFocusMemory';
 import { moveFocusForRoute, routeFocusTarget } from './lib/routeFocus';
+import { focusSkipTarget } from './lib/skipLink';
 import { BookOpen, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -859,7 +860,7 @@ function AppContent() {
           className="skip-link"
           onClick={() => {
             const main = mainRef.current;
-            if (main) routeFocusTarget(main).focus({ preventScroll: true });
+            if (main) focusSkipTarget(routeFocusTarget(main), { preventScroll: true });
           }}
         >
           Skip to content

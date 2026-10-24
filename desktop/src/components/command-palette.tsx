@@ -15,6 +15,11 @@ import { usePlugins } from '@/features/plugins/PluginProvider';
 import { runPluginCommand } from '@/features/plugins/api';
 import { showToast } from './Toast';
 import { formatError } from '@/lib/tauri';
+import {
+  matchSettingsSections,
+  requestSettingsSection,
+  type SettingsSectionTarget,
+} from '@/lib/settingsSection';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -35,7 +40,7 @@ const SETTINGS_ITEMS: { label: string; tab: Tab; icon: string }[] = [
 type ResultItem =
   | { __section: string }
   | { __type: 'instance'; instance_id: string; name: string; loader: string; loader_version: string; minecraft_version: string }
-  | { __type: 'setting'; label: string; tab: Tab; icon: string }
+  | { __type: 'setting'; label: string; tab: Tab; icon: string; section?: SettingsSectionTarget }
   | { __type: 'plugin'; id: string; pluginId: string; label: string; exportName: string };
 
 export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPaletteProps) {
@@ -80,9 +85,19 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
     const filteredInstances = instances.filter((inst) =>
       query ? inst.name.toLowerCase().includes(query.toLowerCase()) : true,
     );
-    const filteredSettings = SETTINGS_ITEMS.filter((item) =>
-      query ? item.label.toLowerCase().includes(query.toLowerCase()) : true,
-    );
+    const filteredSettings: ResultItem[] = [
+      ...SETTINGS_ITEMS.filter((item) =>
+        query ? item.label.toLowerCase().includes(query.toLowerCase()) : true,
+      ).map((item) => ({ __type: 'setting' as const, ...item })),
+      // Named sections of Settings, found by their label or what they cover.
+      ...matchSettingsSections(query).map((entry) => ({
+        __type: 'setting' as const,
+        label: entry.label,
+        tab: 'settings' as const,
+        icon: entry.icon,
+        section: entry.target,
+      })),
+    ];
 
     if (filteredInstances.length > 0) {
       r.push({ __section: 'Instances' });
@@ -99,9 +114,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
     }
     if (filteredSettings.length > 0) {
       r.push({ __section: 'Settings' });
-      for (const s of filteredSettings) {
-        r.push({ __type: 'setting', ...s });
-      }
+      r.push(...filteredSettings);
     }
     const commands: ResultItem[] = ofKind('command').flatMap((contribution) => {
       const command = plugins.find((plugin) => plugin.id === contribution.pluginId)
@@ -192,6 +205,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
       onNavigate('instances', item.instance_id);
     } else if (item.__type === 'setting') {
       onOpenChange(false);
+      if (item.section) requestSettingsSection(item.section);
       onNavigate(item.tab);
     } else if (item.__type === 'plugin') {
       onOpenChange(false);
@@ -291,7 +305,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
               if (item.__type === 'setting') {
                 return (
                   <button
-                    key={item.tab}
+                    key={`${item.tab}:${item.label}`}
                     role="option"
                     aria-selected={isItemSelected(index)}
                     onClick={() => activateItem(index)}

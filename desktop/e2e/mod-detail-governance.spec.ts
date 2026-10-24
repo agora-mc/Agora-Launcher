@@ -509,3 +509,67 @@ test.describe('ModDetail first-vote explainer', () => {
     await expect(page.getByRole('dialog').getByText('Votes are public')).toBeVisible();
   });
 });
+
+test.describe('ModDetail vote arrows and keyboard use', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('agora-vote-explainer-acknowledged', '1'));
+  });
+
+  /** Accessible names of the focused element, one per Tab press, until one of the targets is reached. */
+  async function tabUntil(page: Page, targets: string[], maxPresses: number): Promise<string[]> {
+    const seen: string[] = [];
+    for (let i = 0; i < maxPresses; i += 1) {
+      await page.keyboard.press('Tab');
+      const name = await page.evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        return el?.getAttribute('aria-label') ?? el?.textContent?.trim() ?? el?.tagName ?? '';
+      });
+      seen.push(name);
+      if (targets.some((target) => name === target)) break;
+    }
+    return seen;
+  }
+
+  test('Tab reaches Install to Instance before the vote arrows', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' })).toBeEnabled();
+
+    const seen = await tabUntil(page, ['Install to Instance', 'Upvote Test Mod. 10 upvotes.'], 60);
+    expect(seen[seen.length - 1]).toBe('Install to Instance');
+    expect(seen).not.toContain('Upvote Test Mod. 10 upvotes.');
+  });
+
+  test('holding Enter on an arrow records one vote, not one per key repeat', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.focus();
+    await page.keyboard.down('Enter');
+    // Each repeat arrives after the previous vote has settled. Today the arrow is
+    // disabled while its vote is in flight, which drops focus, so the repeats find
+    // nothing to press. This guards that: it fails if focus is kept on the arrow
+    // without something else stopping the repeats.
+    for (let i = 0; i < 3; i += 1) {
+      await page.waitForTimeout(150);
+      await page.keyboard.down('Enter');
+    }
+    await page.keyboard.up('Enter');
+    await page.waitForTimeout(150);
+
+    const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('a single Enter still votes', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.focus();
+    await page.keyboard.press('Enter');
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+  });
+});
