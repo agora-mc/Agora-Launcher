@@ -3732,6 +3732,26 @@ fn technic_search_rejects_a_zero_limit() {
     assert!(!output.status.success());
 }
 
+/// A pin that cannot match a SHA-256 digest is refused before any install
+/// starts, rather than installing with a hash that looks like protection.
+#[test]
+fn technic_install_refuses_a_malformed_sha256_pin() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let non_hex = "g".repeat(64);
+    for bad in ["abc", non_hex.as_str(), ""] {
+        let output = run_agora(
+            &data_dir,
+            &["technic", "install", "tekkit", "--sha256", bad],
+        );
+        assert!(
+            !output.status.success(),
+            "--sha256 {bad:?} should be refused"
+        );
+    }
+    let listed = run_agora(&data_dir, &["list-instances", "--json"]);
+    assert_eq!(assert_json_stdout(&listed), serde_json::json!([]));
+}
+
 #[test]
 fn pack_install_provider_needs_a_project_and_excludes_a_manifest() {
     let (_tmp, data_dir) = temp_data_dir();

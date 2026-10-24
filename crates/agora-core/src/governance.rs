@@ -380,13 +380,22 @@ pub fn resolve_governance_config(
 // ---------------------------------------------------------------------------
 
 /// Check whether a table exists in the opened database.
-pub fn table_exists(conn: &Connection, name: &str) -> bool {
+///
+/// `Ok(false)` means the table is genuinely absent (an older registry build).
+/// A failed read of the schema is an error, never "absent".
+pub fn table_exists(conn: &Connection, name: &str) -> LauncherResult<bool> {
+    use rusqlite::OptionalExtension;
     conn.query_row(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
         [name],
-        |_| Ok(true),
+        |_| Ok(()),
     )
-    .unwrap_or(false)
+    .optional()
+    .map(|found| found.is_some())
+    .map_err(|e| LauncherError::Generic {
+        code: "ERR_GOVERNANCE_QUERY".into(),
+        message: format!("Cannot read the registry schema: {e}"),
+    })
 }
 
 /// Fetch a governance summary for a single item from `governance_summary`.
@@ -397,7 +406,7 @@ pub fn get_governance_summary(
     conn: &Connection,
     item_id: &str,
 ) -> LauncherResult<Option<GovernanceSummary>> {
-    if !table_exists(conn, "governance_summary") {
+    if !table_exists(conn, "governance_summary")? {
         return Ok(None);
     }
 
@@ -456,7 +465,7 @@ pub fn list_governance_events(
     item_id: Option<&str>,
     limit: i64,
 ) -> LauncherResult<Vec<GovernanceEvent>> {
-    if !table_exists(conn, "governance_events") {
+    if !table_exists(conn, "governance_events")? {
         return Ok(Vec::new());
     }
 
@@ -516,6 +525,29 @@ pub fn list_governance_events(
 // Governance diagnostics — structured read-only checks
 // ---------------------------------------------------------------------------
 
+/// Schema version and governance-table presence for the diagnostics. A missing
+/// `schema_version` table reads as version 0; a failed read is an error.
+fn read_schema_state(conn: &Connection) -> LauncherResult<(i64, bool, bool)> {
+    let schema_version: i64 = if table_exists(conn, "schema_version")? {
+        conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_GOVERNANCE_QUERY".into(),
+            message: e.to_string(),
+        })?
+    } else {
+        0
+    };
+    Ok((
+        schema_version,
+        table_exists(conn, "governance_summary")?,
+        table_exists(conn, "governance_events")?,
+    ))
+}
+
 /// Run governance diagnostics (sync checks only).
 ///
 /// Checks 1-4, plus governance JSON file parses (14-16) and schema validation.
@@ -531,18 +563,17 @@ pub fn run_governance_diagnostics(
     let gov_dir = registry_dir.or_else(|| config.governance_dir.as_deref().map(Path::new));
 
     let (schema_version, has_summary_table, has_events_table) = match registry_conn {
-        Some(conn) => {
-            let sv: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            let hst = table_exists(conn, "governance_summary");
-            let het = table_exists(conn, "governance_events");
-            (sv, hst, het)
-        }
+        Some(conn) => match read_schema_state(conn) {
+            Ok(state) => state,
+            Err(e) => {
+                checks.push(DiagnosticCheck {
+                    id: "registry_readable".into(),
+                    status: DiagnosticStatus::Fail,
+                    message: format!("Cannot read the registry database: {e}"),
+                });
+                (0, false, false)
+            }
+        },
         None => (0, false, false),
     };
 
@@ -944,6 +975,42 @@ pub fn is_development_registry() -> bool {
 // Governance network diagnostics (read-only GitHub checks 5-13)
 // ---------------------------------------------------------------------------
 
+/// The nine network checks, reported as "cannot check" when they cannot run.
+///
+/// `has_token` says why: with no GitHub token, the checks name the missing
+/// token; with one, the checks could not run for some other reason (such as a
+/// missing core context), and they say so instead of blaming the token.
+pub fn network_checks_unavailable(has_token: bool) -> Vec<DiagnosticCheck> {
+    let reason = if has_token {
+        "Cannot check: core context unavailable"
+    } else {
+        "Cannot check: no GitHub token"
+    };
+    let check = |id: &str, status: DiagnosticStatus| DiagnosticCheck {
+        id: id.into(),
+        status,
+        message: if !has_token && id == "repository_metadata_readable" {
+            "Cannot check: no GitHub token available".into()
+        } else {
+            reason.into()
+        },
+    };
+    vec![
+        check("repository_metadata_readable", DiagnosticStatus::Fail),
+        check("issues_enabled", DiagnosticStatus::Warning),
+        check("discussions_enabled", DiagnosticStatus::Warning),
+        check("triage_category_exists", DiagnosticStatus::Warning),
+        check("community_review_label_exists", DiagnosticStatus::Warning),
+        check(
+            "registry_submission_label_exists",
+            DiagnosticStatus::Warning,
+        ),
+        check("registry_vote_label_exists", DiagnosticStatus::Warning),
+        check("review_form_exists", DiagnosticStatus::Warning),
+        check("mod_submission_exists", DiagnosticStatus::Warning),
+    ]
+}
+
 /// Run the network-based diagnostic checks (repo metadata, labels, triage
 /// category, issue templates).
 ///
@@ -953,53 +1020,7 @@ pub async fn run_network_diagnostics(ctx: &Ctx) -> Vec<DiagnosticCheck> {
     let diagnostic_token = match crate::auth::get_valid_access_token().await {
         Some(token) => token,
         None => {
-            return vec![
-                DiagnosticCheck {
-                    id: "repository_metadata_readable".into(),
-                    status: DiagnosticStatus::Fail,
-                    message: "Cannot check: no GitHub token available".into(),
-                },
-                DiagnosticCheck {
-                    id: "issues_enabled".into(),
-                    status: DiagnosticStatus::Warning,
-                    message: "Cannot check: no GitHub token".into(),
-                },
-                DiagnosticCheck {
-                    id: "discussions_enabled".into(),
-                    status: DiagnosticStatus::Warning,
-                    message: "Cannot check: no GitHub token".into(),
-                },
-                DiagnosticCheck {
-                    id: "triage_category_exists".into(),
-                    status: DiagnosticStatus::Warning,
-                    message: "Cannot check: no GitHub token".into(),
-                },
-                DiagnosticCheck {
-                    id: "community_review_label_exists".into(),
-                    status: DiagnosticStatus::Warning,
-                    message: "Cannot check: no GitHub token".into(),
-                },
-                DiagnosticCheck {
-                    id: "registry_submission_label_exists".into(),
-                    status: DiagnosticStatus::Warning,
-                    message: "Cannot check: no GitHub token".into(),
-                },
-                DiagnosticCheck {
-                    id: "registry_vote_label_exists".into(),
-                    status: DiagnosticStatus::Warning,
-                    message: "Cannot check: no GitHub token".into(),
-                },
-                DiagnosticCheck {
-                    id: "review_form_exists".into(),
-                    status: DiagnosticStatus::Warning,
-                    message: "Cannot check: no GitHub token".into(),
-                },
-                DiagnosticCheck {
-                    id: "mod_submission_exists".into(),
-                    status: DiagnosticStatus::Warning,
-                    message: "Cannot check: no GitHub token".into(),
-                },
-            ];
+            return network_checks_unavailable(false);
         }
     };
 
@@ -2098,5 +2119,74 @@ mod tests {
         assert!(events.is_empty(), "schema 6 should return empty events");
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A connection to a file that is not a SQLite database, so every query
+    /// fails. Governance reads must report that, not show "nothing yet".
+    fn broken_governance_connection() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("registry.db");
+        std::fs::write(&path, b"this file is plain text, not a SQLite database").unwrap();
+        let conn = Connection::open(&path).unwrap();
+        (dir, conn)
+    }
+
+    #[test]
+    fn governance_reads_are_errors_on_a_broken_registry() {
+        let (_dir, conn) = broken_governance_connection();
+        assert!(get_governance_summary(&conn, "test-mod").is_err());
+        assert!(list_governance_events(&conn, None, 10).is_err());
+    }
+
+    #[test]
+    fn diagnostics_report_an_unreadable_registry_as_a_failure() {
+        let (_dir, conn) = broken_governance_connection();
+        let config = resolve_governance_config(Some(false), None);
+        let checks = run_governance_diagnostics(Some(&conn), None, &config);
+        let readable = checks
+            .iter()
+            .find(|check| check.id == "registry_readable")
+            .expect("an unreadable registry must produce a registry_readable check");
+        assert_eq!(readable.status, DiagnosticStatus::Fail);
+    }
+
+    #[test]
+    fn unavailable_network_checks_name_the_missing_token_only_when_it_is_missing() {
+        let ids = [
+            "repository_metadata_readable",
+            "issues_enabled",
+            "discussions_enabled",
+            "triage_category_exists",
+            "community_review_label_exists",
+            "registry_submission_label_exists",
+            "registry_vote_label_exists",
+            "review_form_exists",
+            "mod_submission_exists",
+        ];
+
+        let no_token = network_checks_unavailable(false);
+        assert_eq!(
+            no_token.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(no_token[0].status, DiagnosticStatus::Fail);
+        assert_eq!(
+            no_token[0].message,
+            "Cannot check: no GitHub token available"
+        );
+        assert!(no_token[1..]
+            .iter()
+            .all(|c| c.status == DiagnosticStatus::Warning
+                && c.message == "Cannot check: no GitHub token"));
+
+        let with_token = network_checks_unavailable(true);
+        assert_eq!(
+            with_token.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ids
+        );
+        assert!(with_token
+            .iter()
+            .all(|c| c.message.contains("core context unavailable")
+                && !c.message.contains("no GitHub token")));
     }
 }

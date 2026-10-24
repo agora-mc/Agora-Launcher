@@ -183,7 +183,7 @@ These commands only read. They never vote, and they never post to GitHub.
 | `agora governance config` | Show the governance repository and environment this build uses |
 | `agora governance diagnostics` | Run the governance setup checks, local and GitHub |
 
-These queries read the installed registry, so they fail with an error when none is installed; run `agora registry sync` first. `governance diagnostics` prints one line per check and exits with status 1 when any check fails. Its GitHub checks are read-only requests. When GitHub is unreachable or you are not signed in, those checks report their own failure rather than passing.
+These queries read the installed registry, so they fail with an error when none is installed; run `agora registry sync` first. A registry database that cannot be read is an error too, never an empty list. An empty list means there is genuinely nothing to show. `governance diagnostics` prints one line per check and exits with status 1 when any check fails. Its GitHub checks are read-only requests. When GitHub is unreachable or you are not signed in, those checks report their own failure rather than passing.
 
 ### Instances
 
@@ -408,12 +408,12 @@ agora pack install --provider <PROVIDER_ID> --project <PROJECT_ID> --version <VE
 agora technic search <QUERY> --limit 20
 agora technic install <SLUG>
 agora technic install <SLUG> --build <BUILD> --name <NAME>
-agora technic install <SLUG> --minecraft <VERSION> --loader <LOADER> --loader-version <VERSION>
+agora technic install <SLUG> --minecraft <VERSION> --loader <LOADER> --loader-version <VERSION> --sha256 <HEX>
 ```
 
 `pack install --provider` installs a provider's modpack as a **new** instance, through the same registry the desktop uses. It cannot be combined with a manifest path and instance. `--version` is optional; without it the provider chooses.
 
-Technic consent is off by default. It is stored as the `technic_enabled` setting, and zip packs also need `allow_unverified_packs`; `agora settings set technic_enabled true` changes it. `technic search` and `technic install` are refused while the setting is off. Solder packs install at their recommended build unless `--build` names one. Zip packs carry no metadata, so you must give their Minecraft version, loader, and loader version. Core checks both settings on every call, whatever flags you pass.
+Technic consent is off by default. It is stored as the `technic_enabled` setting, and zip packs also need `allow_unverified_packs`; `agora settings set technic_enabled true` changes it. `technic search` and `technic install` are refused while the setting is off. Solder packs install at their recommended build unless `--build` names one. Zip packs carry no metadata, so you must give their Minecraft version, loader, and loader version. Pass `--sha256 <HEX>` (64 hex digits) to check the zip download against a published SHA-256; the download fails if it does not match. Without `--sha256` the CLI warns that the zip is installed unverified, and it does so before the install starts. `--sha256` is refused for Solder packs. Core checks both settings on every call, whatever flags you pass.
 
 ### Updates
 

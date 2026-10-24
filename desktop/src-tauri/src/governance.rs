@@ -470,13 +470,15 @@ pub fn run_sync_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
 
 /// Run async network-based diagnostic checks. The checks live in
 /// `agora_core::governance`, shared with the CLI; this adapter only supplies
-/// the core context.
+/// the core context. Without a context the checks cannot run, so they are
+/// reported as unavailable rather than dropped.
 pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     let ctx = match crate::core_context(app) {
         Ok(ctx) => ctx,
         Err(error) => {
             eprintln!("[governance] core context unavailable for network diagnostics: {error}");
-            return Vec::new();
+            let has_token = agora_core::auth::get_valid_access_token().await.is_some();
+            return agora_core::governance::network_checks_unavailable(has_token);
         }
     };
     agora_core::governance::run_network_diagnostics(&ctx).await

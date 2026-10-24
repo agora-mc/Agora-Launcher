@@ -59,7 +59,9 @@ pub enum TechnicCmd {
     ///
     /// Solder packs take `--build` (default: the pack's recommended build).
     /// Zip packs have no metadata, so they need `--minecraft`, `--loader` and
-    /// `--loader-version`. Consent settings are enforced by core.
+    /// `--loader-version`. Pass `--sha256` to pin a zip's download to a
+    /// published hash; without it the zip is installed unverified and the CLI
+    /// says so. Consent settings are enforced by core.
     Install {
         /// Technic pack slug, as shown by `technic search`.
         slug: String,
@@ -67,6 +69,12 @@ pub enum TechnicCmd {
         build: Option<String>,
         #[arg(long, help = "Name for the new instance")]
         name: Option<String>,
+        #[arg(
+            long,
+            value_parser = parse_sha256_arg,
+            help = "SHA-256 of the zip download, 64 hex digits (zip packs only)"
+        )]
+        sha256: Option<String>,
         #[arg(long, help = "Minecraft version (zip packs only)")]
         minecraft: Option<String>,
         #[arg(long, help = "Mod loader (zip packs only)")]
@@ -308,6 +316,7 @@ pub async fn run_technic_command(
             minecraft,
             loader,
             loader_version,
+            sha256,
         } => {
             let detail = technic::pack_detail(ctx, &slug).await?;
             let result = match detail.tier {
@@ -317,6 +326,9 @@ pub async fn run_technic_command(
                             "--minecraft, --loader and --loader-version apply to zip packs only; \
                              '{slug}' is a Solder pack"
                         );
+                    }
+                    if sha256.is_some() {
+                        bail!("--sha256 applies to zip packs only; '{slug}' is a Solder pack");
                     }
                     let solder = detail
                         .solder
@@ -338,10 +350,19 @@ pub async fn run_technic_command(
                         .download_url
                         .clone()
                         .with_context(|| format!("Technic pack '{slug}' has no download URL"))?;
+                    // Said before the install starts, so it is shown even if
+                    // the install then fails.
+                    if sha256.is_none() {
+                        eprintln!(
+                            "Warning: no --sha256 given, so the zip for '{slug}' is installed \
+                             unverified: its download is not checked against a published hash. \
+                             Pass --sha256 <HEX> to pin it."
+                        );
+                    }
                     let pack = TechnicZipPack {
                         display_name: detail.title.clone(),
                         download_url,
-                        sha256: None,
+                        sha256,
                         minecraft_version: minecraft.with_context(|| {
                             format!("zip pack '{slug}' needs --minecraft <VERSION>")
                         })?,
@@ -454,4 +475,51 @@ pub fn plugin_set(
         println!("Set {key} = {value} for {id}.");
     }
     Ok(())
+}
+
+/// `--sha256`: exactly 64 hex digits, lower-cased so it compares the same way
+/// as a published hash. Anything else is refused: a pin that can never match
+/// is worse than no pin, because it would look like protection.
+fn parse_sha256_arg(raw: &str) -> Result<String, String> {
+    let hash = raw.trim();
+    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(hash.to_ascii_lowercase())
+    } else {
+        Err("expected exactly 64 hexadecimal characters (a SHA-256 digest)".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_sha256_arg;
+
+    const HASH: &str = "0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn accepts_a_64_digit_hash_and_lower_cases_it() {
+        assert_eq!(parse_sha256_arg(HASH).unwrap(), HASH.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace_before_checking() {
+        assert_eq!(
+            parse_sha256_arg(&format!("  {HASH}\n")).unwrap(),
+            HASH.to_ascii_lowercase()
+        );
+    }
+
+    #[test]
+    fn refuses_a_hash_of_the_wrong_length() {
+        assert!(parse_sha256_arg(&HASH[..63]).is_err());
+        assert!(parse_sha256_arg(&format!("{HASH}0")).is_err());
+        assert!(parse_sha256_arg("").is_err());
+        assert!(parse_sha256_arg("   ").is_err());
+    }
+
+    #[test]
+    fn refuses_non_hex_characters_at_the_right_length() {
+        let bad = format!("{}g", &HASH[..63]);
+        assert!(parse_sha256_arg(&bad).is_err());
+        assert!(parse_sha256_arg(&"z".repeat(64)).is_err());
+    }
 }
