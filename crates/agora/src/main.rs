@@ -3522,24 +3522,24 @@ async fn run_auth_command(
                 }
             });
 
-            let credentials =
+            let account =
                 agora_core::msa::poll_login(&ctx.http_clients, &flow, &db_path, &cancel).await?;
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
-                        "username": credentials.username,
-                        "uuid": credentials.uuid,
-                        "expires": credentials.expires,
+                        "username": account.username,
+                        "uuid": account.uuid,
+                        "expires": account.expires,
                     })
                 );
             } else {
-                println!("Signed in as {}", credentials.username);
+                println!("Signed in as {}", account.username);
             }
         }
         AuthCmd::Status => match agora_core::msa::load_credentials()? {
-            Some(creds) => {
-                if creds.needs_reauth() {
+            Some(account) => {
+                if account.needs_reauth() {
                     // Stored by the pre-migration flow: no refresh token
                     // Agora now holds can renew it.
                     if json {
@@ -3547,24 +3547,24 @@ async fn run_auth_command(
                             "{}",
                             serde_json::json!({
                                 "status": "sign_in_required",
-                                "username": creds.username,
+                                "username": account.username,
                                 "reason": agora_core::msa::LEGACY_CREDENTIALS_MESSAGE,
                             })
                         );
                     } else {
-                        println!("Signed in as {} — sign-in required", creds.username);
+                        println!("Signed in as {} — sign-in required", account.username);
                         println!("{}", agora_core::msa::LEGACY_CREDENTIALS_MESSAGE);
                     }
-                } else if creds.is_expired() {
+                } else if account.is_expired() {
                     if json {
                         println!(
                             "{}",
-                            serde_json::json!({"status": "expired", "username": creds.username})
+                            serde_json::json!({"status": "expired", "username": account.username})
                         );
                     } else {
                         println!(
                             "Signed in as {} (expired — run 'agora auth login')",
-                            creds.username
+                            account.username
                         );
                     }
                 } else {
@@ -3573,14 +3573,14 @@ async fn run_auth_command(
                             "{}",
                             serde_json::json!({
                                 "status": "valid",
-                                "username": creds.username,
-                                "expires": creds.expires,
+                                "username": account.username,
+                                "expires": account.expires,
                             })
                         );
                     } else {
                         println!(
                             "Signed in as {} (expires {})",
-                            creds.username, creds.expires
+                            account.username, account.expires
                         );
                     }
                 }
