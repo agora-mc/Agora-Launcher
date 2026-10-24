@@ -16,8 +16,23 @@ export function formatMemoryMb(mb: number): string {
   return `${mb} MB`;
 }
 
-/** Launcher names as users know them, from the snake_case kind or the source label. */
+const FILE_SOURCE_PREFIX = 'mrpack:';
+
+/** Whether an instance came from a pack file on disk rather than another launcher. */
+export function isFileImportSource(source: string | null | undefined): boolean {
+  return (source ?? '').trim().toLowerCase().startsWith(FILE_SOURCE_PREFIX);
+}
+
+/**
+ * Launcher names as users know them, from the snake_case kind or the source
+ * label. An instance imported from a pack file is recorded as
+ * `mrpack:<file name>` and shows that file name.
+ */
 export function importSourceLabel(source: string | null | undefined): string | null {
+  if (isFileImportSource(source)) {
+    const file = (source ?? '').trim().slice(FILE_SOURCE_PREFIX.length).trim();
+    return file === '' ? 'a pack file' : file;
+  }
   switch ((source ?? '').trim().toLowerCase()) {
     case 'curseforge':
     case 'curse_forge':

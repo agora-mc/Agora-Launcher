@@ -934,10 +934,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Import a pack',
-          body: 'Open an instance with Edit, then use the Other launchers & files tab (Select File & Import, for a .mrpack or Prism .zip) or "Import pack as new instance" on the Mods tab (.mrpack or Agora pack file). A .mrpack opens a short review where you can rename the new instance before it is created. Agora prepares the loader and required content before promoting the new instance.',
+          body: 'On My Instances, click Import pack file at the top and pick a .mrpack or an Agora pack file. (In an instance\'s editor, the Import pack as new instance button at the top does the same, and the Other launchers & files tab has Select File & Import for a .mrpack or Prism .zip.) Either kind of pack opens a review before anything is created: the new instance\'s name, every file with where it comes from (a Modrinth or other download, or a copy inside the pack), what is left out, and anything that would stop the import. Agora prepares the loader and required content before promoting the new instance, and the finished instance shows which file it was imported from.',
           steps: [
             'Choose the pack file from a trusted source.',
-            'Check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
+            'In the review, check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
+            'Read the list of files and what is left out, then choose Import. Cancel leaves nothing behind.',
             'Leave save symlinking off unless you understand how shared save paths behave.',
             'Wait for preparation and health validation to finish.',
             'Launch once and verify the pack before adding more content.',
@@ -960,17 +961,17 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Send a setup to a friend or another computer',
-          body: 'Open the instance with Edit, go to the Export tab, and choose Export as Modrinth Pack (.mrpack). It works for any setup: mods Agora can find on Modrinth are listed with download links, and every other mod is included as a file inside the pack, so nothing is missing on the other end. Disabled mods are included and arrive disabled. Send the saved file however you like. Configs, keybinds, and settings are not included, and neither are saves or snapshots.',
+          body: 'Open the instance with Edit, go to the Export tab, and choose Export as Modrinth Pack (.mrpack). It works for any setup: mods Agora can find on Modrinth are listed with download links, and every other mod is included as a file inside the pack, so nothing is missing on the other end. Your resource packs, shader packs and datapacks go along too (linked when Modrinth hosts that exact file, otherwise included as files), because you chose them. Disabled mods are included and arrive disabled. Send the saved file however you like. Configs, keybinds, and settings are not included, and neither are saves or snapshots.',
           steps: [
             'On the Export tab, pick Export as Modrinth Pack (.mrpack) and choose where to save it.',
             'Send the file to your friend, or copy it to the other computer.',
-            'In Agora there, open an instance with Edit and use "Import pack as new instance" on the Mods tab (or Select File & Import on the Other launchers & files tab), then pick the file. Prism, Modrinth App and other launchers can open a .mrpack too.',
-            'Review the name, let Agora finish preparing, then launch once to check it.',
+            'In Agora there, go to My Instances, click Import pack file, and pick the file. Prism, Modrinth App and other launchers can open a .mrpack too.',
+            'Review the name and the file list, choose Import, let Agora finish preparing, then launch once to check it.',
           ],
           callout: {
             tone: 'note',
             title: 'The Agora pack (.json) is lighter but needs sources',
-            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along. Disabled mods stay disabled on the other side, and the import review marks them. The pack carries the instance name you see in Agora.',
+            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along; the Agora pack never carries resource packs, shader packs or datapacks. Disabled mods stay disabled on the other side, and the import review marks them. The pack carries the instance name you see in Agora.',
           },
         },
         {

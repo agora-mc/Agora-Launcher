@@ -115,6 +115,126 @@ async fn lookup_batch(clients: &HttpClients, hashes: &[String]) -> HashMap<Strin
         .unwrap_or_default()
 }
 
+/// A file Modrinth hosts, identified by the hash of the copy on disk, so the
+/// bytes at `url` are the bytes the user has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedFile {
+    pub url: String,
+    pub sha1: String,
+    pub sha512: String,
+    pub size: u64,
+}
+
+/// Folders of content the user chose, as opposed to configs and settings,
+/// that an exported `.mrpack` carries besides the mods.
+pub const PACK_CONTENT_DIRS: [&str; 3] = ["resourcepacks", "shaderpacks", "datapacks"];
+
+/// Reads the reply of `POST /v2/version_files` for the hosted file behind each
+/// requested hash: the version's file whose own SHA-1 is that hash, with its
+/// Modrinth CDN link. Anything else (another host, missing hashes) is skipped.
+pub fn parse_hosted_files(body: &serde_json::Value) -> HashMap<String, HostedFile> {
+    let mut hosted = HashMap::new();
+    let Some(map) = body.as_object() else {
+        return hosted;
+    };
+    for (hash, version) in map {
+        let hash = hash.to_ascii_lowercase();
+        let Some(files) = version.get("files").and_then(|f| f.as_array()) else {
+            continue;
+        };
+        for file in files {
+            let text = |value: Option<&serde_json::Value>| {
+                value
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.trim().to_ascii_lowercase())
+                    .filter(|v| !v.is_empty())
+            };
+            let sha1 = text(file.pointer("/hashes/sha1"));
+            let sha512 = text(file.pointer("/hashes/sha512"));
+            let url = file
+                .get("url")
+                .and_then(|v| v.as_str())
+                .filter(|u| u.starts_with("https://cdn.modrinth.com/"));
+            if let (Some(sha1), Some(sha512), Some(url)) = (sha1, sha512, url) {
+                if sha1 == hash {
+                    hosted.insert(
+                        hash.clone(),
+                        HostedFile {
+                            url: url.to_string(),
+                            sha1,
+                            sha512,
+                            size: file.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+                        },
+                    );
+                    break;
+                }
+            }
+        }
+    }
+    hosted
+}
+
+async fn lookup_hosted_batch(
+    clients: &HttpClients,
+    hashes: &[String],
+) -> HashMap<String, HostedFile> {
+    let body = serde_json::json!({ "hashes": hashes, "algorithm": "sha1" });
+    let response = match http_client::checked_post_json(
+        clients,
+        ClientCategory::Modrinth,
+        "https://api.modrinth.com/v2/version_files",
+        &body,
+        &[("Accept".to_string(), "application/json".to_string())],
+    )
+    .await
+    {
+        Ok(response) if response.status().is_success() => response,
+        _ => return HashMap::new(),
+    };
+    let Ok(bytes) = http_client::checked_response_bytes(response, ClientCategory::Modrinth).await
+    else {
+        return HashMap::new();
+    };
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map(|value| parse_hosted_files(&value))
+        .unwrap_or_default()
+}
+
+/// Which resource packs, shader packs and datapacks in `instance_dir` Modrinth hosts,
+/// keyed by the SHA-1 of the file on disk. Never fails: offline, or a file
+/// Modrinth does not know, simply leaves it out of the map (the export then
+/// carries the file itself).
+pub async fn find_hosted_pack_content(instance_dir: &Path) -> HashMap<String, HostedFile> {
+    let mut hashes: Vec<String> = Vec::new();
+    for dir in PACK_CONTENT_DIRS {
+        let Ok(read) = std::fs::read_dir(instance_dir.join(dir)) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+            if !is_file {
+                continue;
+            }
+            if let Some(hash) = sha1_of_file(&entry.path()) {
+                hashes.push(hash);
+            }
+        }
+    }
+    hashes.sort();
+    hashes.dedup();
+    if hashes.is_empty() {
+        return HashMap::new();
+    }
+    let Ok(clients) = HttpClients::new() else {
+        return HashMap::new();
+    };
+    let mut hosted = HashMap::new();
+    for chunk in hashes.chunks(BATCH) {
+        hosted.extend(lookup_hosted_batch(&clients, chunk).await);
+    }
+    hosted
+}
+
 /// Whether a mod has a route a pack could install it from.
 pub fn has_source(item: &InstalledMod) -> bool {
     let non_empty = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.trim().is_empty());

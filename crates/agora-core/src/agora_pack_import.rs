@@ -188,6 +188,11 @@ pub enum PlannedSource {
     Modrinth,
     /// No source this install can use. The entry's `reason` says why.
     CannotGet,
+    /// A direct download link in a Modrinth pack that is not Modrinth's own
+    /// (an allowed host such as GitHub).
+    Download,
+    /// The file is inside the pack itself; nothing is downloaded for it.
+    Bundled,
 }
 
 /// One entry of an import plan. Says what the import will try, and what the
@@ -224,6 +229,26 @@ pub struct PackImportPlan {
     pub file_sha256: String,
     /// Size in bytes of the reviewed file.
     pub file_size: u64,
+    /// An instance already has the name the pack would get.
+    #[serde(default)]
+    pub name_taken: bool,
+    /// A free name to offer: the pack's name when unused, else "Name (2)".
+    #[serde(default)]
+    pub suggested_name: String,
+    /// What the import will not bring over, with the reason.
+    #[serde(default)]
+    pub left_out: Vec<String>,
+    /// What will make the import fail or cannot be carried out. Empty means
+    /// nothing found; the entries' own `reason`s are shown beside each mod.
+    #[serde(default)]
+    pub problems: Vec<String>,
+    /// Files that cannot be fetched. The user may import without them; the
+    /// import then leaves exactly these out.
+    #[serde(default)]
+    pub soft_problems: Vec<String>,
+    /// Anything else the user should know before importing (settings copied, ...).
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// SHA-256 (lowercase hex) of a pack file's bytes.
@@ -1251,6 +1276,12 @@ pub fn plan_agora_pack(backend: &dyn PackBackend, pack: &ParsedAgoraPack) -> Pac
         // Filled in by `plan_agora_pack_bytes`, which has the file's bytes.
         file_sha256: String::new(),
         file_size: 0,
+        name_taken: false,
+        suggested_name: pack_display_name(&pack.instance),
+        left_out: Vec::new(),
+        problems: Vec::new(),
+        soft_problems: Vec::new(),
+        notes: Vec::new(),
     }
 }
 
@@ -1326,7 +1357,16 @@ fn plan_entry(
 
 /// [`plan_agora_pack`] against this install's real settings and catalog.
 pub fn plan_agora_pack_import(ctx: &Ctx, pack: &ParsedAgoraPack) -> PackImportPlan {
-    plan_agora_pack(&CoreBackend::new(ctx.clone()), pack)
+    let mut plan = plan_agora_pack(&CoreBackend::new(ctx.clone()), pack);
+    // The name check reads the instances folder and the instance list; if it
+    // cannot, the pack's own name stands and the import itself refuses a clash.
+    if let Ok(check) =
+        crate::import_service::ImportService::new(ctx.clone()).preview_name(&plan.pack_name)
+    {
+        plan.name_taken = check.name_taken;
+        plan.suggested_name = check.suggested_name;
+    }
+    plan
 }
 
 pub async fn retry_agora_pack_entries_with(

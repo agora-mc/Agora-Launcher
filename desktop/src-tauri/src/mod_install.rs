@@ -345,8 +345,33 @@ pub async fn export_instance_pack(
     out_path: &Path,
 ) -> LauncherResult<String> {
     let (manifest, instance_dir) = manifest_for_export(app, instance_id).await?;
-    agora_core::export_service::export_instance_pack_to(&instance_dir, &manifest, out_path, format)
-        .await
+    // Resource and shader packs Modrinth hosts are linked rather than bundled,
+    // when the user allows Modrinth lookups; otherwise they are bundled.
+    let hosted = if format == "mrpack" && modrinth_lookups_allowed(app) {
+        agora_core::source_identify::find_hosted_pack_content(&instance_dir).await
+    } else {
+        Default::default()
+    };
+    agora_core::export_service::export_instance_pack_with_hosted(
+        &instance_dir,
+        &manifest,
+        out_path,
+        format,
+        &hosted,
+    )
+    .await
+}
+
+/// Whether Modrinth may be asked about this user's files (the same switch
+/// that lets an export look up sources for mods).
+fn modrinth_lookups_allowed(app: &tauri::AppHandle) -> bool {
+    crate::core_context(app)
+        .map(|ctx| {
+            agora_core::modrinth::ModrinthService::new(ctx)
+                .check_enabled()
+                .is_ok()
+        })
+        .unwrap_or(false)
 }
 
 /// What an import produced: the new instance, and for an Agora pack the
@@ -364,15 +389,17 @@ pub async fn import_instance_pack(
     app: &tauri::AppHandle,
     source_path: &str,
     reviewed_sha256: Option<&str>,
+    name: Option<&str>,
+    skip_unfetchable: bool,
 ) -> LauncherResult<PackImportOutcome> {
     let lower = source_path.to_ascii_lowercase();
     if lower.ends_with(".mrpack") {
         Ok(PackImportOutcome {
-            instance_id: import_mrpack(app, source_path).await?,
+            instance_id: import_mrpack(app, reviewed_sha256, name, skip_unfetchable).await?,
             report: None,
         })
     } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
-        import_agora_json(app, source_path, reviewed_sha256).await
+        import_agora_json(app, source_path, reviewed_sha256, name).await
     } else {
         Err(LauncherError::Generic {
             code: "ERR_INVALID_FORMAT".into(),
@@ -400,16 +427,23 @@ pub async fn retry_pack_import_entries(
     .await
 }
 
-/// What importing a `.agora-pack.json` would do, for the review step. Reads
-/// the file and this install's settings; writes nothing and contacts no source.
+/// What importing a pack file would do, for the review step: an
+/// `.agora-pack.json` or a `.mrpack`. Reads the file and this install's
+/// settings; writes nothing and contacts no source.
 pub fn plan_pack_import(
     app: &tauri::AppHandle,
     source_path: &str,
 ) -> LauncherResult<agora_core::agora_pack_import::PackImportPlan> {
-    if !source_path.to_ascii_lowercase().ends_with(".json") {
+    let lower = source_path.to_ascii_lowercase();
+    if lower.ends_with(".mrpack") {
+        let ctx = crate::core_context(app)?;
+        return agora_core::import_service::ImportService::new(ctx)
+            .plan_mrpack_import(Path::new(source_path));
+    }
+    if !lower.ends_with(".json") {
         return Err(LauncherError::Generic {
             code: "ERR_INVALID_FORMAT".into(),
-            message: "Only .agora-pack.json files have a review step.".into(),
+            message: "Only .agora-pack.json and .mrpack files have a review step.".into(),
         });
     }
     let ctx = crate::core_context(app)?;
@@ -435,17 +469,44 @@ fn read_agora_pack_bytes(source_path: &str) -> LauncherResult<Vec<u8>> {
     std::fs::read(source_path).map_err(|_| unreadable())
 }
 
-async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherResult<String> {
+/// Imports the staged copy the review made (not the original file, which may
+/// have changed since), then removes that copy.
+async fn import_mrpack(
+    app: &tauri::AppHandle,
+    reviewed_sha256: Option<&str>,
+    name: Option<&str>,
+    skip_unfetchable: bool,
+) -> LauncherResult<String> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::import_service::ImportService::new(ctx);
+    let svc = agora_core::import_service::ImportService::new(ctx.clone());
+    let staged = svc.take_reviewed_copy(reviewed_sha256)?;
     let request = agora_core::import_service::ImportRequest {
-        source: agora_core::import_service::ImportSource::mrpack(
-            Path::new(source_path).to_path_buf(),
-        ),
+        source: agora_core::import_service::ImportSource::Mrpack {
+            path: staged,
+            origin_url: None,
+            skip_unfetchable,
+        },
         symlink_saves: false,
     };
-    let result = svc.run_import(request).await?;
-    Ok(result.instance_id)
+    let result = svc
+        .run_import_named(
+            request,
+            name.map(str::to_string),
+            ctx.progress_sink.clone(),
+            agora_core::event_sink::CancellationToken::new(),
+        )
+        .await;
+    if let Some(sha) = reviewed_sha256 {
+        svc.discard_reviewed_copy(sha);
+    }
+    Ok(result?.instance_id)
+}
+
+/// Drops the staged copy of a pack whose review was cancelled.
+pub fn discard_pack_review(app: &tauri::AppHandle, sha256: &str) -> LauncherResult<()> {
+    let ctx = crate::core_context(app)?;
+    agora_core::import_service::ImportService::new(ctx).discard_reviewed_copy(sha256);
+    Ok(())
 }
 
 /// Import an Agora plain-JSON pack (.agora-pack.json).
@@ -457,6 +518,7 @@ async fn import_agora_json(
     app: &tauri::AppHandle,
     source_path: &str,
     reviewed_sha256: Option<&str>,
+    name_override: Option<&str>,
 ) -> LauncherResult<PackImportOutcome> {
     let ctx = crate::core_context(app)?;
     // One read: the bytes checked against the reviewed fingerprint are the
@@ -464,8 +526,16 @@ async fn import_agora_json(
     let bytes = read_agora_pack_bytes(source_path)?;
     let pack = agora_core::agora_pack_import::parse_reviewed_agora_pack(&bytes, reviewed_sha256)?;
     let inst = &pack.instance;
-    let name = agora_core::agora_pack_import::pack_display_name(inst);
-    let instance_id = paths::sanitize_id(inst.id.as_deref().unwrap_or(&name));
+    // The name the user chose in the review wins, and its folder follows it;
+    // without one the pack's own id and name are used, as before.
+    let chosen = name_override.map(str::trim).filter(|n| !n.is_empty());
+    let name = chosen
+        .map(str::to_string)
+        .unwrap_or_else(|| agora_core::agora_pack_import::pack_display_name(inst));
+    let instance_id = paths::sanitize_id(match chosen {
+        Some(chosen) => chosen,
+        None => inst.id.as_deref().unwrap_or(&name),
+    });
     let instance_id = if instance_id.is_empty() {
         "imported-pack".into()
     } else {

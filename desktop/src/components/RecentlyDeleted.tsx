@@ -8,12 +8,14 @@ import {
   type RecentlyDeletedEntry,
 } from '../lib/tauri';
 import { useConfirm } from '@/components/ui/confirm';
+import { importSourceLabel, isFileImportSource } from '../lib/importDisplay';
 
 /** How long Agora keeps a deleted instance before moving it to the OS trash. */
 export const RECENTLY_DELETED_DAYS = 30;
 
 function launcherName(source: string | null | undefined): string | null {
   if (!source) return null;
+  if (isFileImportSource(source)) return importSourceLabel(source);
   if (source === 'curse_forge' || source === 'curseforge') return 'CurseForge';
   if (source === 'prism') return 'Prism Launcher';
   return 'Modrinth App';
@@ -22,7 +24,9 @@ function launcherName(source: string | null | undefined): string | null {
 /** Say exactly what Delete does: Agora's copy only, restorable for 30 days. */
 export function deleteDialogBody(instance: { name: string; import_source?: string | null }): string {
   const launcher = launcherName(instance.import_source);
-  const untouched = launcher ? ` Your ${launcher} files aren't touched.` : '';
+  const untouched = isFileImportSource(instance.import_source)
+    ? ` The pack file ${launcher} isn't touched.`
+    : launcher ? ` Your ${launcher} files aren't touched.` : '';
   return `Removes Agora's copy of ${instance.name}.${untouched} You can restore it from Recently deleted for ${RECENTLY_DELETED_DAYS} days.`;
 }
 

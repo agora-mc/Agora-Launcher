@@ -101,6 +101,26 @@ pub async fn export_instance_pack_to(
     out_path: &Path,
     format: &str,
 ) -> LauncherResult<String> {
+    export_instance_pack_with_hosted(
+        instance_dir,
+        manifest,
+        out_path,
+        format,
+        &std::collections::HashMap::new(),
+    )
+    .await
+}
+
+/// [`export_instance_pack_to`] where `hosted` names the resource packs and
+/// shader packs Modrinth hosts (by SHA-1 of the local file). A `.mrpack` links
+/// those; every other pack file is bundled inside it.
+pub async fn export_instance_pack_with_hosted(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    out_path: &Path,
+    format: &str,
+    hosted: &std::collections::HashMap<String, crate::source_identify::HostedFile>,
+) -> LauncherResult<String> {
     match format {
         "json" | "mrpack" => {}
         other => return Err(invalid_format_error(other)),
@@ -109,7 +129,7 @@ pub async fn export_instance_pack_to(
     let written = if format == "json" {
         write_json_pack(manifest, &tmp_path)
     } else {
-        write_mrpack_pack(instance_dir, manifest, &tmp_path).await
+        write_mrpack_pack(instance_dir, manifest, hosted, &tmp_path).await
     };
     commit_tmp_file(&tmp_path, out_path, written)?;
     Ok(out_path.to_string_lossy().to_string())
@@ -182,9 +202,52 @@ fn unbundleable_mod(filename: &str, reason: &str) -> LauncherError {
     }
 }
 
+/// Every regular file under `root`, as (path relative to `root` with `/`
+/// separators, path on disk), sorted. A link stops the export: it cannot be
+/// bundled, and leaving it out would hand a friend a pack that differs.
+fn pack_content_files(root: &Path) -> LauncherResult<Vec<(String, PathBuf)>> {
+    fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) -> LauncherResult<()> {
+        let unreadable = |what: &str| unbundleable_mod(what, "it could not be read");
+        let read = std::fs::read_dir(dir).map_err(|_| unreadable(prefix))?;
+        for entry in read {
+            let entry = entry.map_err(|_| unreadable(prefix))?;
+            let file_name = entry.file_name();
+            let name = file_name
+                .to_str()
+                .ok_or_else(|| unbundleable_mod(prefix, "a file name cannot be stored in a pack"))?
+                .to_string();
+            let rel = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let kind = entry.file_type().map_err(|_| unreadable(&rel))?;
+            if kind.is_symlink() {
+                return Err(unbundleable_mod(
+                    &rel,
+                    "it is a link, and links cannot be bundled",
+                ));
+            }
+            if kind.is_dir() {
+                walk(&entry.path(), &rel, out)?;
+            } else if kind.is_file() {
+                out.push((rel, entry.path()));
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    if root.is_dir() {
+        walk(root, "", &mut files)?;
+    }
+    files.sort();
+    Ok(files)
+}
+
 async fn write_mrpack_pack(
     instance_dir: &Path,
     manifest: &InstanceManifest,
+    hosted: &std::collections::HashMap<String, crate::source_identify::HostedFile>,
     tmp_path: &Path,
 ) -> LauncherResult<()> {
     let mods_dir = instance_dir.join("mods");
@@ -245,6 +308,34 @@ async fn write_mrpack_pack(
             "downloads": [],
             "fileSize": size,
         }));
+    }
+
+    // Resource packs, shader packs and instance-level datapacks are content the user chose (unlike
+    // configs and settings, which stay out), so they travel with the pack:
+    // linked when Modrinth hosts that exact file, otherwise bundled under
+    // `overrides/`, where the format keeps loose files.
+    for dir in crate::source_identify::PACK_CONTENT_DIRS {
+        for (rel, path) in pack_content_files(&instance_dir.join(dir))? {
+            let pack_path = format!("{dir}/{rel}");
+            let unreadable = || unbundleable_mod(&pack_path, "it could not be read");
+            let (sha1, sha512) = sha1_and_sha512(&path).ok_or_else(unreadable)?;
+            let top_level = !rel.contains('/');
+            // Linked only when both hashes agree, so the link is to these bytes.
+            let linked = top_level
+                .then(|| hosted.get(&sha1).filter(|file| file.sha512 == sha512))
+                .flatten();
+            if let Some(file) = linked {
+                files_meta.push(serde_json::json!({
+                    "path": pack_path,
+                    "hashes": { "sha1": file.sha1, "sha512": file.sha512 },
+                    "downloads": [file.url],
+                    "fileSize": file.size,
+                }));
+            } else {
+                stream_jar_into_zip(&mut zip, opts, &format!("overrides/{pack_path}"), &path)
+                    .map_err(|_| unreadable())?;
+            }
+        }
     }
 
     let mut deps = serde_json::Map::new();
@@ -932,5 +1023,295 @@ mod tests {
             );
             assert_eq!(imported.loader_version, version, "{loader}");
         }
+    }
+}
+
+#[cfg(test)]
+mod pack_content_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn manifest() -> InstanceManifest {
+        serde_json::from_value(serde_json::json!({
+            "instance_id": "spiff", "name": "Spiff", "minecraft_version": "1.20.4",
+            "loader": "fabric", "loader_version": "0.15.0", "mods": [],
+        }))
+        .unwrap()
+    }
+
+    fn read_index(path: &Path) -> serde_json::Value {
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+        let entry = archive.by_name("modrinth.index.json").unwrap();
+        serde_json::from_reader(entry).unwrap()
+    }
+
+    fn instance_with_packs(tmp: &TempDir) -> PathBuf {
+        let dir = tmp.path().join("instance");
+        std::fs::create_dir_all(dir.join("shaderpacks")).unwrap();
+        std::fs::create_dir_all(dir.join("resourcepacks")).unwrap();
+        std::fs::write(
+            dir.join("shaderpacks").join("Complementary.zip"),
+            b"shader one",
+        )
+        .unwrap();
+        std::fs::write(dir.join("shaderpacks").join("BSL.zip"), b"shader two").unwrap();
+        std::fs::write(dir.join("resourcepacks").join("Faithful.zip"), b"textures").unwrap();
+        std::fs::create_dir_all(dir.join("datapacks")).unwrap();
+        std::fs::write(dir.join("datapacks").join("Tweaks.zip"), b"data").unwrap();
+        // A world's own datapacks are part of that world, not instance content.
+        std::fs::create_dir_all(dir.join("saves").join("W").join("datapacks")).unwrap();
+        std::fs::write(
+            dir.join("saves").join("W").join("datapacks").join("w.zip"),
+            b"w",
+        )
+        .unwrap();
+        // Settings are not content the user chose; they stay out.
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(dir.join("config").join("sodium.json"), b"{}").unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn shader_and_resource_packs_travel_inside_the_mrpack_and_come_back_on_import() {
+        let tmp = TempDir::new().unwrap();
+        let dir = instance_with_packs(&tmp);
+        let out = tmp.path().join("pack.mrpack");
+
+        export_instance_pack_to(&dir, &manifest(), &out, "mrpack")
+            .await
+            .unwrap();
+
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        assert!(archive
+            .by_name("overrides/shaderpacks/Complementary.zip")
+            .is_ok());
+        assert!(archive.by_name("overrides/shaderpacks/BSL.zip").is_ok());
+        assert!(archive
+            .by_name("overrides/resourcepacks/Faithful.zip")
+            .is_ok());
+        assert!(archive.by_name("overrides/datapacks/Tweaks.zip").is_ok());
+        assert!(
+            archive
+                .by_name("overrides/saves/W/datapacks/w.zip")
+                .is_err(),
+            "per-world datapacks stay with the world"
+        );
+        assert!(
+            archive.by_name("overrides/config/sodium.json").is_err(),
+            "configs are not exported"
+        );
+
+        let imported = crate::import::import_mrpack(&out, &tmp.path().join("in"), false).unwrap();
+        let root = tmp.path().join("in").join(&imported.instance_id);
+        assert!(root.join("shaderpacks").join("Complementary.zip").is_file());
+        assert!(root.join("shaderpacks").join("BSL.zip").is_file());
+        assert!(root.join("resourcepacks").join("Faithful.zip").is_file());
+        assert!(root.join("datapacks").join("Tweaks.zip").is_file());
+    }
+
+    #[tokio::test]
+    async fn a_pack_modrinth_hosts_is_linked_by_hash_and_the_rest_is_bundled() {
+        let tmp = TempDir::new().unwrap();
+        let dir = instance_with_packs(&tmp);
+        let out = tmp.path().join("pack.mrpack");
+        let (sha1, sha512) = sha1_and_sha512(&dir.join("shaderpacks").join("BSL.zip")).unwrap();
+        let mut hosted = HashMap::new();
+        hosted.insert(
+            sha1.clone(),
+            crate::source_identify::HostedFile {
+                url: "https://cdn.modrinth.com/data/abc/versions/def/BSL.zip".into(),
+                sha1: sha1.clone(),
+                sha512,
+                size: 10,
+            },
+        );
+
+        export_instance_pack_with_hosted(&dir, &manifest(), &out, "mrpack", &hosted)
+            .await
+            .unwrap();
+
+        let index = read_index(&out);
+        let files = index["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{index}");
+        assert_eq!(files[0]["path"], "shaderpacks/BSL.zip");
+        assert_eq!(
+            files[0]["downloads"][0],
+            "https://cdn.modrinth.com/data/abc/versions/def/BSL.zip"
+        );
+        assert_eq!(files[0]["hashes"]["sha1"], sha1.as_str());
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        assert!(
+            archive.by_name("overrides/shaderpacks/BSL.zip").is_err(),
+            "a linked pack is not also bundled"
+        );
+        assert!(archive
+            .by_name("overrides/shaderpacks/Complementary.zip")
+            .is_ok());
+        assert!(archive
+            .by_name("overrides/resourcepacks/Faithful.zip")
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_unzipped_shader_folder_is_bundled_whole() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("instance");
+        std::fs::create_dir_all(dir.join("shaderpacks").join("MyShader").join("shaders")).unwrap();
+        std::fs::write(
+            dir.join("shaderpacks")
+                .join("MyShader")
+                .join("shaders")
+                .join("final.fsh"),
+            b"void main(){}",
+        )
+        .unwrap();
+        let out = tmp.path().join("pack.mrpack");
+
+        export_instance_pack_to(&dir, &manifest(), &out, "mrpack")
+            .await
+            .unwrap();
+
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        assert!(archive
+            .by_name("overrides/shaderpacks/MyShader/shaders/final.fsh")
+            .is_ok());
+    }
+
+    #[test]
+    fn modrinth_reply_gives_the_hosted_file_behind_each_hash() {
+        let reply = serde_json::json!({
+            "AAA1": { "project_id": "p", "files": [
+                { "hashes": { "sha1": "bbb2", "sha512": "x" }, "url": "https://cdn.modrinth.com/other.zip", "size": 1 },
+                { "hashes": { "sha1": "aaa1", "sha512": "S512" }, "url": "https://cdn.modrinth.com/data/p/versions/v/a.zip", "size": 42 }
+            ]},
+            "ccc3": { "files": [
+                { "hashes": { "sha1": "ccc3", "sha512": "s" }, "url": "https://evil.example.com/c.zip", "size": 1 }
+            ]}
+        });
+        let hosted = crate::source_identify::parse_hosted_files(&reply);
+        assert_eq!(hosted.len(), 1, "{hosted:?}");
+        let file = &hosted["aaa1"];
+        assert_eq!(file.url, "https://cdn.modrinth.com/data/p/versions/v/a.zip");
+        assert_eq!(file.sha512, "s512");
+        assert_eq!(file.size, 42);
+    }
+}
+
+#[cfg(test)]
+mod round_trip_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use tempfile::TempDir;
+
+    fn mod_entry(
+        filename: &str,
+        modrinth_id: Option<&str>,
+        enabled: bool,
+    ) -> crate::models::InstalledMod {
+        serde_json::from_value(serde_json::json!({
+            "filename": filename, "registry_id": null, "modrinth_id": modrinth_id,
+            "source": "test", "version": null, "sha256": "00", "installed_at": "t",
+            "enabled": enabled,
+        }))
+        .unwrap()
+    }
+
+    /// Our own export, planned and imported by our own importer: nothing it
+    /// writes may be a hard problem, and everything comes back.
+    #[tokio::test]
+    async fn an_export_with_bundled_disabled_and_shader_content_plans_clean_and_imports_whole() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("instance");
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::create_dir_all(dir.join("shaderpacks")).unwrap();
+        // (b) a mod Modrinth cannot identify, bundled; (c) a disabled one.
+        std::fs::write(dir.join("mods").join("curseforge-only.jar"), b"cf jar").unwrap();
+        std::fs::write(dir.join("mods").join("off.jar.disabled"), b"off jar").unwrap();
+        // (d) a shader pack.
+        std::fs::write(dir.join("shaderpacks").join("BSL.zip"), b"shader").unwrap();
+        let mut manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "rt", "name": "RT", "minecraft_version": "1.20.4",
+            "loader": "fabric", "loader_version": "0.15.0", "mods": [],
+        }))
+        .unwrap();
+        manifest
+            .mods
+            .push(mod_entry("curseforge-only.jar", None, true));
+        manifest.mods.push(mod_entry("off.jar", None, false));
+        let out = tmp.path().join("rt.mrpack");
+        export_instance_pack_to(&dir, &manifest, &out, "mrpack")
+            .await
+            .unwrap();
+
+        // (a) a Modrinth-identified mod: the export links it through a network
+        // lookup, so add the entry that lookup would have written.
+        let with_modrinth = tmp.path().join("rt-modrinth.mrpack");
+        {
+            let mut src = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&with_modrinth).unwrap());
+            let opts = zip::write::SimpleFileOptions::default();
+            for i in 0..src.len() {
+                let mut entry = src.by_index(i).unwrap();
+                let name = entry.name().unwrap().to_string();
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                if name == "modrinth.index.json" {
+                    let mut index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    index["files"].as_array_mut().unwrap().push(serde_json::json!({
+                        "path": "mods/sodium.jar",
+                        "hashes": { "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha512": "x" },
+                        "downloads": ["https://cdn.modrinth.com/data/AANobbMI/versions/v/sodium.jar"],
+                        "fileSize": 1,
+                    }));
+                    bytes = serde_json::to_vec(&index).unwrap();
+                }
+                writer.start_file(name, opts).unwrap();
+                writer.write_all(&bytes).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let ctx = crate::ctx::CoreContext::for_testing(tmp.path().join("data"));
+        let _ = crate::db::init_local_state_db(&ctx.paths.local_state_db());
+        let plan = crate::import_service::ImportService::new(ctx)
+            .plan_mrpack_import(&with_modrinth)
+            .unwrap();
+        assert!(plan.problems.is_empty(), "hard: {:?}", plan.problems);
+        assert!(
+            plan.soft_problems.is_empty(),
+            "soft: {:?}",
+            plan.soft_problems
+        );
+        let source_of = |n: &str| {
+            plan.entries
+                .iter()
+                .find(|e| e.name == n)
+                .unwrap_or_else(|| panic!("{n} not in {:?}", plan.entries))
+                .source
+        };
+        use crate::agora_pack_import::PlannedSource;
+        assert_eq!(source_of("mods/sodium.jar"), PlannedSource::Modrinth);
+        assert_eq!(
+            source_of("mods/curseforge-only.jar"),
+            PlannedSource::Bundled
+        );
+        assert_eq!(source_of("mods/off.jar.disabled"), PlannedSource::Bundled);
+        assert!(plan
+            .entries
+            .iter()
+            .any(|e| e.name == "mods/off.jar.disabled" && e.arrives_disabled));
+        assert_eq!(source_of("shaderpacks/BSL.zip"), PlannedSource::Bundled);
+
+        // The import of the file we exported reproduces all of it.
+        let imported = crate::import::import_mrpack(&out, &tmp.path().join("in"), false).unwrap();
+        let root = tmp.path().join("in").join(&imported.instance_id);
+        assert!(root.join("mods").join("curseforge-only.jar").is_file());
+        assert!(root.join("mods").join("off.jar.disabled").is_file());
+        assert!(
+            !root.join("mods").join("off.jar").exists(),
+            "disabled stays disabled"
+        );
+        assert!(root.join("shaderpacks").join("BSL.zip").is_file());
     }
 }

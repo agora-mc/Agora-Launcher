@@ -338,6 +338,7 @@ pub fn run() {
             commands::export_sourceless_mods,
             commands::import_instance_pack,
             commands::plan_pack_import,
+            commands::discard_pack_review,
             commands::retry_pack_import_entries,
             commands::is_modrinth_enabled,
             commands::search_modrinth,

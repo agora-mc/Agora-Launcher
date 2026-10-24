@@ -1583,9 +1583,11 @@ export interface AgoraPackInstance {
 
 /**
  * Where a pack entry would be fetched from, judged without downloading:
- * `curated` (the catalog), `modrinth`, or `cannot_get` (no usable source).
+ * `curated` (the catalog), `modrinth`, `download` (a link in a Modrinth pack
+ * to another allowed host), `bundled` (the file is inside the pack), or
+ * `cannot_get` (no usable source).
  */
-export type PlannedPackSource = 'curated' | 'modrinth' | 'cannot_get';
+export type PlannedPackSource = 'curated' | 'modrinth' | 'download' | 'bundled' | 'cannot_get';
 
 /** One line of the import review. Not a result: nothing is installed yet. */
 export interface PlannedPackEntry {
@@ -1608,15 +1610,41 @@ export interface PackImportPlan {
   /** SHA-256 of the exact file that was reviewed; the import is held to it. */
   file_sha256: string;
   file_size: number;
+  /** An instance already has the name the pack would get. */
+  name_taken: boolean;
+  /** A free name to start from: the pack's name, else "Name (2)". */
+  suggested_name: string;
+  /** What the import will not bring over, each with the reason. */
+  left_out: string[];
+  /** What Agora cannot do safely; the import is not offered while any remain. */
+  problems: string[];
+  /** Files that cannot be fetched. "Import anyway" imports without exactly these. */
+  soft_problems: string[];
+  /** Other things worth knowing before importing. */
+  notes: string[];
 }
 
 /**
  * Import a pack file as a new instance. `reviewedSha256` is the plan's
- * `file_sha256` for an .agora-pack.json; the import refuses a changed file.
+ * `file_sha256`; the import refuses a changed file. `name` is the instance
+ * name chosen in the review.
  */
-export const importInstancePack = (sourcePath: string, reviewedSha256?: string | null) =>
-  invoke<PackImportOutcome>('import_instance_pack', { sourcePath, reviewedSha256: reviewedSha256 ?? null });
-/** What importing an .agora-pack.json would do. Writes and downloads nothing. */
+export const importInstancePack = (
+  sourcePath: string,
+  reviewedSha256?: string | null,
+  name?: string | null,
+  skipUnfetchable = false,
+) =>
+  invoke<PackImportOutcome>('import_instance_pack', {
+    sourcePath,
+    reviewedSha256: reviewedSha256 ?? null,
+    name: name ?? null,
+    skipUnfetchable,
+  });
+/** Drop the copy a .mrpack review staged (the review was cancelled). */
+export const discardPackReview = (sha256: string) =>
+  invoke<void>('discard_pack_review', { sha256 });
+/** What importing a pack file (.agora-pack.json or .mrpack) would do. Writes and downloads nothing. */
 export const planPackImport = (sourcePath: string) =>
   invoke<PackImportPlan>('plan_pack_import', { sourcePath });
 /**
