@@ -821,15 +821,25 @@ function ReviewView({
         : 'Install';
   // Every file the plan touches, named. Counts alone answer "how much"; a
   // removal review in particular is useless without "which one".
+  // A file the instance records but that is gone from mods/ is restored, not
+  // added: say so, and never list it as removed.
+  const restoredNames = new Set(
+    plan.filesToAdd
+      .filter((file) => file.replacesMissingFile)
+      .map((file) => file.targetFilename.replace(/\.disabled$/, '')),
+  );
   const changeItems: ChangeItem[] = [
     ...operationArtifacts(plan.operation)
       .filter((artifact) => artifact.metadata.version)
-      .map((artifact) => ({
-        kind: 'add' as const,
-        filename: artifact.filename,
-        tag: artifact.metadata.version as string,
-        isNew: newlyAddedFiles.has(artifact.filename),
-      })),
+      .map((artifact) => {
+        const restores = restoredNames.has(artifact.filename);
+        return {
+          kind: 'add' as const,
+          filename: artifact.filename,
+          tag: restores ? 'restores missing file' : artifact.metadata.version as string,
+          isNew: !restores && newlyAddedFiles.has(artifact.filename),
+        };
+      }),
     ...plan.filesToRemove.map((file) => ({
       kind: 'remove' as const,
       filename: file.filename,
@@ -853,10 +863,11 @@ function ReviewView({
   const satisfiedRequired = requiredDeps.filter((dep) => dep.disposition.type === 'reuse-existing');
   const pendingRequired = requiredDeps.filter((dep) => dep.disposition.type !== 'reuse-existing');
 
-  const addCount = plan.filesToAdd.length;
+  const restoreCount = plan.filesToAdd.filter((file) => file.replacesMissingFile).length;
+  const addCount = plan.filesToAdd.length - restoreCount;
   const removeCount = plan.filesToRemove.length;
   const disableCount = plan.filesToDisable.length;
-  const touchesFiles = addCount + removeCount + disableCount > 0;
+  const touchesFiles = addCount + restoreCount + removeCount + disableCount > 0;
 
   // The curator's own cautions come first and get their own heading; the rest
   // of the plan warnings keep their existing list.
@@ -939,6 +950,9 @@ function ReviewView({
           <div className="mt-2 flex flex-wrap gap-1.5">
             {addCount > 0 && (
               <ChangeChip icon={PackagePlus} tone="add" label={`${addCount} ${pluralFiles(addCount)} added`} />
+            )}
+            {restoreCount > 0 && (
+              <ChangeChip icon={PackagePlus} tone="add" label={`Restores ${restoreCount} missing ${pluralFiles(restoreCount)}`} />
             )}
             {removeCount > 0 && (
               <ChangeChip icon={PackageMinus} tone="remove" label={`${removeCount} ${pluralFiles(removeCount)} will be removed`} />

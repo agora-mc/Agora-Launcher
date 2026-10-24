@@ -2504,6 +2504,7 @@ mod tests {
             message: msg.into(),
             suggested_action: None,
             loader_compatibility: None,
+            missing_file: None,
         };
         let mut lines = Vec::new();
         push_blocker_lines(

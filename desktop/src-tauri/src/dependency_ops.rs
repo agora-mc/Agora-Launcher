@@ -62,6 +62,7 @@ pub fn build_install_plan(
     installed: &[crate::models::InstalledMod],
     loader: &str,
     loader_version: &str,
+    on_disk: &std::collections::HashSet<String>,
 ) -> InstallPlan {
     agora_core::dependency_ops::build_install_plan(
         target_manifest_deps,
@@ -69,6 +70,7 @@ pub fn build_install_plan(
         installed,
         loader,
         loader_version,
+        on_disk,
     )
 }
 

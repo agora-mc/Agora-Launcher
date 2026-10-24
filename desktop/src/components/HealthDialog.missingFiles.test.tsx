@@ -197,3 +197,49 @@ describe('HealthDialog missing-file reinstall', () => {
     await waitFor(() => expect(screen.queryByText('fabric-api.jar')).not.toBeInTheDocument());
   });
 });
+
+describe('HealthDialog blocker for a missing provider', () => {
+  function blockerReport(): HealthReport {
+    return {
+      score: 'red',
+      scan_token: 't',
+      warnings: [],
+      recommendations: [],
+      missing_files: ['fabric-api-0.100.0.jar'],
+      blockers: [
+        {
+          kind: 'missing_required_dependency',
+          mod_id: 'fabric-api',
+          filename: 'sodium-0.6.0.jar',
+          message: 'sodium-0.6.0 needs Fabric API, whose file is missing.',
+          suggested_action: "Reinstall Fabric API from the Health Check, or put fabric-api-0.100.0.jar back in this instance's mods folder.",
+          missing_file: 'fabric-api-0.100.0.jar',
+        },
+      ],
+    } as HealthReport;
+  }
+
+  it('offers Reinstall on the blocker itself, through the same install review', async () => {
+    tauriMocks.getInstanceDetail.mockResolvedValue(
+      detailWith([mod({ filename: 'fabric-api-0.100.0.jar', registry_id: 'fabric-api', version: '0.100.0' })]),
+    );
+    renderDialog(blockerReport());
+
+    expect(await screen.findByText(/whose file is missing/)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Reinstall' }));
+    await screen.findByRole('dialog', { name: 'install review' });
+    expect(installFlowMock.lastIntent).toMatchObject({
+      action: { type: 'install', sourceType: 'curated', itemId: 'fabric-api', candidateVersion: '0.100.0' },
+    });
+  });
+
+  it('offers no Reinstall when the manifest entry has no source to reinstall from', async () => {
+    tauriMocks.getInstanceDetail.mockResolvedValue(
+      detailWith([mod({ filename: 'fabric-api-0.100.0.jar', source: 'manual' })]),
+    );
+    renderDialog(blockerReport());
+
+    expect(await screen.findByText(/is missing from mods\/\. Find it in Browse\./)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reinstall' })).not.toBeInTheDocument();
+  });
+});
