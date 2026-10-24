@@ -202,6 +202,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "bisect",
     "governance",
     "technic",
+    "backup",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
@@ -260,6 +261,15 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["crash", "inspect"],
     &["crash", "investigate"],
     &["pack", "install"],
+    &["pack", "export"],
+    &["pack", "review"],
+    &["pack", "import"],
+    &["import", "launchers"],
+    &["import", "plan"],
+    &["import", "run"],
+    &["backup", "export"],
+    &["backup", "import"],
+    &["backup", "prune"],
     &["loadout", "create"],
     &["loadout", "list"],
     &["loadout", "apply"],
