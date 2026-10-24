@@ -252,6 +252,12 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["lockfile", "verify"],
     &["lockfile", "repair"],
     &["lockfile", "import"],
+    &["instance", "updates"],
+    &["mod", "pin"],
+    &["mod", "unpin"],
+    &["mod", "changelog"],
+    &["pack", "update-preview"],
+    &["pack", "update"],
     &["plugin", "list"],
     &["plugin", "preview"],
     &["plugin", "install"],
@@ -3474,4 +3480,363 @@ fn removal_reports_whether_stored_data_was_kept() {
         stdout.to_lowercase().contains("kept"),
         "removal should state that data was kept: {stdout}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Updates, pins, changelogs and pack updates
+// ---------------------------------------------------------------------------
+
+/// The manifest entry for one installed file, as the instance records it.
+fn manifest_entry(data_dir: &Path, instance: &str, file: &str) -> serde_json::Value {
+    let path = data_dir
+        .join("instances")
+        .join(instance)
+        .join("instance_manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    manifest["mods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["filename"] == file)
+        .cloned()
+        .unwrap_or_else(|| panic!("{file} is not in the manifest"))
+}
+
+/// A minimal .mrpack for a 1.21 Fabric instance: one config override, no jars.
+fn write_test_mrpack(path: &Path, config_body: &str) {
+    use zip::write::SimpleFileOptions;
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = SimpleFileOptions::default();
+    let index = serde_json::json!({
+        "formatVersion": 1,
+        "game": "minecraft",
+        "versionId": "2.0.0",
+        "name": "Updates Test Pack",
+        "dependencies": { "minecraft": "1.21", "fabric-loader": "0.16.0" },
+        "files": [],
+    });
+    zip.start_file("modrinth.index.json", options).unwrap();
+    zip.write_all(index.to_string().as_bytes()).unwrap();
+    zip.start_file("overrides/config/updates-test.toml", options)
+        .unwrap();
+    zip.write_all(config_body.as_bytes()).unwrap();
+    zip.finish().unwrap();
+}
+
+#[test]
+fn instance_updates_reports_nothing_for_hand_installed_mods() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "upd-none", &["manual.jar"]);
+
+    let output = run_agora(&data_dir, &["instance", "updates", "upd-none"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("No updates are available for 'upd-none'"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn instance_updates_json_is_an_empty_list_when_nothing_is_newer() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "upd-json", &["manual.jar"]);
+
+    let output = run_agora_json(&data_dir, &["instance", "updates", "upd-json"]);
+    assert!(output.status.success());
+    assert_eq!(assert_json_stdout(&output), serde_json::json!([]));
+}
+
+#[test]
+fn instance_updates_apply_with_nothing_to_apply_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "upd-apply-none", &["manual.jar"]);
+
+    let output = run_agora(
+        &data_dir,
+        &["instance", "updates", "upd-apply-none", "--apply"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("No updates to apply"), "{stdout}");
+}
+
+#[test]
+fn instance_updates_refuses_an_unknown_instance() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    let output = run_agora(&data_dir, &["instance", "updates", "no-such-instance"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("'no-such-instance' not found"),
+        "stderr should name the instance:\n{stderr}"
+    );
+}
+
+#[test]
+fn instance_updates_yes_without_apply_is_refused_by_the_parser() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "upd-yes", &["manual.jar"]);
+
+    let output = run_agora(&data_dir, &["instance", "updates", "upd-yes", "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--apply"), "{stderr}");
+}
+
+#[test]
+fn mod_pin_and_unpin_record_the_choice_in_the_manifest() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pin-round", &["sodium.jar"]);
+
+    let pin = run_agora(&data_dir, &["mod", "pin", "pin-round", "sodium.jar"]);
+    assert!(
+        pin.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pin.stderr)
+    );
+    assert_eq!(
+        manifest_entry(&data_dir, "pin-round", "sodium.jar")["update_pinned"],
+        true
+    );
+
+    let unpin = run_agora(&data_dir, &["mod", "unpin", "pin-round", "sodium.jar"]);
+    assert!(unpin.status.success());
+    assert_eq!(
+        manifest_entry(&data_dir, "pin-round", "sodium.jar")["update_pinned"],
+        false
+    );
+}
+
+#[test]
+fn mod_pin_unknown_file_fails_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pin-ghost", &["sodium.jar"]);
+
+    let output = run_agora(&data_dir, &["mod", "pin", "pin-ghost", "ghost.jar"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ghost.jar") && stderr.contains("not installed"),
+        "stderr should name the missing file:\n{stderr}"
+    );
+    // An unpinned entry leaves `update_pinned` out of the manifest, so "not pinned" is the check.
+    assert!(manifest_entry(&data_dir, "pin-ghost", "sodium.jar")["update_pinned"] != true);
+}
+
+#[test]
+fn mod_changelog_has_nothing_to_show_for_a_hand_installed_mod() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "log-none", &["manual.jar"]);
+
+    let output = run_agora(&data_dir, &["mod", "changelog", "log-none", "manual.jar"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("has no newer version"), "{stdout}");
+}
+
+#[test]
+fn mod_changelog_unknown_file_fails() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "log-ghost", &["sodium.jar"]);
+
+    let output = run_agora(&data_dir, &["mod", "changelog", "log-ghost", "ghost.jar"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not installed"), "{stderr}");
+}
+
+#[test]
+fn pack_update_preview_lists_the_change_and_writes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-preview", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update-preview",
+            "pack-preview",
+            mrpack_arg.as_str(),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("Updates Test Pack"), "{stdout}");
+    assert!(stdout.contains("add: 1"), "{stdout}");
+    assert!(
+        !data_dir
+            .join("instances/pack-preview/config/updates-test.toml")
+            .exists(),
+        "a preview must not write the pack's file"
+    );
+}
+
+#[test]
+fn pack_update_with_yes_applies_the_new_config() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-apply", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &["pack", "update", "pack-apply", mrpack_arg.as_str(), "--yes"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("Updated 'pack-apply'"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(data_dir.join("instances/pack-apply/config/updates-test.toml"))
+            .unwrap(),
+        "pack = true\n"
+    );
+}
+
+#[test]
+fn pack_update_without_yes_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-noyes", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &["pack", "update", "pack-noyes", mrpack_arg.as_str()],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert!(!data_dir
+        .join("instances/pack-noyes/config/updates-test.toml")
+        .exists());
+}
+
+#[test]
+fn pack_update_refuses_an_unanswered_conflict_and_keeps_the_users_file() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-conflict", &["sodium.jar"]);
+    let config = data_dir.join("instances/pack-conflict/config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("updates-test.toml"), "user edit\n").unwrap();
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update",
+            "pack-conflict",
+            mrpack_arg.as_str(),
+            "--yes",
+        ],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("need an answer"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(config.join("updates-test.toml")).unwrap(),
+        "user edit\n"
+    );
+}
+
+#[test]
+fn pack_update_refuses_an_empty_or_repeated_answer() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-hostile", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let empty = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update",
+            "pack-hostile",
+            mrpack_arg.as_str(),
+            "--keep-ours",
+            "  ",
+            "--yes",
+        ],
+    );
+    assert!(!empty.status.success());
+    assert!(
+        String::from_utf8_lossy(&empty.stderr).contains("cannot be empty"),
+        "a blank key must be refused"
+    );
+
+    let repeated = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update",
+            "pack-hostile",
+            mrpack_arg.as_str(),
+            "--keep-ours",
+            "config/a.toml",
+            "--take-theirs",
+            "config/a.toml",
+            "--yes",
+        ],
+    );
+    assert!(!repeated.status.success());
+    assert!(
+        String::from_utf8_lossy(&repeated.stderr).contains("answered more than once"),
+        "one key answered both ways must be refused"
+    );
+}
+
+#[test]
+fn pack_update_refuses_an_answer_for_a_key_that_is_not_a_conflict() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-typo", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update",
+            "pack-typo",
+            mrpack_arg.as_str(),
+            "--take-theirs",
+            "config/nonsense.toml",
+            "--yes",
+        ],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is not a conflict"), "{stderr}");
+    assert!(!data_dir
+        .join("instances/pack-typo/config/updates-test.toml")
+        .exists());
 }

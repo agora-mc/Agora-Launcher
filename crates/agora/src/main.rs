@@ -16,6 +16,8 @@ use agora_core::registry::RegistryService;
 use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
 
+mod cli_updates;
+
 /// The guide `agora skill` prints for an AI agent driving this CLI.
 const AGENT_SKILL: &str = include_str!("../skills/agora/SKILL.md");
 
@@ -358,6 +360,20 @@ enum InstanceCmd {
     RepairLoader { id: String },
     /// Explain the current automatic memory estimate without changing settings.
     RecommendMemory { id: String },
+    /// Check installed content for newer versions. With --apply, plan the updates
+    /// as one batch (one snapshot, full rollback); add --yes to run that plan.
+    Updates {
+        /// Instance ID.
+        instance: String,
+        #[arg(long, help = "Plan the available updates as one batch")]
+        apply: bool,
+        #[arg(
+            long,
+            requires = "apply",
+            help = "Run the planned batch without asking"
+        )]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -676,6 +692,24 @@ enum ModsCmd {
     SyncDatapacks {
         instance: String,
     },
+    /// Keep an installed file out of update checks until it is unpinned.
+    Pin {
+        instance: String,
+        /// Installed file name, as shown by `mod list`.
+        file: String,
+    },
+    /// Let an installed file be offered for updates again.
+    Unpin {
+        instance: String,
+        /// Installed file name, as shown by `mod list`.
+        file: String,
+    },
+    /// Show the changelog between an installed file and its pending update.
+    Changelog {
+        instance: String,
+        /// Installed file name, as shown by `mod list`.
+        file: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -778,6 +812,35 @@ enum PackCmd {
         release: Option<String>,
         #[arg(long, help = "Print the plan without installing")]
         dry_run: bool,
+    },
+    /// Preview what a newer .mrpack would change in an instance. Changes nothing.
+    UpdatePreview {
+        /// Target instance ID.
+        instance: String,
+        /// The newer .mrpack file.
+        mrpack: PathBuf,
+    },
+    /// Apply a newer .mrpack to an instance. Every conflict needs --keep-ours or
+    /// --take-theirs; without --yes nothing is changed.
+    Update {
+        /// Target instance ID.
+        instance: String,
+        /// The newer .mrpack file.
+        mrpack: PathBuf,
+        #[arg(
+            long = "keep-ours",
+            value_name = "KEY",
+            help = "Keep the instance's file for this conflict (repeatable)"
+        )]
+        keep_ours: Vec<String>,
+        #[arg(
+            long = "take-theirs",
+            value_name = "KEY",
+            help = "Take the new pack's file for this conflict (repeatable)"
+        )]
+        take_theirs: Vec<String>,
+        #[arg(long, help = "Apply the update without asking")]
+        yes: bool,
     },
 }
 
@@ -2533,6 +2596,15 @@ async fn run_mods_command(
             let report = agora_core::datapack_sync::sync_instance(ctx, &instance)?;
             print_datapack_sync(&instance, &report, json)?;
         }
+        ModsCmd::Pin { instance, file } => {
+            cli_updates::set_mod_pin(ctx, &instance, &file, true, json)?
+        }
+        ModsCmd::Unpin { instance, file } => {
+            cli_updates::set_mod_pin(ctx, &instance, &file, false, json)?
+        }
+        ModsCmd::Changelog { instance, file } => {
+            cli_updates::mod_changelog(ctx, &instance, &file, json).await?
+        }
         ModsCmd::UpdateAll {
             instance,
             include_optional,
@@ -2940,6 +3012,11 @@ async fn run_instance_command(
                 }
             }
         }
+        InstanceCmd::Updates {
+            instance,
+            apply,
+            yes,
+        } => cli_updates::instance_updates(ctx, &instance, apply, yes, json).await?,
     }
     Ok(())
 }
@@ -3100,6 +3177,19 @@ async fn run_pack_command(
                     anyhow::bail!("Install failed and rolled back: {}", error);
                 }
             }
+        }
+        PackCmd::UpdatePreview { instance, mrpack } => {
+            cli_updates::pack_update_preview(ctx, &instance, &mrpack, json)?
+        }
+        PackCmd::Update {
+            instance,
+            mrpack,
+            keep_ours,
+            take_theirs,
+            yes,
+        } => {
+            cli_updates::pack_update(ctx, &instance, &mrpack, &keep_ours, &take_theirs, yes, json)
+                .await?
         }
     }
     Ok(())

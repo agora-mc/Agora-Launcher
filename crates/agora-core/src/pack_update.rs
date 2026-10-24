@@ -1941,6 +1941,47 @@ fn validate_download_url(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Apply a pack update to an instance: take the instance lock, stage the new
+/// pack, merge it, and clear the staging folder.
+///
+/// The desktop's `apply_pack_update` command and `agora pack update` both call
+/// this. It blocks on disk and network I/O (the fetcher is blocking HTTP), so
+/// async callers must run it on a blocking thread.
+pub fn apply_pack_update(
+    ctx: &crate::ctx::Ctx,
+    instance_id: &str,
+    instance_dir: &Path,
+    mrpack_path: &Path,
+    resolutions: &BTreeMap<String, ConflictResolution>,
+) -> Result<PackUpdateOutcome, String> {
+    let sanitized = crate::paths::sanitize_id(instance_id);
+    let staged_dir = ctx
+        .paths
+        .staging_dir(&format!("pack-update-{sanitized}"))
+        .map_err(|e| e.to_string())?;
+    let _lock = ctx
+        .lock_manager
+        .acquire(
+            crate::lock_manager::LockResource::Instance(sanitized.clone()),
+            "pack-update",
+        )
+        .map_err(|e| e.to_string())?;
+    let conn = crate::db::local_state_connection(&ctx.paths.local_state_db())
+        .map_err(|e| e.to_string())?;
+    let outcome = update_pack(
+        &conn,
+        &sanitized,
+        instance_dir,
+        mrpack_path,
+        &staged_dir,
+        resolutions,
+        &NetworkFetcher,
+        false,
+    );
+    let _ = std::fs::remove_dir_all(&staged_dir);
+    Ok(outcome)
+}
+
 /// Real network fetcher, using the project's allowlist and Modpack client
 /// category (large responses allowed).
 pub struct NetworkFetcher;
