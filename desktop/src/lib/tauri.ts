@@ -1616,8 +1616,10 @@ export interface PackImportPlan {
   suggested_name: string;
   /** What the import will not bring over, each with the reason. */
   left_out: string[];
-  /** What would make the import fail; the import is not offered while any remain. */
+  /** What Agora cannot do safely; the import is not offered while any remain. */
   problems: string[];
+  /** Files that cannot be fetched. "Import anyway" imports without exactly these. */
+  soft_problems: string[];
   /** Other things worth knowing before importing. */
   notes: string[];
 }
@@ -1631,12 +1633,17 @@ export const importInstancePack = (
   sourcePath: string,
   reviewedSha256?: string | null,
   name?: string | null,
+  skipUnfetchable = false,
 ) =>
   invoke<PackImportOutcome>('import_instance_pack', {
     sourcePath,
     reviewedSha256: reviewedSha256 ?? null,
     name: name ?? null,
+    skipUnfetchable,
   });
+/** Drop the copy a .mrpack review staged (the review was cancelled). */
+export const discardPackReview = (sha256: string) =>
+  invoke<void>('discard_pack_review', { sha256 });
 /** What importing a pack file (.agora-pack.json or .mrpack) would do. Writes and downloads nothing. */
 export const planPackImport = (sourcePath: string) =>
   invoke<PackImportPlan>('plan_pack_import', { sourcePath });

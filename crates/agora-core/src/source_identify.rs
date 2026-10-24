@@ -127,7 +127,7 @@ pub struct HostedFile {
 
 /// Folders of content the user chose, as opposed to configs and settings,
 /// that an exported `.mrpack` carries besides the mods.
-pub const PACK_CONTENT_DIRS: [&str; 2] = ["resourcepacks", "shaderpacks"];
+pub const PACK_CONTENT_DIRS: [&str; 3] = ["resourcepacks", "shaderpacks", "datapacks"];
 
 /// Reads the reply of `POST /v2/version_files` for the hosted file behind each
 /// requested hash: the version's file whose own SHA-1 is that hash, with its
@@ -200,7 +200,7 @@ async fn lookup_hosted_batch(
         .unwrap_or_default()
 }
 
-/// Which resource packs and shader packs in `instance_dir` Modrinth hosts,
+/// Which resource packs, shader packs and datapacks in `instance_dir` Modrinth hosts,
 /// keyed by the SHA-1 of the file on disk. Never fails: offline, or a file
 /// Modrinth does not know, simply leaves it out of the map (the export then
 /// carries the file itself).

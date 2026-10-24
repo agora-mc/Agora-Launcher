@@ -72,6 +72,7 @@ async function installMock(
             suggested_name: 'Imported Pack',
             left_out: [],
             problems: [],
+            soft_problems: [],
             notes: [],
             ...(options.plan ?? {}),
           });

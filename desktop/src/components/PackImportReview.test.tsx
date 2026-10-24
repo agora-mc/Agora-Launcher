@@ -16,6 +16,7 @@ const plan: PackImportPlan = {
   suggested_name: 'Friend Pack',
   left_out: [],
   problems: [],
+  soft_problems: [],
   notes: [],
 };
 
@@ -88,5 +89,33 @@ describe('pack import review', () => {
     expect(button.disabled).toBe(true);
     fireEvent.click(button);
     expect(onImport).not.toHaveBeenCalled();
+  });
+
+  it('a hard problem keeps Import disabled even when there are soft ones too', () => {
+    review({
+      plan: { ...mrpackPlan, problems: ['mods/bad.jar cannot be imported'], soft_problems: ['mods/ghost.jar has no way to be fetched'] },
+    });
+    expect(screen.queryByRole('button', { name: 'Import anyway' })).toBeNull();
+    expect((screen.getByRole('button', { name: /^Import/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('soft problems are named and offer Import anyway, which says it is skipping them', () => {
+    const onImport = vi.fn();
+    review({
+      plan: { ...mrpackPlan, name_taken: false, soft_problems: ['mods/ghost.jar has no way to be fetched, so it would be left out.'] },
+      onImport,
+    });
+    expect(screen.getByLabelText('Files that cannot be fetched').textContent).toContain('mods/ghost.jar');
+    const button = screen.getByRole('button', { name: 'Import anyway' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(onImport).toHaveBeenCalledWith(true);
+  });
+
+  it('a plain import does not skip anything', () => {
+    const onImport = vi.fn();
+    review({ onImport });
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    expect(onImport).toHaveBeenCalledWith(false);
   });
 });

@@ -16,6 +16,6 @@ describe('Packs & sharing guide', () => {
     // The primary control is on My Instances; it was once described as being on the Mods tab.
     expect(text).toContain('Import pack file');
     expect(text).not.toContain('on the Mods tab');
-    expect(text).toContain('resource packs and shader packs');
+    expect(text).toContain('resource packs, shader packs and datapacks');
   });
 });

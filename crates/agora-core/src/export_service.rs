@@ -310,7 +310,7 @@ async fn write_mrpack_pack(
         }));
     }
 
-    // Resource packs and shader packs are content the user chose (unlike
+    // Resource packs, shader packs and instance-level datapacks are content the user chose (unlike
     // configs and settings, which stay out), so they travel with the pack:
     // linked when Modrinth hosts that exact file, otherwise bundled under
     // `overrides/`, where the format keeps loose files.
@@ -1057,6 +1057,15 @@ mod pack_content_tests {
         .unwrap();
         std::fs::write(dir.join("shaderpacks").join("BSL.zip"), b"shader two").unwrap();
         std::fs::write(dir.join("resourcepacks").join("Faithful.zip"), b"textures").unwrap();
+        std::fs::create_dir_all(dir.join("datapacks")).unwrap();
+        std::fs::write(dir.join("datapacks").join("Tweaks.zip"), b"data").unwrap();
+        // A world's own datapacks are part of that world, not instance content.
+        std::fs::create_dir_all(dir.join("saves").join("W").join("datapacks")).unwrap();
+        std::fs::write(
+            dir.join("saves").join("W").join("datapacks").join("w.zip"),
+            b"w",
+        )
+        .unwrap();
         // Settings are not content the user chose; they stay out.
         std::fs::create_dir_all(dir.join("config")).unwrap();
         std::fs::write(dir.join("config").join("sodium.json"), b"{}").unwrap();
@@ -1081,6 +1090,13 @@ mod pack_content_tests {
         assert!(archive
             .by_name("overrides/resourcepacks/Faithful.zip")
             .is_ok());
+        assert!(archive.by_name("overrides/datapacks/Tweaks.zip").is_ok());
+        assert!(
+            archive
+                .by_name("overrides/saves/W/datapacks/w.zip")
+                .is_err(),
+            "per-world datapacks stay with the world"
+        );
         assert!(
             archive.by_name("overrides/config/sodium.json").is_err(),
             "configs are not exported"
@@ -1091,6 +1107,7 @@ mod pack_content_tests {
         assert!(root.join("shaderpacks").join("Complementary.zip").is_file());
         assert!(root.join("shaderpacks").join("BSL.zip").is_file());
         assert!(root.join("resourcepacks").join("Faithful.zip").is_file());
+        assert!(root.join("datapacks").join("Tweaks.zip").is_file());
     }
 
     #[tokio::test]

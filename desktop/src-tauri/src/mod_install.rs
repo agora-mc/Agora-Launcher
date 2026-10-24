@@ -390,15 +390,12 @@ pub async fn import_instance_pack(
     source_path: &str,
     reviewed_sha256: Option<&str>,
     name: Option<&str>,
+    skip_unfetchable: bool,
 ) -> LauncherResult<PackImportOutcome> {
     let lower = source_path.to_ascii_lowercase();
     if lower.ends_with(".mrpack") {
-        agora_core::import_service::ImportService::verify_reviewed_file(
-            Path::new(source_path),
-            reviewed_sha256,
-        )?;
         Ok(PackImportOutcome {
-            instance_id: import_mrpack(app, source_path, name).await?,
+            instance_id: import_mrpack(app, reviewed_sha256, name, skip_unfetchable).await?,
             report: None,
         })
     } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
@@ -472,17 +469,23 @@ fn read_agora_pack_bytes(source_path: &str) -> LauncherResult<Vec<u8>> {
     std::fs::read(source_path).map_err(|_| unreadable())
 }
 
+/// Imports the staged copy the review made (not the original file, which may
+/// have changed since), then removes that copy.
 async fn import_mrpack(
     app: &tauri::AppHandle,
-    source_path: &str,
+    reviewed_sha256: Option<&str>,
     name: Option<&str>,
+    skip_unfetchable: bool,
 ) -> LauncherResult<String> {
     let ctx = crate::core_context(app)?;
     let svc = agora_core::import_service::ImportService::new(ctx.clone());
+    let staged = svc.take_reviewed_copy(reviewed_sha256)?;
     let request = agora_core::import_service::ImportRequest {
-        source: agora_core::import_service::ImportSource::mrpack(
-            Path::new(source_path).to_path_buf(),
-        ),
+        source: agora_core::import_service::ImportSource::Mrpack {
+            path: staged,
+            origin_url: None,
+            skip_unfetchable,
+        },
         symlink_saves: false,
     };
     let result = svc
@@ -492,8 +495,18 @@ async fn import_mrpack(
             ctx.progress_sink.clone(),
             agora_core::event_sink::CancellationToken::new(),
         )
-        .await?;
-    Ok(result.instance_id)
+        .await;
+    if let Some(sha) = reviewed_sha256 {
+        svc.discard_reviewed_copy(sha);
+    }
+    Ok(result?.instance_id)
+}
+
+/// Drops the staged copy of a pack whose review was cancelled.
+pub fn discard_pack_review(app: &tauri::AppHandle, sha256: &str) -> LauncherResult<()> {
+    let ctx = crate::core_context(app)?;
+    agora_core::import_service::ImportService::new(ctx).discard_reviewed_copy(sha256);
+    Ok(())
 }
 
 /// Import an Agora plain-JSON pack (.agora-pack.json).

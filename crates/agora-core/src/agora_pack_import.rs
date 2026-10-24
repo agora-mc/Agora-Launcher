@@ -242,6 +242,10 @@ pub struct PackImportPlan {
     /// nothing found; the entries' own `reason`s are shown beside each mod.
     #[serde(default)]
     pub problems: Vec<String>,
+    /// Files that cannot be fetched. The user may import without them; the
+    /// import then leaves exactly these out.
+    #[serde(default)]
+    pub soft_problems: Vec<String>,
     /// Anything else the user should know before importing (settings copied, ...).
     #[serde(default)]
     pub notes: Vec<String>,
@@ -1276,6 +1280,7 @@ pub fn plan_agora_pack(backend: &dyn PackBackend, pack: &ParsedAgoraPack) -> Pac
         suggested_name: pack_display_name(&pack.instance),
         left_out: Vec::new(),
         problems: Vec::new(),
+        soft_problems: Vec::new(),
         notes: Vec::new(),
     }
 }

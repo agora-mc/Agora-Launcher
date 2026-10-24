@@ -2983,7 +2983,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               The industry-standard format for sharing Minecraft modpacks. Compatible with
               Modrinth, Prism Launcher, and other launchers. Lists your mods with download
               links and checksums; a mod Agora can't find on Modrinth is bundled in the file.
-              Your resource packs and shader packs go along too, linked when Modrinth hosts
+              Your resource packs, shader packs and datapacks go along too, linked when Modrinth hosts
               that exact file and bundled otherwise. If a file can't be read, the export
               stops and names it.
             </p>

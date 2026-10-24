@@ -961,7 +961,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Send a setup to a friend or another computer',
-          body: 'Open the instance with Edit, go to the Export tab, and choose Export as Modrinth Pack (.mrpack). It works for any setup: mods Agora can find on Modrinth are listed with download links, and every other mod is included as a file inside the pack, so nothing is missing on the other end. Your resource packs and shader packs go along too (linked when Modrinth hosts that exact file, otherwise included as files), because you chose them. Disabled mods are included and arrive disabled. Send the saved file however you like. Configs, keybinds, and settings are not included, and neither are saves or snapshots.',
+          body: 'Open the instance with Edit, go to the Export tab, and choose Export as Modrinth Pack (.mrpack). It works for any setup: mods Agora can find on Modrinth are listed with download links, and every other mod is included as a file inside the pack, so nothing is missing on the other end. Your resource packs, shader packs and datapacks go along too (linked when Modrinth hosts that exact file, otherwise included as files), because you chose them. Disabled mods are included and arrive disabled. Send the saved file however you like. Configs, keybinds, and settings are not included, and neither are saves or snapshots.',
           steps: [
             'On the Export tab, pick Export as Modrinth Pack (.mrpack) and choose where to save it.',
             'Send the file to your friend, or copy it to the other computer.',
@@ -971,7 +971,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'note',
             title: 'The Agora pack (.json) is lighter but needs sources',
-            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along; the Agora pack never carries resource packs or shader packs. Disabled mods stay disabled on the other side, and the import review marks them. The pack carries the instance name you see in Agora.',
+            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along; the Agora pack never carries resource packs, shader packs or datapacks. Disabled mods stay disabled on the other side, and the import review marks them. The pack carries the instance name you see in Agora.',
           },
         },
         {

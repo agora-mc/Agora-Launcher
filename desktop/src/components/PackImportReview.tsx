@@ -58,7 +58,8 @@ export function PackImportReview({
   /** The name the new instance will get. */
   name: string;
   onNameChange: (name: string) => void;
-  onImport: () => void;
+  /** `skipUnfetchable` is true when the user chose "Import anyway". */
+  onImport: (skipUnfetchable: boolean) => void;
   onCancel: () => void;
 }) {
   const counts = plan ? tally(plan.entries) : null;
@@ -66,7 +67,10 @@ export function PackImportReview({
   const downloadCount = plan
     ? plan.entries.filter((entry) => entry.source !== 'cannot_get' && entry.source !== 'bundled' && entry.reason === null).length
     : 0;
+  // Hard problems (unsafe, or cannot be verified) keep Import disabled. Soft ones
+  // (files that cannot be fetched) are named, and the user may import without them.
   const blocked = plan !== null && plan.problems.length > 0;
+  const soft = plan !== null && plan.soft_problems.length > 0;
   // The webview's own view of the network. A hint, not proof, so the import still runs.
   const offlineNow = typeof navigator !== 'undefined' && navigator.onLine === false;
 
@@ -163,6 +167,14 @@ export function PackImportReview({
             {plan.notes.map((note) => (
               <p key={note} className="text-xs text-muted-foreground">{note}</p>
             ))}
+            {soft && !blocked && (
+              <div role="alert" className="space-y-1 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+                <p className="font-medium">These can&apos;t be fetched and would be left out of the new instance:</p>
+                <ul aria-label="Files that cannot be fetched" className="list-disc space-y-0.5 pl-4">
+                  {plan.soft_problems.map((problem) => <li key={problem} className="break-all">{problem}</li>)}
+                </ul>
+              </div>
+            )}
             {blocked && (
               <div role="alert" className="space-y-1 rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
                 <p className="font-medium">Agora can&apos;t import this pack as it is:</p>
@@ -184,11 +196,11 @@ export function PackImportReview({
           </button>
           <button
             type="button"
-            onClick={onImport}
+            onClick={() => onImport(soft && !blocked)}
             disabled={!plan || blocked || name.trim() === ''}
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {plan?.name_taken ? 'Import as a copy' : 'Import'}
+            {soft && !blocked ? 'Import anyway' : plan?.name_taken ? 'Import as a copy' : 'Import'}
           </button>
         </div>
       </DialogContent>

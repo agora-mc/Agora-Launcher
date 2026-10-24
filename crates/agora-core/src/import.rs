@@ -642,12 +642,41 @@ pub fn import_mrpack(
 pub fn import_mrpack_with_progress(
     mrpack_path: &Path,
     instances_root: &Path,
+    symlink_saves: bool,
+    progress_sink: Option<std::sync::Arc<dyn ProgressSink>>,
+    operation_id: Option<OperationId>,
+    origin_url: Option<String>,
+    override_policy: OverridePolicy,
+    name_override: Option<&str>,
+) -> LauncherResult<ImportResult> {
+    import_mrpack_inner(
+        mrpack_path,
+        instances_root,
+        symlink_saves,
+        progress_sink,
+        operation_id,
+        origin_url,
+        override_policy,
+        name_override,
+        false,
+    )
+}
+
+/// The import. With `skip_unfetchable`, a listed file that has no allowed
+/// download link and no copy inside the pack is left out instead of stopping
+/// the import (the user saw it in the review and chose to go on). Every other
+/// refusal still applies.
+#[allow(clippy::too_many_arguments)]
+pub fn import_mrpack_inner(
+    mrpack_path: &Path,
+    instances_root: &Path,
     _symlink_saves: bool,
     progress_sink: Option<std::sync::Arc<dyn ProgressSink>>,
     operation_id: Option<OperationId>,
     origin_url: Option<String>,
     override_policy: OverridePolicy,
     name_override: Option<&str>,
+    skip_unfetchable: bool,
 ) -> LauncherResult<ImportResult> {
     let file = fs::File::open(mrpack_path).map_err(|e| LauncherError::Generic {
         code: "ERR_IMPORT_OPEN".into(),
@@ -702,6 +731,17 @@ pub fn import_mrpack_with_progress(
             })
             .collect();
         for file_entry in &index.files {
+            if skip_unfetchable {
+                let has_link = file_entry
+                    .downloads
+                    .first()
+                    .is_some_and(|url| validate_mrpack_download_url(url).is_ok());
+                let key = manifest_path_key(&relative_archive_path(&file_entry.path));
+                if !has_link && archive.by_name(&key).is_err() {
+                    completed_files += 1;
+                    continue;
+                }
+            }
             if let (Some(sink), Some(operation_id)) = (&progress_sink, &operation_id) {
                 sink.report(
                     ProgressEvent::new(
@@ -1008,6 +1048,7 @@ pub fn plan_mrpack(
 
     let mut entries: Vec<PlannedEntry> = Vec::new();
     let mut problems: Vec<String> = Vec::new();
+    let mut soft_problems: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let mut jar_in_mods = false;
     let is_mod_jar = |path: &str| {
@@ -1049,22 +1090,51 @@ pub fn plan_mrpack(
                 Some("The pack gives no download link and does not contain the file.".to_string()),
             ),
         };
+        // Hard: Agora cannot do it safely. Soft: the file simply cannot be
+        // fetched; the user may import without it.
+        let unfetchable = source == PlannedSource::CannotGet;
+        let mut hard = false;
         if !safe {
             reason = Some("Its path would leave the instance folder.".to_string());
+            hard = true;
+        } else if unfetchable {
+            // Keeps the reason set above.
         } else if !has_sha1 {
             reason = Some(
                 "The pack gives no SHA-1 hash for it, so Agora cannot check it and will not import it."
                     .to_string(),
             );
+            hard = true;
         } else if embedded_size.is_some_and(|size| size > MAX_MRPACK_FILE_BYTES as u64)
             && source == PlannedSource::Bundled
         {
             reason = Some("The copy inside the pack is over the 500 MB limit.".to_string());
+            hard = true;
+        } else if source == PlannedSource::Bundled {
+            // The copy inside the pack must match the hash the pack itself gives.
+            let expected = listed.hashes.get("sha1").cloned().unwrap_or_default();
+            if let Some(actual) = archive
+                .by_name(&key)
+                .ok()
+                .and_then(|mut e| sha1_of_reader(&mut e))
+            {
+                if !actual.eq_ignore_ascii_case(expected.trim()) {
+                    reason = Some(
+                        "The copy inside the pack does not match the SHA-1 the pack lists for it."
+                            .to_string(),
+                    );
+                    hard = true;
+                }
+            }
         }
         let blocked = reason.is_some();
-        if blocked {
+        if hard {
             problems.push(format!(
                 "{key} cannot be imported, and the import stops at a file like this."
+            ));
+        } else if unfetchable {
+            soft_problems.push(format!(
+                "{key} has no way to be fetched, so it would be left out."
             ));
         }
         if is_mod_jar(&key) {
@@ -1198,8 +1268,24 @@ pub fn plan_mrpack(
         suggested_name: name,
         left_out,
         problems,
+        soft_problems,
         notes,
     })
+}
+
+/// Lowercase hex SHA-1 of everything `reader` yields, or `None` if it fails.
+fn sha1_of_reader(reader: &mut impl Read) -> Option<String> {
+    use sha1::Digest;
+    let mut hasher = sha1::Sha1::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Some(hex::encode(hasher.finalize()))
 }
 
 fn parse_mrpack_deps(deps: &Option<serde_json::Value>) -> (String, String, String) {

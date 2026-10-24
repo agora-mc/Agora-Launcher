@@ -4,6 +4,7 @@ import {
   formatError,
   importInstancePack,
   importModrinthPackByUrl,
+  discardPackReview,
   describeRestoreCoverage,
   planPackImport,
   restoreSnapshot,
@@ -388,13 +389,19 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
   };
 
   /** `reviewedSha256` is the fingerprint the review recorded; `name` is the instance name chosen there. */
-  const beginPackFileImport = (sourcePath: string, label: string, reviewedSha256?: string, name?: string) => {
+  const beginPackFileImport = (
+    sourcePath: string,
+    label: string,
+    reviewedSha256?: string,
+    name?: string,
+    skipUnfetchable = false,
+  ) => {
     const id = `pack-file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setTaskMap((current) => ({
       ...current,
       [id]: initialTask(id, label, 'pack-file', null, label),
     }));
-    void importInstancePack(sourcePath, reviewedSha256, name)
+    void importInstancePack(sourcePath, reviewedSha256, name, skipUnfetchable)
       .then((outcome) => completeImportedTask(id, outcome.instance_id, label, outcome.report))
       .catch((cause) => failTask(id, formatError(cause)));
   };
@@ -414,13 +421,13 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       )));
   };
 
-  const confirmReview = () => {
+  const confirmReview = (skipUnfetchable: boolean) => {
     if (!review?.plan) return;
     const { sourcePath, label, plan, name } = review;
     if (name.trim() === '') return;
     setReview(null);
     // The import is held to the exact bytes that were reviewed.
-    beginPackFileImport(sourcePath, label, plan.file_sha256, name.trim());
+    beginPackFileImport(sourcePath, label, plan.file_sha256, name.trim(), skipUnfetchable);
   };
 
   const updateImportReport = (instanceId: string, report: PackImportReport | null) => {
@@ -460,7 +467,11 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
           name={review.name}
           onNameChange={(name) => setReview((current) => (current ? { ...current, name } : current))}
           onImport={confirmReview}
-          onCancel={() => setReview(null)}
+          onCancel={() => {
+            // A .mrpack review staged a copy of the file; drop it.
+            if (review.plan) void Promise.resolve(discardPackReview(review.plan.file_sha256)).catch(() => undefined);
+            setReview(null);
+          }}
         />
       )}
       <PackInstallIndicator tasks={value.tasks} />

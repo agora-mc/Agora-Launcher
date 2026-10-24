@@ -2289,7 +2289,8 @@ fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> 
 /// Import an instance from a pack file (.mrpack or .agora-pack.json).
 /// `reviewed_sha256` is the fingerprint the review step recorded; a pack file
 /// whose bytes no longer match it is refused. `name` is the instance name the
-/// user chose in the review.
+/// user chose in the review. `skip_unfetchable` is the user's "Import anyway":
+/// files with no way to be fetched are left out instead of stopping the import.
 #[tauri::command]
 pub async fn import_instance_pack(
     app: tauri::AppHandle,
@@ -2297,12 +2298,14 @@ pub async fn import_instance_pack(
     source_path: String,
     reviewed_sha256: Option<String>,
     name: Option<String>,
+    skip_unfetchable: bool,
 ) -> LauncherResult<mod_install::PackImportOutcome> {
     mod_install::import_instance_pack(
         &app,
         &source_path,
         reviewed_sha256.as_deref(),
         name.as_deref(),
+        skip_unfetchable,
     )
     .await
 }
@@ -2316,6 +2319,16 @@ pub async fn plan_pack_import(
     source_path: String,
 ) -> LauncherResult<agora_core::agora_pack_import::PackImportPlan> {
     mod_install::plan_pack_import(&app, &source_path)
+}
+
+/// Remove the copy a `.mrpack` review staged, when the user cancels it.
+#[tauri::command]
+pub async fn discard_pack_review(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    sha256: String,
+) -> LauncherResult<()> {
+    mod_install::discard_pack_review(&app, &sha256)
 }
 
 /// Retry the entries of an Agora pack import that needed an action (Modrinth
