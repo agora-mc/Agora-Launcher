@@ -217,11 +217,15 @@ pub fn run() {
             commands::list_audit_log,
             commands::check_registry_update,
             commands::get_registry_status,
+            commands::get_connectivity_status,
             commands::extract_overrides,
             commands::list_instances,
             commands::get_instance_detail,
             commands::create_instance,
             commands::delete_instance,
+            commands::list_recently_deleted,
+            commands::restore_deleted_instance,
+            commands::purge_deleted_instance,
             commands::unlock_instance,
             commands::lock_instance,
             commands::rename_instance,
@@ -241,6 +245,7 @@ pub fn run() {
             commands::clear_cached_instance_updates,
             commands::get_lkg_marker,
             commands::export_lockfile,
+            commands::save_lockfile_export,
             commands::import_lockfile,
             commands::detect_drift,
             commands::verify_lockfile,
@@ -283,6 +288,9 @@ pub fn run() {
             commands::apply_instance_template,
             commands::list_loadout_profiles,
             commands::create_loadout_profile,
+            commands::list_loadout_unlisted_mods,
+            commands::preview_loadout_update,
+            commands::update_loadout_profile,
             commands::apply_loadout_profile,
             commands::delete_loadout_profile,
             commands::import_instance,
@@ -329,7 +337,11 @@ pub fn run() {
             commands::plan_launcher_imports,
             commands::execute_launcher_imports,
             commands::export_instance_pack,
+            commands::export_sourceless_mods,
             commands::import_instance_pack,
+            commands::plan_pack_import,
+            commands::discard_pack_review,
+            commands::retry_pack_import_entries,
             commands::is_modrinth_enabled,
             commands::search_modrinth,
             commands::list_modrinth_categories,
@@ -492,6 +504,26 @@ pub fn run() {
                             Ok(_) => {}
                             Err(error) => {
                                 eprintln!("[core] startup cache warmup unavailable: {error}")
+                            }
+                        }
+                    });
+                    // Recently deleted: entries past 30 days (or over the size
+                    // budget) go to the OS trash; failures leave them in place.
+                    let cleanup_ctx = ctx.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match agora_core::maintenance::cleanup_recently_deleted(
+                            cleanup_ctx,
+                            crate::instances::trash_adapter(),
+                        )
+                        .await
+                        {
+                            Ok(summary) if summary.purged > 0 || summary.failed > 0 => eprintln!(
+                                "[core] recently deleted: {} purged, {} could not be purged (left in place)",
+                                summary.purged, summary.failed
+                            ),
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("[core] recently deleted cleanup unavailable: {error}")
                             }
                         }
                     });

@@ -54,7 +54,7 @@ Keep these rules in mind:
 - Use `--dry-run` on install, remove, and update operations before executing a complex plan.
 - Create a snapshot before manual or high-risk changes.
 - Use disposable instances when learning destructive commands.
-- `instance delete`, `snapshots restore`, `snapshots delete`, `lockfile import`, and some install conflict choices can replace or remove files.
+- `instance delete` moves the instance to Recently deleted, where it can be restored for 30 days; then it goes to the OS trash. `snapshots restore`, `snapshots delete`, `lockfile import`, and some install conflict choices can replace or remove files.
 - Never place access tokens or account codes in command history, log files, or bug reports.
 - `--data-dir` isolates files under the Agora data root, but Microsoft credentials use the operating-system credential store. `auth status`, `auth login`, and `auth logout` therefore inspect or change the same credential entry used by the desktop app. The exception is a portable copy (a `portable.txt` beside the executable, with no `AGORA_DATA_DIR` override), which never uses the operating-system store and keeps its credentials encrypted in its own data folder.
 
@@ -179,6 +179,9 @@ agora instance unlock
 agora instance repair-loader
 agora instance recommend-memory
 agora instance delete
+agora instance deleted
+agora instance restore
+agora instance purge
 ```
 
 Examples:
@@ -192,6 +195,14 @@ agora instance clone <SOURCE_ID> "Debug Copy" --no-saves
 Clone flags can omit saves, mods, resource packs, shader packs, screenshots, configuration, `servers.dat`, or options. Hard-link and symlink modes change filesystem behavior and should be used only when the destination and source relationship is understood.
 
 Locking prevents ordinary content mutation. Unlock explicitly before applying intended changes.
+
+Deleted instances wait in Recently deleted for 30 days. `instance deleted` lists them with their entry ID (the ID to pass to `restore` and `purge`, which is not the instance ID), name, deletion time, and size. `instance restore` brings one back with its files and records; if its original ID has been taken, it returns under a new one and says so. `instance purge` sends one to the OS trash now and asks first unless you pass `--yes`; Agora cannot restore it afterwards, though the OS trash may still hold the files. Agora also runs the same 30-day cleanup when an instance command starts, so expired entries reach the trash without the desktop app open.
+
+```bash
+agora --json instance deleted
+agora instance restore <ENTRY_ID>
+agora instance purge <ENTRY_ID> --yes
+```
 
 ### Mods and content
 
@@ -269,11 +280,14 @@ Agora's automatic pre-launch recovery snapshot is optimized for mod, configurati
 ```text
 agora loadout create <INSTANCE> <NAME>
 agora loadout list <INSTANCE>
-agora loadout apply <INSTANCE> <NAME>
+agora loadout apply <INSTANCE> <NAME> [--others keep|off]
+agora loadout update <INSTANCE> <NAME> [--yes]
 agora loadout delete <INSTANCE> <NAME>
 ```
 
-A loadout records enabled state. It does not revert mod versions or configuration files.
+A loadout records the on/off state of mods, resource packs, shader packs, data packs and worlds. Applying one sets each item it records to that state. An enabled mod it does not list (one added since it was saved, say) is a choice: `--others keep` leaves it on and `--others off` switches it off. When there are such mods and no `--others` is given, apply refuses and names them, so nothing changes. Packs and worlds it does not list are left as they are. Apply refuses a locked instance, and an instance whose game is running or starting, and changes nothing in either case. Before switching, apply saves an undo point labelled `before-loadout` (only the newest is kept). `loadout update` saves a profile again from the instance's current setup, so a mod added since it was saved stops being unlisted. It lists what would change (added, turned on or off, or dropped because it is gone) and asks first on an interactive terminal. Without a terminal it changes nothing and names the changes; pass `--yes` once the person using this computer has agreed. It does not touch the instance, so a locked instance or a running game does not block it.
+
+A loadout does not revert mod versions or configuration files.
 
 ### Reproduction lockfiles
 

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 15;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 16;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -629,6 +629,30 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (15)",
+            [],
+        )?;
+    }
+
+    if current < 16 {
+        // Pack entries the instance still lacks (failed, or waiting on a user
+        // action). Kept here so the instance page can say "not ready" after a
+        // restart, when the import report is gone. No uniqueness on purpose:
+        // the list is replaced as a whole, and an unnamed entry must not
+        // collide with another one.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS instance_pack_gaps (
+                 instance_id TEXT NOT NULL,
+                 filename TEXT NOT NULL,
+                 display_name TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 reason TEXT,
+                 FOREIGN KEY (instance_id) REFERENCES user_instances(instance_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_instance_pack_gaps_instance
+                 ON instance_pack_gaps (instance_id);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (16)",
             [],
         )?;
     }
@@ -1404,6 +1428,65 @@ pub fn replace_instance_pack_files(
     }
     tx.commit()?;
     Ok(())
+}
+
+/// A pack entry that is still missing from an instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstancePackGap {
+    pub filename: String,
+    pub display_name: String,
+    /// `failed` or `needs_action`.
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+/// Replace the list of pack entries an instance is still missing.
+pub fn replace_instance_pack_gaps(
+    conn: &Connection,
+    instance_id: &str,
+    gaps: &[InstancePackGap],
+) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM instance_pack_gaps WHERE instance_id = ?1",
+        [instance_id],
+    )?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO instance_pack_gaps (instance_id, filename, display_name, status, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for gap in gaps {
+            stmt.execute(rusqlite::params![
+                instance_id,
+                gap.filename,
+                gap.display_name,
+                gap.status,
+                gap.reason
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn list_instance_pack_gaps(
+    conn: &Connection,
+    instance_id: &str,
+) -> anyhow::Result<Vec<InstancePackGap>> {
+    let mut stmt = conn.prepare(
+        "SELECT filename, display_name, status, reason FROM instance_pack_gaps
+         WHERE instance_id = ?1 ORDER BY rowid",
+    )?;
+    let rows = stmt.query_map([instance_id], |row| {
+        Ok(InstancePackGap {
+            filename: row.get(0)?,
+            display_name: row.get(1)?,
+            status: row.get(2)?,
+            reason: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

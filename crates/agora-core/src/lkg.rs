@@ -301,9 +301,6 @@ pub struct RetentionPolicy {
     pub keep_non_lkg_count: u32,
     /// Number of pre-restore snapshots to keep.
     pub keep_pre_restore_count: u32,
-    /// Number of user-created and migration snapshots to keep (most recent).
-    /// Automatic snapshots never count against this and never evict them.
-    pub keep_preserved_count: u32,
     /// Maximum total snapshot storage per instance in bytes.
     pub size_cap_bytes: u64,
 }
@@ -317,6 +314,8 @@ pub struct RetentionEntry {
     pub is_lkg: bool,
     pub is_current_lkg: bool,
     pub is_pre_restore: bool,
+    /// The undo snapshot a loadout apply takes (`before-loadout`), automatic only.
+    pub is_loadout_undo: bool,
     /// Created by the user or as a migration recovery point, not automatically.
     pub is_preserved: bool,
     /// A live Crash Doctor recovery point. It must survive retention until
@@ -324,13 +323,23 @@ pub struct RetentionEntry {
     pub is_protected: bool,
 }
 
+/// How many ordinary automatic snapshots (taken before installs, launches and
+/// other changes) are kept per instance. Five is enough to step back over a
+/// few changes in a row without letting backups pile up; the size cap below
+/// still applies and trims the oldest of these first.
+pub const KEEP_AUTOMATIC_SNAPSHOTS: u32 = 5;
+
+/// How many loadout undo snapshots are kept. Like pre-restore points, they get
+/// a slot of their own. Sharing the automatic five let a run of applies push
+/// out install restore points, which are the ones a person relies on.
+pub const KEEP_LOADOUT_UNDO_SNAPSHOTS: u32 = 1;
+
 impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
             keep_lkg_count: 3,
-            keep_non_lkg_count: 1,
+            keep_non_lkg_count: KEEP_AUTOMATIC_SNAPSHOTS,
             keep_pre_restore_count: 1,
-            keep_preserved_count: 10,
             size_cap_bytes: 2_000_000_000, // 2 GB
         }
     }
@@ -353,6 +362,7 @@ pub fn retention_plan(
             is_lkg: lkg_ids.contains(id),
             is_current_lkg: current == Some(id),
             is_pre_restore: pre_restore_ids.contains(id),
+            is_loadout_undo: false,
             is_preserved: false,
             is_protected: false,
         })
@@ -381,7 +391,7 @@ pub fn retention_plan_with_sizes(
     let mut kept_lkg = usize::from(!keep.is_empty());
     let mut kept_non_lkg = 0usize;
     let mut kept_pre_restore = 0usize;
-    let mut kept_preserved = 0usize;
+    let mut kept_loadout_undo = 0usize;
     for entry in entries_newest_first {
         if entry.is_protected {
             keep.insert(entry.id.clone());
@@ -395,15 +405,19 @@ pub fn retention_plan_with_sizes(
                 keep.insert(entry.id.clone());
                 kept_lkg += 1;
             }
+        } else if entry.is_preserved {
+            // User-created and migration snapshots have no count cap: they
+            // are removed only by the person who made them.
+            keep.insert(entry.id.clone());
         } else if entry.is_pre_restore {
             if kept_pre_restore < policy.keep_pre_restore_count as usize {
                 keep.insert(entry.id.clone());
                 kept_pre_restore += 1;
             }
-        } else if entry.is_preserved {
-            if kept_preserved < policy.keep_preserved_count as usize {
+        } else if entry.is_loadout_undo {
+            if kept_loadout_undo < KEEP_LOADOUT_UNDO_SNAPSHOTS as usize {
                 keep.insert(entry.id.clone());
-                kept_preserved += 1;
+                kept_loadout_undo += 1;
             }
         } else if kept_non_lkg < policy.keep_non_lkg_count as usize {
             keep.insert(entry.id.clone());
@@ -422,11 +436,12 @@ pub fn retention_plan_with_sizes(
             .rev() // oldest first within each safety tier
             .filter(|entry| keep.contains(&entry.id) && !entry.is_current_lkg)
             .filter(|entry| !entry.is_protected)
+            // Snapshots a person made (or a migration took) are never deleted
+            // to make room; only automatic ones are.
+            .filter(|entry| !entry.is_preserved)
             .collect();
         candidates.sort_by_key(|entry| {
-            if entry.is_preserved {
-                3u8
-            } else if !entry.is_lkg && !entry.is_pre_restore {
+            if !entry.is_lkg && !entry.is_pre_restore {
                 0
             } else if entry.is_pre_restore {
                 1
@@ -481,10 +496,16 @@ pub fn run_retention(instance_dir: &Path) -> Result<(), String> {
                 is_lkg: lkg.promoted_snapshot_ids.contains(&snapshot.id)
                     || lkg.current_lkg_snapshot_id.as_ref() == Some(&snapshot.id),
                 is_current_lkg: lkg.current_lkg_snapshot_id.as_ref() == Some(&snapshot.id),
-                is_pre_restore: snapshot
-                    .label
-                    .as_deref()
-                    .is_some_and(|label| label.starts_with("pre-restore-")),
+                // Only automatic snapshots can be undo points. The label is
+                // free text a person can type, so it never makes a recorded
+                // manual or migration snapshot one.
+                is_pre_restore: !snapshot.is_preserved()
+                    && snapshot
+                        .label
+                        .as_deref()
+                        .is_some_and(|label| label.starts_with("pre-restore-")),
+                is_loadout_undo: !snapshot.is_preserved()
+                    && snapshot.label.as_deref() == Some(crate::loadout::UNDO_SNAPSHOT_LABEL),
                 is_preserved: snapshot.is_preserved(),
                 is_protected: snapshot
                     .label
@@ -495,6 +516,19 @@ pub fn run_retention(instance_dir: &Path) -> Result<(), String> {
         .collect();
     let policy = RetentionPolicy::default();
     let to_evict = retention_plan_with_sizes(&entries, &policy);
+    let kept_manual_size: u64 = entries
+        .iter()
+        .filter(|entry| entry.is_preserved && !to_evict.contains(&entry.id))
+        .map(|entry| entry.size_bytes)
+        .sum();
+    if kept_manual_size > policy.size_cap_bytes {
+        eprintln!(
+            "snapshots you made in {} use {} MB, over the {} MB limit; they are kept, but automatic snapshots may not fit. Delete some to free space.",
+            instance_dir.display(),
+            kept_manual_size / 1_000_000,
+            policy.size_cap_bytes / 1_000_000
+        );
+    }
 
     let mut errors = Vec::new();
     for id in &to_evict {
@@ -799,7 +833,6 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 1,
-            keep_preserved_count: 10,
             size_cap_bytes: 2_000_000_000,
         };
         let evict = retention_plan(&ids, &lkg, &[], &policy);
@@ -823,7 +856,6 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 2,
             keep_pre_restore_count: 2,
-            keep_preserved_count: 10,
             size_cap_bytes: 1_000,
         };
         assert!(retention_plan_with_sizes(&entries, &policy).is_empty());
@@ -841,7 +873,6 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 1,
-            keep_preserved_count: 10,
             size_cap_bytes: 90,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -861,7 +892,6 @@ mod tests {
             keep_lkg_count: 1,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 0,
-            keep_preserved_count: 10,
             size_cap_bytes: 100,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -879,7 +909,6 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 0,
             keep_pre_restore_count: 1,
-            keep_preserved_count: 10,
             size_cap_bytes: 80,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -899,6 +928,7 @@ mod tests {
             is_lkg,
             is_current_lkg,
             is_pre_restore,
+            is_loadout_undo: false,
             is_preserved: false,
             is_protected: false,
         }
@@ -913,6 +943,7 @@ mod tests {
                 is_lkg: false,
                 is_current_lkg: false,
                 is_pre_restore: false,
+                is_loadout_undo: false,
                 is_preserved: false,
                 is_protected: true,
             },
@@ -922,7 +953,6 @@ mod tests {
             keep_lkg_count: 0,
             keep_non_lkg_count: 0,
             keep_pre_restore_count: 0,
-            keep_preserved_count: 10,
             size_cap_bytes: 1,
         };
 
@@ -970,8 +1000,8 @@ mod tests {
         }
         let remaining = remaining_ids(dir);
         assert!(remaining.contains(&manual));
-        // The automatic ones still rotate: only the newest one is kept.
-        assert_eq!(remaining.len(), 2);
+        // The automatic ones all fit in the keep-5 window.
+        assert_eq!(remaining.len(), 4);
     }
 
     #[test]
@@ -997,30 +1027,182 @@ mod tests {
     }
 
     #[test]
-    fn automatic_snapshots_still_rotate() {
+    fn automatic_snapshots_keep_the_last_five() {
         let temp = TempDir::new().unwrap();
         let dir = temp.path();
-        let mut last = String::new();
-        for label in ["pre-launch", "pre-launch", "install-abc", "pack-merge"] {
-            last = create_test_snapshot(dir, label);
+        let mut created = Vec::new();
+        for i in 0..8 {
+            created.push(create_test_snapshot(dir, &format!("pre-launch-{i}")));
             run_retention(dir).unwrap();
         }
-        assert_eq!(remaining_ids(dir), vec![last]);
+        let mut remaining = remaining_ids(dir);
+        remaining.sort();
+        let mut expected: Vec<String> = created[3..].to_vec();
+        expected.sort();
+        assert_eq!(remaining, expected);
     }
 
     #[test]
-    fn preserved_snapshots_are_capped_by_count_and_evicted_last_under_the_size_cap() {
+    fn automatic_retention_with_zero_or_one_snapshot_deletes_nothing() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        run_retention(dir).unwrap();
+        assert!(remaining_ids(dir).is_empty());
+        let only = create_test_snapshot(dir, "pre-launch");
+        run_retention(dir).unwrap();
+        assert_eq!(remaining_ids(dir), vec![only]);
+    }
+
+    #[test]
+    fn fifteen_manual_snapshots_are_all_kept_by_retention() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let manual: Vec<String> = (0..15)
+            .map(|i| {
+                create_test_snapshot_as(
+                    dir,
+                    &format!("my save {i}"),
+                    crate::snapshot::SnapshotOrigin::User,
+                )
+            })
+            .collect();
+        run_retention(dir).unwrap();
+        let remaining = remaining_ids(dir);
+        assert_eq!(remaining.len(), 15, "retention removed a manual snapshot");
+        for id in &manual {
+            assert!(remaining.contains(id), "manual snapshot {id} was deleted");
+        }
+    }
+
+    #[test]
+    fn manual_snapshots_never_count_toward_the_automatic_five() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let manual = create_test_snapshot_as(dir, "mine", crate::snapshot::SnapshotOrigin::User);
+        for i in 0..7 {
+            create_test_snapshot(dir, &format!("install-{i}"));
+            run_retention(dir).unwrap();
+        }
+        let remaining = remaining_ids(dir);
+        assert!(remaining.contains(&manual));
+        assert_eq!(remaining.len(), 6, "1 manual + exactly 5 automatic");
+    }
+
+    #[test]
+    fn loadout_undo_points_do_not_evict_install_restore_points() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let installs: Vec<String> = (0..5)
+            .map(|i| create_test_snapshot(dir, &format!("install-{i:016x}")))
+            .collect();
+        run_retention(dir).unwrap();
+        assert_eq!(remaining_ids(dir).len(), 5);
+
+        create_test_snapshot(dir, crate::loadout::UNDO_SNAPSHOT_LABEL);
+        run_retention(dir).unwrap();
+
+        let remaining = remaining_ids(dir);
+        for id in &installs {
+            assert!(
+                remaining.contains(id),
+                "install restore point {id} was evicted by a loadout apply"
+            );
+        }
+        assert_eq!(
+            remaining.len(),
+            6,
+            "5 install points + 1 loadout undo point"
+        );
+    }
+
+    #[test]
+    fn loadout_undo_keeps_only_the_newest_point_and_never_a_manual_one() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let manual = create_test_snapshot_as(
+            dir,
+            crate::loadout::UNDO_SNAPSHOT_LABEL,
+            crate::snapshot::SnapshotOrigin::User,
+        );
+        create_test_snapshot(dir, crate::loadout::UNDO_SNAPSHOT_LABEL);
+        create_test_snapshot(dir, crate::loadout::UNDO_SNAPSHOT_LABEL);
+        let newest = create_test_snapshot(dir, crate::loadout::UNDO_SNAPSHOT_LABEL);
+        run_retention(dir).unwrap();
+
+        let remaining = remaining_ids(dir);
+        assert!(
+            remaining.contains(&manual),
+            "a manual snapshot is never evicted"
+        );
+        assert!(remaining.contains(&newest), "the newest undo point is kept");
+        assert_eq!(remaining.len(), 2, "manual + newest undo point only");
+    }
+
+    #[test]
+    fn default_policy_keeps_exactly_five_automatic_and_never_a_manual() {
+        let auto = |i: usize| retention(&format!("auto-{i}"), 1, false, false, false);
+        let mut entries: Vec<RetentionEntry> = (0..9).map(auto).collect();
+        entries.insert(
+            3,
+            RetentionEntry {
+                is_loadout_undo: false,
+                is_preserved: true,
+                ..retention("manual", 1, false, false, false)
+            },
+        );
+        let evicted = retention_plan_with_sizes(&entries, &RetentionPolicy::default());
+        assert_eq!(
+            evicted,
+            (5..9).map(|i| format!("auto-{i}")).collect::<Vec<_>>()
+        );
+        // exactly 5 or fewer: nothing evicted
+        let few: Vec<RetentionEntry> = (0..5).map(auto).collect();
+        assert!(retention_plan_with_sizes(&few, &RetentionPolicy::default()).is_empty());
+    }
+
+    #[test]
+    fn size_cap_trims_oldest_automatic_snapshots_before_manual_ones() {
+        let mut entries: Vec<RetentionEntry> = (0..5)
+            .map(|i| retention(&format!("auto-{i}"), 30, false, false, false))
+            .collect();
+        entries.push(RetentionEntry {
+            is_loadout_undo: false,
+            is_preserved: true,
+            ..retention("manual", 30, false, false, false)
+        });
+        let policy = RetentionPolicy {
+            size_cap_bytes: 100,
+            ..RetentionPolicy::default()
+        };
+        let evicted = retention_plan_with_sizes(&entries, &policy);
+        assert_eq!(
+            evicted,
+            vec![
+                "auto-2".to_string(),
+                "auto-3".to_string(),
+                "auto-4".to_string()
+            ]
+        );
+        assert!(!evicted.contains(&"manual".to_string()));
+    }
+
+    #[test]
+    fn preserved_snapshots_have_no_count_cap_and_are_evicted_last_under_the_size_cap() {
         let preserved = |id: &str, size: u64| RetentionEntry {
+            is_loadout_undo: false,
             is_preserved: true,
             ..retention(id, size, false, false, false)
         };
-        let mut entries: Vec<RetentionEntry> = (0..12)
+        let mut entries: Vec<RetentionEntry> = (0..40)
             .map(|i| preserved(&format!("user-{i}"), 1))
             .collect();
         entries.insert(0, retention("auto", 1, false, false, false));
         let policy = RetentionPolicy::default();
         let evicted = retention_plan_with_sizes(&entries, &policy);
-        assert_eq!(evicted, vec!["user-10".to_string(), "user-11".to_string()]);
+        assert!(
+            evicted.is_empty(),
+            "manual snapshots were evicted: {evicted:?}"
+        );
 
         let entries = vec![
             preserved("user", 60),
@@ -1082,6 +1264,67 @@ mod tests {
             .collect();
         assert!(remaining.contains(&protected));
         assert!(remaining.contains(&evicted));
-        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining.len(), 3, "protected + both ordinary automatic");
+    }
+
+    #[test]
+    fn manual_snapshot_named_pre_restore_is_not_evicted_as_an_undo_point() {
+        // Labels are free text in the UI, so a person can type a pre-restore-
+        // prefix. Pre-restore bucketing is by label only, so the manual
+        // snapshot competes for the single undo slot and is evicted.
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let manual = create_test_snapshot_as(
+            dir,
+            "pre-restore-my-world-backup",
+            crate::snapshot::SnapshotOrigin::User,
+        );
+        create_test_snapshot(dir, "pre-restore-20260101-000000");
+
+        run_retention(dir).unwrap();
+
+        assert!(remaining_ids(dir).contains(&manual));
+    }
+
+    #[test]
+    fn manual_snapshot_over_size_cap_survives_its_own_retention_pass() {
+        // SnapshotService::create runs retention right after capture. A manual
+        // snapshot that alone exceeds the 2 GB cap is the newest entry and is
+        // not the current LKG, so the cap evicts it on the spot.
+        let manual = RetentionEntry {
+            is_loadout_undo: false,
+            is_preserved: true,
+            ..retention("manual", 3_000_000_000, false, false, false)
+        };
+
+        let evicted = retention_plan_with_sizes(&[manual], &RetentionPolicy::default());
+
+        assert!(
+            evicted.is_empty(),
+            "just-taken manual snapshot was evicted: {evicted:?}"
+        );
+    }
+
+    #[test]
+    fn size_cap_never_evicts_manual_but_still_trims_automatic() {
+        let manual = RetentionEntry {
+            is_loadout_undo: false,
+            is_preserved: true,
+            ..retention("manual", 3_000_000_000, false, false, false)
+        };
+        let entries = vec![retention("auto", 10, false, false, false), manual];
+        let evicted = retention_plan_with_sizes(&entries, &RetentionPolicy::default());
+        assert_eq!(evicted, vec!["auto".to_string()]);
+    }
+
+    #[test]
+    fn preserved_entry_flagged_pre_restore_does_not_take_the_undo_slot() {
+        let manual = RetentionEntry {
+            is_loadout_undo: false,
+            is_preserved: true,
+            ..retention("manual", 1, false, false, true)
+        };
+        let entries = vec![manual, retention("undo", 1, false, false, true)];
+        assert!(retention_plan_with_sizes(&entries, &RetentionPolicy::default()).is_empty());
     }
 }

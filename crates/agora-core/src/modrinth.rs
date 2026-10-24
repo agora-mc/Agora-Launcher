@@ -333,7 +333,16 @@ pub struct ModrinthSearchParams {
     /// Modrinth project type filter: "mod", "shader", "resourcepack", "modpack", "datapack".
     /// When None the facet is omitted, returning results from all project types.
     pub project_type: Option<String>,
+    /// Project types that match even when `loaders` is set, for searches across
+    /// all types: packs and shaders carry no mod loader. Ignored when
+    /// `project_type` is set.
+    #[serde(default)]
+    pub loader_exempt_types: Vec<String>,
 }
+
+/// Modrinth project types that carry no mod loader, so a loader filter must not
+/// hide them in an all-types search.
+pub const LOADER_EXEMPT_PROJECT_TYPES: &[&str] = &["resourcepack", "shader", "datapack"];
 
 /// A page of search results with paging metadata for infinite scroll.
 #[derive(Debug, Clone, Serialize)]
@@ -500,6 +509,62 @@ pub struct RawModrinthVersionCandidate {
     pub version_type: String,
 }
 
+/// The facet groups for a search (OR within a group, AND across groups), per
+/// the Modrinth v2 search facet spec. Loaders map onto the `categories` facet
+/// because Modrinth treats loaders as categories in search.
+pub(crate) fn search_facet_groups(params: &ModrinthSearchParams) -> Vec<Vec<String>> {
+    let mut facet_groups: Vec<Vec<String>> = Vec::new();
+
+    if let Some(loaders) = &params.loaders {
+        let mut group: Vec<String> = loaders
+            .iter()
+            .filter(|l| !l.is_empty())
+            .map(|l| format!("categories:{}", l))
+            .collect();
+        // Loader-free project types join the loader group, so an all-types
+        // search still returns them. A single project type is never widened.
+        if !group.is_empty() && params.project_type.is_none() {
+            group.extend(
+                params
+                    .loader_exempt_types
+                    .iter()
+                    .filter(|t| !t.is_empty())
+                    .map(|t| format!("project_type:{}", t)),
+            );
+        }
+        if !group.is_empty() {
+            facet_groups.push(group);
+        }
+    }
+
+    // Each selected category becomes its own single-element group so that
+    // multiple categories combine with AND (mod must have all of them).
+    if let Some(cats) = &params.categories {
+        for c in cats.iter().filter(|c| !c.is_empty()) {
+            facet_groups.push(vec![format!("categories:{}", c)]);
+        }
+    }
+
+    if let Some(versions) = &params.game_versions {
+        let group: Vec<String> = versions
+            .iter()
+            .filter(|v| !v.is_empty())
+            .map(|v| format!("versions:{}", v))
+            .collect();
+        if !group.is_empty() {
+            facet_groups.push(group);
+        }
+    }
+
+    // Restrict by project type (mod, shader, resourcepack, modpack, datapack).
+    // When None, omit the facet so Modrinth returns all project types.
+    if let Some(pt) = &params.project_type {
+        facet_groups.push(vec![format!("project_type:{}", pt)]);
+    }
+
+    facet_groups
+}
+
 /// Live Modrinth search with facets, sorting and offset pagination.
 ///
 /// Facets are built to mirror Modrinth's native search semantics:
@@ -542,48 +607,7 @@ pub async fn search_modrinth_http(
         _ => "*",
     };
 
-    // Build facets as a JSON array of arrays (OR within a group, AND across
-    // groups), per the Modrinth v2 search facet spec. Loaders map onto the
-    // `categories` facet because Modrinth treats loaders as categories in
-    // search.
-    let mut facet_groups: Vec<Vec<String>> = Vec::new();
-
-    if let Some(loaders) = &params.loaders {
-        let group: Vec<String> = loaders
-            .iter()
-            .filter(|l| !l.is_empty())
-            .map(|l| format!("categories:{}", l))
-            .collect();
-        if !group.is_empty() {
-            facet_groups.push(group);
-        }
-    }
-
-    // Each selected category becomes its own single-element group so that
-    // multiple categories combine with AND (mod must have all of them).
-    if let Some(cats) = &params.categories {
-        for c in cats.iter().filter(|c| !c.is_empty()) {
-            facet_groups.push(vec![format!("categories:{}", c)]);
-        }
-    }
-
-    if let Some(versions) = &params.game_versions {
-        let group: Vec<String> = versions
-            .iter()
-            .filter(|v| !v.is_empty())
-            .map(|v| format!("versions:{}", v))
-            .collect();
-        if !group.is_empty() {
-            facet_groups.push(group);
-        }
-    }
-
-    // Restrict by project type (mod, shader, resourcepack, modpack, datapack).
-    // When None, omit the facet so Modrinth returns all project types.
-    if let Some(pt) = &params.project_type {
-        facet_groups.push(vec![format!("project_type:{}", pt)]);
-    }
-
+    let facet_groups = search_facet_groups(params);
     let facets_json = serde_json::to_string(&facet_groups).unwrap_or_else(|_| "[]".to_string());
 
     let url = format!(
@@ -1122,6 +1146,15 @@ impl ModrinthService {
     /// `modrinth_enabled` feature toggle. Returns `Err(ModrinthDisabled)` when
     /// the toggle is off or the DB cannot be read (secure default: closed).
     pub fn check_enabled(&self) -> LauncherResult<()> {
+        self.check_network_enabled()?;
+        let conn = self.connection()?;
+        require_modrinth_enabled(&conn)
+    }
+
+    /// Only the Privacy switch (`network_modrinth_enabled`), not the
+    /// `modrinth_enabled` toggle. Used for a Modrinth request the user allowed
+    /// for one import, which must not turn the toggle on.
+    pub fn check_network_enabled(&self) -> LauncherResult<()> {
         let conn = self.connection()?;
         if !db::is_network_enabled(&conn, "network_modrinth_enabled") {
             return Err(LauncherError::Generic {
@@ -1129,7 +1162,7 @@ impl ModrinthService {
                 message: "Modrinth catalog API is disabled in Privacy settings.".into(),
             });
         }
-        require_modrinth_enabled(&conn)
+        Ok(())
     }
 
     /// Whether the `modrinth_enabled` toggle is currently on.
@@ -1382,7 +1415,31 @@ impl ModrinthService {
         project_type: Option<&str>,
     ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
         self.check_enabled()?;
+        self.list_raw_modrinth_versions_unchecked(instance_id, project_id, project_type)
+            .await
+    }
 
+    /// [`list_raw_modrinth_versions`](Self::list_raw_modrinth_versions) for a
+    /// request the user allowed for one import: the Privacy switch still
+    /// applies, the `modrinth_enabled` toggle does not.
+    pub(crate) async fn list_raw_modrinth_versions_allowed_once(
+        &self,
+        instance_id: Option<&str>,
+        project_id: &str,
+        project_type: Option<&str>,
+    ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
+        self.check_network_enabled()?;
+        self.list_raw_modrinth_versions_unchecked(instance_id, project_id, project_type)
+            .await
+    }
+
+    /// The listing itself. Callers must have passed a gate first.
+    async fn list_raw_modrinth_versions_unchecked(
+        &self,
+        instance_id: Option<&str>,
+        project_id: &str,
+        project_type: Option<&str>,
+    ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
         let instance = match instance_id {
             Some(iid) => {
                 let svc = InstanceService::new(self.ctx.clone());
@@ -1431,8 +1488,63 @@ impl ModrinthService {
         candidate: &RawModrinthVersionCandidate,
         project_type: &str,
     ) -> LauncherResult<InstalledMod> {
-        self.check_enabled()?;
+        self.install_raw_modrinth_pinned(instance_id, project_id, candidate, project_type, None)
+            .await
+    }
 
+    /// [`install_raw_modrinth`](Self::install_raw_modrinth) that also requires
+    /// the downloaded bytes to have `required_sha256`, e.g. the hash a shared
+    /// pack file pinned for this exact file. Checked before anything is written.
+    pub async fn install_raw_modrinth_pinned(
+        &self,
+        instance_id: &str,
+        project_id: &str,
+        candidate: &RawModrinthVersionCandidate,
+        project_type: &str,
+        required_sha256: Option<&str>,
+    ) -> LauncherResult<InstalledMod> {
+        self.check_enabled()?;
+        self.install_raw_modrinth_pinned_unchecked(
+            instance_id,
+            project_id,
+            candidate,
+            project_type,
+            required_sha256,
+        )
+        .await
+    }
+
+    /// [`install_raw_modrinth_pinned`](Self::install_raw_modrinth_pinned) for a
+    /// file the user allowed for one import: the Privacy switch still applies,
+    /// the `modrinth_enabled` toggle does not.
+    pub(crate) async fn install_raw_modrinth_pinned_allowed_once(
+        &self,
+        instance_id: &str,
+        project_id: &str,
+        candidate: &RawModrinthVersionCandidate,
+        project_type: &str,
+        required_sha256: Option<&str>,
+    ) -> LauncherResult<InstalledMod> {
+        self.check_network_enabled()?;
+        self.install_raw_modrinth_pinned_unchecked(
+            instance_id,
+            project_id,
+            candidate,
+            project_type,
+            required_sha256,
+        )
+        .await
+    }
+
+    /// The install itself. Callers must have passed a gate first.
+    async fn install_raw_modrinth_pinned_unchecked(
+        &self,
+        instance_id: &str,
+        project_id: &str,
+        candidate: &RawModrinthVersionCandidate,
+        project_type: &str,
+        required_sha256: Option<&str>,
+    ) -> LauncherResult<InstalledMod> {
         if project_type == "modpack" {
             return Err(LauncherError::Generic {
                 code: "ERR_USE_PACK_IMPORT".to_string(),
@@ -1459,7 +1571,7 @@ impl ModrinthService {
         };
 
         let svc = InstallService::new(self.ctx.clone());
-        svc.install_artifact(
+        svc.install_artifact_pinned(
             instance_id,
             &candidate.filename,
             content_type,
@@ -1470,6 +1582,8 @@ impl ModrinthService {
             Some(&candidate.version),
             Some(&expected_sha1),
             None,
+            required_sha256,
+            candidate.sha512.as_deref(),
         )
         .await
     }
@@ -1478,6 +1592,84 @@ impl ModrinthService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exempt() -> Vec<String> {
+        LOADER_EXEMPT_PROJECT_TYPES
+            .iter()
+            .map(|t| t.to_string())
+            .collect()
+    }
+
+    fn fabric_params(project_type: Option<&str>) -> ModrinthSearchParams {
+        ModrinthSearchParams {
+            loaders: Some(vec!["fabric".into()]),
+            project_type: project_type.map(str::to_string),
+            loader_exempt_types: exempt(),
+            ..Default::default()
+        }
+    }
+
+    /// All types with a Fabric filter: Fabric content OR a loader-free pack
+    /// type, in one OR group, so a Forge-only mod is not returned but packs are.
+    #[test]
+    fn all_types_loader_group_keeps_loader_free_packs() {
+        assert_eq!(
+            search_facet_groups(&fabric_params(None)),
+            vec![vec![
+                "categories:fabric".to_string(),
+                "project_type:resourcepack".to_string(),
+                "project_type:shader".to_string(),
+                "project_type:datapack".to_string(),
+            ]]
+        );
+    }
+
+    /// A single project type keeps the plain loader filter: nothing is widened.
+    #[test]
+    fn single_project_type_is_never_widened() {
+        assert_eq!(
+            search_facet_groups(&fabric_params(Some("mod"))),
+            vec![
+                vec!["categories:fabric".to_string()],
+                vec!["project_type:mod".to_string()]
+            ]
+        );
+    }
+
+    /// Without a loader there is no loader group, so exempt types add nothing.
+    #[test]
+    fn no_loader_means_no_group_at_all() {
+        let params = ModrinthSearchParams {
+            loader_exempt_types: exempt(),
+            ..Default::default()
+        };
+        assert!(search_facet_groups(&params).is_empty());
+    }
+
+    /// Blank loaders and blank exempt types are dropped, and a list that is
+    /// blank after filtering is not turned into an empty OR group.
+    #[test]
+    fn blank_loader_and_blank_exempt_entries_are_ignored() {
+        let params = ModrinthSearchParams {
+            loaders: Some(vec![String::new()]),
+            loader_exempt_types: vec![String::new(), "shader".into()],
+            ..Default::default()
+        };
+        assert!(search_facet_groups(&params).is_empty());
+
+        let params = ModrinthSearchParams {
+            loaders: Some(vec!["fabric".into()]),
+            loader_exempt_types: vec![String::new(), "shader".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            search_facet_groups(&params),
+            vec![vec![
+                "categories:fabric".to_string(),
+                "project_type:shader".to_string()
+            ]]
+        );
+    }
 
     fn temp_ctx() -> (Ctx, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(

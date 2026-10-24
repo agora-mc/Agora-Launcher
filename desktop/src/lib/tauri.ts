@@ -407,11 +407,20 @@ export interface InstanceManifest {
   user_preferences: Record<string, unknown>;
 }
 
+/** A pack entry the instance still lacks: it failed, or needs an action from the user. */
+export interface InstancePackGap {
+  filename: string;
+  display_name: string;
+  status: 'failed' | 'needs_action';
+  reason: string | null;
+}
+
 export interface InstanceDetail {
   row: InstanceRow;
   manifest: InstanceManifest | null;
   snapshot_readiness: 'ready' | 'pending' | 'failed';
   snapshot_error: string | null;
+  pack_gaps: InstancePackGap[];
 }
 
 export type CurationStatus = 'curated' | 'under_review' | 'uncurated' | 'archived' | 'unknown';
@@ -693,6 +702,28 @@ export const createInstance = (request: CreateInstanceRequest) =>
   invoke<InstanceRow>('create_instance', { request });
 export const deleteInstance = (instanceId: string) =>
   invoke<void>('delete_instance', { instanceId });
+export interface RecentlyDeletedEntry {
+  entry_id: string;
+  instance_id: string;
+  name: string;
+  minecraft_version: string;
+  loader: string;
+  import_source: string | null;
+  deleted_at: string;
+  expires_at: string;
+  size_bytes: number;
+}
+export interface RestoreOutcome {
+  instance_id: string;
+  original_instance_id: string;
+  renamed: boolean;
+}
+export const listRecentlyDeleted = () =>
+  invoke<RecentlyDeletedEntry[]>('list_recently_deleted');
+export const restoreDeletedInstance = (entryId: string) =>
+  invoke<RestoreOutcome>('restore_deleted_instance', { entryId });
+export const purgeDeletedInstance = (entryId: string) =>
+  invoke<void>('purge_deleted_instance', { entryId });
 export const unlockInstance = (instanceId: string) =>
   invoke<void>('unlock_instance', { instanceId });
 export const lockInstance = (instanceId: string) =>
@@ -768,6 +799,12 @@ export interface UpdateInfo {
   latest_version: string;
   target_version: string;
   source: string;
+  /** Set when only a newer build for another Minecraft version exists (a note, not an update). */
+  needs_minecraft?: string | null;
+  /** True when nothing shows the version is newer: listed for manual choice, never an update. */
+  uncertain?: boolean;
+  /** Release date of latest_version, if the source published one. */
+  latest_released?: string | null;
 }
 
 export const checkInstanceUpdates = (instanceId: string) =>
@@ -830,6 +867,10 @@ export const getLkgMarker = (instanceId: string) =>
 
 export const exportLockfile = (instanceId: string) =>
   invoke<Record<string, unknown>>('export_lockfile', { instanceId });
+
+/** Opens a save dialog and writes the lockfile text there. Resolves to the saved path, or null if cancelled. */
+export const saveLockfileExport = (instanceId: string, contents: string) =>
+  invoke<string | null>('save_lockfile_export', { instanceId, contents });
 
 export interface SnapshotDiffEntry {
   path: string;
@@ -966,6 +1007,8 @@ export interface HealthBlocker {
   suggested_action: string | null;
   /** Present when this blocker is a loader requirement finding. */
   loader_compatibility?: LoaderCompatibilityIssue | null;
+  /** The tracked jar that would satisfy this blocker, when its file is missing from mods/ (Rust: missing_file). */
+  missing_file?: string | null;
 }
 
 export interface HealthRecommendation {
@@ -981,6 +1024,8 @@ export interface HealthReport {
   warnings: HealthWarning[];
   blockers: HealthBlocker[];
   recommendations: HealthRecommendation[];
+  /** Enabled mod filenames the manifest tracks but mods/ lacks (Rust: missing_files). */
+  missing_files?: string[];
   scan_token: string;
 }
 
@@ -1150,6 +1195,14 @@ export const listAuditLog = (limit?: number) =>
 export const checkRegistryUpdate = (force?: boolean) =>
   invoke<RegistryStatus>('check_registry_update', { force });
 export const getRegistryStatus = () => invoke<RegistryStatus>('get_registry_status');
+export type ConnectivityState = 'unknown' | 'reachable' | 'unreachable';
+export interface ConnectivitySnapshot {
+  state: ConnectivityState;
+  /** Unix seconds when the request that set `state` finished. */
+  last_outcome_at: number | null;
+}
+export const getConnectivityStatus = () =>
+  invoke<ConnectivitySnapshot>('get_connectivity_status');
 export const extractOverrides = (zipPath: string, instanceId: string) =>
   invoke<ExtractionResult>('extract_overrides', { zipPath, instanceId });
 
@@ -1326,8 +1379,16 @@ export const listInstanceWorlds = (instanceId: string) =>
 export const syncInstanceDatapacks = (instanceId: string) =>
   invoke<DatapackSyncReport>('sync_instance_datapacks', { instanceId });
 
+/** Opens a save dialog for the pack. Resolves to the saved path, or null if cancelled. */
 export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack') =>
-  invoke<string>('export_instance_pack', { instanceId, format });
+  invoke<string | null>('export_instance_pack', { instanceId, format });
+
+/**
+ * Mods an export in this format could not carry to a friend: no catalog or Modrinth
+ * source, and the format only lists mods. Empty for `.mrpack`, which bundles them.
+ */
+export const exportSourcelessMods = (instanceId: string, format: 'json' | 'mrpack') =>
+  invoke<string[] | null>('export_sourceless_mods', { instanceId, format });
 
 export const pickOpenFile = (title: string, extensions: string[]) =>
   invoke<string | null>('pick_open_file', { title, extensions });
@@ -1365,6 +1426,11 @@ export interface ContentInventory {
   has_shaderpacks: boolean;
   has_datapacks: boolean;
   has_saves: boolean;
+  /** Counts of what the import copies; null when that folder could not be read. */
+  mod_count: number | null;
+  resourcepack_count: number | null;
+  shaderpack_count: number | null;
+  world_count: number | null;
 }
 
 export interface LauncherImportCandidate {
@@ -1402,6 +1468,8 @@ export interface LauncherImportDiscovery {
   prism: LauncherDiscovery;
   curseforge: LauncherDiscovery;
   modrinth: LauncherDiscovery;
+  /** Folder that imported copies are written into. */
+  instances_root: string;
 }
 
 export interface ImportSelection {
@@ -1459,8 +1527,138 @@ export const planLauncherImports = (selections: ImportSelection[]) =>
 export const executeLauncherImports = (plan: LauncherImportPlan) =>
   invoke<LauncherImportBatchResult>('execute_launcher_imports', { plan });
 
-export const importInstancePack = (sourcePath: string) =>
-  invoke<string>('import_instance_pack', { sourcePath });
+/** One mod entry of an Agora pack file, as the pack recorded it. */
+export interface AgoraPackEntry {
+  filename: string;
+  version: string | null;
+  registry_id: string | null;
+  modrinth_id: string | null;
+  sha256: string | null;
+  source: string | null;
+  /** Absent means enabled. `false` installs the mod switched off. */
+  enabled?: boolean | null;
+}
+
+export type PackEntryStatus = 'installed' | 'failed' | 'needs_action';
+export type PackNeedsAction = 'enable_modrinth' | 'open_settings';
+
+/** How one pack entry ended. Every entry gets exactly one. */
+export interface PackEntryOutcome {
+  name: string;
+  status: PackEntryStatus;
+  /** Installed only: the bytes matched the SHA-256 the pack pinned. */
+  verified_against_pack: boolean;
+  /** Why it failed or what it needs; for an unverified install, the caveat. */
+  reason: string | null;
+  action: PackNeedsAction | null;
+  /** The catalog name when known; `name` (the filename) otherwise. */
+  display_name?: string | null;
+  /** Handed back to retry a needs-action entry. */
+  entry: AgoraPackEntry;
+}
+
+export interface PackImportReport {
+  instance_id: string;
+  instance_name: string;
+  total: number;
+  installed: number;
+  outcomes: PackEntryOutcome[];
+  warnings: string[];
+}
+
+/** `report` is null for formats without a per-mod report (.mrpack). */
+export interface PackImportOutcome {
+  instance_id: string;
+  report: PackImportReport | null;
+}
+
+/** The instance block of an Agora pack file. */
+export interface AgoraPackInstance {
+  id: string | null;
+  name: string | null;
+  minecraft_version: string;
+  loader: string;
+  loader_version: string;
+}
+
+/**
+ * Where a pack entry would be fetched from, judged without downloading:
+ * `curated` (the catalog), `modrinth`, `download` (a link in a Modrinth pack
+ * to another allowed host), `bundled` (the file is inside the pack), or
+ * `cannot_get` (no usable source).
+ */
+export type PlannedPackSource = 'curated' | 'modrinth' | 'download' | 'bundled' | 'cannot_get';
+
+/** One line of the import review. Not a result: nothing is installed yet. */
+export interface PlannedPackEntry {
+  name: string;
+  display_name: string | null;
+  source: PlannedPackSource;
+  /** The pack pinned a valid SHA-256, so the download can be checked against it. */
+  checkable: boolean;
+  /** What needs action, or why the entry will not install. Null when it is ready. */
+  reason: string | null;
+  action: PackNeedsAction | null;
+  /** The pack marks this mod disabled, so it will be installed switched off. */
+  arrives_disabled?: boolean;
+  /** What kind of file this is: mod, shader, resourcepack, datapack, world, or other. */
+  content_type: string;
+}
+
+export interface PackImportPlan {
+  pack_name: string;
+  instance: AgoraPackInstance;
+  entries: PlannedPackEntry[];
+  /** SHA-256 of the exact file that was reviewed; the import is held to it. */
+  file_sha256: string;
+  file_size: number;
+  /** An instance already has the name the pack would get. */
+  name_taken: boolean;
+  /** A free name to start from: the pack's name, else "Name (2)". */
+  suggested_name: string;
+  /** What the import will not bring over, each with the reason. */
+  left_out: string[];
+  /** What Agora cannot do safely; the import is not offered while any remain. */
+  problems: string[];
+  /** Files that cannot be fetched. "Import anyway" imports without exactly these. */
+  soft_problems: string[];
+  /** Other things worth knowing before importing. */
+  notes: string[];
+}
+
+/**
+ * Import a pack file as a new instance. `reviewedSha256` is the plan's
+ * `file_sha256`; the import refuses a changed file. `name` is the instance
+ * name chosen in the review.
+ */
+export const importInstancePack = (
+  sourcePath: string,
+  reviewedSha256?: string | null,
+  name?: string | null,
+  skipUnfetchable = false,
+) =>
+  invoke<PackImportOutcome>('import_instance_pack', {
+    sourcePath,
+    reviewedSha256: reviewedSha256 ?? null,
+    name: name ?? null,
+    skipUnfetchable,
+  });
+/** Drop the copy a .mrpack review staged (the review was cancelled). */
+export const discardPackReview = (sha256: string) =>
+  invoke<void>('discard_pack_review', { sha256 });
+/** What importing a pack file (.agora-pack.json or .mrpack) would do. Writes and downloads nothing. */
+export const planPackImport = (sourcePath: string) =>
+  invoke<PackImportPlan>('plan_pack_import', { sourcePath });
+/**
+ * Try needs-action entries again on the instance the import created.
+ * `allowModrinthOnce` lets these entries use Modrinth without turning the
+ * Modrinth setting on.
+ */
+export const retryPackImportEntries = (
+  instanceId: string,
+  entries: AgoraPackEntry[],
+  allowModrinthOnce: boolean,
+) => invoke<PackImportReport>('retry_pack_import_entries', { instanceId, entries, allowModrinthOnce });
 export const importModrinthPackByUrl = (downloadUrl: string, packIconUrl?: string | null) =>
   invoke<string>('import_modrinth_pack_by_url', {
     downloadUrl,
@@ -1654,6 +1852,8 @@ export interface CuratedAnnotation {
   id: string;
   name: string;
   curator_note: string | null;
+  /** The curator's plain-text install warning. Null when the item has none. */
+  curator_warning: string | null;
   net_score: number | null;
   is_immune: boolean;
   base_categories: string[];
@@ -2101,18 +2301,38 @@ export interface Snapshot {
   file_count: number;
   size_estimate: number;
   /** Absent on snapshots taken before origins were recorded. */
-  origin?: 'user' | 'migration' | 'automatic';
+  origin?: 'user' | 'migration' | 'automatic' | 'lock';
   /** The recorded origin, or the one inferred from the label for older snapshots. */
-  effective_origin: 'user' | 'migration' | 'automatic';
+  effective_origin: 'user' | 'migration' | 'automatic' | 'lock';
   is_lkg: boolean;
   is_current_lkg: boolean;
   is_pre_restore: boolean;
+}
+
+/** One item a profile records, with the on/off state it was saved in. */
+export interface LoadoutItem {
+  filename: string;
+  content_type: string;
+  enabled: boolean;
+}
+
+/** Enabled items per kind, counted when the profile was saved. */
+export interface LoadoutCoverage {
+  mods: number;
+  resourcepacks: number;
+  shaders: number;
+  datapacks: number;
+  worlds: number;
 }
 
 export interface LoadoutProfile {
   name: string;
   enabled_mods: string[];
   created_at: string;
+  /** Null for profiles saved before counts were recorded. */
+  covers?: LoadoutCoverage | null;
+  /** Every item the profile records, on and off. Null for profiles saved before this. */
+  items?: LoadoutItem[] | null;
 }
 
 export interface ImportResult {
@@ -2700,11 +2920,42 @@ export const listLoadoutProfiles = (instanceId: string) =>
 export const createLoadoutProfile = (instanceId: string, name: string) =>
   invoke<LoadoutProfile>('create_loadout_profile', { instanceId, name });
 
-export const applyLoadoutProfile = (instanceId: string, profileName: string) =>
-  invoke<void>('apply_loadout_profile', { instanceId, profileName });
+/** What applying a profile does with enabled mods it does not list. `keep` leaves them on; `off` switches them off. */
+export type UnlistedModsChoice = 'keep' | 'off';
+
+export const listLoadoutUnlistedMods = (instanceId: string, profileName: string) =>
+  invoke<string[]>('list_loadout_unlisted_mods', { instanceId, profileName });
+
+export const applyLoadoutProfile = (instanceId: string, profileName: string, unlistedMods: UnlistedModsChoice) =>
+  invoke<void>('apply_loadout_profile', { instanceId, profileName, unlistedMods });
 
 export const deleteLoadoutProfile = (instanceId: string, profileName: string) =>
   invoke<void>('delete_loadout_profile', { instanceId, profileName });
+
+/** How one item would change when a profile is saved again from the instance's setup. */
+export type LoadoutChangeKind =
+  | { added: { enabled: boolean } }
+  | 'turned_on'
+  | 'turned_off'
+  | { removed: { enabled: boolean } };
+
+export interface LoadoutChange {
+  filename: string;
+  /** Empty for a profile saved before it recorded kinds. */
+  content_type: string;
+  kind: LoadoutChangeKind;
+}
+
+export interface LoadoutUpdate {
+  name: string;
+  changes: LoadoutChange[];
+}
+
+export const previewLoadoutUpdate = (instanceId: string, profileName: string) =>
+  invoke<LoadoutUpdate>('preview_loadout_update', { instanceId, profileName });
+
+export const updateLoadoutProfile = (instanceId: string, profileName: string) =>
+  invoke<LoadoutUpdate>('update_loadout_profile', { instanceId, profileName });
 
 export const importInstance = (sourcePath: string, symlinkSaves: boolean, name?: string) =>
   invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves, name: name ?? null });
@@ -2827,6 +3078,11 @@ export interface BrowsePage {
   hasMore: boolean;
   /** Providers that could not answer this query. Everyone else still shows. */
   providerFailures?: ProviderFailure[];
+  /**
+   * Set when the first page is empty under an instance's version or loader
+   * filter: how many matches that filter hid. `more` means at least that many.
+   */
+  hiddenByFilters?: { count: number; more: boolean } | null;
 }
 
 export const browseSearch = (

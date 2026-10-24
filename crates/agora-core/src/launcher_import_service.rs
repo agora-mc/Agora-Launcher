@@ -56,6 +56,9 @@ pub struct LauncherImportDiscovery {
     pub prism: LauncherDiscovery,
     pub curseforge: LauncherDiscovery,
     pub modrinth: LauncherDiscovery,
+    /// Folder that imported copies are written into. Display only: execution
+    /// derives its own paths from the app data root.
+    pub instances_root: String,
 }
 
 impl LauncherImportDiscovery {
@@ -472,11 +475,51 @@ type ManifestInventories = (
     Vec<InstalledMod>,
 );
 
+/// Remove, from the freshly copied staging folder, each disabled copy whose
+/// enabled twin is also in its folder. Leaving it would give the mod two files,
+/// and the toggles could then not switch the enabled one off. Returns one note
+/// per copy removed, for the import result.
+fn drop_superseded_disabled_copies(staging: &Path) -> LauncherResult<Vec<String>> {
+    let mut notes = Vec::new();
+    for folder in ["mods", "resourcepacks", "shaderpacks", "datapacks", "saves"] {
+        let root = staging.join(folder);
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut keys = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| LauncherError::Generic {
+                code: "ERR_IMPORT_READ".into(),
+                message: format!("Cannot read {folder}: {error}"),
+            })?;
+            let file_type = entry.file_type().map_err(|error| LauncherError::Generic {
+                code: "ERR_IMPORT_READ".into(),
+                message: format!("Cannot read {folder}: {error}"),
+            })?;
+            if file_type.is_file() {
+                keys.push(format!("{folder}/{}", entry.file_name().to_string_lossy()));
+            }
+        }
+        for key in crate::import::superseded_disabled_keys(&keys) {
+            std::fs::remove_file(staging.join(&key)).map_err(|error| LauncherError::Generic {
+                code: "ERR_IMPORT_COPY".into(),
+                message: format!("Cannot leave {key} out of the import: {error}"),
+            })?;
+            let logical = crate::import::split_disabled_suffix(&key).unwrap_or(&key);
+            notes.push(format!(
+                "{key} was left out: it is a disabled copy of {logical}, which the folder also has, so only the enabled copy is kept."
+            ));
+        }
+    }
+    Ok(notes)
+}
+
 fn build_manifest_arrays(
     instance_dir: &Path,
     source_label: &str,
     loader: &str,
-) -> LauncherResult<ManifestInventories> {
+) -> LauncherResult<(ManifestInventories, Vec<String>)> {
+    let notes = drop_superseded_disabled_copies(instance_dir)?;
     let mods = inventory_directory(instance_dir, "mods", "mod", source_label, loader)?;
     let resourcepacks = inventory_directory(
         instance_dir,
@@ -489,7 +532,7 @@ fn build_manifest_arrays(
     let datapacks =
         inventory_directory(instance_dir, "datapacks", "datapack", source_label, loader)?;
     let worlds = inventory_directory(instance_dir, "saves", "world", source_label, loader)?;
-    Ok((mods, resourcepacks, shaders, datapacks, worlds))
+    Ok(((mods, resourcepacks, shaders, datapacks, worlds), notes))
 }
 
 /// Scan one content subdirectory and build `InstalledMod` entries.
@@ -528,24 +571,24 @@ fn inventory_directory(
 
         let fname = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
+        // Iris settings sidecars (`<pack>.zip.txt`) sit beside shader zips and
+        // are not shaders, so they are neither listed nor counted.
+        if content_type == "shader"
+            && ft.is_file()
+            && !crate::launcher_import::is_shader_pack_entry(&fname, false)
+        {
+            continue;
+        }
         let sha = match hash_content_entry(&path) {
             Ok(value) => value,
             Err(_) => continue,
         };
 
-        // Track disabled .jar.disabled files as disabled mods.
-        let (filename, enabled) = if ft.is_file() {
-            if let Some(stripped) = fname.strip_suffix(".disabled") {
-                if stripped.ends_with(".jar") {
-                    (stripped.to_string(), false)
-                } else {
-                    (fname.clone(), true)
-                }
-            } else {
-                (fname.clone(), true)
-            }
-        } else {
-            (fname.clone(), true)
+        // A disabled file is recorded under its logical name, switched off, for
+        // every content type (`x.jar.disabled` and `pack.zip.disabled` alike).
+        let (filename, enabled) = match crate::import::split_disabled_suffix(&fname) {
+            Some(logical) if ft.is_file() => (logical.to_string(), false),
+            _ => (fname.clone(), true),
         };
 
         // Only attempt JAR metadata for .jar files.
@@ -609,6 +652,7 @@ fn inventory_directory(
     }
 
     items.sort_by(|a, b| a.filename.cmp(&b.filename));
+    crate::import::refuse_duplicate_names(&items, subdir)?;
     Ok(items)
 }
 
@@ -963,6 +1007,7 @@ impl LauncherImportService {
             prism: launcher_import::discover_prism_launcher(custom),
             curseforge: launcher_import::discover_curseforge_launcher(custom),
             modrinth: launcher_import::discover_modrinth_launcher(custom),
+            instances_root: self.ctx.paths.instances_root().display().to_string(),
         }
     }
 
@@ -1282,6 +1327,19 @@ impl LauncherImportService {
 
         let mut outcomes: Vec<PerItemOutcome> = Vec::new();
 
+        // One byte bar covers the whole run: only the items this run will copy
+        // count, so skipped items do not hold the bar back.
+        let runnable: Vec<&PerItemPlan> = plan
+            .items
+            .iter()
+            .filter(|item| {
+                item.blockers.is_empty() && !matches!(item.action, ItemAction::Unchanged)
+            })
+            .collect();
+        let batch_bytes_total: u64 = runnable.iter().map(|item| item.total_bytes).sum();
+        let mut batch_bytes_done: u64 = 0;
+        let mut runnable_index: usize = 0;
+
         for (index, item) in plan.items.iter().enumerate() {
             if cancellation.is_cancelled() {
                 outcomes.extend(
@@ -1307,18 +1365,30 @@ impl LauncherImportService {
                 continue;
             }
 
+            runnable_index += 1;
+            let batch = BatchProgress {
+                index: runnable_index,
+                count: runnable.len(),
+                bytes_before: batch_bytes_done,
+                bytes_total: batch_bytes_total,
+            };
             self.ctx.progress_sink.report(
                 ProgressEvent::new(
                     operation_id.clone(),
                     ProgressPhase::Staging,
-                    format!("Importing {}", item.destination_name),
+                    format!(
+                        "Importing {} ({} of {})",
+                        item.destination_name, batch.index, batch.count
+                    ),
                 )
-                .with_progress(index as f64 / plan.items.len().max(1) as f64)
-                .with_sub_label(item.destination_name.clone()),
+                .with_progress(batch.fraction())
+                .with_sub_label(item.destination_name.clone())
+                .with_bytes(batch.bytes_before, batch.bytes_total.max(1)),
             );
             let result = self
-                .execute_item(item, &policy, &cancellation, &operation_id)
+                .execute_item(item, &policy, &cancellation, &operation_id, batch)
                 .await;
+            batch_bytes_done = batch_bytes_done.saturating_add(item.total_bytes);
 
             match result {
                 Ok(outcome) => outcomes.push(outcome),
@@ -1328,7 +1398,7 @@ impl LauncherImportService {
                     });
                 }
                 Err(e) => outcomes.push(PerItemOutcome::Failed {
-                    error: e.to_string(),
+                    error: import_failure_message(&item.destination_name, &e),
                     warnings: item.warnings.clone(),
                 }),
             }
@@ -1353,6 +1423,7 @@ impl LauncherImportService {
         policy: &NetworkPolicy,
         cancellation: &CancellationToken,
         operation_id: &crate::event_sink::OperationId,
+        batch: BatchProgress,
     ) -> LauncherResult<PerItemOutcome> {
         check_cancelled(cancellation)?;
         let source_path = PathBuf::from(&item.source_path);
@@ -1502,14 +1573,21 @@ impl LauncherImportService {
                 || copied_bytes >= item.total_bytes
             {
                 last_reported = copied_bytes;
+                // Bytes are reported for the whole run, so the bar moves across
+                // instances instead of restarting at each one.
+                let run_bytes = batch.bytes_before.saturating_add(copied_bytes);
                 self.ctx.progress_sink.report(
                     ProgressEvent::new(
                         operation_id.clone(),
                         ProgressPhase::Staging,
-                        format!("Copying {}", item.destination_name),
+                        format!(
+                            "Copying {} ({} of {})",
+                            item.destination_name, batch.index, batch.count
+                        ),
                     )
+                    .with_progress((run_bytes as f64 / batch.bytes_total.max(1) as f64).min(1.0))
                     .with_sub_label(item.destination_name.clone())
-                    .with_bytes(copied_bytes, item.total_bytes.max(1)),
+                    .with_bytes(run_bytes, batch.bytes_total.max(1)),
                 );
             }
         };
@@ -1555,8 +1633,17 @@ impl LauncherImportService {
             .as_ref()
             .map(|tuple| tuple.loader.as_str())
             .unwrap_or("vanilla");
-        let (mods, resourcepacks, shaders, datapacks, worlds) =
+        let ((mut mods, resourcepacks, shaders, datapacks, worlds), copy_notes) =
             build_manifest_arrays(&staging, source_label, manifest_loader)?;
+        // Copied jars carry no download source. Where the user allows Modrinth,
+        // ask it (one batched hash lookup) so a pack made from this setup can
+        // be installed elsewhere. This never fails the import.
+        if crate::modrinth::ModrinthService::new(self.ctx.clone())
+            .check_enabled()
+            .is_ok()
+        {
+            crate::source_identify::identify_mods_on_modrinth(&staging, &mut mods).await;
+        }
 
         let (loader_name, loader_version, mc_version) = item
             .loader_tuple
@@ -1632,7 +1719,7 @@ impl LauncherImportService {
             shaders,
             datapacks,
             worlds,
-            user_preferences: serde_json::json!({}),
+            user_preferences: copied_memory_preferences(item, source_label),
         };
 
         let manifest_json =
@@ -1683,11 +1770,9 @@ impl LauncherImportService {
             )
             .with_sub_label(item.destination_name.clone()),
         );
-        let mut health_warnings: Vec<String> = Vec::new();
+        let mut health_warnings: Vec<String> = copy_notes;
         if health_report.score == HealthScore::Red {
-            for b in &health_report.blockers {
-                health_warnings.push(format!("Health blocker: {}", b.message));
-            }
+            push_blocker_lines(&mut health_warnings, &health_report.blockers);
         }
 
         // ── Handle new vs update ─────────────────────────────────────────
@@ -1870,12 +1955,7 @@ impl LauncherImportService {
                 let final_health =
                     health::health(&final_dir, &manifest, Some(&self.ctx.paths.registry_db()));
                 if final_health.score == HealthScore::Red {
-                    let details: Vec<String> = final_health
-                        .blockers
-                        .iter()
-                        .map(|b| b.message.clone())
-                        .collect();
-                    health_warnings.extend(details);
+                    push_blocker_lines(&mut health_warnings, &final_health.blockers);
                 }
 
                 Ok(PerItemOutcome::Imported {
@@ -2166,12 +2246,7 @@ impl LauncherImportService {
                 let final_health =
                     health::health(&final_dir, &manifest, Some(&self.ctx.paths.registry_db()));
                 if final_health.score == HealthScore::Red {
-                    let details: Vec<String> = final_health
-                        .blockers
-                        .iter()
-                        .map(|b| b.message.clone())
-                        .collect();
-                    health_warnings.extend(details);
+                    push_blocker_lines(&mut health_warnings, &final_health.blockers);
                 }
 
                 Ok(PerItemOutcome::Updated {
@@ -2181,6 +2256,42 @@ impl LauncherImportService {
             }
             ItemAction::Unchanged => unreachable!("unchanged imports are skipped before execution"),
         }
+    }
+}
+
+/// Record that an imported instance's memory was copied from its source launcher.
+///
+/// The editor shows this as "Copied from <launcher>" so the number is not
+/// presented as a choice made in Agora. Empty when no memory was copied.
+fn copied_memory_preferences(item: &PerItemPlan, source_label: &str) -> serde_json::Value {
+    match item.sanitized_settings.memory_mb {
+        Some(memory_mb) if item.preserve_settings => serde_json::json!({
+            "memory_copied": { "launcher": source_label, "mb": memory_mb }
+        }),
+        _ => serde_json::json!({}),
+    }
+}
+
+/// Where one instance sits in the import run, for progress events.
+#[derive(Debug, Clone, Copy)]
+struct BatchProgress {
+    /// 1-based position among the instances this run will copy.
+    index: usize,
+    /// How many instances this run will copy.
+    count: usize,
+    /// Bytes of earlier instances in this run that are already handled.
+    bytes_before: u64,
+    /// Bytes this whole run will copy.
+    bytes_total: u64,
+}
+
+impl BatchProgress {
+    /// Fraction of the run's bytes handled before this instance starts (0.0 to 1.0).
+    fn fraction(&self) -> f64 {
+        if self.bytes_total == 0 {
+            return (self.index.saturating_sub(1)) as f64 / self.count.max(1) as f64;
+        }
+        self.bytes_before as f64 / self.bytes_total as f64
     }
 }
 
@@ -2403,8 +2514,43 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Add one "Needs fixing" line per distinct blocker message. The pre-install
+/// and post-install scans report the same problems, and a result list that
+/// shows each twice reads as twice as many problems.
+fn push_blocker_lines(lines: &mut Vec<String>, blockers: &[health::Blocker]) {
+    for blocker in blockers {
+        let line = format!("Needs fixing: {}", blocker.message);
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blocker_lines_are_deduplicated_across_scans() {
+        let blocker = |msg: &str| health::Blocker {
+            kind: health::BlockerKind::MissingRequiredDependency,
+            mod_id: None,
+            filename: None,
+            message: msg.into(),
+            suggested_action: None,
+            loader_compatibility: None,
+            missing_file: None,
+        };
+        let mut lines = Vec::new();
+        push_blocker_lines(
+            &mut lines,
+            &[
+                blocker("A needs B, which isn't installed."),
+                blocker("C needs D, which isn't installed."),
+            ],
+        );
+        push_blocker_lines(&mut lines, &[blocker("A needs B, which isn't installed.")]);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+    }
+
     use super::*;
     use crate::ctx::CoreContext;
     use crate::launcher_import::{ContentInventory, LaunchStrategy};
@@ -2551,6 +2697,10 @@ mod tests {
                 has_shaderpacks: false,
                 has_datapacks: false,
                 has_saves: false,
+                mod_count: None,
+                resourcepack_count: None,
+                shaderpack_count: None,
+                world_count: None,
             },
             loader_tuple: None,
             last_played: None,
@@ -3114,6 +3264,181 @@ name=Dup Instance
         assert!(import.is_some());
     }
 
+    /// One runnable plan item whose payload is `src_root`, with exact byte totals.
+    fn runnable_plan_item(
+        src_root: &Path,
+        destination_id: &str,
+        total_bytes: u64,
+        preserve_settings: bool,
+        memory_mb: Option<i64>,
+    ) -> PerItemPlan {
+        PerItemPlan {
+            fingerprint: plan_fingerprint(
+                destination_id,
+                LauncherKind::Prism,
+                destination_id,
+                &ItemAction::New,
+                preserve_settings,
+            ),
+            destination_id: destination_id.to_string(),
+            destination_name: format!("Name {destination_id}"),
+            action: ItemAction::New,
+            source_key: destination_id.to_string(),
+            launcher_kind: LauncherKind::Prism,
+            installation_key: "prism:test".to_string(),
+            source_path: src_root.to_string_lossy().to_string(),
+            loader_tuple: Some(LoaderTuple {
+                loader: "vanilla".to_string(),
+                loader_version: String::new(),
+                minecraft_version: "1.20.1".to_string(),
+            }),
+            total_bytes,
+            total_files: 1,
+            preserve_settings,
+            sanitized_settings: LaunchSettingsPreview {
+                memory_mb,
+                java_path: None,
+                jvm_args: Vec::new(),
+            },
+            existing_import: None,
+            blockers: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn plan_of(items: Vec<PerItemPlan>) -> LauncherImportPlan {
+        let fingerprints: Vec<String> = items.iter().map(|i| i.fingerprint.clone()).collect();
+        LauncherImportPlan {
+            batch_fingerprint: batch_fingerprint(&fingerprints),
+            peak_bytes: items.iter().map(|i| i.total_bytes).sum(),
+            total_files: items.iter().map(|i| i.total_files).sum(),
+            items,
+            batch_blockers: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_reports_byte_progress_across_the_whole_run() {
+        let sink = std::sync::Arc::new(crate::event_sink::CollectingProgressSink::new());
+        let ctx = test_ctx().with_progress_sink(sink.clone());
+        let svc = LauncherImportService::new(ctx);
+
+        let first = test_tmp("progress-first");
+        let second = test_tmp("progress-second");
+        for root in [&first, &second] {
+            std::fs::create_dir_all(root.join("mods")).unwrap();
+            std::fs::write(root.join("mods").join("a.jar"), b"0123456789").unwrap();
+        }
+        let plan = plan_of(vec![
+            runnable_plan_item(&first, "progress-one", 10, false, None),
+            runnable_plan_item(&second, "progress-two", 10, false, None),
+        ]);
+
+        let result = svc.execute(plan).await.unwrap();
+        assert_eq!(result.outcomes.len(), 2);
+
+        let events = sink.events();
+        let find = |message: &str| {
+            events
+                .iter()
+                .find(|e| e.message == message)
+                .unwrap_or_else(|| panic!("no event {message:?} in {events:?}"))
+        };
+        // The second instance's bar starts where the first one ended.
+        let start_two = find("Importing Name progress-two (2 of 2)");
+        assert_eq!(start_two.bytes_downloaded, Some(10));
+        assert_eq!(start_two.bytes_total, Some(20));
+        let copy_two = find("Copying Name progress-two (2 of 2)");
+        assert_eq!(copy_two.bytes_downloaded, Some(20));
+        assert_eq!(copy_two.bytes_total, Some(20));
+        assert_eq!(copy_two.progress, Some(1.0));
+        let copy_one = find("Copying Name progress-one (1 of 2)");
+        assert_eq!(copy_one.bytes_downloaded, Some(10));
+    }
+
+    #[tokio::test]
+    async fn test_execute_records_copied_memory_in_manifest() {
+        let ctx = test_ctx();
+        let svc = LauncherImportService::new(ctx.clone());
+        let src_root = test_tmp("memory-copy-src");
+        std::fs::create_dir_all(src_root.join("mods")).unwrap();
+        std::fs::write(src_root.join("mods").join("a.jar"), b"0123456789").unwrap();
+
+        let item = runnable_plan_item(&src_root, "memory-copied", 10, true, Some(12064));
+        let result = svc.execute(plan_of(vec![item])).await.unwrap();
+        assert!(matches!(
+            result.outcomes[0],
+            PerItemOutcome::Imported { .. }
+        ));
+
+        let instance_dir = ctx.paths.instances_root().join("memory-copied");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest["user_preferences"]["memory_copied"]["mb"],
+            serde_json::json!(12064)
+        );
+        assert_eq!(
+            manifest["user_preferences"]["memory_copied"]["launcher"],
+            serde_json::json!("prism")
+        );
+
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        let row = crate::db::get_instance(&conn, "memory-copied")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.jvm_memory_mb, 12064);
+        assert_eq!(row.jvm_memory_mode, "manual");
+    }
+
+    #[tokio::test]
+    async fn test_execute_without_copied_memory_records_no_memory_source() {
+        let ctx = test_ctx();
+        let svc = LauncherImportService::new(ctx.clone());
+        let src_root = test_tmp("memory-none-src");
+        std::fs::create_dir_all(src_root.join("mods")).unwrap();
+        std::fs::write(src_root.join("mods").join("a.jar"), b"0123456789").unwrap();
+
+        // Settings not preserved, and a preserved item with no memory, both copy nothing.
+        let dropped = runnable_plan_item(&src_root, "memory-dropped", 10, false, Some(12064));
+        let absent = runnable_plan_item(&src_root, "memory-absent", 10, true, None);
+        svc.execute(plan_of(vec![dropped, absent])).await.unwrap();
+
+        for id in ["memory-dropped", "memory-absent"] {
+            let manifest: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(
+                    ctx.paths
+                        .instances_root()
+                        .join(id)
+                        .join("instance_manifest.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest["user_preferences"], serde_json::json!({}), "{id}");
+        }
+    }
+
+    #[test]
+    fn test_batch_progress_fraction_is_safe_for_empty_runs() {
+        let empty = BatchProgress {
+            index: 1,
+            count: 0,
+            bytes_before: 0,
+            bytes_total: 0,
+        };
+        assert_eq!(empty.fraction(), 0.0);
+        let halfway = BatchProgress {
+            index: 2,
+            count: 2,
+            bytes_before: 50,
+            bytes_total: 100,
+        };
+        assert_eq!(halfway.fraction(), 0.5);
+    }
+
     #[tokio::test]
     async fn test_execute_update_unchanged() {
         let ctx = test_ctx();
@@ -3359,6 +3684,73 @@ name=Dup Instance
         assert_eq!(items[0].filename, "mymod.jar");
     }
 
+    /// A disabled resource pack or shader is recorded the way a disabled mod is:
+    /// its logical name, switched off. Before, only `.jar` files got this.
+    #[test]
+    fn test_inventory_directory_disabled_pack_of_any_kind() {
+        let dir = test_tmp("inv-disabled-pack");
+        std::fs::create_dir_all(dir.join("resourcepacks")).unwrap();
+        std::fs::write(
+            dir.join("resourcepacks").join("Faithful.zip.disabled"),
+            b"pack",
+        )
+        .unwrap();
+        std::fs::write(dir.join("resourcepacks").join("On.zip"), b"pack").unwrap();
+
+        let items =
+            inventory_directory(&dir, "resourcepacks", "resourcepack", "prism", "fabric").unwrap();
+        let state: Vec<(&str, bool)> = items
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(state, vec![("Faithful.zip", false), ("On.zip", true)]);
+    }
+
+    /// `x.jar` and `x.jar.disabled` in one folder would be one mod twice, so
+    /// the launcher import refuses instead of recording both.
+    #[test]
+    fn test_inventory_directory_refuses_a_jar_and_its_disabled_copy() {
+        let dir = test_tmp("inv-dup");
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::write(dir.join("mods").join("x.jar"), b"on").unwrap();
+        std::fs::write(dir.join("mods").join("x.jar.disabled"), b"off").unwrap();
+
+        let err = inventory_directory(&dir, "mods", "mod", "prism", "fabric").unwrap_err();
+        assert_eq!(err.code(), "ERR_IMPORT_DUPLICATE");
+    }
+
+    /// A launcher folder with `x.jar` and `x.jar.disabled` is common. The import
+    /// keeps the enabled jar, drops the disabled copy from its staging copy and
+    /// says so; a disabled file with no enabled twin is kept as the mod.
+    #[test]
+    fn test_drop_superseded_keeps_the_enabled_jar_and_notes_the_copy() {
+        let dir = test_tmp("drop-superseded");
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::create_dir_all(dir.join("resourcepacks")).unwrap();
+        std::fs::write(dir.join("mods").join("x.jar"), b"on").unwrap();
+        std::fs::write(dir.join("mods").join("x.jar.disabled"), b"old").unwrap();
+        std::fs::write(dir.join("mods").join("y.jar.disabled"), b"off").unwrap();
+        std::fs::write(dir.join("resourcepacks").join("pack.zip"), b"p").unwrap();
+        std::fs::write(dir.join("resourcepacks").join("pack.zip.disabled"), b"q").unwrap();
+
+        let notes = drop_superseded_disabled_copies(&dir).unwrap();
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[0].starts_with("mods/x.jar.disabled was left out"),
+            "{notes:?}"
+        );
+        assert!(!dir.join("mods").join("x.jar.disabled").exists());
+        assert!(!dir.join("resourcepacks").join("pack.zip.disabled").exists());
+        assert!(dir.join("mods").join("y.jar.disabled").exists());
+
+        let items = inventory_directory(&dir, "mods", "mod", "prism", "fabric").unwrap();
+        let state: Vec<(&str, bool)> = items
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(state, vec![("x.jar", true), ("y.jar", false)]);
+    }
+
     #[test]
     fn test_inventory_directory_regular() {
         let dir = test_tmp("inv-regular");
@@ -3370,6 +3762,32 @@ name=Dup Instance
         assert_eq!(items.len(), 2);
         assert!(items.iter().all(|m| m.enabled));
         assert!(items.iter().all(|m| m.source == "imported_prism"));
+    }
+
+    #[test]
+    fn test_inventory_directory_skips_iris_settings_sidecar() {
+        let dir = test_tmp("inv-shader-sidecar");
+        std::fs::create_dir_all(dir.join("shaderpacks").join("Folder Shaders")).unwrap();
+        std::fs::write(
+            dir.join("shaderpacks")
+                .join("ComplementaryUnbound_r5.6.1.zip"),
+            b"zip",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("shaderpacks")
+                .join("ComplementaryUnbound_r5.6.1.zip.txt"),
+            b"iris settings",
+        )
+        .unwrap();
+
+        let items = inventory_directory(&dir, "shaderpacks", "shader", "prism", "fabric").unwrap();
+        let mut names: Vec<&str> = items.iter().map(|m| m.filename.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["ComplementaryUnbound_r5.6.1.zip", "Folder Shaders"]
+        );
     }
 
     #[test]
@@ -3390,6 +3808,7 @@ name=Dup Instance
             prism: LauncherDiscovery::empty(),
             curseforge: LauncherDiscovery::empty(),
             modrinth: LauncherDiscovery::empty(),
+            instances_root: String::new(),
         };
         assert!(empty.ready_candidates().is_empty());
         assert!(empty.all_candidates().is_empty());
@@ -3506,5 +3925,66 @@ name=Dup Instance
 
         copy_dir_recursive(&src, &dst).unwrap();
         assert!(dst.join("real.txt").exists());
+    }
+}
+
+/// What the user reads when one instance in a batch import fails.
+///
+/// A network failure says what could not be reached and that nothing was
+/// changed, so the user knows the import can simply be run again. The rollback
+/// in `execute_item` makes "nothing was changed" true on both the new and the
+/// update path.
+fn import_failure_message(name: &str, error: &LauncherError) -> String {
+    match error {
+        LauncherError::NetworkOffline => format!(
+            "{} Nothing was changed for this instance; retry the import once you're online.",
+            error.clone().while_attempting(format!("import \"{name}\""))
+        ),
+        LauncherError::NetworkUnavailable { .. } => format!(
+            "{error} Nothing was changed for this instance; retry the import once you're online."
+        ),
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod import_failure_message_tests {
+    use super::import_failure_message;
+    use crate::error::LauncherError;
+
+    #[test]
+    fn offline_failure_names_the_instance_and_says_nothing_changed() {
+        let text = import_failure_message("spiff", &LauncherError::NetworkOffline);
+        assert!(
+            text.starts_with("Couldn't import \"spiff\": no internet connection."),
+            "{text}"
+        );
+        assert!(text.contains("Nothing was changed"), "{text}");
+        assert!(text.contains("retry"), "{text}");
+        assert!(!text.contains("cached"), "{text}");
+    }
+
+    #[test]
+    fn a_specific_network_failure_keeps_its_own_wording() {
+        let err = LauncherError::NetworkUnavailable {
+            action: "download Fabric 0.20.1".into(),
+        };
+        let text = import_failure_message("spiff", &err);
+        assert!(
+            text.starts_with("Couldn't download Fabric 0.20.1: no internet connection."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn other_errors_are_reported_as_they_were() {
+        let text = import_failure_message("spiff", &LauncherError::HashMismatch);
+        assert_eq!(text, LauncherError::HashMismatch.to_string());
+    }
+
+    #[test]
+    fn an_empty_name_still_produces_a_readable_sentence() {
+        let text = import_failure_message("", &LauncherError::NetworkOffline);
+        assert!(text.contains("no internet connection"), "{text}");
     }
 }

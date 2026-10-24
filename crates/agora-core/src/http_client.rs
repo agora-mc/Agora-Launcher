@@ -679,6 +679,17 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
     }
 }
 
+/// A request that could not be sent never got an answer from its server: DNS,
+/// the route, a proxy, or the TLS handshake failed. That is reported as
+/// `NetworkOffline` (not a URL-bearing `ERR_NETWORK`), so every caller shows
+/// the same honest "no internet connection" story, and the failure is recorded
+/// for the Privacy status. Callers that have context attach it with
+/// [`LauncherError::while_attempting`].
+pub(crate) fn transport_failure() -> LauncherError {
+    crate::connectivity::record_unreachable();
+    LauncherError::NetworkOffline
+}
+
 // ---------------------------------------------------------------------------
 // Checked request helpers (with per-hop redirect re-validation)
 // ---------------------------------------------------------------------------
@@ -721,18 +732,12 @@ pub async fn checked_request_with_policy(
     let mut current_url = url.to_string();
 
     loop {
-        let response =
-            client
-                .get(&current_url)
-                .send()
-                .await
-                .map_err(|e| LauncherError::Generic {
-                    code: "ERR_NETWORK".into(),
-                    message: format!(
-                        "HTTP GET failed for {}: {e}",
-                        network::sanitized_url_for_log(&current_url)
-                    ),
-                })?;
+        let response = client
+            .get(&current_url)
+            .send()
+            .await
+            .map_err(|_| transport_failure())?;
+        crate::connectivity::record_reachable();
 
         // Check if the response is a redirect.
         let status = response.status();
@@ -819,13 +824,8 @@ pub async fn checked_send(
             request = request.body(body);
         }
 
-        let response = request.send().await.map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!(
-                "HTTP request failed for {}: {e}",
-                network::sanitized_url_for_log(&current_url)
-            ),
-        })?;
+        let response = request.send().await.map_err(|_| transport_failure())?;
+        crate::connectivity::record_reachable();
         if !response.status().is_redirection() {
             return Ok(response);
         }
@@ -1031,10 +1031,7 @@ where
     let content_length = response.content_length();
     on_progress(0, content_length);
     loop {
-        let chunk = response.chunk().await.map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!("Failed to read response chunk: {e}"),
-        })?;
+        let chunk = response.chunk().await.map_err(|_| transport_failure())?;
         let Some(chunk) = chunk else { break };
         total = total.saturating_add(chunk.len());
         if total > max {
@@ -1067,10 +1064,7 @@ pub async fn checked_response_bytes(
     let mut data = Vec::new();
     let mut total = 0usize;
     loop {
-        let chunk = response.chunk().await.map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!("Failed to read response chunk: {e}"),
-        })?;
+        let chunk = response.chunk().await.map_err(|_| transport_failure())?;
         let Some(chunk) = chunk else { break };
         total = total.saturating_add(chunk.len());
         if total > max {
@@ -1124,13 +1118,8 @@ pub async fn checked_request_with_headers(
             }
         }
 
-        let response = req.send().await.map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!(
-                "HTTP GET failed for {}: {e}",
-                network::sanitized_url_for_log(&current_url)
-            ),
-        })?;
+        let response = req.send().await.map_err(|_| transport_failure())?;
+        crate::connectivity::record_reachable();
 
         if response.status().is_redirection() {
             if remaining_redirects == 0 {
@@ -1220,13 +1209,8 @@ pub fn blocking_checked_request_with_policy(
         let response = client
             .get(&current_url)
             .send()
-            .map_err(|e| LauncherError::Generic {
-                code: "ERR_NETWORK".into(),
-                message: format!(
-                    "HTTP GET failed for {}: {e}",
-                    network::sanitized_url_for_log(url)
-                ),
-            })?;
+            .map_err(|_| transport_failure())?;
+        crate::connectivity::record_reachable();
 
         if response.status().is_redirection() {
             if remaining_redirects == 0 {
@@ -1305,10 +1289,7 @@ pub fn blocking_checked_get_bytes_with_policy(
     let mut bytes = Vec::new();
     limited
         .read_to_end(&mut bytes)
-        .map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!("Failed to read response body: {e}"),
-        })?;
+        .map_err(|_| transport_failure())?;
     if bytes.len() as u64 > max {
         return Err(LauncherError::Generic {
             code: "ERR_RESPONSE_TOO_LARGE".into(),
@@ -1953,5 +1934,48 @@ mod tests {
         assert!(!category_allowlist(ClientCategory::Loader).is_empty());
         assert!(!category_allowlist(ClientCategory::MojangContent).is_empty());
         assert!(!category_allowlist(ClientCategory::Registry).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod transport_failure_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A loopback port with nothing listening on it: connecting is refused at once.
+    fn closed_local_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    #[tokio::test]
+    async fn request_through_a_dead_proxy_reports_no_internet_not_a_url_error() {
+        // Policy is the subject under test here, so the process gate is the
+        // permissive test gate, as in `Ctx::for_testing`.
+        crate::network_gate::install(Arc::new(crate::network_gate::AllowAll));
+        let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{}", closed_local_port()))
+            .expect("proxy url");
+        let client = reqwest::Client::builder()
+            .proxy(proxy)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client");
+        let clients = HttpClients::for_testing(client);
+
+        let err = checked_request(
+            &clients,
+            ClientCategory::GitHub,
+            "https://api.github.com/repos/agora-mc/Agora-Launcher/releases/latest",
+        )
+        .await
+        .expect_err("a dead proxy must fail the request");
+
+        assert!(matches!(err, LauncherError::NetworkOffline), "{err:?}");
+        assert_eq!(err.code(), "ERR_NETWORK_OFFLINE");
+        assert!(!err.to_string().contains("cached"), "{err}");
+        assert_eq!(
+            crate::connectivity::snapshot().state,
+            crate::connectivity::ConnectivityState::Unreachable
+        );
     }
 }

@@ -200,31 +200,7 @@ pub async fn install_mod_version(
     } else {
         &item.content_type
     };
-    // Which hash to expect depends on where this candidate actually came from,
-    // not on the item's preferred strategy: an item can resolve from a fallback
-    // source, and a Modrinth-served file must not be judged against a hash
-    // pinned for the GitHub release.
-    let candidate_strategy = candidate
-        .source_strategy
-        .as_deref()
-        .map(str::trim)
-        .filter(|strategy| !strategy.is_empty())
-        .unwrap_or(item.download_strategy.as_str());
-    let pinned = item.sha256.trim();
-    let exp_sha256 = match candidate_strategy {
-        // Hand-pinned: the registry hash is the whole integrity story.
-        "direct_hash" | "technic_pack" => Some(pinned).filter(|hash| !hash.is_empty()),
-        // GitHub publishes a per-asset digest on newer releases and nothing on
-        // older ones. The registry's pinned hash describes one historical file,
-        // so it must not stand in for a version it never described.
-        "github_release" => candidate.sha256.as_deref(),
-        // Otherwise prefer the hash the selected version published, falling
-        // back to the pinned one only when the source published none.
-        _ => candidate
-            .sha256
-            .as_deref()
-            .or(Some(pinned).filter(|hash| !hash.is_empty())),
-    };
+    let exp_sha256 = agora_core::agora_pack_import::expected_sha256_for_candidate(&item, candidate);
     let svc = agora_core::install_service::InstallService::new(ctx);
     svc.install_artifact(
         instance_id,
@@ -236,7 +212,7 @@ pub async fn install_mod_version(
         "registry",
         Some(&candidate.version),
         candidate.sha1.as_deref(),
-        exp_sha256,
+        exp_sha256.as_deref(),
     )
     .await
 }
@@ -305,12 +281,15 @@ pub async fn add_manual_mod(
     })?
 }
 
-/// Export pack via core ExportService.
-pub async fn export_instance_pack(
+/// The manifest an export is built from, plus its instance folder.
+///
+/// Carries the name the user sees (older renames only reached the database),
+/// and, where the user allows Modrinth, a download source for mods that were
+/// copied in from another launcher without one (one batched hash lookup).
+async fn manifest_for_export(
     app: &tauri::AppHandle,
     instance_id: &str,
-    format: &str,
-) -> LauncherResult<String> {
+) -> LauncherResult<(InstanceManifest, std::path::PathBuf)> {
     let ctx = crate::core_context(app)?;
     let manifest_path = paths::instance_manifest_path(app, instance_id)
         .map_err(|_| LauncherError::InstanceCreateFailed)?;
@@ -320,27 +299,107 @@ pub async fn export_instance_pack(
             message: "Instance manifest not found.".into(),
         });
     }
-    let manifest: InstanceManifest = {
+    let mut manifest: InstanceManifest = {
         let text = std::fs::read_to_string(&manifest_path)
             .map_err(|_| LauncherError::InstanceCreateFailed)?;
         serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?
     };
+    // Instances renamed before the manifest followed renames still carry the
+    // old name there; the exported pack must carry the one the user sees.
+    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+        if let Ok(Some(row)) = agora_core::db::get_instance(&conn, instance_id) {
+            manifest.name = row.name;
+        }
+    }
     let instance_dir = ctx.paths.instance_dir(instance_id)?;
-    let exports_dir = ctx.paths.root().join("exports");
-    agora_core::export_service::export_instance_pack(&instance_dir, &manifest, &exports_dir, format)
-        .await
+    if agora_core::modrinth::ModrinthService::new(ctx)
+        .check_enabled()
+        .is_ok()
+    {
+        agora_core::source_identify::identify_mods_on_modrinth(&instance_dir, &mut manifest.mods)
+            .await;
+    }
+    Ok((manifest, instance_dir))
+}
+
+/// Names of the mods an export in `format` would leave a friend unable to
+/// install: the Agora pack only lists mods, so a mod with no catalog or
+/// Modrinth id has nowhere to come from. A `.mrpack` bundles those files.
+pub async fn export_sourceless_mods(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    format: &str,
+) -> LauncherResult<Vec<String>> {
+    if format != "json" {
+        return Ok(Vec::new());
+    }
+    let (manifest, _) = manifest_for_export(app, instance_id).await?;
+    Ok(agora_core::source_identify::sourceless_mod_names(&manifest))
+}
+
+/// Export pack via core ExportService, to the file the user chose in the save dialog.
+pub async fn export_instance_pack(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    format: &str,
+    out_path: &Path,
+) -> LauncherResult<String> {
+    let (manifest, instance_dir) = manifest_for_export(app, instance_id).await?;
+    // Resource and shader packs Modrinth hosts are linked rather than bundled,
+    // when the user allows Modrinth lookups; otherwise they are bundled.
+    let hosted = if format == "mrpack" && modrinth_lookups_allowed(app) {
+        agora_core::source_identify::find_hosted_pack_content(&instance_dir).await
+    } else {
+        Default::default()
+    };
+    agora_core::export_service::export_instance_pack_with_hosted(
+        &instance_dir,
+        &manifest,
+        out_path,
+        format,
+        &hosted,
+    )
+    .await
+}
+
+/// Whether Modrinth may be asked about this user's files (the same switch
+/// that lets an export look up sources for mods).
+fn modrinth_lookups_allowed(app: &tauri::AppHandle) -> bool {
+    crate::core_context(app)
+        .map(|ctx| {
+            agora_core::modrinth::ModrinthService::new(ctx)
+                .check_enabled()
+                .is_ok()
+        })
+        .unwrap_or(false)
+}
+
+/// What an import produced: the new instance, and for an Agora pack the
+/// per-mod report (installed / failed / needs action) the UI must show.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PackImportOutcome {
+    pub instance_id: String,
+    pub report: Option<agora_core::agora_pack_import::PackImportReport>,
 }
 
 /// Import a pack file.  .mrpack → core ImportService.  .agora-pack.json → local orchestrator.
+/// `reviewed_sha256` is the fingerprint the review step recorded for an Agora
+/// pack; the import refuses a file whose bytes no longer match it.
 pub async fn import_instance_pack(
     app: &tauri::AppHandle,
     source_path: &str,
-) -> LauncherResult<String> {
+    reviewed_sha256: Option<&str>,
+    name: Option<&str>,
+    skip_unfetchable: bool,
+) -> LauncherResult<PackImportOutcome> {
     let lower = source_path.to_ascii_lowercase();
     if lower.ends_with(".mrpack") {
-        import_mrpack(app, source_path).await
+        Ok(PackImportOutcome {
+            instance_id: import_mrpack(app, reviewed_sha256, name, skip_unfetchable).await?,
+            report: None,
+        })
     } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
-        import_agora_json(app, source_path).await
+        import_agora_json(app, source_path, reviewed_sha256, name).await
     } else {
         Err(LauncherError::Generic {
             code: "ERR_INVALID_FORMAT".into(),
@@ -349,71 +408,134 @@ pub async fn import_instance_pack(
     }
 }
 
-async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherResult<String> {
+/// Try pack entries again on an existing instance (after the user turned
+/// Modrinth on, or allowed it for this import). Entries already installed are
+/// not downloaded again.
+pub async fn retry_pack_import_entries(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    entries: Vec<agora_core::agora_pack_import::AgoraPackEntry>,
+    allow_modrinth_once: bool,
+) -> LauncherResult<agora_core::agora_pack_import::PackImportReport> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::import_service::ImportService::new(ctx);
+    agora_core::agora_pack_import::retry_agora_pack_entries(
+        &ctx,
+        instance_id,
+        entries,
+        allow_modrinth_once,
+    )
+    .await
+}
+
+/// What importing a pack file would do, for the review step: an
+/// `.agora-pack.json` or a `.mrpack`. Reads the file and this install's
+/// settings; writes nothing and contacts no source.
+pub fn plan_pack_import(
+    app: &tauri::AppHandle,
+    source_path: &str,
+) -> LauncherResult<agora_core::agora_pack_import::PackImportPlan> {
+    let lower = source_path.to_ascii_lowercase();
+    if lower.ends_with(".mrpack") {
+        let ctx = crate::core_context(app)?;
+        return agora_core::import_service::ImportService::new(ctx)
+            .plan_mrpack_import(Path::new(source_path));
+    }
+    if !lower.ends_with(".json") {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_FORMAT".into(),
+            message: "Only .agora-pack.json and .mrpack files have a review step.".into(),
+        });
+    }
+    let ctx = crate::core_context(app)?;
+    let bytes = read_agora_pack_bytes(source_path)?;
+    agora_core::agora_pack_import::plan_agora_pack_bytes(&ctx, &bytes)
+}
+
+/// The bytes of a `.agora-pack.json`, refusing one too large to read. A file
+/// whose size cannot be read is refused too, rather than read unchecked. The
+/// core re-checks the size of the bytes it is given.
+fn read_agora_pack_bytes(source_path: &str) -> LauncherResult<Vec<u8>> {
+    let unreadable = || LauncherError::Generic {
+        code: "ERR_PACK_READ".into(),
+        message: format!("Cannot read pack file: {source_path}"),
+    };
+    let too_big = std::fs::metadata(source_path)
+        .map_err(|_| unreadable())?
+        .len()
+        > agora_core::agora_pack_import::MAX_PACK_FILE_BYTES;
+    if too_big {
+        return Err(agora_core::agora_pack_import::pack_too_big_error());
+    }
+    std::fs::read(source_path).map_err(|_| unreadable())
+}
+
+/// Imports the staged copy the review made (not the original file, which may
+/// have changed since), then removes that copy.
+async fn import_mrpack(
+    app: &tauri::AppHandle,
+    reviewed_sha256: Option<&str>,
+    name: Option<&str>,
+    skip_unfetchable: bool,
+) -> LauncherResult<String> {
+    let ctx = crate::core_context(app)?;
+    let svc = agora_core::import_service::ImportService::new(ctx.clone());
+    let staged = svc.take_reviewed_copy(reviewed_sha256)?;
     let request = agora_core::import_service::ImportRequest {
-        source: agora_core::import_service::ImportSource::mrpack(
-            Path::new(source_path).to_path_buf(),
-        ),
+        source: agora_core::import_service::ImportSource::Mrpack {
+            path: staged,
+            origin_url: None,
+            skip_unfetchable,
+        },
         symlink_saves: false,
     };
-    let result = svc.run_import(request).await?;
-    Ok(result.instance_id)
+    let result = svc
+        .run_import_named(
+            request,
+            name.map(str::to_string),
+            ctx.progress_sink.clone(),
+            agora_core::event_sink::CancellationToken::new(),
+        )
+        .await;
+    if let Some(sha) = reviewed_sha256 {
+        svc.discard_reviewed_copy(sha);
+    }
+    Ok(result?.instance_id)
+}
+
+/// Drops the staged copy of a pack whose review was cancelled.
+pub fn discard_pack_review(app: &tauri::AppHandle, sha256: &str) -> LauncherResult<()> {
+    let ctx = crate::core_context(app)?;
+    agora_core::import_service::ImportService::new(ctx).discard_reviewed_copy(sha256);
+    Ok(())
 }
 
 /// Import an Agora plain-JSON pack (.agora-pack.json).
-async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> LauncherResult<String> {
+///
+/// Creates the instance, then hands the mods to core, which installs each
+/// entry's pinned file, checks it against the pack's hash, and reports every
+/// entry's outcome.
+async fn import_agora_json(
+    app: &tauri::AppHandle,
+    source_path: &str,
+    reviewed_sha256: Option<&str>,
+    name_override: Option<&str>,
+) -> LauncherResult<PackImportOutcome> {
     let ctx = crate::core_context(app)?;
-    let text = std::fs::read_to_string(source_path).map_err(|_| LauncherError::Generic {
-        code: "ERR_PACK_READ".into(),
-        message: format!("Cannot read pack file: {source_path}"),
-    })?;
-    let pack: serde_json::Value =
-        serde_json::from_str(&text).map_err(|_| LauncherError::Generic {
-            code: "ERR_PACK_PARSE".into(),
-            message: "Failed to parse agora-pack JSON.".into(),
-        })?;
-    let inst = pack.get("instance").ok_or_else(|| LauncherError::Generic {
-        code: "ERR_PACK_PARSE".into(),
-        message: "agora-pack missing 'instance' object.".into(),
-    })?;
-    let mc_version = inst
-        .get("minecraft_version")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| LauncherError::Generic {
-            code: "ERR_PACK_PARSE".into(),
-            message: "agora-pack missing minecraft_version.".into(),
-        })?;
-    let loader = inst
-        .get("loader")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| LauncherError::Generic {
-            code: "ERR_PACK_PARSE".into(),
-            message: "agora-pack missing loader.".into(),
-        })?;
-    let loader_version = inst
-        .get("loader_version")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| LauncherError::Generic {
-            code: "ERR_PACK_PARSE".into(),
-            message: "agora-pack missing loader_version.".into(),
-        })?;
-    let name = inst
-        .get("name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            inst.get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "imported-pack".to_string());
-    let instance_id = paths::sanitize_id(inst.get("id").and_then(|v| v.as_str()).unwrap_or(&name));
+    // One read: the bytes checked against the reviewed fingerprint are the
+    // bytes parsed and installed.
+    let bytes = read_agora_pack_bytes(source_path)?;
+    let pack = agora_core::agora_pack_import::parse_reviewed_agora_pack(&bytes, reviewed_sha256)?;
+    let inst = &pack.instance;
+    // The name the user chose in the review wins, and its folder follows it;
+    // without one the pack's own id and name are used, as before.
+    let chosen = name_override.map(str::trim).filter(|n| !n.is_empty());
+    let name = chosen
+        .map(str::to_string)
+        .unwrap_or_else(|| agora_core::agora_pack_import::pack_display_name(inst));
+    let instance_id = paths::sanitize_id(match chosen {
+        Some(chosen) => chosen,
+        None => inst.id.as_deref().unwrap_or(&name),
+    });
     let instance_id = if instance_id.is_empty() {
         "imported-pack".into()
     } else {
@@ -422,9 +544,9 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
     let req = instances::CreateInstanceRequest {
         name: name.clone(),
         instance_id: instance_id.clone(),
-        minecraft_version: mc_version.to_string(),
-        loader: loader.to_string(),
-        loader_version: loader_version.to_string(),
+        minecraft_version: inst.minecraft_version.clone(),
+        loader: inst.loader.clone(),
+        loader_version: inst.loader_version.clone(),
         jvm_memory_mb: Some(4096),
         jvm_memory_mode: Some("auto".into()),
         jvm_gc: None,
@@ -435,93 +557,36 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
         template_id: None,
     };
     instances::create_instance(app.clone(), req).await?;
-    if let Some(mods_arr) = pack.get("mods").and_then(|m| m.as_array()) {
-        for entry in mods_arr {
-            if let Some(rid) = entry
-                .get("registry_id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                let filename = entry.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-                let candidates = list_mod_versions(app, &instance_id, rid)
-                    .await
-                    .unwrap_or_default();
-                let candidate = candidates
-                    .iter()
-                    .find(|c| c.filename == filename)
-                    .or_else(|| {
-                        entry
-                            .get("version")
-                            .and_then(|v| v.as_str())
-                            .and_then(|v| candidates.iter().find(|c| c.version == v))
-                    });
-                if let Some(c) = candidate {
-                    let _ = install_mod_version(app, &instance_id, rid, c).await;
-                }
-            } else if let Some(mid) = entry
-                .get("modrinth_id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-            {
-                let candidates = crate::modrinth_raw::list_raw_modrinth_versions(
-                    &ctx.http_clients,
-                    app,
-                    Some(&instance_id),
-                    mid,
-                    Some("mod"),
-                )
-                .await
-                .unwrap_or_default();
-                let candidate = candidates
-                    .iter()
-                    .find(|c| c.primary)
-                    .or_else(|| candidates.first());
-                if let Some(c) = candidate {
-                    let _ =
-                        crate::modrinth_raw::install_raw_modrinth(app, &instance_id, mid, c, "mod")
-                            .await;
-                }
+    let mut report =
+        agora_core::agora_pack_import::install_agora_pack_mods(&ctx, &instance_id, &name, pack)
+            .await;
+    if agora_core::agora_pack_import::nothing_installed_for_lack_of_connection(&report) {
+        // Nothing usable was made, so do not leave an empty instance behind.
+        // It goes to the OS trash, and a later import starts clean.
+        match instances::delete_instance(app, &instance_id) {
+            Ok(()) => {
+                let subject = if report.total == 1 {
+                    "This mod needs".to_string()
+                } else {
+                    format!("These {} mods need", report.total)
+                };
+                return Err(LauncherError::Generic {
+                    code: "ERR_PACK_OFFLINE".into(),
+                    message: format!(
+                        "{subject} to be downloaded. Couldn't connect: no internet, or the \
+                         server can't be reached right now. Nothing was installed, and the new \
+                         instance was removed. Try again when you're online."
+                    ),
+                });
             }
+            Err(error) => report.warnings.push(format!(
+                "The mods could not be downloaded for lack of a connection, and the new \
+                 instance could not be removed ({error}). It was kept; try again when you're online."
+            )),
         }
     }
-    // Stamp PackOrigin for LocalFile pack and persist inventory.
-    // Honest identity is display name only; every id stays None so
-    // pack-update can distinguish "unknown" from "known".
-    let instance_dir = ctx.paths.instance_dir(&instance_id)?;
-    let pack_files =
-        agora_core::pack_inventory::collect_pack_inventory(&instance_dir).unwrap_or_default();
-    let pack_hash = if pack_files.is_empty() {
-        None
-    } else {
-        Some(agora_core::pack_inventory::pack_content_hash(&pack_files))
-    };
-    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
-        let _ = agora_core::db::replace_instance_pack_files(&conn, &instance_id, &pack_files);
-    }
-    let manifest_path = ctx.paths.instance_manifest(&instance_id)?;
-    if let Ok(mut manifest) = agora_core::helpers::read_manifest(&manifest_path) {
-        let pack_origin = agora_core::models::PackOrigin {
-            platform: agora_core::models::PackPlatform::LocalFile,
-            pack_name: name.clone(),
-            project_id: None,
-            version_id: None,
-            version_number: None,
-            origin_url: None,
-            pack_content_hash: pack_hash,
-            pack_minecraft_version: Some(mc_version.to_string()),
-            pack_loader: Some(loader.to_string()),
-            pack_loader_version: Some(loader_version.to_string()),
-            launcher_kind: None,
-            installation_key: None,
-            source_key: None,
-            cloned_from: None,
-            installed_at: chrono::Utc::now().to_rfc3339(),
-        };
-        manifest.pack_origin = Some(pack_origin);
-        manifest.manifest_version = agora_core::models::CURRENT_MANIFEST_VERSION;
-        if let Ok(json) = serde_json::to_string_pretty(&manifest) {
-            let _ = std::fs::write(&manifest_path, json);
-        }
-    }
-    Ok(instance_id)
+    Ok(PackImportOutcome {
+        instance_id,
+        report: Some(report),
+    })
 }

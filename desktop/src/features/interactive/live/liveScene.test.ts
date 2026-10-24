@@ -50,6 +50,7 @@ function detail(): InstanceDetail {
     },
     snapshot_readiness: 'ready',
     snapshot_error: null,
+    pack_gaps: [],
   };
 }
 

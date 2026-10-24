@@ -85,6 +85,7 @@ function makeInstanceDetail(isLocked: boolean): Record<string, unknown> {
       jvm_custom_args: '',
       created_at: '2026-06-01T00:00:00Z',
     },
+    pack_gaps: [],
     manifest: {
       instance_id: INSTANCE_ID,
       name: 'Test Instance',
@@ -299,8 +300,9 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
           if (command === 'list_snapshots') return Promise.resolve([]);
           if (command === 'list_loadout_profiles') return Promise.resolve([]);
           if (command === 'list_pack_mods') return Promise.resolve([]);
-          if (command === 'export_instance_pack') return Promise.resolve('');
-          if (command === 'import_instance_pack') return Promise.resolve('');
+          if (command === 'export_instance_pack') return Promise.resolve('C:/exports/test-instance.mrpack');
+          if (command === 'save_lockfile_export') return Promise.resolve('C:/exports/test-instance.lockfile.json');
+          if (command === 'import_instance_pack') return Promise.resolve({ instance_id: '', report: null });
           if (command === 'get_disable_plan') return Promise.resolve({ dependents: [] });
           if (command === 'disable_instance_mod') {
             const filename = args.filename as string;

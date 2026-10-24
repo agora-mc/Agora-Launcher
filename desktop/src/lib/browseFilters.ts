@@ -11,6 +11,24 @@ export function loaderFilterApplies(contentType: string | null): boolean {
 }
 
 /**
+ * What the empty Browse state says when the instance's version or loader
+ * filter is what hid the matches. Null when the filter hid nothing.
+ */
+export function hiddenResultsSentence(
+  hidden: { count: number; more: boolean },
+  mcVersion: string | null,
+  loader: string | null,
+): string | null {
+  if (hidden.count <= 0) return null;
+  const scope = [mcVersion, loader ? loader.charAt(0).toUpperCase() + loader.slice(1) : null]
+    .filter((part): part is string => Boolean(part))
+    .join(' ');
+  const noun = hidden.count === 1 ? 'result' : 'results';
+  const prefix = hidden.more ? 'At least ' : '';
+  return `No results for ${scope || 'this instance'}. ${prefix}${hidden.count} ${noun} for other versions or loaders.`;
+}
+
+/**
  * Why a content type has no results regardless of filters, if that is known.
  * Modrinth has no world project type, and no other source Agora browses lists
  * worlds, so an empty world catalog is expected rather than a failed search.

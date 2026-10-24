@@ -177,19 +177,26 @@ export function Sidebar({
         )}
       </nav>
 
-      {!collapsed && (
-        <div className="space-y-1 border-t border-border p-3">
-          <button
-            onClick={onOpenCommandPalette}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            aria-label="Open command palette"
-          >
-            <Command className="h-4 w-4" aria-hidden="true" />
-            <span className="min-w-0 flex-1 text-left leading-snug">Quick actions</span>
-            <kbd className="ml-auto rounded-sm border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">Ctrl K</kbd>
-          </button>
-        </div>
-      )}
+      {/* Still here when collapsed (icon only), so the palette is never out of reach. */}
+      <div className="space-y-1 border-t border-border p-3">
+        <button
+          onClick={onOpenCommandPalette}
+          title={collapsed ? 'Quick actions (Ctrl K)' : undefined}
+          className={[
+            'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+            collapsed ? 'justify-center px-0' : '',
+          ].join(' ')}
+          aria-label="Open command palette"
+        >
+          <Command className="h-4 w-4" aria-hidden="true" />
+          {!collapsed && (
+            <>
+              <span className="min-w-0 flex-1 text-left leading-snug">Quick actions</span>
+              <kbd className="ml-auto rounded-sm border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">Ctrl K</kbd>
+            </>
+          )}
+        </button>
+      </div>
 
       {!collapsed && (
         <div className="border-t border-border p-4 text-xs text-muted-foreground">

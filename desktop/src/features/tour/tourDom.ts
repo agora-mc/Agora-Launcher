@@ -95,6 +95,15 @@ export function prefersReducedMotion(): boolean {
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
+/** Input types the user types free text into. */
+const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel']);
+
+/** Whether `node` is a text field the user types into (not a select, toggle or number). */
+export function isTextEntry(node: EventTarget | null): boolean {
+  if (node instanceof HTMLTextAreaElement) return true;
+  return node instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(node.type);
+}
+
 /**
  * Every anchor enclosing `node`, innermost first — an event target can sit
  * inside several nested anchors (a version row inside the version list).

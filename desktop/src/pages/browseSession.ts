@@ -122,3 +122,120 @@ export function pickDefaultPackRelease<T extends { minecraft_version: string; lo
   if (index >= 0) return { index, mismatch: false };
   return { index: 0, mismatch: !!mc };
 }
+
+/**
+ * The instance Browse is filtered to, as the user left it this session. `null`
+ * means nothing was chosen yet, so the default applies; `''` means the user
+ * picked "No instance context". Module-level like the snapshot, so remounting
+ * Browse does not undo a choice.
+ */
+let contextChoice: string | null = null;
+
+/** Remember the instance the user picked (`''` for "No instance context"). */
+export function saveBrowseContextChoice(instanceId: string): void {
+  contextChoice = instanceId;
+}
+
+/** The remembered choice: an instance id, `''` for none, or `null` if no choice was made. */
+export function peekBrowseContextChoice(): string | null {
+  return contextChoice;
+}
+
+interface ContextCandidate {
+  instance_id: string;
+  last_launched_at: string | null;
+  created_at: string;
+}
+
+/** Milliseconds for a timestamp, or -Infinity when it is missing or unreadable. */
+function timestampOf(value: string | null | undefined): number {
+  const ms = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * The instance Browse opens on when nothing else chooses one: the most
+ * recently launched, else the most recently created. `null` when there are
+ * no instances.
+ */
+export function defaultBrowseContextInstance(rows: readonly ContextCandidate[]): string | null {
+  if (rows.length === 0) return null;
+  const launched = rows.reduce((best, row) =>
+    timestampOf(row.last_launched_at) > timestampOf(best.last_launched_at) ? row : best);
+  if (timestampOf(launched.last_launched_at) > Number.NEGATIVE_INFINITY) return launched.instance_id;
+  const created = rows.reduce((best, row) =>
+    timestampOf(row.created_at) > timestampOf(best.created_at) ? row : best);
+  return created.instance_id;
+}
+
+/**
+ * The instance id Browse should start on ('' for none). An instance handed over
+ * from My Instances wins, then the user's choice this session, then the
+ * default. A remembered id that no longer exists is ignored.
+ */
+export function pickBrowseContextInstance({
+  offered,
+  choice,
+  rows,
+}: {
+  offered: string | null;
+  choice: string | null;
+  rows: readonly ContextCandidate[];
+}): string {
+  const exists = (id: string | null): id is string =>
+    id !== null && rows.some((row) => row.instance_id === id);
+  if (exists(offered)) return offered;
+  if (choice === '') return '';
+  if (exists(choice)) return choice;
+  return defaultBrowseContextInstance(rows) ?? '';
+}
+
+/**
+ * Whether the results on screen belong to the query the controls now show.
+ * False while a typed query is still waiting out its debounce, and while a new
+ * filter set has not produced results yet.
+ */
+export function browseResultsStale({
+  resultsKey,
+  queryKey,
+  query,
+  debouncedQuery,
+}: {
+  resultsKey: string | null;
+  queryKey: string;
+  query: string;
+  debouncedQuery: string;
+}): boolean {
+  return resultsKey !== queryKey || query.trim() !== debouncedQuery.trim();
+}
+
+/**
+ * Whether to offer the Modrinth search under an empty result. Only when
+ * Modrinth is off and could be turned on (no privacy or lockdown block), the
+ * user searched for something, and the list has really finished. A failed
+ * provider read offers nothing.
+ */
+export function shouldOfferModrinthSearch({
+  provider,
+  query,
+  sort,
+  resultCount,
+  loading,
+  hasError,
+}: {
+  provider: { enabled: boolean; unavailableReason?: string | null } | null;
+  query: string;
+  sort: string;
+  resultCount: number;
+  loading: boolean;
+  hasError: boolean;
+}): boolean {
+  return provider !== null
+    && !provider.enabled
+    && !provider.unavailableReason
+    && query.trim() !== ''
+    && sort !== 'for_you'
+    && resultCount === 0
+    && !loading
+    && !hasError;
+}

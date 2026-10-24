@@ -25,6 +25,9 @@ pub enum ImportSource {
     Mrpack {
         path: PathBuf,
         origin_url: Option<String>,
+        /// Leave out files that cannot be fetched instead of stopping (the
+        /// user chose "Import anyway" in the review).
+        skip_unfetchable: bool,
     },
     /// A PrismLauncher / MultiMC instance `.zip`.
     PrismZip(PathBuf),
@@ -54,6 +57,7 @@ impl ImportSource {
         Self::Mrpack {
             path,
             origin_url: None,
+            skip_unfetchable: false,
         }
     }
 }
@@ -75,6 +79,36 @@ pub(crate) fn strip_url_query(url: &str) -> String {
             .unwrap_or(url)
             .to_string()
     }
+}
+
+/// SHA-256 (lowercase hex) and size of a file, read in chunks.
+fn file_sha256_and_size(path: &std::path::Path) -> LauncherResult<(String, u64)> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let unreadable = |e: std::io::Error| LauncherError::Generic {
+        code: "ERR_PACK_READ".into(),
+        message: format!("Cannot read pack file {}: {e}", path.display()),
+    };
+    let mut file = std::fs::File::open(path).map_err(unreadable)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut size = 0u64;
+    loop {
+        let n = file.read(&mut buf).map_err(unreadable)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        size += n as u64;
+    }
+    Ok((hex::encode(hasher.finalize()), size))
+}
+
+/// The `launcher_kind` recorded for an instance imported from a local pack
+/// file. The file name rides along after the colon so the instance list can
+/// say "Imported from <file>"; it never matches a launcher re-import.
+pub fn mrpack_origin_kind(file_name: &str) -> String {
+    format!("mrpack:{file_name}")
 }
 
 /// Import configuration passed to [`ImportService::run_import`].
@@ -172,6 +206,7 @@ impl ImportService {
                     source: ImportSource::Mrpack {
                         path: temp_path.clone(),
                         origin_url: Some(stripped),
+                        skip_unfetchable: false,
                     },
                     symlink_saves: false,
                 },
@@ -214,30 +249,192 @@ impl ImportService {
         source: &std::path::Path,
     ) -> LauncherResult<ImportNamePreview> {
         let default_name = crate::import::default_import_name(source)?;
-        let instances_root = self.ctx.paths.instances_root();
-        let name_taken = crate::import::import_name_taken(&instances_root, &default_name)?;
-        let suggested_name =
-            crate::import::suggest_unique_import_name(&instances_root, &default_name)?;
-        Ok(ImportNamePreview {
-            default_name,
-            name_taken,
-            suggested_name,
-        })
+        self.preview_name(&default_name)
+    }
+
+    /// Whether an instance already has `name`: its folder exists, or an
+    /// instance the user can see carries the same name (case ignored). The
+    /// folder alone misses an instance whose id differs from its name, such
+    /// as one that was renamed.
+    fn name_in_use(&self, name: &str, existing_names: &[String]) -> bool {
+        let wanted = name.trim().to_lowercase();
+        existing_names
+            .iter()
+            .any(|existing| existing.trim().to_lowercase() == wanted)
+            || crate::import::import_name_taken(&self.ctx.paths.instances_root(), name)
+                .unwrap_or(false)
+    }
+
+    fn existing_instance_names(&self) -> Vec<String> {
+        crate::db::local_state_connection(&self.ctx.paths.local_state_db())
+            .ok()
+            .and_then(|conn| crate::db::list_instances(&conn).ok())
+            .map(|rows| rows.into_iter().map(|row| row.name).collect())
+            .unwrap_or_default()
     }
 
     /// The same name check for a pack that has no file to inspect (a Technic
     /// or provider pack): its display name, whether that is taken, and a free
     /// "<name> (2)" style suggestion.
     pub fn preview_name(&self, default_name: &str) -> LauncherResult<ImportNamePreview> {
-        let instances_root = self.ctx.paths.instances_root();
+        let names = self.existing_instance_names();
+        // A name that cannot become a folder is an error here, as it would be
+        // at import time.
+        crate::import::import_name_taken(&self.ctx.paths.instances_root(), default_name)?;
+        let name_taken = self.name_in_use(default_name, &names);
+        let suggested_name = crate::import::next_free_name(default_name, |candidate| {
+            self.name_in_use(candidate, &names)
+        });
         Ok(ImportNamePreview {
             default_name: default_name.to_string(),
-            name_taken: crate::import::import_name_taken(&instances_root, default_name)?,
-            suggested_name: crate::import::suggest_unique_import_name(
-                &instances_root,
-                default_name,
-            )?,
+            name_taken,
+            suggested_name,
         })
+    }
+
+    /// What importing a `.mrpack` would do, read from the file alone: the
+    /// mods and where each comes from, what is left out, and anything that
+    /// would stop the import. Writes nothing and downloads nothing. The plan
+    /// carries the file's fingerprint, which [`Self::take_reviewed_copy`]
+    /// holds the import to.
+    pub fn plan_mrpack_import(
+        &self,
+        source: &std::path::Path,
+    ) -> LauncherResult<crate::agora_pack_import::PackImportPlan> {
+        let policy = crate::override_sanitizer::OverridePolicy::from_settings(&self.ctx);
+        // One copy is hashed, planned and (later) imported, so what the user
+        // reviewed is exactly what is imported even if the original changes.
+        let (staged, sha256, size) = self.stage_for_review(source)?;
+        let mut plan = crate::import::plan_mrpack(&staged, policy)?;
+        plan.file_sha256 = sha256;
+        plan.file_size = size;
+        let check = self.preview_name(&plan.pack_name)?;
+        plan.name_taken = check.name_taken;
+        plan.suggested_name = check.suggested_name;
+        Ok(plan)
+    }
+
+    fn review_root(&self) -> PathBuf {
+        self.ctx.paths.staging_root().join("pack-review")
+    }
+
+    /// A fingerprint is 64 hex digits; anything else never names a folder.
+    fn review_dir(&self, sha256: &str) -> LauncherResult<PathBuf> {
+        let sha = sha256.trim().to_ascii_lowercase();
+        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(LauncherError::Generic {
+                code: "ERR_PACK_NOT_REVIEWED".into(),
+                message: "Review the pack before importing it.".into(),
+            });
+        }
+        Ok(self.review_root().join(sha))
+    }
+
+    /// Copies `source` once into a staging folder named for its SHA-256,
+    /// hashing as it copies. Review and import both use this copy, so a file
+    /// swapped after review is never imported. Returns (staged path, sha256, size).
+    fn stage_for_review(&self, source: &std::path::Path) -> LauncherResult<(PathBuf, String, u64)> {
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Write};
+        let io_err = |e: std::io::Error| LauncherError::Generic {
+            code: "ERR_PACK_READ".into(),
+            message: format!("Cannot read pack file {}: {e}", source.display()),
+        };
+        let root = self.review_root();
+        std::fs::create_dir_all(&root).map_err(io_err)?;
+        // Copies nobody imported or cancelled (a crash, say) do not pile up.
+        if let Ok(read) = std::fs::read_dir(&root) {
+            for entry in read.flatten() {
+                let old = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > std::time::Duration::from_secs(24 * 3600));
+                if old {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+        let file_name = source.file_name().ok_or_else(|| LauncherError::Generic {
+            code: "ERR_PACK_READ".into(),
+            message: "The pack path has no file name.".into(),
+        })?;
+        let tmp_dir = root.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp_dir).map_err(io_err)?;
+        let copy = (|| -> std::io::Result<(String, u64)> {
+            let mut input = std::fs::File::open(source)?;
+            let mut output = std::fs::File::create(tmp_dir.join(file_name))?;
+            let mut hasher = Sha256::new();
+            let mut buf = vec![0u8; 256 * 1024];
+            let mut size = 0u64;
+            loop {
+                let n = input.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                output.write_all(&buf[..n])?;
+                size += n as u64;
+            }
+            output.flush()?;
+            Ok((hex::encode(hasher.finalize()), size))
+        })();
+        let (sha, size) = match copy {
+            Ok(done) => done,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                return Err(io_err(e));
+            }
+        };
+        let final_dir = root.join(&sha);
+        if final_dir.exists() {
+            // Reviewed before: keep that copy (it hashes to the same value).
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+        } else if let Err(e) = std::fs::rename(&tmp_dir, &final_dir) {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return Err(io_err(e));
+        }
+        Ok((final_dir.join(file_name), sha, size))
+    }
+
+    /// The staged copy the review recorded, re-checked against the reviewed
+    /// fingerprint. Refuses when there was no review, or the copy is gone or
+    /// no longer matches.
+    pub fn take_reviewed_copy(&self, reviewed_sha256: Option<&str>) -> LauncherResult<PathBuf> {
+        let Some(reviewed) = reviewed_sha256 else {
+            return Err(LauncherError::Generic {
+                code: "ERR_PACK_NOT_REVIEWED".into(),
+                message: "Review the pack before importing it.".into(),
+            });
+        };
+        let dir = self.review_dir(reviewed)?;
+        let gone = || LauncherError::Generic {
+            code: "ERR_PACK_NOT_REVIEWED".into(),
+            message: "The reviewed copy of the pack is gone. Review it again.".into(),
+        };
+        let file = std::fs::read_dir(&dir)
+            .map_err(|_| gone())?
+            .flatten()
+            .find(|entry| entry.path().is_file())
+            .map(|entry| entry.path())
+            .ok_or_else(gone)?;
+        let (actual, _) = file_sha256_and_size(&file)?;
+        if !actual.eq_ignore_ascii_case(reviewed.trim()) {
+            return Err(LauncherError::Generic {
+                code: "ERR_PACK_CHANGED".into(),
+                message: "The reviewed copy of the pack changed. Review it again.".into(),
+            });
+        }
+        Ok(file)
+    }
+
+    /// Removes the staged copy of a reviewed pack (after the import, or when
+    /// the review is cancelled). Nothing to remove is fine.
+    pub fn discard_reviewed_copy(&self, sha256: &str) {
+        if let Ok(dir) = self.review_dir(sha256) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     /// [`ImportService::run_import_with_sink`] with an optional user-chosen
@@ -328,18 +525,21 @@ impl ImportService {
         let blocking_operation_id = op_id.clone();
 
         let result = match tokio::task::spawn_blocking(move || match blocking_source {
-            ImportSource::Mrpack { path, origin_url } => {
-                crate::import::import_mrpack_with_progress(
-                    &path,
-                    &blocking_instances_root,
-                    blocking_symlink,
-                    Some(blocking_sink),
-                    Some(blocking_operation_id),
-                    origin_url,
-                    override_policy,
-                    name_override.as_deref(),
-                )
-            }
+            ImportSource::Mrpack {
+                path,
+                origin_url,
+                skip_unfetchable,
+            } => crate::import::import_mrpack_inner(
+                &path,
+                &blocking_instances_root,
+                blocking_symlink,
+                Some(blocking_sink),
+                Some(blocking_operation_id),
+                origin_url,
+                override_policy,
+                name_override.as_deref(),
+                skip_unfetchable,
+            ),
             ImportSource::PrismZip(path) => crate::import::import_prism_zip_named(
                 &path,
                 &blocking_instances_root,
@@ -508,6 +708,34 @@ impl ImportService {
             let _ = rollback();
             let _ = crate::db::delete_instance(&conn, &result.instance_id);
             return Err(error);
+        }
+
+        // A pack imported from a file on disk remembers which file, so the
+        // instance list can say where it came from. Cosmetic: a failure to
+        // write it must not undo an import that otherwise worked.
+        if let ImportSource::Mrpack {
+            path,
+            origin_url: None,
+            ..
+        } = &request.source
+        {
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                let now = chrono::Utc::now().to_rfc3339();
+                let record = crate::db::InstanceImportRecord {
+                    instance_id: result.instance_id.clone(),
+                    launcher_kind: mrpack_origin_kind(file_name),
+                    installation_key: "file".into(),
+                    source_instance_key: result.instance_id.clone(),
+                    source_path: file_name.to_string(),
+                    source_metadata_json: "{}".into(),
+                    imported_settings_json: "{}".into(),
+                    source_fingerprint: String::new(),
+                    imported_at: now.clone(),
+                    updated_at: now,
+                    last_result: "imported".into(),
+                };
+                let _ = crate::db::replace_instance_import(&conn, &record, &[]);
+            }
         }
 
         // ── Pack file inventory for any pack-like import (M1c).
@@ -1397,6 +1625,7 @@ mod tests {
             source: ImportSource::Mrpack {
                 path: mrpack_path,
                 origin_url: Some(presigned.to_string()),
+                skip_unfetchable: false,
             },
             symlink_saves: false,
         };
@@ -1562,5 +1791,333 @@ mod tests {
         let db_path = tmp.join("local_state.db");
         let _ = crate::db::init_local_state_db(&db_path);
         rusqlite::Connection::open(&db_path).expect("test db")
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::agora_pack_import::PlannedSource;
+    use crate::ctx::CoreContext;
+    use std::io::Write;
+
+    fn new_ctx() -> (tempfile::TempDir, Ctx) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = CoreContext::for_testing(tmp.path().to_path_buf());
+        let _ = crate::db::init_local_state_db(&ctx.paths.local_state_db());
+        (tmp, ctx)
+    }
+
+    /// An `.mrpack` with `index` as its index and `files` as extra entries.
+    fn pack(dir: &std::path::Path, file: &str, index: &str, files: &[(&str, &[u8])]) -> PathBuf {
+        let path = dir.join(file);
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("modrinth.index.json", opts).unwrap();
+        writer.write_all(index.as_bytes()).unwrap();
+        for (name, bytes) in files {
+            writer.start_file(*name, opts).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+        path
+    }
+
+    const SHA1: &str = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+
+    fn index_with_files(files: serde_json::Value) -> String {
+        serde_json::json!({
+            "name": "Spiff", "versionId": "1",
+            "dependencies": { "minecraft": "1.20.4", "fabric-loader": "0.15.0" },
+            "files": files,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_review_says_where_each_file_comes_from_what_is_left_out_and_what_would_fail() {
+        let (tmp, ctx) = new_ctx();
+        let index = index_with_files(serde_json::json!([
+            { "path": "mods/sodium.jar", "hashes": { "sha1": SHA1 },
+              "downloads": ["https://cdn.modrinth.com/data/AANobbMI/versions/x/sodium.jar"] },
+            { "path": "mods/homebrew.jar", "hashes": { "sha1": SHA1 }, "downloads": [] },
+            { "path": "mods/nohash.jar", "hashes": {},
+              "downloads": ["https://cdn.modrinth.com/data/a/versions/x/nohash.jar"] },
+            { "path": "mods/ghost.jar", "hashes": { "sha1": SHA1 },
+              "downloads": ["https://example.com/ghost.jar"] },
+        ]));
+        let path = pack(
+            tmp.path(),
+            "spiff.mrpack",
+            &index,
+            &[
+                ("mods/homebrew.jar", b""),
+                ("overrides/config/sodium.json", b"{}"),
+                ("overrides/shaderpacks/BSL.zip", b"zip"),
+                ("overrides/saves/world/level.dat", b"x"),
+                ("server-overrides/server.properties", b"x"),
+            ],
+        );
+
+        let plan = ImportService::new(ctx).plan_mrpack_import(&path).unwrap();
+
+        let source_of = |name: &str| {
+            plan.entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("{name} missing from {:?}", plan.entries))
+        };
+        assert_eq!(source_of("mods/sodium.jar").source, PlannedSource::Modrinth);
+        assert_eq!(
+            source_of("mods/homebrew.jar").source,
+            PlannedSource::Bundled
+        );
+        assert_eq!(
+            source_of("shaderpacks/BSL.zip").source,
+            PlannedSource::Bundled
+        );
+        assert!(source_of("mods/nohash.jar")
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("SHA-1"));
+        assert_eq!(source_of("mods/ghost.jar").source, PlannedSource::CannotGet);
+        assert_eq!(plan.problems.len(), 1, "{:?}", plan.problems);
+        assert_eq!(plan.soft_problems.len(), 1, "{:?}", plan.soft_problems);
+        assert!(plan
+            .left_out
+            .iter()
+            .any(|l| l.starts_with("saves/world/level.dat")));
+        assert!(plan
+            .left_out
+            .iter()
+            .any(|l| l.starts_with("server-overrides/")));
+        assert!(plan
+            .notes
+            .iter()
+            .any(|n| n.contains("1 settings and data file")));
+        assert_eq!(plan.instance.loader, "fabric");
+        assert_eq!(plan.file_size, std::fs::metadata(&path).unwrap().len());
+        assert_eq!(plan.file_sha256.len(), 64);
+    }
+
+    #[test]
+    fn a_pack_the_importer_would_refuse_is_reported_as_a_problem_not_discovered_midway() {
+        let (tmp, ctx) = new_ctx();
+        let index = serde_json::json!({
+            "name": "NoLoader", "dependencies": { "minecraft": "1.20.4" }, "files": [],
+        })
+        .to_string();
+        let path = pack(
+            tmp.path(),
+            "nl.mrpack",
+            &index,
+            &[("overrides/mods/a.jar", b"jar")],
+        );
+        let plan = ImportService::new(ctx).plan_mrpack_import(&path).unwrap();
+        // Standard policy declines a loose jar, so it is left out, not imported.
+        assert!(
+            plan.left_out.iter().any(|l| l.starts_with("mods/a.jar")),
+            "{:?}",
+            plan.left_out
+        );
+
+        let index = index_with_files(serde_json::json!([
+            { "path": "mods/a.jar", "hashes": { "sha1": SHA1 }, "downloads": [] },
+        ]))
+        .replace("\"fabric-loader\":\"0.15.0\"", "\"x\":\"1\"");
+        let (tmp2, ctx2) = new_ctx();
+        let path = pack(tmp2.path(), "nl2.mrpack", &index, &[("mods/a.jar", b"jar")]);
+        let plan = ImportService::new(ctx2).plan_mrpack_import(&path).unwrap();
+        assert!(
+            plan.problems.iter().any(|p| p.contains("no mod loader")),
+            "{:?}",
+            plan.problems
+        );
+    }
+
+    #[test]
+    fn a_taken_name_gets_a_free_numbered_suggestion_even_when_the_folder_differs() {
+        let (tmp, ctx) = new_ctx();
+        // An instance the user renamed: its folder is "old-id", its name "Spiff".
+        let row = InstanceRow {
+            instance_id: "old-id".into(),
+            name: "Spiff".into(),
+            minecraft_version: "1.20.4".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "auto".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+        };
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        let path = pack(
+            tmp.path(),
+            "spiff.mrpack",
+            &index_with_files(serde_json::json!([])),
+            &[],
+        );
+
+        let plan = ImportService::new(ctx).plan_mrpack_import(&path).unwrap();
+
+        assert!(plan.name_taken);
+        assert_eq!(plan.pack_name, "Spiff");
+        assert_eq!(plan.suggested_name, "Spiff (2)");
+    }
+
+    #[test]
+    fn an_import_uses_the_copy_that_was_reviewed_even_if_the_original_is_swapped() {
+        let (tmp, ctx) = new_ctx();
+        let path = pack(
+            tmp.path(),
+            "p.mrpack",
+            &index_with_files(serde_json::json!([])),
+            &[],
+        );
+        let svc = ImportService::new(ctx);
+        let plan = svc.plan_mrpack_import(&path).unwrap();
+        let reviewed_bytes = std::fs::read(&path).unwrap();
+
+        // The original is replaced after review.
+        pack(
+            tmp.path(),
+            "p.mrpack",
+            &index_with_files(serde_json::json!([])),
+            &[("overrides/config/x.txt", b"swapped")],
+        );
+
+        let staged = svc.take_reviewed_copy(Some(&plan.file_sha256)).unwrap();
+        assert_eq!(std::fs::read(&staged).unwrap(), reviewed_bytes);
+        assert_eq!(staged.file_name().unwrap(), "p.mrpack");
+
+        let unreviewed = svc.take_reviewed_copy(None).unwrap_err();
+        assert!(
+            unreviewed.to_string().contains("Review the pack"),
+            "{unreviewed}"
+        );
+        let bogus = svc.take_reviewed_copy(Some("../../etc")).unwrap_err();
+        assert!(bogus.to_string().contains("Review the pack"), "{bogus}");
+
+        // A tampered staged copy is refused.
+        std::fs::write(&staged, b"tampered").unwrap();
+        let changed = svc.take_reviewed_copy(Some(&plan.file_sha256)).unwrap_err();
+        assert!(changed.to_string().contains("changed"), "{changed}");
+
+        svc.discard_reviewed_copy(&plan.file_sha256);
+        assert!(!staged.exists());
+        let gone = svc.take_reviewed_copy(Some(&plan.file_sha256)).unwrap_err();
+        assert!(gone.to_string().contains("Review it again"), "{gone}");
+    }
+
+    #[test]
+    fn unfetchable_files_are_soft_and_unsafe_or_unverifiable_ones_are_hard() {
+        let (tmp, ctx) = new_ctx();
+        let index = index_with_files(serde_json::json!([
+            { "path": "mods/ghost.jar", "hashes": { "sha1": SHA1 }, "downloads": [] },
+            { "path": "mods/tampered.jar", "hashes": { "sha1": SHA1 }, "downloads": [] },
+            { "path": "mods/nohash.jar", "hashes": {},
+              "downloads": ["https://cdn.modrinth.com/data/a/versions/x/nohash.jar"] },
+            { "path": "../escape.jar", "hashes": { "sha1": SHA1 }, "downloads": [] },
+        ]));
+        let path = pack(
+            tmp.path(),
+            "p.mrpack",
+            &index,
+            &[("mods/tampered.jar", b"not empty")],
+        );
+        let plan = ImportService::new(ctx).plan_mrpack_import(&path).unwrap();
+
+        assert_eq!(plan.soft_problems.len(), 1, "{:?}", plan.soft_problems);
+        assert!(plan.soft_problems[0].contains("mods/ghost.jar"));
+        assert_eq!(plan.problems.len(), 3, "{:?}", plan.problems);
+        let joined = plan.problems.join("\n");
+        assert!(
+            joined.contains("mods/tampered.jar"),
+            "hash mismatch is hard"
+        );
+        assert!(joined.contains("mods/nohash.jar"), "no hash is hard");
+        assert!(joined.contains("escape.jar"), "path traversal is hard");
+    }
+
+    #[tokio::test]
+    async fn importing_anyway_leaves_out_exactly_the_unfetchable_files_and_strict_import_still_refuses(
+    ) {
+        let (tmp, ctx) = new_ctx();
+        let index = r#"{"name":"Gappy","dependencies":{},"files":[
+            {"path":"mods/ghost.jar","hashes":{"sha1":"da39a3ee5e6b4b0d3255bfef95601890afd80709"},"downloads":[]}
+        ]}"#;
+        let path = pack(
+            tmp.path(),
+            "gappy.mrpack",
+            index,
+            &[("overrides/config/a.toml", b"x")],
+        );
+        let svc = ImportService::new(ctx.clone());
+        let request = |skip: bool| ImportRequest {
+            source: ImportSource::Mrpack {
+                path: path.clone(),
+                origin_url: None,
+                skip_unfetchable: skip,
+            },
+            symlink_saves: false,
+        };
+
+        let strict = svc.run_import(request(false)).await;
+        assert!(
+            strict.is_err(),
+            "a file with no source stops a strict import"
+        );
+
+        let result = svc.run_import(request(true)).await.unwrap();
+        let root = ctx.paths.instance_dir(&result.instance_id).unwrap();
+        assert!(!root.join("mods").join("ghost.jar").exists());
+        assert!(root.join("config").join("a.toml").is_file());
+    }
+
+    #[tokio::test]
+    async fn an_imported_pack_keeps_the_name_chosen_and_remembers_its_file() {
+        let (tmp, ctx) = new_ctx();
+        let path = pack(
+            tmp.path(),
+            "spiff-fabric-1.20.4.mrpack",
+            r#"{"name":"Spiff","dependencies":{},"files":[]}"#,
+            &[],
+        );
+        let svc = ImportService::new(ctx.clone());
+        let result = svc
+            .run_import_named(
+                ImportRequest {
+                    source: ImportSource::mrpack(path),
+                    symlink_saves: false,
+                },
+                Some("Spiff (2)".into()),
+                ctx.progress_sink.clone(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.name, "Spiff (2)");
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        let row = crate::db::get_instance(&conn, &result.instance_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.name, "Spiff (2)");
+        assert_eq!(
+            row.import_source.as_deref(),
+            Some("mrpack:spiff-fabric-1.20.4.mrpack")
+        );
     }
 }

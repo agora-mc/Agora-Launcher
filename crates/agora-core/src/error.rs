@@ -1,8 +1,14 @@
 /// Standardized launcher error codes matching the human-centric taxonomy.
 #[derive(Debug, Clone)]
 pub enum LauncherError {
-    /// ERR_NETWORK_OFFLINE — You're offline. Using cached data.
+    /// ERR_NETWORK_OFFLINE — Agora could not reach the server. Says nothing about
+    /// whether cached data was used: callers that fell back to cache must not
+    /// return this error.
     NetworkOffline,
+    /// ERR_NETWORK_OFFLINE — the same failure as [`LauncherError::NetworkOffline`],
+    /// with what was being attempted, e.g. "download the catalog". Build it with
+    /// [`LauncherError::while_attempting`] so the message says what failed.
+    NetworkUnavailable { action: String },
     /// ERR_REGISTRY_DOWNLOAD_FAILED — Could not download the latest registry.
     RegistryDownloadFailed,
     /// ERR_REGISTRY_SIGNATURE_INVALID — Registry signature check failed.
@@ -129,9 +135,28 @@ pub enum LauncherError {
 }
 
 impl LauncherError {
+    /// Say what was being attempted when a request failed for lack of a network.
+    ///
+    /// `NetworkOffline` is only the category of failure; the message a user
+    /// needs names the thing that did not download. Any other error passes
+    /// through untouched, so this is safe to apply to a whole fallible step.
+    pub fn while_attempting(self, action: impl Into<String>) -> Self {
+        let action = action.into();
+        match self {
+            // An empty description would read "Couldn't : no internet
+            // connection." The plain offline error is the honest fallback.
+            LauncherError::NetworkOffline if !action.trim().is_empty() => {
+                LauncherError::NetworkUnavailable { action }
+            }
+            other => other,
+        }
+    }
+
     pub fn code(&self) -> String {
         match self {
-            LauncherError::NetworkOffline => "ERR_NETWORK_OFFLINE".to_string(),
+            LauncherError::NetworkOffline | LauncherError::NetworkUnavailable { .. } => {
+                "ERR_NETWORK_OFFLINE".to_string()
+            }
             LauncherError::RegistryDownloadFailed => "ERR_REGISTRY_DOWNLOAD_FAILED".to_string(),
             LauncherError::RegistrySignatureInvalid => "ERR_REGISTRY_SIGNATURE_INVALID".to_string(),
             LauncherError::SchemaTooNew => "ERR_SCHEMA_TOO_NEW".to_string(),
@@ -202,7 +227,15 @@ impl LauncherError {
 impl std::fmt::Display for LauncherError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LauncherError::NetworkOffline => write!(f, "You're offline. Using cached data."),
+            LauncherError::NetworkOffline => {
+                write!(
+                    f,
+                    "No internet connection: Agora couldn't reach the server."
+                )
+            }
+            LauncherError::NetworkUnavailable { action } => {
+                write!(f, "Couldn't {action}: no internet connection.")
+            }
             LauncherError::RegistryDownloadFailed => {
                 write!(
                     f,
@@ -462,7 +495,9 @@ impl serde::Serialize for LauncherError {
             LauncherError::HashMismatch => {
                 Some("The downloaded file may be corrupted or from an untrusted source. Try again.")
             }
-            LauncherError::NetworkOffline => Some("Check your internet connection and try again."),
+            LauncherError::NetworkOffline | LauncherError::NetworkUnavailable { .. } => {
+                Some("Check your internet connection or proxy settings, then try again.")
+            }
             LauncherError::AuthExpired => Some("Sign in again via Settings to continue."),
             LauncherError::AuthRequired => Some("Sign in via Settings to use this feature."),
             LauncherError::MsaAuthRequired => {
@@ -950,5 +985,44 @@ mod tests {
             actions,
             vec!["reinstall_loader", "use_delegated_launch", "dismiss"]
         );
+    }
+}
+
+#[cfg(test)]
+mod network_message_tests {
+    use super::LauncherError;
+
+    #[test]
+    fn offline_message_does_not_claim_cached_data_was_used() {
+        let text = LauncherError::NetworkOffline.to_string();
+        assert!(!text.contains("cached"), "{text}");
+        assert!(!text.contains("You're offline"), "{text}");
+    }
+
+    #[test]
+    fn while_attempting_names_the_failed_step() {
+        let err = LauncherError::NetworkOffline.while_attempting("download the catalog");
+        assert_eq!(
+            err.to_string(),
+            "Couldn't download the catalog: no internet connection."
+        );
+        assert_eq!(err.code(), "ERR_NETWORK_OFFLINE");
+    }
+
+    #[test]
+    fn while_attempting_leaves_other_errors_alone() {
+        let err = LauncherError::HashMismatch.while_attempting("download the catalog");
+        assert!(matches!(err, LauncherError::HashMismatch));
+    }
+
+    #[test]
+    fn while_attempting_with_blank_action_keeps_the_plain_offline_error() {
+        for blank in [
+            "", "   ", "	
+",
+        ] {
+            let err = LauncherError::NetworkOffline.while_attempting(blank);
+            assert!(matches!(err, LauncherError::NetworkOffline), "{blank:?}");
+        }
     }
 }

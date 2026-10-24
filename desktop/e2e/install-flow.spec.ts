@@ -244,6 +244,7 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
             const instanceId = args.instanceId as string;
             return Promise.resolve({
               row: { instance_id: instanceId, name: 'Test Instance', minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', is_modpack: false, is_locked: false, last_launched_at: null, jvm_memory_mb: 4096, jvm_gc: 'G1GC', jvm_custom_args: '', created_at: '2026-01-01T00:00:00Z' },
+              pack_gaps: [],
               manifest: { instance_id: instanceId, name: 'Test Instance', created_from_pack: null, minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', mods: [{ filename: 'installed-test-mod.jar', registry_id: null, modrinth_id: null, mod_jar_id: 'test-mod', source: 'manual_drag_drop', version: '1.0.0', sha256: 'a'.repeat(64), installed_at: '2026-07-01T00:00:00Z', enabled: true, content_type: 'mod' }], resourcepacks: [], shaders: [], datapacks: [], worlds: [], user_preferences: {} },
              });
           }
@@ -467,8 +468,12 @@ async function browseToModDetail(page: Page) {
 // Helper: primary install flow steps (ModDetail inline) up to InstallFlow
 // ---------------------------------------------------------------------------
 
+// The main ModDetail button reads "Installed ✓ · Change version" once the mod is
+// in the instance (the default fixture has it installed), so match either label.
+const INSTALL_TO_INSTANCE_BUTTON = /Install to Instance|Installed .*Change version/;
+
 async function triggerInlineInstallFlow(page: Page) {
-  await page.getByRole('button', { name: 'Install to Instance' }).click();
+  await page.getByRole('button', { name: INSTALL_TO_INSTANCE_BUTTON }).click();
   await pickFirstInstanceSelect(page, 'test-instance');
   await page.getByRole('button', { name: 'Next: Choose Version' }).click();
   // Click the first version entry
@@ -519,7 +524,9 @@ test.describe('Release C3 — Install flow entry points', () => {
     await page.getByRole('button', { name: 'Versions' }).click();
 
     // Wait for GitHub version list, click the "1.0.0" version row
-    await page.getByText('1.0.0').first().click();
+    // The row is a role=button; a plain text match can hit the installed-state
+    // header ("Version 1.0.0 · ...") instead.
+    await page.getByRole('button', { name: /^1\.0\.0/ }).first().click();
 
     // Now the selected-version detail panel appears with "Install to instance" label
     // and a <select> plus "Review install plan" button.
@@ -529,6 +536,9 @@ test.describe('Release C3 — Install flow entry points', () => {
     const count = await selects.count();
     let instanceSelected = false;
     for (let i = 0; i < count; i++) {
+      // Browse's own instance selector is in the DOM too (hidden behind this
+      // page) and lists the same instance, so only a visible select counts.
+      if (!(await selects.nth(i).isVisible())) continue;
       const options = await selects.nth(i).locator('option').allTextContents();
       if (options.some((t) => t.includes('Test Instance'))) {
         await selects.nth(i).selectOption('test-instance');
@@ -575,7 +585,7 @@ test.describe('Release C3 — Install flow entry points', () => {
     });
     await page.goto('/');
 
-    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    await page.getByRole('button', { name: INSTALL_TO_INSTANCE_BUTTON }).click();
 
     // Select instance
     await pickFirstInstanceSelect(page, 'test-instance');
@@ -668,12 +678,13 @@ test.describe('Release C3 — Install flow entry points', () => {
 
     await page.getByText('Test Instance').first().waitFor();
 
-    // The button sits next to Import Mod in the Mods panel and counts the
-    // entries the overlay lists (mods that recommend add-ons).
-    await page.getByRole('button', { name: 'Optional dependencies (1)' }).click();
+    // The button sits next to Import Mod in the Mods panel. It says all listed
+    // add-ons are installed, since the overlay only lists satisfied pairs.
+    await expect(page.getByRole('button', { name: 'Optional add-ons' })).toContainText('all installed');
+    await page.getByRole('button', { name: 'Optional add-ons' }).click();
 
     const dialog = page.getByRole('dialog');
-    await expect(dialog.getByRole('heading', { name: 'Optional dependencies' })).toBeVisible();
+    await expect(dialog.getByRole('heading', { name: 'Optional add-ons' })).toBeVisible();
     await expect(dialog.getByText('Test Mod')).toBeVisible();
     await expect(dialog.getByText('recommends')).toBeVisible();
     await expect(dialog.getByText('companion-mod')).toBeVisible();
@@ -755,8 +766,10 @@ test.describe('Release C3 — Install flow entry points', () => {
     await expect(page.getByRole('button', { name: 'Review replace plan' })).toBeVisible();
 
     // The inline flow shows the installed notice, marks the row, and offers
-    // "Replace with" instead of "Install".
-    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    // "Replace with" instead of "Install". The page's main button already
+    // reflects the installed state rather than offering a fresh install.
+    await expect(page.getByRole('button', { name: 'Install to Instance' })).toHaveCount(0);
+    await page.getByRole('button', { name: /Installed .*Change version/ }).click();
     await page.getByRole('button', { name: 'Next: Choose Version' }).click();
     await expect(page.getByText(/Already installed: version 1\.0\.0/)).toBeVisible();
     await page.getByText('test-mod-1.0.0.jar', { exact: true }).click();
@@ -948,7 +961,7 @@ test.describe('Guided install version order', () => {
     await installFlowMock(page, { versions: [...newer, ...fitting] });
     await page.goto('/');
     await browseToModDetail(page);
-    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    await page.getByRole('button', { name: INSTALL_TO_INSTANCE_BUTTON }).click();
     await pickFirstInstanceSelect(page, 'test-instance');
     await page.getByRole('button', { name: 'Next: Choose Version' }).click();
 
@@ -969,7 +982,7 @@ test.describe('Guided install version order', () => {
     await expect(other.locator('li[role="button"]')).toHaveCount(9);
   });
 
-  test('the destination step moves on when the right instance is already selected', async ({ page }) => {
+  test('one click advances one step: the destination step is shown when the right instance is already selected', async ({ page }) => {
     const stepIndex = TOUR_STEPS.findIndex((step) => step.id === 'install-pick-instance');
     await page.addInitScript((index) => {
       localStorage.setItem('agora-tour', JSON.stringify({ version: 1, status: 'running', index, completed: false }));
@@ -977,9 +990,74 @@ test.describe('Guided install version order', () => {
     }, stepIndex - 1);
     await installFlowMock(page);
     await page.goto('/');
-    // Opening the panel puts the tour on the destination step; the instance is
-    // preselected, so it must advance by itself to "Then pick a version".
-    await page.getByRole('button', { name: 'Install to Instance' }).click();
-    await expect(page.getByRole('dialog', { name: 'Guided tour' }).getByText('Then pick a version')).toBeVisible();
+    // Opening the panel moves the tour onto the destination step, one step
+    // only. The instance is preselected, but the card must still show (with
+    // Continue) rather than chaining on to "Then pick a version" by itself.
+    // The mod may already be installed there, which relabels the button.
+    await page.getByRole('button', { name: /Install to Instance|Installed .*Change version/ }).click();
+    const tour = page.getByRole('dialog', { name: 'Guided tour' });
+    await expect(tour.getByText('Choose where it goes')).toBeVisible();
+    await expect(tour.getByText(`Step ${stepIndex + 1} of ${TOUR_STEPS.length}`)).toBeVisible();
+    await tour.getByRole('button', { name: 'Continue' }).click();
+    await expect(tour.getByText('Then pick a version')).toBeVisible();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyboard: the corner panel while it runs, and the result that replaces it
+// ---------------------------------------------------------------------------
+
+test.describe('install panel keyboard use', () => {
+  /** Drive an install to its review, confirm it, and leave it running. */
+  async function startInstall(page: Page) {
+    await installFlowMock(page);
+    await page.goto('/');
+    await browseToModDetail(page);
+    await triggerInlineInstallFlow(page);
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
+    await resolveInstallCall(page, await lastInstallCall(page, 'resolve_install_plan'), makePlan());
+    await expectReviewView(page);
+    await confirmInstall(page);
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
+    return page.getByRole('dialog', { name: 'Review Instance Changes' });
+  }
+
+  test('Escape closes the corner panel while focus is in it', async ({ page }) => {
+    await installFlowMock(page);
+    await page.goto('/');
+    await browseToModDetail(page);
+    await triggerInlineInstallFlow(page);
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
+    // Resolving: the panel sits in the corner and never takes focus itself.
+    const panel = page.getByRole('dialog', { name: 'Review Instance Changes' });
+    await expect(panel).toHaveAttribute('aria-modal', 'false');
+
+    await panel.getByRole('button', { name: 'Close install panel' }).focus();
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
+  });
+
+  test('when the install lands with focus in the panel, focus moves to Open Instance', async ({ page }) => {
+    const panel = await startInstall(page);
+    // Running: a corner panel. Put focus in it the way a keyboard user would.
+    await expect(panel).toHaveAttribute('aria-modal', 'false');
+    await panel.getByRole('button', { name: 'Close install panel' }).focus();
+    await expect(panel.getByRole('button', { name: 'Close install panel' })).toBeFocused();
+
+    const applyIdx = await lastInstallCall(page, 'apply_install_plan');
+    await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
+
+    await expectResultView(page);
+    await expect(panel.getByRole('button', { name: 'Open Instance' })).toBeFocused();
+  });
+
+  test('Escape dismisses the finished result', async ({ page }) => {
+    const panel = await startInstall(page);
+    const applyIdx = await lastInstallCall(page, 'apply_install_plan');
+    await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
+    await expectResultView(page);
+
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
   });
 });

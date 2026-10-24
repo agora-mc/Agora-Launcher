@@ -3,6 +3,7 @@ import { getSetting, setSetting } from '../lib/tauri';
 import { Switch } from '../components/ui/switch';
 import { Badge } from '../components/ui/badge';
 import { cn } from '../lib/utils';
+import { useConnectivity } from '../hooks/use-connectivity';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -105,7 +106,7 @@ const LOCKDOWN_KEY = 'network_lockdown_enabled';
 export function Privacy() {
   const [endpointStates, setEndpointStates] = useState<Record<string, boolean>>({});
   const [lockdown, setLockdown] = useState(false);
-  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const connectivity = useConnectivity();
   const [loading, setLoading] = useState(true);
 
   // Load all per-endpoint settings + lockdown on mount
@@ -151,18 +152,6 @@ export function Privacy() {
       return next;
     });
   }, [lockdown]);
-
-  // Online/offline indicator
-  useEffect(() => {
-    const onOnline = () => setOnline(true);
-    const onOffline = () => setOnline(false);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-    };
-  }, []);
 
   const persistToggle = useCallback(async (key: string, value: boolean) => {
     try {
@@ -229,23 +218,42 @@ export function Privacy() {
             Mojang Metadata, Mojang Content, and Modloader Metadata &amp; Content are <strong>enabled by default</strong> under <strong>Privacy → Launch</strong>. Once files are cached, installed instances can launch with those categories disabled.
           </p>
         </div>
-        <Badge
-          variant="outline"
-          className={cn(
-            'shrink-0 text-[10px] font-semibold px-2 py-0.5 gap-1',
-            online
-              ? 'border-green-500/40 text-green-600 dark:text-green-400'
-              : 'border-amber-500/40 text-amber-600 dark:text-amber-400',
-          )}
-        >
-          <span
+        <div className="shrink-0 space-y-1 text-right">
+          <Badge
+            variant="outline"
             className={cn(
-              'inline-block h-1.5 w-1.5 rounded-full',
-              online ? 'bg-green-500' : 'bg-amber-500',
+              'text-[10px] font-semibold px-2 py-0.5 gap-1',
+              connectivity.state === 'reachable'
+                ? 'border-green-500/40 text-green-600 dark:text-green-400'
+                : connectivity.state === 'unreachable'
+                  ? 'border-amber-500/40 text-amber-600 dark:text-amber-400'
+                  : 'border-border text-muted-foreground',
             )}
-          />
-          {online ? 'Online' : 'Offline'}
-        </Badge>
+          >
+            <span
+              className={cn(
+                'inline-block h-1.5 w-1.5 rounded-full',
+                connectivity.state === 'reachable'
+                  ? 'bg-green-500'
+                  : connectivity.state === 'unreachable'
+                    ? 'bg-amber-500'
+                    : 'bg-muted-foreground/50',
+              )}
+            />
+            {connectivity.state === 'reachable'
+              ? 'Online'
+              : connectivity.state === 'unreachable'
+                ? "Can't reach the internet"
+                : 'No requests yet'}
+          </Badge>
+          <p className="text-[10px] text-muted-foreground max-w-[14rem]">
+            {connectivity.state === 'reachable'
+              ? 'Based on the last request Agora made.'
+              : connectivity.state === 'unreachable'
+                ? 'The last request could not connect. Check your connection or proxy settings.'
+                : 'Shows whether Agora can reach the internet once it makes a request.'}
+          </p>
+        </div>
       </div>
 
       {/* Lockdown toggle */}

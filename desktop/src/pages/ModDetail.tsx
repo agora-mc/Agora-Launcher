@@ -18,7 +18,9 @@ import {
   getCuratedAnnotation,
   getGovernanceSummary,
   getGovernanceConfig,
+  checkInstanceHealth,
   getInstanceDetail,
+  getGithubProfile,
   getItemVote,
   getRegistryItem,
   openExternalUrl,
@@ -200,6 +202,48 @@ const SANITIZE_SCHEMA: Schema = {
 
 type CuratorNotesRegistryItem = RegistryItem & { curator_notes?: string | null };
 
+const VOTE_EXPLAINER_KEY = 'agora-vote-explainer-acknowledged';
+
+/**
+ * A held key sends repeated keydown events, and each one presses the focused
+ * vote button again. Only the first press of a hold counts.
+ */
+function ignoreKeyRepeat(event: { repeat: boolean; preventDefault(): void }) {
+  if (event.repeat) event.preventDefault();
+}
+
+function voteExplainerAcknowledged(): boolean {
+  try {
+    return window.localStorage.getItem(VOTE_EXPLAINER_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function acknowledgeVoteExplainer() {
+  try {
+    window.localStorage.setItem(VOTE_EXPLAINER_KEY, '1');
+  } catch {
+    // Storage unavailable: the explainer simply shows again next time.
+  }
+}
+
+/**
+ * Whether a manifest entry's file is absent from mods/, by the same check the
+ * Health Check reports (`missing_files`), so Browse and Health agree.
+ *
+ * If the check itself fails, the file is not claimed missing: the manifest
+ * still records the entry, and the Health Check stays the authority.
+ */
+async function installedFileIsMissing(instanceId: string, entry: InstalledMod): Promise<boolean> {
+  try {
+    const report = await checkInstanceHealth(instanceId);
+    return (report.missing_files ?? []).includes(entry.filename);
+  } catch {
+    return false;
+  }
+}
+
 export function ModDetail({ itemId, initialInstanceId, requestedContentType, onBack, onOpenInstanceEditor }: { itemId: string; initialInstanceId?: string; requestedContentType?: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
   const [item, setItem] = useState<RegistryItem | null>(null);
   // Which format of a multi-format project the user is after. Seeded from the
@@ -254,6 +298,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   const [governanceConfig, setGovernanceConfig] = useState<GovernanceConfig | null>(null);
   const [itemVoteState, setItemVoteState] = useState<ItemVoteState | null>(null);
   const [votePending, setVotePending] = useState(false);
+  // State lags a render behind, so a second press can arrive before votePending
+  // is true. This ref is set at once and covers the confirm step too.
+  const voteInFlight = useRef(false);
   const [voteLoadError, setVoteLoadError] = useState<string | null>(null);
   const governanceLoadedForRef = useRef<string | null>(null);
 
@@ -274,8 +321,17 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   // manifest corresponds to this mod. Separate trackers for the header
   // (browse-context instance), the install-flow dialog, and the versions tab.
   const [contextInstalledEntry, setContextInstalledEntry] = useState<InstalledMod | null>(null);
+  // The instance an install just ran against, so the page can show the new
+  // installed state; `installRefresh` re-reads the instance when the flow closes.
+  const [lastInstallTarget, setLastInstallTarget] = useState<string | null>(null);
+  const [installRefresh, setInstallRefresh] = useState(0);
   const [flowInstalledEntry, setFlowInstalledEntry] = useState<InstalledMod | null>(null);
   const [versionsTabInstalledEntry, setVersionsTabInstalledEntry] = useState<InstalledMod | null>(null);
+  // The entry is in the manifest but its file is gone from mods/ (Health Check
+  // `missing_files`). Each tracker has its own flag, set alongside its entry.
+  const [contextFileMissing, setContextFileMissing] = useState(false);
+  const [flowFileMissing, setFlowFileMissing] = useState(false);
+  const [versionsTabFileMissing, setVersionsTabFileMissing] = useState(false);
 
   // Whether versions should be sorted purely by date (ignoring stable vs prerelease)
   const [versionSortByDate, setVersionSortByDate] = useState(false);
@@ -753,42 +809,66 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     return null;
   }, [itemId, item?.modrinth_id]);
 
+  const contextInstanceId = lastInstallTarget ?? initialInstanceId ?? null;
+
   // Header banner: when arriving with an instance context, surface the
   // installed state up front.
   useEffect(() => {
-    if (!initialInstanceId) {
+    if (!contextInstanceId) {
       setContextInstalledEntry(null);
+      setContextFileMissing(false);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const detail = await getInstanceDetail(initialInstanceId);
-        if (!cancelled) setContextInstalledEntry(findInstalledEntry(detail));
+        const detail = await getInstanceDetail(contextInstanceId);
+        const entry = findInstalledEntry(detail);
+        if (cancelled) return;
+        setContextInstalledEntry(entry);
+        setContextFileMissing(false);
+        if (entry) {
+          const missing = await installedFileIsMissing(contextInstanceId, entry);
+          if (!cancelled) setContextFileMissing(missing);
+        }
       } catch {
-        if (!cancelled) setContextInstalledEntry(null);
+        if (!cancelled) {
+          setContextInstalledEntry(null);
+          setContextFileMissing(false);
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [initialInstanceId, findInstalledEntry]);
+  }, [contextInstanceId, findInstalledEntry, installRefresh]);
 
   // Versions tab: track the installed entry for the picked instance.
   useEffect(() => {
     if (!versionsTabInstanceId) {
       setVersionsTabInstalledEntry(null);
+      setVersionsTabFileMissing(false);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
         const detail = await getInstanceDetail(versionsTabInstanceId);
-        if (!cancelled) setVersionsTabInstalledEntry(findInstalledEntry(detail));
+        const entry = findInstalledEntry(detail);
+        if (cancelled) return;
+        setVersionsTabInstalledEntry(entry);
+        setVersionsTabFileMissing(false);
+        if (entry) {
+          const missing = await installedFileIsMissing(versionsTabInstanceId, entry);
+          if (!cancelled) setVersionsTabFileMissing(missing);
+        }
       } catch {
-        if (!cancelled) setVersionsTabInstalledEntry(null);
+        if (!cancelled) {
+          setVersionsTabInstalledEntry(null);
+          setVersionsTabFileMissing(false);
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [versionsTabInstanceId, findInstalledEntry]);
+  }, [versionsTabInstanceId, findInstalledEntry, installRefresh]);
 
   const loadMoreVersions = useCallback(async () => {
     if (!selectedInstanceId || loadingMoreVersions || !hasMoreVersions) return;
@@ -922,8 +1002,10 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     }
   })();
   const showIcon = item.icon_url != null && item.icon_url.startsWith('https://');
-  const velocityLabel =
-    item.velocity > 0 ? `▲ ${item.velocity.toFixed(1)}` : item.velocity < 0 ? `▼ ${item.velocity.toFixed(1)}` : '0.0';
+  // Plain words for the recent vote direction; the raw velocity number means
+  // little to a player, so it is not shown.
+  const trendPhrase =
+    item.velocity > 0 ? 'votes trending up' : item.velocity < 0 ? 'votes trending down' : 'votes steady';
 
   const handleTechnicInstall = async () => {
     if (!technicDetail) return;
@@ -985,6 +1067,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     setSelectedCandidate(null);
     setInstances([]);
     setFlowInstalledEntry(null);
+    setFlowFileMissing(false);
     setInstancesLoading(true);
     try {
       const all = await listInstances();
@@ -1015,7 +1098,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     setLoadingMoreVersions(false);
     try {
       const detail = await getInstanceDetail(selectedInstanceId).catch(() => null);
-      setFlowInstalledEntry(findInstalledEntry(detail));
+      const flowEntry = findInstalledEntry(detail);
+      setFlowInstalledEntry(flowEntry);
+      setFlowFileMissing(flowEntry ? await installedFileIsMissing(selectedInstanceId, flowEntry) : false);
       if (isModrinthInstall) {
         const vers = await listRawModrinthVersions(selectedInstanceId, item.modrinth_id!, installType);
         setModrinthCandidates(vers);
@@ -1090,6 +1175,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     setSelectedCandidate(null);
     setSelectedModrinthCandidate(null);
     setFlowInstalledEntry(null);
+    setFlowFileMissing(false);
   };
 
   // Inline create: submit handler
@@ -1162,10 +1248,38 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     }
   };
 
-  const handleVote = async (direction: ItemVote) => {
+  const castVote = async (direction: ItemVote) => {
     if (!item || item.id !== itemId || !itemVoteState || votePending) return;
     const previous = itemVoteState;
     const desired = !previous.conflicted && previous.vote === direction ? null : direction;
+    // The first vote ever explains that it is public; removing a vote does not need it.
+    if (desired !== null && !voteExplainerAcknowledged()) {
+      setVotePending(true);
+      let login: string | null = null;
+      try {
+        login = (await getGithubProfile())?.login ?? null;
+      } catch {
+        login = null;
+      }
+      const proceed = await confirm({
+        title: 'Votes are public',
+        body: (
+          <>
+            Your vote is a public GitHub reaction, posted as{' '}
+            <strong>{login ? `@${login}` : 'your GitHub account'}</strong>. Anyone can see it on GitHub.
+            You will not be asked again.
+          </>
+        ),
+        confirmLabel: 'Vote publicly',
+        cancelLabel: 'Cancel',
+      });
+      if (!proceed) {
+        setVotePending(false);
+        return;
+      }
+      acknowledgeVoteExplainer();
+      setVotePending(false);
+    }
     setVotePending(true);
     try {
       const next = await setItemVote(item.id, desired);
@@ -1185,6 +1299,18 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
       showToast(formatError(voteError), 'error');
     } finally {
       setVotePending(false);
+    }
+  };
+
+  // The arrows use aria-disabled while a vote is in flight, not disabled: a
+  // disabled button drops keyboard focus to the body.
+  const handleVote = async (direction: ItemVote) => {
+    if (voteInFlight.current) return;
+    voteInFlight.current = true;
+    try {
+      await castVote(direction);
+    } finally {
+      voteInFlight.current = false;
     }
   };
 
@@ -1219,11 +1345,37 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
         </div>
       )}
 
-      {contextInstalledEntry && (
+      {curatedAnnotation?.curator_warning && (
+        <div
+          role="note"
+          aria-label="Curator warning"
+          className="rounded-lg border border-amber-600/50 bg-amber-100 px-4 py-3 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100"
+        >
+          <div className="flex items-center gap-2 font-semibold">
+            <span aria-hidden>⚠️</span>
+            <span>Curator warning</span>
+          </div>
+          <p className="mt-1 whitespace-pre-wrap">{curatedAnnotation.curator_warning}</p>
+        </div>
+      )}
+
+      {contextInstalledEntry && contextFileMissing && (
+        <div role="alert" className="rounded-lg border border-amber-500 bg-amber-500/10 px-4 py-3 text-sm">
+          <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-300">
+            <span aria-hidden>!</span>
+            <span>Missing file in {versionsTabInstances.find((instance) => instance.instance_id === contextInstanceId)?.name ?? contextInstanceId}</span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Version {contextInstalledEntry.version ?? 'unknown'} is listed as installed, but {contextInstalledEntry.filename} is
+            not in the mods folder, so the game will not load it. Reinstalling puts the file back.
+          </p>
+        </div>
+      )}
+      {contextInstalledEntry && !contextFileMissing && (
         <div className="rounded-lg border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
           <div className="flex items-center gap-2 font-semibold">
             <span aria-hidden>✓</span>
-            <span>Already installed in {versionsTabInstances.find((instance) => instance.instance_id === initialInstanceId)?.name ?? initialInstanceId}</span>
+            <span>Already installed in {versionsTabInstances.find((instance) => instance.instance_id === contextInstanceId)?.name ?? contextInstanceId}</span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             Version {contextInstalledEntry.version ?? 'unknown'} · {contextInstalledEntry.filename}
@@ -1274,7 +1426,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
         </section>
       )}
 
-      <section className="rounded-xl border border-border bg-card p-6">
+      {/* Flex column: `order` puts the community votes above the install controls
+          on screen, while the DOM (so Tab order) reaches the install controls first. */}
+      <section className="flex flex-col rounded-xl border border-border bg-card p-6">
         <div className="flex items-start gap-4">
           {(modrinthProject?.icon_url || showIcon) && (
             <img
@@ -1345,98 +1499,11 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                 ))}
               </div>
             )}
-            <p className="text-xs text-muted-foreground mt-1 break-all">
-              {modrinthProject ? item.id : item.source_identifier}
-            </p>
             {modrinthProject?.description && (
               <p className="text-sm text-foreground mt-2">{modrinthProject.description}</p>
             )}
             {!modrinthProject && item.description && (
               <p className="text-sm text-foreground mt-2">{item.description}</p>
-            )}
-            {isRegistryBacked && !item.is_immune && governanceSummary?.vote_issue_number ? (
-              <div className="mt-3 space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <button
-                    type="button"
-                    aria-label={`Upvote ${item.name}. ${item.upvotes} upvotes.`}
-                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'}
-                    disabled={authed !== true || !itemVoteState || votePending}
-                    onClick={() => handleVote('upvote')}
-                    data-tour="mod-detail-upvote"
-                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                      !itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'
-                        ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                        : 'border-border text-muted-foreground hover:border-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300'
-                    }`}
-                  >
-                    <ArrowUp aria-hidden size={15} />
-                    <span>{item.upvotes}</span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Downvote ${item.name}. ${item.downvotes} downvotes.`}
-                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'}
-                    disabled={authed !== true || !itemVoteState || votePending}
-                    onClick={() => handleVote('downvote')}
-                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                      !itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'
-                        ? 'border-rose-500 bg-rose-500/15 text-rose-700 dark:text-rose-300'
-                        : 'border-border text-muted-foreground hover:border-rose-500 hover:text-rose-700 dark:hover:text-rose-300'
-                    }`}
-                  >
-                    <ArrowDown aria-hidden size={15} />
-                    <span>{item.downvotes}</span>
-                  </button>
-                  <span className="text-muted-foreground">
-                    net {item.net_score} · velocity {velocityLabel}
-                  </span>
-                </div>
-                <p className="text-[11px] text-muted-foreground" role="status">
-                  {votePending
-                    ? 'Updating your public GitHub vote…'
-                    : authed === false
-                      ? 'Sign in with GitHub in Settings to vote.'
-                      : voteLoadError
-                        ? `Your vote could not be loaded: ${voteLoadError}`
-                        : itemVoteState?.conflicted
-                          ? 'Conflicting reactions detected. Choose one direction to resolve them.'
-                          : itemVoteState?.vote
-                            ? `Your ${itemVoteState.vote} is recorded. Published scores update after the next registry build.`
-                            : 'Votes are public GitHub reactions. Published scores update after the next catalog build.'}
-                </p>
-              </div>
-            ) : isRegistryBacked ? (
-              // Curated but no vote thread yet (governance_summary has no row
-              // for it). Show the counts and say why voting is unavailable
-              // rather than silently rendering a dead score line.
-              <div className="mt-3 space-y-1">
-                <p className="text-xs text-muted-foreground">
-                  ↑ {item.upvotes} · ↓ {item.downvotes} · net {item.net_score} · velocity {velocityLabel}
-                </p>
-                {!item.is_immune && (
-                  <p className="text-xs text-muted-foreground">
-                    Voting opens once this entry has a catalog vote thread.
-                  </p>
-                )}
-              </div>
-            ) : (
-              // Non-curated items have no Agora score, so the same slot shows
-              // the source's own popularity signals instead of nothing.
-              (() => {
-                const stats: string[] = [];
-                if (technicDetail) {
-                  stats.push(`${technicDetail.installs.toLocaleString()} installs`);
-                  // Technic's counter is likes (`ratings`), not followers.
-                  stats.push(`${technicDetail.likes.toLocaleString()} likes`);
-                } else if (modrinthProject) {
-                  stats.push(`${modrinthProject.downloads.toLocaleString()} downloads`);
-                  stats.push(`${modrinthProject.followers.toLocaleString()} followers`);
-                }
-                return stats.length > 0 ? (
-                  <p className="text-xs text-muted-foreground mt-3">{stats.join(' · ')}</p>
-                ) : null;
-              })()
             )}
             {item.date_added && (
               <p className="text-xs text-muted-foreground mt-1">
@@ -1462,7 +1529,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap gap-2">
+        <div className="order-2 mt-5 flex flex-wrap gap-2">
           {item.content_type === 'pack' && item.download_strategy === 'provider_pack' ? (
             <button
               onClick={handleProviderPackInstall}
@@ -1484,12 +1551,14 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
               data-tour="mod-detail-install"
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              Install to Instance
+              {contextInstalledEntry
+                ? (contextFileMissing ? 'Missing file · Reinstall' : 'Installed ✓ · Change version')
+                : 'Install to Instance'}
             </button>
           )}
         </div>
         {showInstallFlow && (
-          <section className="mt-4 rounded-xl border border-border bg-card p-4 space-y-4" data-tour="install-panel">
+          <section className="order-2 mt-4 rounded-xl border border-border bg-card p-4 space-y-4" data-tour="install-panel">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold text-sm">Install to Instance</h3>
               <button
@@ -1624,7 +1693,13 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
             {/* Step 2: Version picker */}
             {selectedInstanceId && phase !== 'idle' && phase !== 'installing' && phase !== 'done' && (
               <div>
-                {flowInstalledEntry && (
+                {flowInstalledEntry && flowFileMissing && (
+                  <div role="alert" className="mb-2 rounded-lg border border-amber-500 bg-amber-500/10 px-3 py-2 text-xs">
+                    <strong>Missing file:</strong> version {flowInstalledEntry.version ?? 'unknown'} is listed, but {flowInstalledEntry.filename}
+                    {' '}is not in the mods folder. Installing it again puts the file back.
+                  </div>
+                )}
+                {flowInstalledEntry && !flowFileMissing && (
                   <div className="mb-2 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
                     <strong>Already installed:</strong> version {flowInstalledEntry.version ?? 'unknown'} ({flowInstalledEntry.filename}
                     {flowInstalledEntry.enabled === false ? ', disabled' : ''}). Installing a different
@@ -1639,7 +1714,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                     data-tour="install-confirm"
                     className="mb-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
-                    {flowInstalledEntry ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
+                    {flowInstalledEntry && !flowFileMissing ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
                   </button>
                 )}
                 {phase === 'loadingVersions' ? (
@@ -1879,13 +1954,116 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           </section>
         )}
 
+        {(isRegistryBacked || technicDetail || modrinthProject) && (
+          // Its own area, apart from the install controls: a vote is a public
+          // GitHub reaction, so the arrows should not sit beside Install.
+          <div className="order-1 mt-5 border-t border-border pt-4" data-testid="mod-detail-community">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Community</p>
+            {isRegistryBacked && !item.is_immune && governanceSummary?.vote_issue_number ? (
+              <div className="mt-5 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+                  <div className="inline-flex items-center gap-3">
+                  <button
+                    type="button"
+                    aria-label={`Upvote ${item.name}. ${item.upvotes} upvotes.`}
+                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'}
+                    aria-disabled={votePending}
+                    disabled={authed !== true || !itemVoteState}
+                    onClick={() => handleVote('upvote')}
+                    onKeyDown={ignoreKeyRepeat}
+                    data-tour="mod-detail-upvote"
+                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-wait aria-disabled:opacity-60 ${
+                      !itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'
+                        ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                        : 'border-border text-muted-foreground hover:border-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300'
+                    }`}
+                  >
+                    <ArrowUp aria-hidden size={15} />
+                    <span>{item.upvotes}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Downvote ${item.name}. ${item.downvotes} downvotes.`}
+                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'}
+                    aria-disabled={votePending}
+                    disabled={authed !== true || !itemVoteState}
+                    onClick={() => handleVote('downvote')}
+                    onKeyDown={ignoreKeyRepeat}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-wait aria-disabled:opacity-60 ${
+                      !itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'
+                        ? 'border-rose-500 bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                        : 'border-border text-muted-foreground hover:border-rose-500 hover:text-rose-700 dark:hover:text-rose-300'
+                    }`}
+                  >
+                    <ArrowDown aria-hidden size={15} />
+                    <span>{item.downvotes}</span>
+                  </button>
+                  </div>
+                  <span className="text-muted-foreground">
+                    Net score {item.net_score} · {trendPhrase}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground" role="status">
+                  {votePending
+                    ? 'Updating your public GitHub vote…'
+                    : authed === false
+                      ? 'Sign in with GitHub in Settings to vote.'
+                      : voteLoadError
+                        ? `Your vote could not be loaded: ${voteLoadError}`
+                        : itemVoteState?.conflicted
+                          ? 'Conflicting reactions detected. Choose one direction to resolve them.'
+                          : itemVoteState?.vote
+                            ? `Your ${itemVoteState.vote} is recorded. Published scores update after the next registry build.`
+                            : 'Votes are public GitHub reactions. Published scores update after the next catalog build.'}
+                </p>
+              </div>
+            ) : isRegistryBacked ? (
+              // Curated but no vote thread yet (governance_summary has no row
+              // for it). Show the counts and say why voting is unavailable
+              // rather than silently rendering a dead score line.
+              <div className="mt-3 space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  {item.upvotes} up · {item.downvotes} down · net score {item.net_score} · {trendPhrase}
+                </p>
+                {!item.is_immune && (
+                  <p className="text-xs text-muted-foreground">
+                    Voting opens once this entry has a catalog vote thread.
+                  </p>
+                )}
+              </div>
+            ) : (
+              // Non-curated items have no Agora score, so the same slot shows
+              // the source's own popularity signals instead of nothing.
+              (() => {
+                const stats: string[] = [];
+                if (technicDetail) {
+                  stats.push(`${technicDetail.installs.toLocaleString()} installs`);
+                  // Technic's counter is likes (`ratings`), not followers.
+                  stats.push(`${technicDetail.likes.toLocaleString()} likes`);
+                } else if (modrinthProject) {
+                  stats.push(`${modrinthProject.downloads.toLocaleString()} downloads`);
+                  stats.push(`${modrinthProject.followers.toLocaleString()} followers`);
+                }
+                return stats.length > 0 ? (
+                  <p className="text-xs text-muted-foreground mt-3">{stats.join(' · ')}</p>
+                ) : null;
+              })()
+            )}
+          </div>
+        )}
+
+
         {canonicalInstall && (
           <InstallFlow
             open
             intent={canonicalInstall.intent}
             instanceName={canonicalInstall.instanceName}
             onOpenInstance={onOpenInstanceEditor}
-            onClose={() => setCanonicalInstall(null)}
+            onClose={() => {
+              setLastInstallTarget(canonicalInstall.intent.targetInstance);
+              setInstallRefresh((value) => value + 1);
+              setCanonicalInstall(null);
+            }}
           />
         )}
 
@@ -2055,16 +2233,18 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                               <span className="inline-flex items-center gap-1.5">
                                 {v.name || v.version}
                                 {candidateIsPrerelease(v) && (
-                                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                  <span className="whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
                                 )}
                               </span>
                               {versionsTabInstalledEntry?.version === v.version && (
-                                <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                                versionsTabFileMissing
+                                  ? <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">missing file</span>
+                                  : <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
                               )}
                             </td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.mc_versions.join(', ') || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.loaders.join(', ') || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.mc_versions.join(', ') || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.loaders.join(', ') || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
                           </tr>
                         );
                       });
@@ -2227,16 +2407,18 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                               <span className="inline-flex items-center gap-1.5">
                                 {v.version}
                                 {candidateIsPrerelease(v) && (
-                                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                  <span className="whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
                                 )}
                               </span>
                               {versionsTabInstalledEntry?.version === v.version && (
-                                <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                                versionsTabFileMissing
+                                  ? <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">missing file</span>
+                                  : <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
                               )}
                             </td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.mc_version || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.loader || '—'}</td>
-                            <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.mc_version || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.loader || '—'}</td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
                           </tr>
                         );
                       });
@@ -2531,7 +2713,10 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           <div>
             <h3 className="font-semibold text-sm mb-2">Curated Score</h3>
             <p className="text-xs text-muted-foreground">
-              Upvotes: {item.upvotes} &middot; Downvotes: {item.downvotes} &middot; Net: {item.net_score} &middot; Velocity: {velocityLabel}
+              Upvotes: {item.upvotes} &middot; Downvotes: {item.downvotes} &middot; Net score: {item.net_score} &middot; Recent {trendPhrase}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Net score is upvotes minus downvotes. Recent votes show which way the score has been moving lately.
             </p>
           </div>
 

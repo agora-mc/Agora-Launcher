@@ -12,6 +12,8 @@ export interface RegistryItem {
   author: string | null;
   content_type: string;
   curator_note: string;
+  /// The curator's plain-text install warning. Null when the item has none.
+  curator_warning?: string | null;
   description: string | null;
   body_markdown: string | null;
   status: string;

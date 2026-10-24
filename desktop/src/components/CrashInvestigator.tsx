@@ -12,17 +12,26 @@ import {
   investigateCrash,
   investigateInstanceEvidence,
   investigateManual,
+  checkInstanceHealth,
+  getInstanceDetail,
+  listRawModrinthVersions,
   pickAndInvestigateCrashEvidence,
   readCrashLog,
   reportStillCrashing,
   restoreSnapshot,
   type DisablePlan,
   type CrashInvestigation,
+  type HealthBlocker,
+  type InstalledMod,
   type InvestigationResult,
   type SuspectScore,
   type SuggestedAction,
 } from '../lib/tauri';
 import { DependencyPrompt } from './DependencyPrompt';
+import { Button } from '@/components/ui/button';
+import { InstallFlow } from './InstallFlow';
+import type { InstallIntent } from '../lib/installFlow';
+import { reinstallIntent, reinstallSourceFor, type ReinstallSource } from '../lib/missingFileReinstall';
 import { tryEarnInteraction } from '../features/interactive/live/interactionAchievements';
 import type { ProcessState } from '../lib/useProcessController';
 import type { LaunchStartOutcome } from '../lib/useProcessController';
@@ -298,6 +307,63 @@ export function CrashInvestigator({
   const [pasteText, setPasteText] = useState('');
   const cancelledRef = useRef(false);
   const closeInProgressRef = useRef(false);
+  // Mod problems the Health Check reports for this instance. They come first,
+  // because a missing or broken dependency explains a crash before any log
+  // clue does. This reads the health check's own cached report; it is not a
+  // second scan. `failed` is shown as such rather than as "no problems".
+  const [healthBlockers, setHealthBlockers] = useState<HealthBlocker[] | 'loading' | 'failed'>('loading');
+  const [manifestMods, setManifestMods] = useState<InstalledMod[] | 'loading' | 'failed'>('loading');
+  const [reinstall, setReinstall] = useState<InstallIntent | null>(null);
+  const [reinstallBusy, setReinstallBusy] = useState<string | null>(null);
+  const [reinstallError, setReinstallError] = useState<string | null>(null);
+
+  const refreshHealthBlockers = useCallback(async () => {
+    try {
+      const report = await checkInstanceHealth(instanceId);
+      setHealthBlockers(report.blockers);
+    } catch {
+      setHealthBlockers('failed');
+    }
+  }, [instanceId]);
+
+  useEffect(() => {
+    void refreshHealthBlockers();
+  }, [refreshHealthBlockers]);
+
+  // The manifest is only needed to offer Reinstall for a missing file.
+  useEffect(() => {
+    if (!Array.isArray(healthBlockers) || !healthBlockers.some((b) => b.missing_file)) return;
+    let cancelled = false;
+    getInstanceDetail(instanceId).then(
+      (detail) => { if (!cancelled) setManifestMods(detail?.manifest?.mods ?? []); },
+      () => { if (!cancelled) setManifestMods('failed'); },
+    );
+    return () => { cancelled = true; };
+  }, [instanceId, healthBlockers]);
+
+  // Same fix as the Health Check's Reinstall: the install review, from the
+  // version the instance records. Modrinth keys by version id, so look it up.
+  const startHealthReinstall = async (entry: InstalledMod, source: ReinstallSource) => {
+    setReinstallBusy(entry.filename);
+    setReinstallError(null);
+    try {
+      if (source.kind === 'curated') {
+        setReinstall(reinstallIntent(instanceId, 'curated', source.itemId, source.version));
+        return;
+      }
+      const versions = await listRawModrinthVersions(instanceId, source.projectId, 'mod');
+      const match = versions.find((candidate) => candidate.version === source.version);
+      if (!match) {
+        setReinstallError(`Modrinth no longer lists version ${source.version} of ${entry.filename}. Find it in Browse instead.`);
+        return;
+      }
+      setReinstall(reinstallIntent(instanceId, 'modrinth', source.projectId, match.version_id));
+    } catch (e) {
+      setReinstallError(formatError(e));
+    } finally {
+      setReinstallBusy(null);
+    }
+  };
   const pendingLaunchRef = useRef(false);
   const stackedHealthDialogRef = useRef(false);
 
@@ -895,7 +961,7 @@ export function CrashInvestigator({
 
   return (
     <>
-      <Dialog open onOpenChange={handleDialogOpenChange}>
+      <Dialog open={reinstall === null} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="max-h-[90vh] max-w-5xl overflow-hidden flex flex-col">
           <div className="flex items-start justify-between gap-4 border-b border-border pb-4 pr-6 shrink-0">
           <div className="flex-1 min-w-0">
@@ -928,13 +994,62 @@ export function CrashInvestigator({
         </div>
 
         <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+          {healthBlockers === 'failed' && (
+            <div role="alert" className="rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+              We couldn’t check this instance’s mods, so a missing or broken mod may not be listed here. Open the Health Check for the full picture.
+            </div>
+          )}
+          {Array.isArray(healthBlockers) && healthBlockers.length > 0 && (
+            <section aria-label="Mod problems to fix first" className="rounded-lg border border-destructive bg-destructive/10 p-3">
+              <p className="text-sm font-semibold text-destructive">
+                Before digging into the crash: {healthBlockers.length} {healthBlockers.length === 1 ? 'mod problem' : 'mod problems'} to fix
+              </p>
+              <ul className="mt-2 space-y-2">
+                {healthBlockers.map((b, i) => (
+                  <li key={`${b.kind}:${b.mod_id ?? b.filename ?? i}`} className="text-xs">
+                    <p className="text-destructive">{b.message}</p>
+                    {b.suggested_action && <p className="mt-0.5 text-muted-foreground">{b.suggested_action}</p>}
+                    {b.missing_file && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        {manifestMods === 'loading' ? (
+                          <span className="text-muted-foreground">Checking where {b.missing_file} came from…</span>
+                        ) : (() => {
+                          const entry = Array.isArray(manifestMods)
+                            ? manifestMods.find((mod) => mod.filename === b.missing_file) ?? null
+                            : null;
+                          const source = entry ? reinstallSourceFor(entry) : null;
+                          return entry && source ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={reinstallBusy !== null}
+                              title="Review a reinstall of this version"
+                              onClick={() => void startHealthReinstall(entry, source)}
+                            >
+                              {reinstallBusy === entry.filename ? 'Preparing…' : 'Reinstall'}
+                            </Button>
+                          ) : (
+                            <span className="text-muted-foreground">{b.missing_file} is missing from mods/. Find it in Browse.</span>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {reinstallError && <p role="alert" className="mt-2 text-xs text-destructive">{reinstallError}</p>}
+            </section>
+          )}
           <div className="rounded-lg border border-border bg-muted/40 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-sm font-semibold">What we checked</p>
                 <p className="text-xs text-muted-foreground">
                   {evidence
-                    ? `We checked ${evidence.evidence.sources.length} file${evidence.evidence.sources.length === 1 ? '' : 's'} from your game folder — nothing was sent online`
+                    ? evidence.evidence.sources.length > 0
+                      ? `We checked ${evidence.evidence.sources.length} file${evidence.evidence.sources.length === 1 ? '' : 's'} from your game folder — nothing was sent online`
+                      // Zero files read is not a clean bill of health: this only reads crash logs.
+                      : 'No crash logs yet: this checks what happened in a crashed game, not whether the setup is ready'
                     : manualLogText || crashFilename
                       ? 'Using the crash info you shared'
                       : 'No recent crash files were found'}
@@ -1149,6 +1264,18 @@ export function CrashInvestigator({
         </div>
         </DialogContent>
       </Dialog>
+
+      {reinstall && (
+        <InstallFlow
+          open
+          intent={reinstall}
+          instanceName={instanceId}
+          onClose={() => {
+            setReinstall(null);
+            void refreshHealthBlockers();
+          }}
+        />
+      )}
 
       {/* Disable dependency prompt */}
       {disablePlanTarget && (

@@ -1,11 +1,24 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { describeRequirement } from '@/lib/healthSummary';
 import {
   checkInstanceHealth,
   disableModForTest,
+  formatError,
+  getInstanceDetail,
+  listRawModrinthVersions,
   type HealthReport,
+  type InstalledMod,
   type LoaderCompatibilityIssue,
   type RequirementVerdict,
 } from '@/lib/tauri';
+import type { InstallIntent } from '@/lib/installFlow';
+import {
+  reinstallIntent,
+  reinstallSourceFor,
+  searchQueryForFile,
+  type ReinstallSource,
+} from '@/lib/missingFileReinstall';
+import { InstallFlow } from './InstallFlow';
 import {
   activeHealthWarnings,
   healthWarningKey,
@@ -44,12 +57,8 @@ interface HealthDialogProps {
   reviewOnly?: boolean;
   /** Synchronizes a repair result with periodic instance-card health state. */
   onReportChanged?: (report: HealthReport) => void;
-}
-
-function verdictLabel(verdict: RequirementVerdict): string {
-  if (verdict === 'satisfied') return 'Satisfied';
-  if (verdict === 'unsatisfied') return 'Unsatisfied';
-  return 'Unsupported';
+  /** Open Browse with this search ("Find <mod>" on a missing dependency). */
+  onFindMod?: (query: string) => void;
 }
 
 function verdictKey(verdict: RequirementVerdict): string {
@@ -94,25 +103,19 @@ function groupRequirements(issue: LoaderCompatibilityIssue, satisfied: boolean):
   return [...groups.values()].sort((left, right) => left.targetId.localeCompare(right.targetId));
 }
 
-function RequirementGroupCard({ group }: { group: RequirementGroup }) {
-  const predicate = group.versionRanges.length > 0
-    ? group.versionRanges.join(' or ')
-    : 'any version';
+function RequirementGroupCard({ group, loader }: { group: RequirementGroup; loader: string }) {
   const affectedLabel = group.modIds.length === 1
     ? '1 affected mod'
     : `${group.modIds.length} affected mods`;
   return (
     <div className="rounded-sm border border-border bg-background/60 p-2">
-      <p className="text-xs font-medium">
-        {group.targetId} {predicate}
-        <span className="ml-1 text-muted-foreground">({verdictLabel(group.verdict)})</span>
-      </p>
+      <p className="text-xs font-medium">{describeRequirement(group, loader)}</p>
       {group.candidateVersion && (
         <p className="text-xs text-muted-foreground">
-          Current loader provides {group.candidateVersion}
+          This instance provides {group.candidateVersion}
         </p>
       )}
-      {group.modIds.length > 0 && (
+      {group.modIds.length > 1 && (
         <details className="mt-1">
           <summary className="cursor-pointer select-none text-xs text-muted-foreground">
             {affectedLabel}
@@ -242,10 +245,10 @@ function LoaderCompatibilityCard({
       {unresolvedRequirements.length > 0 && (
         <div className="mt-2 space-y-2">
           <p className="text-xs font-medium text-destructive">
-            Unresolved requirements ({unresolvedRequirements.length})
+            Not met ({unresolvedRequirements.length})
           </p>
           {unresolvedRequirements.map((group, index) => (
-            <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} />
+            <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} loader={issue.loader} />
           ))}
         </div>
       )}
@@ -253,8 +256,8 @@ function LoaderCompatibilityCard({
       {(issue.conflicts.length > 0 || indeterminateVersions.length > 0 || satisfiedRequirements.length > 0) && (
         <details className="mt-2">
           <summary className="cursor-pointer select-none text-xs font-medium">
-            View compatibility evidence
-            {satisfiedRequirements.length > 0 ? ` (${satisfiedRequirements.length} satisfied)` : ''}
+            Advanced details
+            {satisfiedRequirements.length > 0 ? ` (${satisfiedRequirements.length} checks passed)` : ''}
             {issue.conflicts.length > 0 ? ` · ${issue.conflicts.length} conflict${issue.conflicts.length > 1 ? 's' : ''}` : ''}
           </summary>
           <div className="mt-2 space-y-2">
@@ -265,7 +268,7 @@ function LoaderCompatibilityCard({
               </p>
             )}
             {satisfiedRequirements.map((group, index) => (
-              <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} />
+              <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} loader={issue.loader} />
             ))}
             {issue.conflicts.map((conflict, index) => (
               <div key={`conflict-${index}`} className="rounded-sm border border-destructive bg-background/60 p-2">
@@ -294,6 +297,7 @@ export function HealthDialog({
   onSwitchLoader,
   reviewOnly = false,
   onReportChanged,
+  onFindMod,
 }: HealthDialogProps) {
   const [report, setReport] = useState<HealthReport>(initialReport);
   const [error, setError] = useState<string | null>(null);
@@ -304,6 +308,12 @@ export function HealthDialog({
   const [fixing, setFixing] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
   const [confirmingBlockers, setConfirmingBlockers] = useState(false);
+  // Reinstalling a missing file runs the normal install review. `manifestMods`
+  // tells us where each missing file came from: 'loading' until the manifest
+  // is read, 'failed' if it could not be read (no reinstall offered).
+  const [manifestMods, setManifestMods] = useState<InstalledMod[] | 'loading' | 'failed'>('loading');
+  const [reinstallBusy, setReinstallBusy] = useState<string | null>(null);
+  const [reinstall, setReinstall] = useState<InstallIntent | null>(null);
 
   // Scroll container ref — reset to top whenever the report changes so a long
   // list of findings always starts at the top instead of clipping out of view.
@@ -347,6 +357,55 @@ export function HealthDialog({
       setFixing(null);
     }
   }, [reviewOnly, instanceId, replaceReport]);
+
+  const missingFiles = report.missing_files ?? [];
+
+  useEffect(() => {
+    if (missingFiles.length === 0) return;
+    let cancelled = false;
+    setManifestMods('loading');
+    (async () => {
+      try {
+        const detail = await getInstanceDetail(instanceId);
+        if (!cancelled) setManifestMods(detail?.manifest?.mods ?? []);
+      } catch {
+        if (!cancelled) setManifestMods('failed');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [instanceId, report.missing_files]);
+
+  const startReinstall = async (entry: InstalledMod, source: ReinstallSource) => {
+    setReinstallBusy(entry.filename);
+    setError(null);
+    try {
+      if (source.kind === 'curated') {
+        setReinstall(reinstallIntent(instanceId, 'curated', source.itemId, source.version));
+        return;
+      }
+      // Modrinth installs are keyed by version id, which the manifest does not
+      // keep. Find the recorded version number among the project's versions.
+      const versions = await listRawModrinthVersions(instanceId, source.projectId, 'mod');
+      const match = versions.find((candidate) => candidate.version === source.version);
+      if (!match) {
+        setError(`Modrinth no longer lists version ${source.version} of ${entry.filename}. Find it in Browse instead.`);
+        return;
+      }
+      setReinstall(reinstallIntent(instanceId, 'modrinth', source.projectId, match.version_id));
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setReinstallBusy(null);
+    }
+  };
+
+  const refreshAfterReinstall = async () => {
+    try {
+      replaceReport(await checkInstanceHealth(instanceId));
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
 
   const handleSilence = useCallback(async (key: string, isMuted: boolean) => {
     const muted = new Set(preferences.mutedWarnings);
@@ -415,13 +474,16 @@ export function HealthDialog({
 
   return (
     <>
-      <Dialog open onOpenChange={(open) => { if (!open && !launching) onCancel(); }}>
+      <Dialog open={reinstall === null} onOpenChange={(open) => { if (!open && !launching) onCancel(); }}>
         <DialogContent className="max-w-lg max-h-[85vh] flex flex-col gap-3">
         <DialogTitle>Health Check</DialogTitle>
         <DialogDescription>
-          {reviewOnly
-            ? `${instanceName} has health findings that need review or repair.`
-            : `${instanceName} has warnings or blockers that should be reviewed before launch.`}
+          {/* The sentence must match the result shown below it. */}
+          {effectiveScore === 'green'
+            ? `${instanceName} has no health findings.`
+            : reviewOnly
+              ? `${instanceName} has health findings that need review or repair.`
+              : `${instanceName} has warnings or blockers that should be reviewed before launch.`}
         </DialogDescription>
 
         {/* Score badge */}
@@ -447,7 +509,7 @@ export function HealthDialog({
           {/* Blockers */}
           {report.blockers.length > 0 && (
             <div className="mb-3">
-              <h4 className="text-sm font-semibold mb-2">Blockers ({report.blockers.length})</h4>
+              <h4 className="text-sm font-semibold mb-2">Problems to fix ({report.blockers.length})</h4>
               <div className="space-y-2">
                 {report.blockers.map((b, i) => {
                   const key = `${b.kind}:${b.mod_id ?? b.filename ?? i}`;
@@ -472,7 +534,46 @@ export function HealthDialog({
                           <span className="text-xs text-muted-foreground">{b.suggested_action}</span>
                         )}
                       </div>
+                      {b.missing_file && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                          {manifestMods === 'loading' ? (
+                            <span className="text-muted-foreground">Checking where {b.missing_file} came from…</span>
+                          ) : (() => {
+                            const entry = Array.isArray(manifestMods)
+                              ? manifestMods.find((mod) => mod.filename === b.missing_file) ?? null
+                              : null;
+                            const source = entry ? reinstallSourceFor(entry) : null;
+                            return entry && source ? (
+                              <>
+                                <span className="break-all font-mono">{b.missing_file}</span>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={reinstallBusy !== null}
+                                  title="Review a reinstall of this version"
+                                  onClick={() => void startReinstall(entry, source)}
+                                >
+                                  {reinstallBusy === entry.filename ? 'Preparing…' : 'Reinstall'}
+                                </Button>
+                              </>
+                            ) : (
+                              <span className="text-muted-foreground">
+                                {b.missing_file} is missing from mods/. Find it in Browse.
+                              </span>
+                            );
+                          })()}
+                        </div>
+                      )}
                       <div className="flex items-center gap-3 mt-2">
+                        {onFindMod && b.kind === 'missing_required_dependency' && b.mod_id && (
+                          <Button
+                            size="sm"
+                            title="Search for this mod in Browse"
+                            onClick={() => onFindMod(b.mod_id!)}
+                          >
+                            Find {b.mod_id}
+                          </Button>
+                        )}
                         {!reviewOnly && (b.kind === 'missing_required_dependency' || b.kind === 'incompatible_mod' || b.kind === 'curated_conflict') && b.filename && (
                           <Button
                             size="sm"
@@ -495,7 +596,7 @@ export function HealthDialog({
           {/* Warnings */}
           {report.warnings.length > 0 && (
             <div className="mb-3">
-              <h4 className="text-sm font-semibold mb-2">Warnings ({report.warnings.length})</h4>
+              <h4 className="text-sm font-semibold mb-2">Warnings to review ({report.warnings.length})</h4>
               <div className="space-y-2">
                 {report.warnings.map((w, i) => {
                   const key = healthWarningKey(w);
@@ -530,6 +631,45 @@ export function HealthDialog({
                       <div className="mt-2 space-y-2">
                         {w.suggested_action && !isSilenced && (
                           <p className="text-xs text-muted-foreground">{w.suggested_action}</p>
+                        )}
+                        {w.kind === 'manifest_drift' && missingFiles.length > 0 && !isSilenced && (
+                          <ul className="space-y-2 rounded-sm border border-border bg-background/60 p-2">
+                            {missingFiles.map((filename) => {
+                              const entry = Array.isArray(manifestMods)
+                                ? manifestMods.find((mod) => mod.filename === filename) ?? null
+                                : null;
+                              const source = entry ? reinstallSourceFor(entry) : null;
+                              return (
+                                <li key={filename} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                                  <span className="break-all font-mono">{filename}</span>
+                                  {manifestMods === 'loading' ? (
+                                    <span className="text-muted-foreground">Checking where it came from…</span>
+                                  ) : entry && source ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={reinstallBusy !== null}
+                                      title="Review a reinstall of this version"
+                                      onClick={() => void startReinstall(entry, source)}
+                                    >
+                                      {reinstallBusy === entry.filename ? 'Preparing…' : 'Reinstall'}
+                                    </Button>
+                                  ) : onFindMod ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      title="Search for this mod in Browse"
+                                      onClick={() => onFindMod(searchQueryForFile(filename))}
+                                    >
+                                      Find in Browse
+                                    </Button>
+                                  ) : (
+                                    <span className="text-muted-foreground">Find it in Browse.</span>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
                         )}
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex shrink-0 items-center gap-2 text-xs">
@@ -616,6 +756,18 @@ export function HealthDialog({
         </div>
         </DialogContent>
       </Dialog>
+
+      {reinstall && (
+        <InstallFlow
+          open
+          intent={reinstall}
+          instanceName={instanceName}
+          onClose={() => {
+            setReinstall(null);
+            void refreshAfterReinstall();
+          }}
+        />
+      )}
 
       <Dialog open={confirmingBlockers} onOpenChange={setConfirmingBlockers}>
         <DialogContent className="z-60 max-w-md gap-4">

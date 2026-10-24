@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import { healthCounts } from '@/lib/healthSummary';
 import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { requestEditorTab } from '../lib/editorDeepLink';
 import { useExternalInstanceChanges } from '../lib/externalChanges';
+import { importOriginBadge, importOriginLine, importSourceLabel, isFileImportSource } from '../lib/importDisplay';
 import {
   cancelJavaRuntime,
   cloneInstance,
@@ -14,6 +16,7 @@ import {
   getInstanceDetail,
   getSetting,
   listInstances,
+  pickOpenFile,
   listLoaderVersions,
   listManifestLoaders,
   listManifestMcVersions,
@@ -40,7 +43,9 @@ import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
+import { RecentlyDeleted, deleteDialogBody } from '../components/RecentlyDeleted';
 import { LaunchFailedBanner } from '../components/LaunchFailedBanner';
+import { HealthNotice, ReviewBeforeLaunchButtons } from '../components/HealthLaunchControls';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
 import { useConfirm } from '@/components/ui/confirm';
 import {
@@ -102,7 +107,23 @@ export function Instances({
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<InstanceRow | null>(null);
-  const { getTaskForInstance, revision: packInstallRevision } = usePackInstall();
+  const { tasks: packTasks, getTaskForInstance, revision: packInstallRevision, startPackFile } = usePackInstall();
+  // Shown only while an import is running; the finished import reports its own
+  // result (see PackImportReports), so the notice must not outlive it.
+  const packImportRunning = packTasks.some((task) => task.kind === 'pack-file' && task.status === 'running');
+
+  // Always creates a new instance from the file; merging into an existing one
+  // is a different action inside the instance editor.
+  const handleImportPackFile = async () => {
+    setError(null);
+    try {
+      const path = await pickOpenFile('Import a pack file', ['mrpack', 'agora-pack.json', 'json']);
+      if (path === null) return;
+      startPackFile(path, path.split(/[\/]/).pop() ?? 'Pack import');
+    } catch (cause) {
+      setError(formatError(cause));
+    }
+  };
 
   // Load direct launch mode once
   const [directLaunch, setDirectLaunch] = useState(false);
@@ -247,6 +268,13 @@ export function Instances({
         </div>
         <div className="flex flex-wrap gap-2">
           <button
+            onClick={() => void handleImportPackFile()}
+            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Import pack file
+          </button>
+          <button
             onClick={() => setShowImport(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
           >
@@ -267,6 +295,11 @@ export function Instances({
       {error && (
         <div className="rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
           {error}
+        </div>
+      )}
+      {packImportRunning && (
+        <div role="status" className="rounded-lg border border-border bg-card p-3 text-sm text-muted-foreground">
+          Importing the pack as a new instance. It will appear here when it is ready.
         </div>
       )}
 
@@ -306,6 +339,13 @@ export function Instances({
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
               Create your first instance
+            </button>
+            <button
+              onClick={() => void handleImportPackFile()}
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Import pack file
             </button>
             <button
               onClick={() => setShowImport(true)}
@@ -404,6 +444,8 @@ export function Instances({
         />
       )}
 
+      <RecentlyDeleted refreshKey={instances} onRestored={() => void refresh({ silent: true })} />
+
       <LauncherImportWizard
         open={showImport}
         onClose={() => setShowImport(false)}
@@ -432,6 +474,14 @@ const PROFILE_ISSUE_MESSAGES: Record<string, { title: string; description: strin
       'The installed loader profile is missing.',
   },
 };
+
+/** Date only; blank when the stored value is missing or unreadable. */
+function formatCreatedDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+}
 
 function InstanceCard({
   instance,
@@ -521,10 +571,7 @@ function InstanceCard({
   const displayError = error ?? controllerError;
   const effectiveBusy = launchBusy || repairBusy || repairing || cancellingJava;
   const recoveryBlocked = recoveryPending || recoveryFailed || packInstall?.status === 'running';
-  const healthIssueCount = healthReport
-    ? healthReport.blockers.length + healthReport.warnings.length
-    : 0;
-  const healthBlocked = (healthReport?.blockers.length ?? 0) > 0;
+  const healthBlocked = healthCounts(healthReport).problems > 0;
 
   const handleCancelJavaProvisioning = async () => {
     if (!runtimeProgress) return;
@@ -560,7 +607,7 @@ function InstanceCard({
   const remove = async () => {
     if (!await confirm({
       title: `Delete instance "${instance.name}"?`,
-      body: 'This moves the folder to trash.',
+      body: deleteDialogBody(instance),
       confirmLabel: 'Delete',
       tone: 'danger',
     })) return;
@@ -622,6 +669,10 @@ function InstanceCard({
     }
   };
 
+  const createdLabel = formatCreatedDate(instance.created_at);
+  // "CurseForge", "Modrinth" or "Prism Launcher" for imported instances; null otherwise.
+  const importedFrom = importSourceLabel(instance.import_source);
+
   const issueDef = controllerRecoverableIssue
     ? PROFILE_ISSUE_MESSAGES[controllerRecoverableIssue.kind]
     : null;
@@ -639,10 +690,8 @@ function InstanceCard({
           <div className="min-w-0">
             <h3 className="wrap-break-word font-semibold">{instance.name}</h3>
             {instance.import_source && (
-              <span className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                Imported from {instance.import_source === 'curse_forge' || instance.import_source === 'curseforge'
-                  ? 'CurseForge'
-                  : instance.import_source === 'prism' ? 'Prism Launcher' : 'Modrinth App'}
+              <span className={`mt-1 inline-flex max-w-full wrap-break-word rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground ${isFileImportSource(instance.import_source) ? '' : 'uppercase tracking-wide'}`}>
+                {importOriginBadge(instance.import_source)}
               </span>
             )}
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -672,6 +721,13 @@ function InstanceCard({
                 'Never launched'
               )}
             </p>
+            {importedFrom ? (
+              <p className="text-xs text-muted-foreground mt-0.5 wrap-break-word">
+                {importOriginLine(instance.import_source, createdLabel)}
+              </p>
+            ) : createdLabel && (
+              <p className="text-xs text-muted-foreground mt-0.5">Created {createdLabel}</p>
+            )}
           </div>
         </div>
         <span className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -683,34 +739,11 @@ function InstanceCard({
 
       {packInstall && <PackInstallProgressBar task={packInstall} compact />}
 
-      {healthReport && healthIssueCount > 0 && (
-        <div
-          className={`mt-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${
-            healthBlocked
-              ? 'border-destructive/60 bg-destructive/10'
-              : 'border-amber-500/60 bg-amber-500/10'
-          }`}
-          role="alert"
-          aria-label={`${healthIssueCount} health issue${healthIssueCount === 1 ? '' : 's'} detected`}
-        >
-          <div className="min-w-0">
-            <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
-              {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
-            </p>
-            <p className="truncate text-muted-foreground">
-              {healthBlocked
-                ? 'Review before launching. You can continue after confirming risk.'
-                : 'Review recommended before launch.'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
-            className="shrink-0 rounded-sm border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
-          >
-            Review & repair
-          </button>
-        </div>
+      {healthReport && (
+        <HealthNotice
+          report={healthReport}
+          onReview={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
+        />
       )}
 
       {healthError && (
@@ -979,6 +1012,15 @@ function InstanceCard({
             <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
             Kill
           </button>
+        ) : healthBlocked && healthReport ? (
+          // Not ready: the main action is to see the problems. Launch stays
+          // reachable as the secondary action (the health dialog asks first).
+          <ReviewBeforeLaunchButtons
+            onReview={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
+            onLaunch={onLaunch}
+            disabled={effectiveBusy || recoveryBlocked}
+            launchLabel={startingThis && !repairing ? 'Starting…' : 'Launch anyway'}
+          />
         ) : (
           <button
             onClick={onLaunch}
@@ -1025,6 +1067,19 @@ function InstanceCard({
       </div>
     </li>
   );
+}
+
+/** Player-facing loader names. The ids (`fabric`, `neoforge`, ...) stay the values. */
+const LOADER_LABELS = new Map<string, string>([
+  ['vanilla', 'Vanilla'],
+  ['fabric', 'Fabric'],
+  ['forge', 'Forge'],
+  ['neoforge', 'NeoForge'],
+  ['quilt', 'Quilt'],
+]);
+
+function loaderLabel(loader: string): string {
+  return LOADER_LABELS.get(loader) ?? loader;
 }
 
 function CreateInstanceDialog({
@@ -1206,7 +1261,10 @@ function CreateInstanceDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg" data-tour="create-instance-dialog">
+      <DialogContent
+        className="max-w-lg max-h-[90vh] overflow-y-auto"
+        data-tour="create-instance-dialog"
+      >
         <DialogTitle>Create Custom Instance</DialogTitle>
         <DialogDescription>
           {loader === 'vanilla'
@@ -1256,7 +1314,7 @@ function CreateInstanceDialog({
               >
                 {['vanilla', ...loaders.filter((l) => l !== 'vanilla')].map((l) => (
                   <option key={l} value={l}>
-                    {l === 'vanilla' ? 'Vanilla' : l}
+                    {loaderLabel(l)}
                   </option>
                 ))}
               </select>

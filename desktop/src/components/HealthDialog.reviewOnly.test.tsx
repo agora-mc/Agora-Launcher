@@ -73,3 +73,29 @@ describe('HealthDialog review-only safety (SOL-2 §18.5)', () => {
     await waitFor(() => expect(tauriMocks.disableModForTest).toHaveBeenCalledWith('inst-1', 'sodium.jar'));
   });
 });
+
+describe('health check heading matches the result', () => {
+  it('says there are no findings when the result is ready to launch', async () => {
+    tauriMocks.checkInstanceHealth.mockResolvedValue({ score: 'green', scan_token: 't', blockers: [], warnings: [], recommendations: [] });
+    render(
+      <HealthDialog
+        instanceId="inst-1"
+        instanceName="My World"
+        initialReport={{ score: 'green', scan_token: 't', blockers: [], warnings: [], recommendations: [] }}
+        onConfirm={async () => null}
+        onCancel={() => undefined}
+        onSwitchLoader={async () => undefined}
+        reviewOnly
+      />,
+    );
+    expect(await screen.findByText('No issues found. Instance is ready to launch.')).toBeInTheDocument();
+    expect(screen.getByText('My World has no health findings.')).toBeInTheDocument();
+    expect(screen.queryByText(/need review or repair/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the review wording when there are findings', async () => {
+    renderDialog(true);
+    expect(await screen.findByText('My World has health findings that need review or repair.')).toBeInTheDocument();
+  });
+});
+
