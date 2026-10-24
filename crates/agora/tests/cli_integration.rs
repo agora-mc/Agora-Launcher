@@ -3702,3 +3702,171 @@ fn import_launchers_lists_and_plan_refuses_unknown_instance() {
     assert!(!plan.status.success());
     assert!(String::from_utf8_lossy(&plan.stderr).contains("No launcher instance"));
 }
+
+/// An instance with one bundled mod and one switched-off mod. Importing its
+/// pack needs the loader, which Agora downloads, so the tests that import it
+/// are `#[ignore]`d (run them with `--ignored` on a machine with network).
+fn create_offline_pack_source(data_dir: &Path, id: &str) {
+    create_loader_instance(data_dir, id, &["bundled.jar", "off.jar"]);
+    let dir = data_dir.join("instances").join(id);
+    std::fs::rename(
+        dir.join("mods").join("off.jar"),
+        dir.join("mods").join("off.jar.disabled"),
+    )
+    .unwrap();
+    let manifest_path = dir.join("instance_manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["minecraft_version"] = "1.20.1".into();
+    manifest["loader_version"] = "0.15.0".into();
+    for m in manifest["mods"].as_array_mut().unwrap() {
+        if m["filename"] == "off.jar" {
+            m["enabled"] = false.into();
+        }
+    }
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+}
+
+fn assert_imported_pack_keeps_both_mods(data_dir: &Path, new_id: &str) {
+    let dir = data_dir.join("instances").join(new_id);
+    assert!(dir.is_dir(), "the new instance should exist");
+    assert!(dir.join("mods").join("bundled.jar").is_file());
+    assert!(
+        dir.join("mods").join("off.jar.disabled").is_file(),
+        "the disabled mod stays disabled"
+    );
+    assert!(!dir.join("mods").join("off.jar").exists());
+}
+
+fn assert_review_copy_cleaned_up(data_dir: &Path, review_id: &str) {
+    let staged = agora_core::app_paths::AppPaths::from_root(data_dir.to_path_buf())
+        .staging_root()
+        .join("pack-review")
+        .join(review_id);
+    assert!(!staged.exists(), "the staged copy should be removed");
+}
+
+#[test]
+#[ignore = "downloads the Fabric loader; run with --ignored"]
+fn pack_review_then_import_of_an_mrpack_keeps_both_mods() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_offline_pack_source(&data_dir, "mr-src");
+    let pack = data_dir.join("mr-src.mrpack");
+    let pack_arg = pack.to_string_lossy().to_string();
+    let exported = run_agora(
+        &data_dir,
+        &[
+            "pack", "export", "mr-src", "--format", "mrpack", "--out", &pack_arg,
+        ],
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+
+    let review = run_agora_json(&data_dir, &["pack", "review", &pack_arg]);
+    assert!(
+        review.status.success(),
+        "{}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+    let id = assert_json_stdout(&review)["reviewId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let imported = run_agora_json(&data_dir, &["pack", "import", &id, "--name", "mr-copy"]);
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let new_id = assert_json_stdout(&imported)["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_imported_pack_keeps_both_mods(&data_dir, &new_id);
+    assert_review_copy_cleaned_up(&data_dir, &id);
+}
+
+#[test]
+#[ignore = "fetches Minecraft metadata; run with --ignored"]
+fn import_plan_then_run_copies_a_prism_fixture_instance() {
+    let (_tmp, data_dir) = temp_data_dir();
+    // Outside the data dir: Agora refuses its own folder as an import source.
+    let fixture_tmp = tempdir();
+    let prism = fixture_tmp.path().join("PrismLauncher");
+    let instances = prism.join("instances");
+    let mods = instances.join("FixInst").join("minecraft").join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    std::fs::write(
+        prism.join("prismlauncher.cfg"),
+        "[General]\nInstanceDir=instances\n",
+    )
+    .unwrap();
+    std::fs::write(
+        instances.join("FixInst").join("instance.cfg"),
+        "[Minecraft]\nname=Fixture Instance\n",
+    )
+    .unwrap();
+    std::fs::write(
+        instances.join("FixInst").join("mmc-pack.json"),
+        r#"{"components":[{"uid":"net.minecraft","version":"1.21"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(mods.join("a.jar"), b"mod content").unwrap();
+    let root = prism.to_string_lossy().to_string();
+
+    let plan = run_agora_json(
+        &data_dir,
+        &["import", "plan", "prism:FixInst", "--root", &root],
+    );
+    assert!(
+        plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let parsed = assert_json_stdout(&plan);
+    let fingerprint = parsed["batch_fingerprint"].as_str().unwrap().to_string();
+
+    let stale = run_agora(
+        &data_dir,
+        &[
+            "import",
+            "run",
+            "prism:FixInst",
+            "--root",
+            &root,
+            "--fingerprint",
+            "0000",
+        ],
+    );
+    assert!(!stale.status.success(), "a stale fingerprint is refused");
+
+    let run = run_agora_json(
+        &data_dir,
+        &[
+            "import",
+            "run",
+            "prism:FixInst",
+            "--root",
+            &root,
+            "--fingerprint",
+            &fingerprint,
+        ],
+    );
+    assert!(
+        run.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let imported = parsed["items"][0]["destination_id"].as_str().unwrap();
+    assert!(data_dir
+        .join("instances")
+        .join(imported)
+        .join("mods")
+        .join("a.jar")
+        .is_file());
+}

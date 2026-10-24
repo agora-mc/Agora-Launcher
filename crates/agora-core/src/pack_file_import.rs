@@ -11,6 +11,12 @@ use crate::import_service::{ImportRequest, ImportService, ImportSource};
 use crate::instance_service::{CreateInstanceRequest, InstanceService};
 use std::path::Path;
 
+/// Builds the sink that receives instance-creation progress for the instance id
+/// the import chose. The desktop returns an emitter for its Create dialog; the
+/// CLI returns the context's own sink.
+pub type CreateProgressFactory<'a> =
+    &'a (dyn Fn(&str) -> std::sync::Arc<dyn crate::event_sink::ProgressSink> + Send + Sync);
+
 /// What an import produced: the new instance, and for an Agora pack the
 /// per-mod report (installed / failed / needs action) a front end must show.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -64,6 +70,7 @@ pub async fn import_pack_file(
     reviewed_sha256: Option<&str>,
     name: Option<&str>,
     skip_unfetchable: bool,
+    create_progress: CreateProgressFactory<'_>,
 ) -> LauncherResult<PackImportOutcome> {
     let lower = source_path.to_ascii_lowercase();
     if lower.ends_with(".mrpack") {
@@ -72,7 +79,7 @@ pub async fn import_pack_file(
             report: None,
         })
     } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
-        import_agora_json(ctx, source_path, reviewed_sha256, name).await
+        import_agora_json(ctx, source_path, reviewed_sha256, name, create_progress).await
     } else {
         Err(LauncherError::Generic {
             code: "ERR_INVALID_FORMAT".into(),
@@ -120,6 +127,7 @@ async fn import_agora_json(
     source_path: &str,
     reviewed_sha256: Option<&str>,
     name_override: Option<&str>,
+    create_progress: CreateProgressFactory<'_>,
 ) -> LauncherResult<PackImportOutcome> {
     // One read: the bytes checked against the reviewed fingerprint are the
     // bytes parsed and installed.
@@ -156,8 +164,12 @@ async fn import_agora_json(
         pack_icon_url: None,
         template_id: None,
     };
+    let creating = InstanceService::new(
+        ctx.clone()
+            .with_progress_sink(create_progress(&instance_id)),
+    );
+    creating.create(req).await?;
     let instances = InstanceService::new(ctx.clone());
-    instances.create(req).await?;
     let mut report =
         agora_pack_import::install_agora_pack_mods(ctx, &instance_id, &name, pack).await;
     if agora_pack_import::nothing_installed_for_lack_of_connection(&report) {
@@ -189,4 +201,48 @@ async fn import_agora_json(
         instance_id,
         report: Some(report),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::CoreContext;
+    use crate::event_sink::{CollectingProgressSink, ProgressSink};
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn agora_pack_import_reports_create_progress_for_the_chosen_instance() {
+        let root =
+            std::env::temp_dir().join(format!("agora-pack-file-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = CoreContext::for_testing(root.clone());
+        let _ = crate::db::init_local_state_db(&ctx.paths.local_state_db());
+        let file = root.join("p.agora-pack.json");
+        std::fs::write(
+            &file,
+            r#"{"format":"agora-pack/v1","instance":{"id":"prog-pack","name":"Prog","minecraft_version":"1.21","loader":"fabric","loader_version":"0.16.0"},"mods":[]}"#,
+        )
+        .unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let plan = plan_pack_file(&ctx, &path).unwrap();
+
+        let sink = Arc::new(CollectingProgressSink::new());
+        let seen_ids = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (sink_for_factory, ids) = (sink.clone(), seen_ids.clone());
+        let factory = move |id: &str| -> Arc<dyn ProgressSink> {
+            ids.lock().unwrap().push(id.to_string());
+            sink_for_factory.clone()
+        };
+        // The loader download needs a network, so the import may fail; the
+        // create step still reports before that.
+        let _ = import_pack_file(&ctx, &path, Some(&plan.file_sha256), None, false, &factory).await;
+
+        assert_eq!(*seen_ids.lock().unwrap(), vec!["prog-pack".to_string()]);
+        assert!(
+            !sink.events().is_empty(),
+            "instance creation must report progress to the sink the front end gave"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

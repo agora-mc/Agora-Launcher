@@ -319,6 +319,7 @@ pub async fn import_instance_pack(
         reviewed_sha256,
         name,
         skip_unfetchable,
+        &|instance_id: &str| crate::instances::create_progress_sink(app, instance_id),
     )
     .await
 }

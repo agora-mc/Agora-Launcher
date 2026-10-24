@@ -293,6 +293,7 @@ pub async fn pack_import(
         Some(&review_id),
         args.name.as_deref(),
         args.import_anyway,
+        &|_instance_id: &str| ctx.progress_sink.clone(),
     )
     .await
     .map_err(|error| {
