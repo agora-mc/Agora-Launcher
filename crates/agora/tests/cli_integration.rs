@@ -200,6 +200,8 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "provider",
     "template",
     "bisect",
+    "governance",
+    "technic",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
@@ -294,6 +296,18 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["plugin", "restore-data"],
     &["plugin", "keygen"],
     &["plugin", "sign"],
+    &["plugin", "settings"],
+    &["plugin", "set"],
+    &["governance", "summary"],
+    &["governance", "events"],
+    &["governance", "config"],
+    &["governance", "diagnostics"],
+    &["registry", "under-review"],
+    &["registry", "reviews"],
+    &["registry", "audit-log"],
+    &["registry", "resolutions"],
+    &["technic", "search"],
+    &["technic", "install"],
 ];
 
 // ---------------------------------------------------------------------------
@@ -4217,4 +4231,422 @@ fn bisect_start_refuses_a_locked_instance_and_writes_nothing() {
     let (on, off) = bisect_mod_state(&data_dir, "bisect-locked");
     assert_eq!(on.len(), 4);
     assert!(off.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Governance, registry review queries, Technic, provider packs, plugin settings
+// ---------------------------------------------------------------------------
+
+/// The seeded registry lives beside the data root, not as `registry.db`: a
+/// plain `registry.db` there is quarantined at startup for lacking a signature.
+/// It is read only through `AGORA_DEV_REGISTRY_DB`, which debug builds honour.
+fn dev_registry_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("dev-registry.db")
+}
+
+/// Run the CLI with the seeded dev registry active (debug builds only).
+fn run_seeded(data_dir: &Path, args: &[&str]) -> std::process::Output {
+    let mut cmd = agora_command(data_dir, args);
+    cmd.env("AGORA_DEV_REGISTRY_DB", dev_registry_path(data_dir));
+    run_command(cmd, args)
+}
+
+/// A schema-7 registry with one item under review, a governance summary and
+/// events for `test-mod`, a curator review, an audit log, and a triage
+/// resolution. Only the tables the read paths query are created.
+fn seed_governance_registry(data_dir: &Path) {
+    let conn = rusqlite::Connection::open(dev_registry_path(data_dir)).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version (version) VALUES (7);
+
+         CREATE TABLE registry_items (
+             id TEXT PRIMARY KEY, name TEXT, content_type TEXT, icon_url TEXT,
+             net_score INTEGER DEFAULT 0, status TEXT DEFAULT 'active'
+         );
+         INSERT INTO registry_items (id, name, content_type, net_score, status)
+         VALUES ('test-mod', 'Test Mod', 'mod', 5, 'active'),
+                ('flagged-mod', 'Flagged Mod', 'mod', -3, 'under_review');
+
+         CREATE TABLE governance_summary (
+             item_id TEXT PRIMARY KEY, vote_issue_number INTEGER, vote_issue_url TEXT,
+             raw_upvotes INTEGER NOT NULL DEFAULT 0, raw_downvotes INTEGER NOT NULL DEFAULT 0,
+             counted_upvotes INTEGER NOT NULL DEFAULT 0, counted_downvotes INTEGER NOT NULL DEFAULT 0,
+             quarantined_upvotes INTEGER NOT NULL DEFAULT 0, quarantined_downvotes INTEGER NOT NULL DEFAULT 0,
+             conflicted_users INTEGER NOT NULL DEFAULT 0, status_reason TEXT,
+             compiled_at TEXT NOT NULL
+         );
+         INSERT INTO governance_summary VALUES
+             ('test-mod', 42, 'https://github.com/example/repo/issues/42',
+              10, 3, 8, 2, 2, 1, 0, NULL, '2026-10-01T00:00:00Z');
+
+         CREATE TABLE governance_events (
+             event_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, event_type TEXT NOT NULL,
+             status TEXT NOT NULL, detected_at TEXT NOT NULL,
+             affected_reactions INTEGER NOT NULL DEFAULT 0, details_json TEXT
+         );
+         INSERT INTO governance_events VALUES
+             ('evt-001', 'test-mod', 'vote_quarantine', 'active', '2026-10-02T00:00:00Z', 3, NULL),
+             ('evt-002', 'test-mod', 'status_change', 'under_review', '2026-10-03T00:00:00Z', 0, NULL);
+
+         CREATE TABLE curator_reviews (item_id TEXT PRIMARY KEY, top_reviews_json TEXT);
+         INSERT INTO curator_reviews VALUES
+             ('flagged-mod', '[{\"author\":\"curator\",\"text\":\"Crashes on load\",\"issue_number\":77,\"created_at\":\"2026-10-01\"}]');
+
+         CREATE TABLE audit_log (
+             id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, action TEXT NOT NULL, details TEXT
+         );
+         INSERT INTO audit_log VALUES (1, '2026-10-04T00:00:00Z', 'triage_keep', 'flagged-mod kept');",
+    )
+    .unwrap();
+}
+
+/// Assert the command succeeded and return its stdout as JSON.
+fn json_of(output: &std::process::Output) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "command failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_json_stdout(output)
+}
+
+#[test]
+fn governance_config_reports_the_repository_as_json() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let value = json_of(&run_agora(&data_dir, &["governance", "config", "--json"]));
+    let repository = value["repository"].as_str().unwrap_or_default();
+    assert!(
+        repository.contains('/'),
+        "repository should be owner/repo: {value}"
+    );
+}
+
+#[test]
+fn governance_summary_and_events_read_the_compiled_registry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+
+    let summary = json_of(&run_seeded(
+        &data_dir,
+        &["governance", "summary", "test-mod", "--json"],
+    ));
+    assert_eq!(summary["raw_upvotes"], 10);
+    assert_eq!(summary["vote_issue_number"], 42);
+
+    let events = json_of(&run_seeded(
+        &data_dir,
+        &["governance", "events", "--item", "test-mod", "--json"],
+    ));
+    assert_eq!(events.as_array().map(Vec::len), Some(2));
+
+    let limited = json_of(&run_seeded(
+        &data_dir,
+        &["governance", "events", "--limit", "1", "--json"],
+    ));
+    assert_eq!(limited.as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn governance_summary_for_an_unknown_item_is_null_not_an_error() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+    let value = json_of(&run_seeded(
+        &data_dir,
+        &["governance", "summary", "no-such-mod", "--json"],
+    ));
+    assert!(value.is_null(), "expected null, got {value}");
+}
+
+#[test]
+fn governance_events_refuses_an_out_of_range_limit() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+    // 0 would reach SQLite as LIMIT 0, and a negative value as "no limit".
+    for limit in ["0", "-1", "100000"] {
+        let output = run_seeded(&data_dir, &["governance", "events", "--limit", limit]);
+        assert!(
+            !output.status.success(),
+            "--limit {limit} should be refused"
+        );
+    }
+}
+
+#[test]
+fn governance_diagnostics_lists_its_checks_with_github_turned_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+    // Turn GitHub requests off so the network checks cannot reach the network
+    // from a test. They then report their own failure, which is still a check.
+    let set = run_seeded(
+        &data_dir,
+        &["settings", "set", "network_github_oauth_enabled", "false"],
+    );
+    assert!(set.status.success());
+
+    // Exit status depends on the machine's sign-in and build config, so only
+    // the shape of the output is asserted here.
+    let output = run_seeded(&data_dir, &["governance", "diagnostics", "--json"]);
+    let value = assert_json_stdout(&output);
+    let ids: Vec<&str> = value
+        .as_array()
+        .expect("diagnostics is a JSON array")
+        .iter()
+        .filter_map(|check| check["id"].as_str())
+        .collect();
+    for expected in ["governance_repo_resolved", "repository_metadata_readable"] {
+        assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
+    }
+}
+
+#[test]
+fn registry_review_queries_read_the_seeded_registry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+
+    let under_review = json_of(&run_seeded(
+        &data_dir,
+        &["registry", "under-review", "--json"],
+    ));
+    let ids: Vec<&str> = under_review
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["flagged-mod"]);
+
+    let reviews = json_of(&run_seeded(
+        &data_dir,
+        &["registry", "reviews", "flagged-mod", "--json"],
+    ));
+    assert_eq!(reviews[0]["text"], "Crashes on load");
+    assert_eq!(reviews[0]["issue_number"], 77);
+
+    let audit = json_of(&run_seeded(&data_dir, &["registry", "audit-log", "--json"]));
+    assert_eq!(audit.as_array().map(Vec::len), Some(1));
+
+    let resolutions = json_of(&run_seeded(
+        &data_dir,
+        &["registry", "resolutions", "--json"],
+    ));
+    assert_eq!(resolutions[0]["action"], "triage_keep");
+
+    let zero = run_seeded(&data_dir, &["registry", "audit-log", "--limit", "0"]);
+    assert!(!zero.status.success(), "--limit 0 should be refused");
+}
+
+#[test]
+fn registry_review_queries_fail_without_a_registry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["registry", "under-review"]);
+    assert!(
+        !output.status.success(),
+        "no registry.db should be an error, not an empty list"
+    );
+}
+
+#[test]
+fn technic_search_is_refused_while_technic_consent_is_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["technic", "search", "tekkit"]);
+    assert!(
+        !output.status.success(),
+        "technic search must not run with consent off"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panic"), "must not panic: {stderr}");
+}
+
+#[test]
+fn technic_install_is_refused_while_technic_consent_is_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["technic", "install", "tekkit"]);
+    assert!(!output.status.success());
+    let listed = run_agora(&data_dir, &["list-instances", "--json"]);
+    assert_eq!(assert_json_stdout(&listed), serde_json::json!([]));
+}
+
+#[test]
+fn technic_search_rejects_a_zero_limit() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["technic", "search", "x", "--limit", "0"]);
+    assert!(!output.status.success());
+}
+
+/// A pin that cannot match a SHA-256 digest is refused before any install
+/// starts, rather than installing with a hash that looks like protection.
+#[test]
+fn technic_install_refuses_a_malformed_sha256_pin() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let non_hex = "g".repeat(64);
+    for bad in ["abc", non_hex.as_str(), ""] {
+        let output = run_agora(
+            &data_dir,
+            &["technic", "install", "tekkit", "--sha256", bad],
+        );
+        assert!(
+            !output.status.success(),
+            "--sha256 {bad:?} should be refused"
+        );
+    }
+    let listed = run_agora(&data_dir, &["list-instances", "--json"]);
+    assert_eq!(assert_json_stdout(&listed), serde_json::json!([]));
+}
+
+#[test]
+fn pack_install_provider_needs_a_project_and_excludes_a_manifest() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let no_project = run_agora(&data_dir, &["pack", "install", "--provider", "modrinth"]);
+    assert!(!no_project.status.success(), "--provider needs --project");
+
+    let mixed = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "install",
+            "--provider",
+            "modrinth",
+            "--project",
+            "abc",
+            "some.json",
+            "inst",
+        ],
+    );
+    assert!(
+        !mixed.status.success(),
+        "a manifest and --provider conflict"
+    );
+
+    let neither = run_agora(&data_dir, &["pack", "install"]);
+    assert!(!neither.status.success(), "pack install needs an input");
+}
+
+#[test]
+fn pack_install_with_an_unknown_provider_is_refused() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "install",
+            "--provider",
+            "no-such-provider",
+            "--project",
+            "abc",
+        ],
+    );
+    assert!(!output.status.success());
+}
+
+/// Write a development plugin with one boolean setting and no capabilities,
+/// so it installs without a consent prompt. Returns its folder.
+fn write_settings_plugin(root: &Path) -> PathBuf {
+    let dir = root.join("settings-probe");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("agora-plugin.json"),
+        r#"{
+  "manifest": 1,
+  "id": "agora.settings-probe",
+  "name": "Settings probe",
+  "version": "0.1.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "activation": [],
+  "capabilities": { "required": [] },
+  "contributions": {
+    "settings": [{ "key": "notify", "title": "Notify", "type": "boolean", "default": false }]
+  }
+}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.js"), "export function noop() {}\n").unwrap();
+    dir
+}
+
+#[test]
+fn plugin_settings_show_set_and_refuse_bad_values() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let plugin_root = tempdir();
+    let plugin_src = write_settings_plugin(plugin_root.path());
+    let plugin_src = plugin_src.to_string_lossy().to_string();
+    let installed = run_agora(
+        &data_dir,
+        &[
+            "plugin",
+            "install",
+            "--yes",
+            "development",
+            plugin_src.as_str(),
+        ],
+    );
+    assert!(
+        installed.status.success(),
+        "install failed: {}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+
+    let before = json_of(&run_agora(
+        &data_dir,
+        &["plugin", "settings", "agora.settings-probe", "--json"],
+    ));
+    assert_eq!(before["values"]["notify"], false);
+    assert_eq!(before["definitions"].as_array().map(Vec::len), Some(1));
+
+    let set = run_agora(
+        &data_dir,
+        &["plugin", "set", "agora.settings-probe", "notify", "true"],
+    );
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let after = json_of(&run_agora(
+        &data_dir,
+        &["plugin", "settings", "agora.settings-probe", "--json"],
+    ));
+    assert_eq!(after["values"]["notify"], true);
+
+    // Wrong type: a quoted string where a boolean is declared.
+    let wrong_type = run_agora(
+        &data_dir,
+        &["plugin", "set", "agora.settings-probe", "notify", "\"yes\""],
+    );
+    assert!(
+        !wrong_type.status.success(),
+        "a wrong-typed value must be refused"
+    );
+
+    // Undeclared key.
+    let unknown_key = run_agora(
+        &data_dir,
+        &["plugin", "set", "agora.settings-probe", "nope", "true"],
+    );
+    assert!(
+        !unknown_key.status.success(),
+        "an undeclared key must be refused"
+    );
+
+    // The stored value did not change after the refusals.
+    let still = json_of(&run_agora(
+        &data_dir,
+        &["plugin", "settings", "agora.settings-probe", "--json"],
+    ));
+    assert_eq!(still["values"]["notify"], true);
+}
+
+#[test]
+fn plugin_settings_for_a_missing_plugin_fail() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let read = run_agora(&data_dir, &["plugin", "settings", "agora.nothing-here"]);
+    assert!(!read.status.success());
+    let write = run_agora(
+        &data_dir,
+        &["plugin", "set", "agora.nothing-here", "k", "true"],
+    );
+    assert!(!write.status.success());
 }

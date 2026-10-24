@@ -121,6 +121,41 @@ Show the plan — what will be installed, which dependencies come with it, any c
 it without `--dry-run` only after the person agrees. Avoid `--replace-conflicts` and
 `--allow-replace` unless they have seen exactly what would be replaced.
 
+## Governance and registry review (read-only)
+
+```bash
+agora --json governance config
+agora --json governance summary <ITEM>
+agora --json governance events --item <ITEM> --limit 50
+agora --json governance diagnostics
+agora --json registry under-review
+agora --json registry reviews <ITEM>
+agora --json registry audit-log --limit 50
+agora --json registry resolutions --limit 50
+```
+
+These only read. The CLI cannot vote or post to GitHub, and you must not suggest a way around
+that. Use them to explain why an item is under review, to show what curators said, or to check
+why the catalog looks wrong. `governance diagnostics` exits nonzero when a check fails; report
+which check and what it says. If a query fails because no catalog is installed, run
+`agora registry sync` first.
+
+## Technic packs, provider packs and plugin settings
+
+- **Technic is off by default.** `agora --json technic search <QUERY>` is refused until the person
+  turns on the `technic_enabled` setting. Do not turn it on, and do not turn on
+  `allow_unverified_packs`, for them. Ask them to decide, and say what each one allows.
+- **Installs create a new instance.** `agora technic install <SLUG>` and
+  `agora pack install --provider <ID> --project <ID>` make a new instance and have no `--dry-run`.
+  Show the person what the search or detail says, the Minecraft version and loader, and get their
+  agreement first.
+- **Zip packs are unverified unless pinned.** A Technic zip needs `--minecraft`, `--loader` and
+  `--loader-version`. Without `--sha256 <HEX>` the CLI prints a warning that the download is not
+  checked against a published hash. Tell the person that before you install. Pass `--sha256` only
+  with a hash they got from a source they trust. Never invent one.
+- **Plugin settings change plugin behaviour.** `agora --json plugin settings <PLUGIN_ID>` reads
+  them. `agora plugin set <PLUGIN_ID> <KEY> <VALUE>` writes one, so ask before running it.
+
 ## Undoing a change
 
 ```bash

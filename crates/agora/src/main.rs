@@ -20,6 +20,7 @@ use agora_core::settings::SettingsService;
 
 mod cli_updates;
 mod cli_tools;
+mod cli_govniche;
 
 /// The guide `agora skill` prints for an AI agent driving this CLI.
 const AGENT_SKILL: &str = include_str!("../skills/agora/SKILL.md");
@@ -295,6 +296,16 @@ enum Commands {
         #[command(subcommand)]
         action: cli_bisect::BisectCmd,
     },
+    /// Read governance state: summaries, events, config, and diagnostics. Read-only.
+    Governance {
+        #[command(subcommand)]
+        action: cli_govniche::GovernanceCmd,
+    },
+    /// Search Technic packs and install them as new instances.
+    Technic {
+        #[command(subcommand)]
+        action: cli_govniche::TechnicCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -481,6 +492,21 @@ enum PluginCmd {
     /// Disable every installed plugin as a recovery action.
     #[command(name = "disable-all")]
     DisableAll,
+    /// Show a plugin's declared settings and their current values.
+    Settings {
+        /// Plugin id.
+        id: String,
+    },
+    /// Set one of a plugin's settings. VALUE is read as JSON (`true`, `42`,
+    /// `"text"`); text that is not valid JSON is taken as a plain string.
+    Set {
+        /// Plugin id.
+        id: String,
+        /// Setting key, as declared by the plugin.
+        key: String,
+        /// New value.
+        value: String,
+    },
     /// Ask a plugin's publisher whether there is a newer release.
     ///
     /// Fetches only the signed metadata, never a package. With no id, checks
@@ -761,6 +787,35 @@ enum ModSourceArg {
 enum RegistryCmd {
     Status,
     Sync,
+    /// List registry items currently under review, lowest score first.
+    #[command(name = "under-review")]
+    UnderReview,
+    /// Show the curator reviews recorded for one registry item.
+    Reviews {
+        /// Registry item ID.
+        item: String,
+    },
+    /// Show recent audit log entries, newest first.
+    #[command(name = "audit-log")]
+    AuditLog {
+        #[arg(
+            long,
+            default_value_t = 200,
+            value_parser = clap::value_parser!(i64).range(1..=1000),
+            help = "Maximum entries (1-1000)"
+        )]
+        limit: i64,
+    },
+    /// Show recent triage resolutions from the audit log.
+    Resolutions {
+        #[arg(
+            long,
+            default_value_t = 50,
+            value_parser = clap::value_parser!(u32).range(1..=1000),
+            help = "Maximum resolutions (1-1000)"
+        )]
+        limit: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -808,12 +863,27 @@ enum RuntimeCmd {
 
 #[derive(Subcommand)]
 enum PackCmd {
-    /// Install a pack manifest JSON file into an existing instance.
+    /// Install a pack manifest JSON file into an existing instance, or a
+    /// content provider's modpack as a new instance (with --provider).
     Install {
-        /// Path to the pack manifest JSON file.
-        path: PathBuf,
-        /// Target instance ID.
-        instance: String,
+        /// Path to the pack manifest JSON file (omit with --provider).
+        #[arg(required_unless_present = "provider", conflicts_with = "provider")]
+        path: Option<PathBuf>,
+        /// Target instance ID (omit with --provider).
+        #[arg(required_unless_present = "provider", conflicts_with = "provider")]
+        instance: Option<String>,
+        /// Content provider to install from, e.g. `modrinth`.
+        #[arg(long, requires = "project")]
+        provider: Option<String>,
+        /// Project ID on that provider (with --provider).
+        #[arg(long, requires = "provider")]
+        project: Option<String>,
+        /// Version ID on that provider (with --provider; omit to let the provider choose).
+        #[arg(long, requires = "provider")]
+        version: Option<String>,
+        /// Name for the new instance (with --provider).
+        #[arg(long, requires = "provider")]
+        name: Option<String>,
     },
     /// List a curated registry pack's locked releases, newest first.
     Versions {
@@ -1453,6 +1523,7 @@ fn touches_instances(command: &Commands) -> bool {
             | Commands::Launch { .. }
             | Commands::Mcp { .. }
             | Commands::Pack { .. }
+            | Commands::Technic { .. }
             | Commands::Export { .. }
             | Commands::Loadout { .. }
             | Commands::Lockfile { .. }
@@ -2072,6 +2143,10 @@ async fn run_plugin_command(
         // Handled by the guard directly above, and by `main` before core even
         // starts. Unreachable in both senses, and harmless if it ever is not.
         PluginCmd::Keygen { .. } | PluginCmd::Sign { .. } => {}
+        PluginCmd::Settings { id } => cli_govniche::plugin_settings(service, &id, json)?,
+        PluginCmd::Set { id, key, value } => {
+            cli_govniche::plugin_set(service, &id, &key, &value, json)?
+        }
         PluginCmd::DisableAll => {
             let disabled = service.disable_all()?;
             if json {
@@ -3068,7 +3143,28 @@ async fn run_pack_command(
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
     match action {
-        PackCmd::Install { path, instance } => {
+        PackCmd::Install {
+            provider: Some(provider),
+            project: Some(project),
+            version,
+            name,
+            ..
+        } => {
+            cli_govniche::install_provider_pack(
+                ctx,
+                &provider,
+                &project,
+                version.as_deref(),
+                name.as_deref(),
+                json,
+            )
+            .await?;
+        }
+        PackCmd::Install {
+            path: Some(path),
+            instance: Some(instance),
+            ..
+        } => {
             let json_text = std::fs::read_to_string(&path).map_err(|e| {
                 anyhow::anyhow!("Cannot read pack manifest '{}': {}", path.display(), e)
             })?;
@@ -3089,6 +3185,11 @@ async fn run_pack_command(
                     result.name, result.mods_installed
                 );
             }
+        }
+        PackCmd::Install { .. } => {
+            anyhow::bail!(
+                "Give a pack manifest path and an instance, or --provider with --project."
+            );
         }
         PackCmd::Versions { pack } => {
             let releases =
@@ -3803,6 +3904,10 @@ async fn run_registry_command(
                 }
             }
         }
+        RegistryCmd::UnderReview => cli_govniche::registry_under_review(ctx, json)?,
+        RegistryCmd::Reviews { item } => cli_govniche::registry_reviews(ctx, &item, json)?,
+        RegistryCmd::AuditLog { limit } => cli_govniche::registry_audit_log(ctx, limit, json)?,
+        RegistryCmd::Resolutions { limit } => cli_govniche::registry_resolutions(ctx, limit, json)?,
     }
     Ok(())
 }
@@ -4534,6 +4639,12 @@ async fn run_command(
             }
         }
         Commands::Pack { action } => Box::pin(run_pack_command(action, ctx, output_fmt)).await?,
+        Commands::Governance { action } => {
+            cli_govniche::run_governance_command(action, ctx, output_fmt).await?
+        }
+        Commands::Technic { action } => {
+            cli_govniche::run_technic_command(action, ctx, output_fmt).await?
+        }
         Commands::Export { instance, dest } => {
             let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
             if !instance_dir.exists() {
