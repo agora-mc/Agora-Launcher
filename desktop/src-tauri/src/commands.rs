@@ -4151,13 +4151,6 @@ pub async fn cancel_bisect(
 // Backup export / import
 // ---------------------------------------------------------------------------
 
-fn backup_error(message: String) -> LauncherError {
-    LauncherError::Generic {
-        code: "ERR_BACKUP".into(),
-        message,
-    }
-}
-
 /// Write a snapshot out to a directory the user chose.
 ///
 /// This is the $0 answer to cloud saves: the destination is any folder, so
@@ -4171,28 +4164,14 @@ pub async fn export_backup(
     snapshot_id: String,
     export_dir: String,
 ) -> LauncherResult<String> {
-    let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     let ctx = crate::core_context(&app)?;
-    ctx.task_scheduler
-        .run_blocking(
-            agora_core::task_scheduler::BlockingPriority::UserInitiated,
-            move || {
-                agora_core::backup::export_snapshot(
-                    &instance_dir,
-                    &snapshot_id,
-                    std::path::Path::new(&export_dir),
-                )
-                .map(|path| path.to_string_lossy().into_owned())
-            },
-        )
-        .await
-        .map_err(|e| backup_error(format!("Backup export task failed: {e}")))?
-        .map_err(backup_error)
+    agora_core::backup::export_instance_backup(
+        &ctx,
+        &instance_id,
+        &snapshot_id,
+        std::path::Path::new(&export_dir),
+    )
+    .await
 }
 
 /// Read a backup artifact back into an instance.
@@ -4207,33 +4186,13 @@ pub async fn import_backup(
     instance_id: String,
     artifact_path: String,
 ) -> LauncherResult<agora_core::snapshot::Snapshot> {
-    let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     let ctx = crate::core_context(&app)?;
-    let lock_manager = ctx.lock_manager.clone();
-    ctx.task_scheduler
-        .run_blocking(
-            agora_core::task_scheduler::BlockingPriority::UserInitiated,
-            move || {
-                let _lock = lock_manager
-                    .acquire(
-                        agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-                        "import-backup",
-                    )
-                    .map_err(|e| e.to_string())?;
-                agora_core::backup::import_backup(
-                    &instance_dir,
-                    std::path::Path::new(&artifact_path),
-                )
-            },
-        )
-        .await
-        .map_err(|e| backup_error(format!("Backup import task failed: {e}")))?
-        .map_err(backup_error)
+    agora_core::backup::import_instance_backup(
+        &ctx,
+        &instance_id,
+        std::path::Path::new(&artifact_path),
+    )
+    .await
 }
 
 /// Apply a retention policy, returning the snapshot ids that were removed.
@@ -4245,25 +4204,12 @@ pub async fn apply_backup_retention(
     keep_last: Option<u32>,
     keep_days: Option<u32>,
 ) -> LauncherResult<Vec<String>> {
-    let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     let policy = agora_core::backup::BackupRetentionPolicy {
         keep_last,
         keep_days,
     };
     let ctx = crate::core_context(&app)?;
-    ctx.task_scheduler
-        .run_blocking(
-            agora_core::task_scheduler::BlockingPriority::Background,
-            move || agora_core::backup::run_backup_retention(&instance_dir, &policy),
-        )
-        .await
-        .map_err(|e| backup_error(format!("Backup retention task failed: {e}")))?
-        .map_err(backup_error)
+    agora_core::backup::apply_instance_retention(&ctx, &instance_id, policy).await
 }
 
 // ---------------------------------------------------------------------------
