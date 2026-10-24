@@ -1,10 +1,12 @@
 import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
+import { healthCounts, healthHeadline, healthLaunchNote } from '@/lib/healthSummary';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
 import { PluginSurface } from '../features/plugins/PluginSurface';
 import { ConsoleView } from '../components/ConsoleView';
 import { takeRequestedEditorTab } from '../lib/editorDeepLink';
+import { focusSkipTarget } from '../lib/skipLink';
 import { InstallFlow } from '../components/InstallFlow';
 import { LaunchFailedBanner } from '../components/LaunchFailedBanner';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
@@ -35,6 +37,7 @@ import {
   setModUpdatePinned,
   getCachedInstanceUpdates,
   exportInstancePack,
+  exportSourcelessMods,
   formatError,
   inspectJavaExecutable,
   pickOpenFile,
@@ -44,6 +47,7 @@ import {
   importInstance,
   previewImportName,
   exportLockfile,
+  saveLockfileExport,
   verifyLockfile,
   repairLockfile,
   importLockfile,
@@ -79,8 +83,11 @@ import {
   checkInstanceHealth,
   listLoadoutProfiles,
   createLoadoutProfile,
+  listLoadoutUnlistedMods,
   applyLoadoutProfile,
   deleteLoadoutProfile,
+  previewLoadoutUpdate,
+  updateLoadoutProfile,
   openInstanceFolder,
   revealPath,
   clearCachedInstanceUpdates,
@@ -101,6 +108,8 @@ import {
   type Snapshot,
   type SnapshotDiff,
   type LoadoutProfile,
+  type LoadoutChange,
+  type UnlistedModsChoice,
   type LockfileDriftReport,
   type MemoryRecommendation,
   type HealthReport,
@@ -108,6 +117,8 @@ import {
 } from '../lib/tauri';
 import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { useConfirm } from '@/components/ui/confirm';
+import { formatDateTime } from '@/lib/utils';
+import { copiedMemoryNote, formatMemoryMb, readCopiedMemory } from '@/lib/importDisplay';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
 import { DatapackWorldsDialog } from '../components/DatapackWorldsDialog';
@@ -118,6 +129,7 @@ import { InstanceIntegrationPanel } from '../components/InstanceIntegrationPanel
 import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
+import { instanceReadiness, type JavaRuntimeMode } from './instanceReadiness';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
 import { LoaderChooser } from '../components/LoaderChooser';
 import {
@@ -256,6 +268,38 @@ function wrapperCommandOf(detail: InstanceDetail): string {
   return typeof value === 'string' ? value : '';
 }
 
+/** What the Lock control does, shown as a tooltip on Lock, Unlock and the status. */
+const LOCK_HELP = 'Locking stops mod changes (installing, updating, removing, or turning mods on and off) until you unlock. Launching still works. Locking also takes a lock snapshot, which Revert returns to.';
+
+function countOf(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** Plain-words summary of what a loadout profile switches on, from the counts saved with it. */
+function describeLoadoutCoverage(prof: LoadoutProfile): string {
+  const covers = prof.covers;
+  if (!covers) {
+    return `Saved before counts were recorded: ${countOf(prof.enabled_mods.length, 'item', 'items')} switched on. Mods it does not list are asked about when you apply; other items it does not list are left alone.`;
+  }
+  const parts = [
+    countOf(covers.mods, 'mod', 'mods'),
+    countOf(covers.resourcepacks, 'resource pack', 'resource packs'),
+    countOf(covers.shaders, 'shader pack', 'shader packs'),
+    countOf(covers.datapacks, 'data pack', 'data packs'),
+    countOf(covers.worlds, 'world', 'worlds'),
+  ];
+  return `Switches on: ${parts.join(', ')}. Mods it does not list are asked about when you apply; other items it does not list are left alone.`;
+}
+
+/** One line for the Update review: what saving the profile again does to one item. */
+function describeLoadoutChange(change: LoadoutChange): string {
+  const kind = change.kind;
+  if (kind === 'turned_on') return `Turn on ${change.filename}`;
+  if (kind === 'turned_off') return `Turn off ${change.filename}`;
+  if ('added' in kind) return `Add ${change.filename} (${kind.added.enabled ? 'on' : 'off'})`;
+  return `Drop ${change.filename}, which is no longer on this instance`;
+}
+
 function previewJavaMajor(version: string | undefined): number {
   const parts = (version ?? '').split('.');
   const first = Number(parts[0]);
@@ -283,8 +327,11 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const errorBannerRef = useRef<HTMLDivElement>(null);
+  const modsRegionRef = useRef<HTMLDivElement>(null);
   const statusBannerRef = useRef<HTMLDivElement>(null);
   const [exportBusy, setExportBusy] = useState(false);
+  // The file the last pack or lockfile was saved to, for "Show in folder".
+  const [savedExportPath, setSavedExportPath] = useState<string | null>(null);
   const [instanceCustomIcon, setInstanceCustomIcon] = useState<string | null>(null);
   const [modCustomIcons, setModCustomIcons] = useState<Record<string, string>>({});
 
@@ -315,6 +362,86 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [profileNameInput, setProfileNameInput] = useState('');
   const [profileBusy, setProfileBusy] = useState<string | null>(null);
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<string | null>(null);
+  // Set while the user is asked what to do with enabled mods a profile does not list.
+  const [unlistedChoice, setUnlistedChoice] = useState<{ profile: string; mods: string[] } | null>(null);
+  // Set while the user reviews what saving a profile again from the setup would change.
+  const [updateReview, setUpdateReview] = useState<{ profile: string; changes: LoadoutChange[] } | null>(null);
+
+  const runProfileApply = async (name: string, unlistedMods: UnlistedModsChoice) => {
+    setProfileBusy(name);
+    setError(null);
+    try {
+      await applyLoadoutProfile(instanceId, name, unlistedMods);
+      await reloadInstance();
+      setStatus(`Profile "${name}" applied. Before switching, Agora saved an undo point under Snapshots, labelled before-loadout (only the newest is kept).`);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setProfileBusy(null);
+    }
+  };
+
+  // Apply asks first when the instance has enabled mods the profile does not
+  // list. Keep is only the value passed when there is nothing to switch off.
+  const requestProfileApply = async (name: string) => {
+    setError(null);
+    setProfileBusy(name);
+    const unlisted = await listLoadoutUnlistedMods(instanceId, name).catch((e: unknown) => {
+      setError(formatError(e));
+      return null;
+    });
+    setProfileBusy(null);
+    if (unlisted === null) return;
+    if (unlisted.length === 0) {
+      await runProfileApply(name, 'keep');
+      return;
+    }
+    setUnlistedChoice({ profile: name, mods: unlisted });
+  };
+
+  // The launch health check, run on demand. The Health Check dialog opens with its
+  // result even when there is nothing to review.
+  const requestReadinessCheck = async () => {
+    setError(null);
+    try {
+      const report = await checkInstanceHealth(instanceId);
+      onReviewHealth?.(instanceId, row?.name ?? 'Instance', report);
+    } catch (cause) {
+      setError(formatError(cause));
+    }
+  };
+
+  // Update shows every change to the profile first, and saves only when the user confirms.
+  const requestProfileUpdate = async (name: string) => {
+    setError(null);
+    setProfileBusy(name);
+    try {
+      const preview = await previewLoadoutUpdate(instanceId, name);
+      if (preview.changes.length === 0) {
+        setStatus(`Profile "${name}" already matches the current setup. Nothing to save.`);
+      } else {
+        setUpdateReview({ profile: name, changes: preview.changes });
+      }
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setProfileBusy(null);
+    }
+  };
+
+  const saveProfileUpdate = async (name: string) => {
+    setProfileBusy(name);
+    setError(null);
+    try {
+      await updateLoadoutProfile(instanceId, name);
+      setProfiles(await listLoadoutProfiles(instanceId));
+      setStatus(`Profile "${name}" now records the current setup of this instance.`);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setProfileBusy(null);
+    }
+  };
 
   // Import state (Phase 6)
   const [importBusy, setImportBusy] = useState(false);
@@ -326,7 +453,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   } | null>(null);
   const [launcherImportOpen, setLauncherImportOpen] = useState(false);
   const [lockfileText, setLockfileText] = useState('');
-  const [lockfileBusy, setLockfileBusy] = useState<'export' | 'verify' | 'repair' | 'clone' | 'copy' | null>(null);
+  const [lockfileBusy, setLockfileBusy] = useState<'export' | 'save' | 'verify' | 'repair' | 'clone' | 'copy' | null>(null);
   const [lockfileReport, setLockfileReport] = useState<LockfileDriftReport | null>(null);
   const [lockfileNotice, setLockfileNotice] = useState<string | null>(null);
 
@@ -416,6 +543,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   useEffect(() => {
     setStatus(null);
     setError(null);
+    setSavedExportPath(null);
   }, [instanceId]);
 
   // The banners sit at the top of the page, so feedback for something done far
@@ -684,11 +812,20 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   /** Updates awaiting the changelog review step; null when nothing is pending. */
   const [pendingUpdates, setPendingUpdates] = useState<UpdateInfo[] | null>(null);
   const [showUpdateChangelogs, setShowUpdateChangelogs] = useState(true);
+  // Global Java mode, read for the readiness line. Null while unknown: the line
+  // then makes no promise about a download.
+  const [javaRuntimeMode, setJavaRuntimeMode] = useState<JavaRuntimeMode | null>(null);
 
   useEffect(() => {
     void getSetting(SETTINGS.showUpdateChangelogs.key)
       .then((raw) => setShowUpdateChangelogs(SETTINGS.showUpdateChangelogs.parse(raw)))
       .catch(() => { /* Default to showing it; a preview is never harmful. */ });
+  }, []);
+
+  useEffect(() => {
+    void getSetting(SETTINGS.javaRuntimeMode.key)
+      .then((raw) => setJavaRuntimeMode(SETTINGS.javaRuntimeMode.parse(raw)))
+      .catch(() => setJavaRuntimeMode(null));
   }, []);
 
   useEffect(() => {
@@ -1211,15 +1348,28 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   };
 
   const handleRevert = async () => {
+    setError(null);
+    // Read the list fresh: the Snapshots list may not have loaded yet, and it
+    // must not decide what the confirmation promises.
+    let lockSnapshot: Snapshot | undefined;
+    try {
+      lockSnapshot = (await listSnapshots(instanceId)).find((snap) => snap.effective_origin === 'lock');
+    } catch (e) {
+      setError(formatError(e));
+      return;
+    }
+    if (!lockSnapshot) {
+      setError('This instance has no lock snapshot to revert to. Lock it once to take one; Revert then returns to that point.');
+      return;
+    }
     if (!await confirm({
-      title: 'Revert to the snapshot taken when this instance was unlocked?',
-      body: 'This removes any mods you added since then.',
+      title: `Revert to the lock snapshot from ${formatInstalledDate(lockSnapshot.created_at)}?`,
+      body: 'Mods, configs and other files changed since then go back to how they were at that point. Saves (worlds) are not touched. Agora first takes an undo snapshot, so you can undo this from Snapshots.',
       confirmLabel: 'Revert',
       tone: 'danger',
     })) {
       return;
     }
-    setError(null);
     try {
       await revertInstance(instanceId);
       await reloadInstance();
@@ -1261,24 +1411,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const handleImportPack = async () => {
     setError(null);
     setStatus(null);
-    const path = await pickOpenFile('Import Pack', ['mrpack', 'agora-pack.json', 'json']);
+    const path = await pickOpenFile('Import pack as new instance', ['mrpack', 'agora-pack.json', 'json']);
     if (path === null) return;
-    if (path.toLowerCase().endsWith('.mrpack')) {
-      // Same name review as the Import tab, so a name clash can be renamed.
-      try {
-        const preview = await previewImportName(path);
-        setImportPending({
-          path,
-          name: preview.suggested_name,
-          nameTaken: preview.name_taken,
-          originalName: preview.default_name,
-        });
-        setActiveTab('import');
-      } catch (e) {
-        setError(formatError(e));
-      }
-      return;
-    }
+    // Both pack formats open the same review (name, files and where they come
+    // from, what is left out) before anything is written.
     startPackFile(path, path.split(/[\\/]/).pop() ?? 'Pack import');
     setStatus('Pack import started in the background.');
   };
@@ -1338,9 +1474,29 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setError(null);
     setStatus(null);
     try {
+      // The Agora pack only lists mods. Say which ones a friend could not get
+      // before saving, and point at the format that bundles them.
+      const unsourced = (await exportSourcelessMods(instanceId, format)) ?? [];
+      if (unsourced.length > 0) {
+        const shown = unsourced.slice(0, 8).join(', ');
+        const more = unsourced.length > 8 ? ` and ${unsourced.length - 8} more` : '';
+        const go = await confirm({
+          title: `${unsourced.length} mod${unsourced.length === 1 ? '' : 's'} can't be installed from this pack`,
+          body: `Agora could not find where to download: ${shown}${more}.
+
+`
+            + 'The Agora pack only lists mods, so a friend importing it would be told these are missing. '
+            + 'A Modrinth pack (.mrpack) includes the files themselves and works for everything.',
+          confirmLabel: 'Export anyway',
+        });
+        if (!go) return;
+      }
+      // null means the user cancelled the save dialog: say nothing.
       const path = await exportInstancePack(instanceId, format);
-      setStatus(`Exported ${format === 'json' ? 'pack' : '.mrpack'} to: ${path}`);
-      await revealPath(path);
+      if (path) {
+        setSavedExportPath(path);
+        setStatus(`${format === 'json' ? 'Agora pack' : 'Modrinth pack'} saved to: ${path}`);
+      }
     } catch (e) {
       setError(formatError(e));
     } finally {
@@ -1372,6 +1528,26 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           ? 'Canonical lockfile exported. It contains hashes and settings, never private config contents.'
           : `Lockfile exported with ${unresolved} unreproducible artifact${unresolved === 1 ? '' : 's'} clearly marked. Verification still works, but clone and repair will refuse substitution.`,
       );
+    } catch (cause) {
+      setError(formatError(cause));
+    } finally {
+      setLockfileBusy(null);
+    }
+  };
+
+  const handleSaveLockfile = async () => {
+    const text = requireLockfileText();
+    if (!text) return;
+    setLockfileBusy('save');
+    setError(null);
+    setLockfileNotice(null);
+    try {
+      // null means the user cancelled the save dialog: say nothing.
+      const path = await saveLockfileExport(instanceId, text);
+      if (path) {
+        setSavedExportPath(path);
+        setLockfileNotice('Lockfile saved.');
+      }
     } catch (cause) {
       setError(formatError(cause));
     } finally {
@@ -1556,10 +1732,27 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const playDisabled = playBusy || operationHeld || processLaunching || processStopping || processDelegated || anotherProcessActive;
   const recoveryPending = detail?.snapshot_readiness === 'pending';
   const snapshotOperationPending = recoveryPending || packInstall?.status === 'running' || migrationBusy || gameActive;
-  const healthIssueCount = healthReport
-    ? healthReport.blockers.length + healthReport.warnings.length
-    : 0;
-  const healthBlocked = (healthReport?.blockers.length ?? 0) > 0;
+  const counts = healthCounts(healthReport);
+  const healthIssueCount = counts.problems + counts.warnings;
+  const healthBlocked = counts.problems > 0;
+  // Where the memory number came from, when an import copied it. Shown only while that
+  // copied number is the one in use; otherwise the user has chosen a different one.
+  const copiedMemoryLabel = copiedMemoryNote(
+    readCopiedMemory(manifest?.user_preferences),
+    instanceJvmMemory,
+    instanceMemoryMode,
+  );
+  const readiness = row ? instanceReadiness({
+    minecraftVersion: row.minecraft_version,
+    loader: manifest?.loader ?? row.loader,
+    loaderVersion: manifest?.loader_version ?? row.loader_version,
+    javaPath: row.java_path,
+    javaMode: javaRuntimeMode,
+    javaMajor: previewJavaMajor(row.minecraft_version),
+    health: healthReport ? healthCounts(healthReport) : null,
+    packGaps: detail ? detail.pack_gaps.length : null,
+    busy: operationHeld,
+  }) : null;
 
   useEffect(() => {
     if (packInstall?.status === 'failed' && packInstall.error) {
@@ -1810,6 +2003,19 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   return (
     <div className="space-y-6" data-tour="page-instance-editor">
+      {/* The mod list is past the header, the sub-tabs and their buttons. */}
+      {activeTab === 'mods' && (
+        <button
+          type="button"
+          className="skip-link"
+          onClick={() => {
+            const region = modsRegionRef.current;
+            if (region) focusSkipTarget(region);
+          }}
+        >
+          Skip to mods
+        </button>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <BackButton onBack={onBack} />
         <button
@@ -1898,16 +2104,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       : 'border-amber-500/60 bg-amber-500/10'
                   }`}
                   role="alert"
-                  aria-label={`${healthIssueCount} health issue${healthIssueCount === 1 ? '' : 's'} detected`}
+                  aria-label={healthHeadline(counts)}
                 >
                   <div className="min-w-0">
                     <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
-                      {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
+                      {healthHeadline(counts)}
                     </p>
                     <p className="truncate text-muted-foreground">
-                      {healthBlocked
-                        ? 'Review before launching. You can continue after confirming risk.'
-                        : 'Review recommended before launch.'}
+                      {healthLaunchNote(counts)}
                     </p>
                   </div>
                   <button
@@ -1920,11 +2124,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 </div>
               )}
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>{row?.is_locked ? '🔒 Locked' : '🔓 Unlocked'}</span>
+                <span title={LOCK_HELP}>{row?.is_locked ? '🔒 Locked' : '🔓 Unlocked'}</span>
                 {row?.is_locked ? (
                   <button
                     onClick={handleUnlock}
                     disabled={recoveryBlocked}
+                    title={LOCK_HELP}
                     className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                   >
                     Unlock
@@ -1934,6 +2139,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     <button
                       onClick={handleLock}
                       disabled={recoveryBlocked}
+                      title={LOCK_HELP}
                       className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                     >
                       Lock
@@ -1941,6 +2147,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     <button
                       onClick={handleRevert}
                       disabled={recoveryBlocked}
+                      title="Go back to the lock snapshot: mods and config changed since the instance was last locked are put back. You can undo this from Snapshots."
                       className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                     >
                       Revert
@@ -1984,7 +2191,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 disabled={recoveryBlocked}
                 className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
               >
-                📥 Import Pack
+                📥 Import pack as new instance
               </button>
               <button
                 onClick={() => openInstanceFolder(instanceId)}
@@ -1996,9 +2203,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               <button
                 onClick={() => onInvestigate?.(instanceId)}
                 className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
-                title="Analyze the latest instance logs"
+                title="Open Crash Doctor to look through the latest logs for what went wrong"
               >
-                Investigate
+                Diagnose a crash
+              </button>
+              <button
+                type="button"
+                onClick={() => { void requestReadinessCheck(); }}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+                title="Run the launch health check and show what it finds, even when nothing needs attention"
+              >
+                Check readiness
               </button>
               </div>
               {processRunning ? (
@@ -2033,6 +2248,20 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <Play className="h-5 w-5 fill-current" aria-hidden="true" />
                   {processLaunching || playBusy ? 'Starting…' : processStopping ? 'Stopping…' : processDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : 'Play'}
                 </button>
+              )}
+              {readiness && !gameActive && (
+                <div className="max-w-sm text-right text-xs" data-testid="instance-readiness">
+                  <p className={`font-medium ${
+                    readiness.level === 'blocked'
+                      ? 'text-destructive'
+                      : readiness.level === 'check'
+                        ? 'text-amber-700 dark:text-amber-300'
+                        : 'text-green-700 dark:text-green-400'
+                  }`}>
+                    {readiness.headline}
+                  </p>
+                  <p className="text-muted-foreground">{readiness.details.join(' · ')}</p>
+                </div>
               )}
             </div>
           </div>
@@ -2092,8 +2321,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
           )}
           {status && (
-            <div ref={statusBannerRef} className="mt-4 rounded-lg bg-accent text-accent-foreground p-3 text-sm">
-              {status}
+            <div ref={statusBannerRef} className="mt-4 flex items-start justify-between gap-3 rounded-lg bg-accent text-accent-foreground p-3 text-sm">
+              <span className="min-w-0">{status}</span>
+              <button
+                type="button"
+                onClick={() => setStatus(null)}
+                aria-label="Dismiss message"
+                className="shrink-0 rounded px-1 text-base leading-none hover:opacity-70"
+              >
+                ×
+              </button>
             </div>
           )}
         </section>
@@ -2110,7 +2347,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             data-active={activeTab === tab}
             className="agora-tab text-sm"
           >
-            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'migrate' ? 'Version Move' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
+            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'migrate' ? 'Version Move' : tab === 'import' ? 'Other launchers & files' : tab === 'export' ? 'Export' : 'Console'}
           </button>
         ))}
         <button
@@ -2124,6 +2361,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       </div>
 
       {activeTab === 'mods' && (
+        <div ref={modsRegionRef} tabIndex={-1}>
         <InstalledContentPanel
           contentType="mod"
           rows={displayedContentRows.filter((content) => content.content_type === 'mod')}
@@ -2148,7 +2386,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onError={setError}
           onDrop={handleDrop}
           extraActions={<>
-            <button type="button" onClick={() => setOptionalDepsOpen(true)} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent" title="See which installed mods recommend optional add-ons" data-testid="optional-deps-button" aria-busy={optionalEdgesLoading}>Optional dependencies{optionalEdgesLoading ? <span className="animate-pulse text-muted-foreground"> (…)<span className="sr-only"> loading</span></span> : optionalDepsCount > 0 ? ` (${optionalDepsCount})` : ''}</button>
+            <button type="button" onClick={() => setOptionalDepsOpen(true)} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent" title="See which installed mods recommend optional add-ons" data-testid="optional-deps-button" aria-busy={optionalEdgesLoading}>Optional add-ons{optionalEdgesLoading ? <span className="animate-pulse text-muted-foreground"> (…)<span className="sr-only"> loading</span></span> : optionalDepsCount > 0 ? ' · all installed' : ''}</button>
             <button type="button" onClick={() => onOpenBrowseForInstance?.(instanceId)} disabled={!!row?.is_locked || recoveryBlocked} className="rounded-lg border border-dashed border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={recoveryBlocked ? 'Wait for the recovery snapshot to finish.' : row?.is_locked ? 'Unlock the instance to add mods.' : undefined}>+ Add Mod</button>
           </>}
           iconForRow={(content) => {
@@ -2156,6 +2394,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             return mod ? modCustomIcons[installedModKey(mod)] ?? null : null;
           }}
         />
+        </div>
       )}
 
       {activeTab === 'resourcepacks' && (
@@ -2370,7 +2609,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Snapshots without a badge are yours and are kept (up to 10), as are those badged Migration. Those badged Automatic, taken around launches, installs and templates, rotate so only the latest is kept.
+            A snapshot is a restore point. It copies your mods, configs, resource packs, shader packs, data packs and options.txt. Worlds are included in full snapshots, but not in the quick ones taken before each launch. Logs, screenshots and other files are not included.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Agora takes an automatic snapshot before changes to an existing instance: launches, mod installs, updates and removals, pack updates, templates, and pack mods added after an import. It keeps the last 5 of those. Turning a mod on or off takes none, and neither does importing a pack into a new instance, since there is nothing to go back to. Snapshots you create yourself, and ones from version moves, are kept until you delete them.
           </p>
           {snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -2384,23 +2626,26 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     <span className="font-medium flex items-center gap-2">
                       <span>{snap.label}</span>
                       {snap.effective_origin === 'automatic' && (
-                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground" title="Taken by Agora; rotates, so only the latest is kept">Automatic</span>
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground" title="Taken by Agora before a change; only the last 5 are kept">Automatic</span>
+                      )}
+                      {snap.effective_origin === 'lock' && (
+                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300" title="Taken when the instance was locked. Revert returns to it until the next lock replaces it.">Lock</span>
                       )}
                       {snap.effective_origin === 'migration' && (
-                        <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>
+                        <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>
                       )}
                       {snap.is_current_lkg && (
-                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] text-green-700 dark:text-green-300">Current LKG</span>
+                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-700 dark:text-green-300" title="The last setup that launched fine. Agora can restore it if a change breaks the game.">Last setup that launched fine</span>
                       )}
                       {!snap.is_current_lkg && snap.is_lkg && (
-                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">Known good</span>
+                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary" title="A setup that launched fine before the current one.">Launched fine before</span>
                       )}
                       {snap.is_pre_restore && (
-                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700 dark:text-amber-300">Undo restore</span>
+                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">Undo restore</span>
                       )}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {snap.created_at} · {snap.file_count} file{snap.file_count !== 1 ? 's' : ''}
+                      {formatDateTime(snap.created_at)} · {snap.file_count} file{snap.file_count !== 1 ? 's' : ''}
                     </span>
                   </div>
                   <div className="flex gap-2 ml-3">
@@ -2569,9 +2814,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               />
               <button
                 onClick={async () => {
+                  const name = profileNameInput.trim();
+                  if (!name) return;
                   setError(null);
                   try {
-                    const name = profileNameInput.trim() || `Current Setup ${new Date().toLocaleString()}`;
                     await createLoadoutProfile(instanceId, name);
                     const result = await listLoadoutProfiles(instanceId);
                     setProfiles(result);
@@ -2581,13 +2827,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     setError(formatError(e));
                   }
                 }}
-                disabled={recoveryBlocked}
+                disabled={recoveryBlocked || !profileNameInput.trim()}
                 className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 whitespace-nowrap"
               >
                 Create Profile
               </button>
             </div>
           </div>
+
+          <p className="text-xs text-muted-foreground">
+            A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off. Apply sets each item it records to that state. A mod it does not list, such as one added since it was saved, is asked about when you apply: keep it on, or switch it off. Packs and worlds it does not list are left as they are. Update from setup saves the profile again from what the instance has now, after showing you what would change. Configs, versions and the loader are not part of a profile.
+          </p>
 
           {profiles.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -2599,27 +2849,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 <div key={prof.name} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm">
                   <div className="min-w-0 flex-1">
                     <span className="font-medium block">{prof.name}</span>
-                    <span className="text-xs text-muted-foreground">{prof.enabled_mods.length} mod{prof.enabled_mods.length !== 1 ? 's' : ''}</span>
+                    <span className="text-xs text-muted-foreground block">{describeLoadoutCoverage(prof)}</span>
                   </div>
                   <div className="flex gap-2 ml-3">
                     <button
-                      onClick={async () => {
-                        setProfileBusy(prof.name);
-                        setError(null);
-                        try {
-                          await applyLoadoutProfile(instanceId, prof.name);
-                          await reloadInstance();
-                          setStatus(`Profile "${prof.name}" applied.`);
-                        } catch (e) {
-                          setError(formatError(e));
-                        } finally {
-                          setProfileBusy(null);
-                        }
-                      }}
+                      onClick={() => requestProfileApply(prof.name)}
                        disabled={profileBusy === prof.name || recoveryBlocked}
                       className="text-xs text-foreground hover:underline disabled:opacity-50"
                     >
                       {profileBusy === prof.name ? 'Applying…' : 'Apply'}
+                    </button>
+                    <button
+                      onClick={() => requestProfileUpdate(prof.name)}
+                      disabled={profileBusy === prof.name || recoveryBlocked}
+                      className="text-xs text-foreground hover:underline disabled:opacity-50"
+                    >
+                      Update from setup
                     </button>
                     {confirmDeleteProfile === prof.name ? (
                       <div className="flex gap-1">
@@ -2764,6 +3009,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 try {
                   const path = await pickOpenFile('Import Instance', ['mrpack', 'zip']);
                   if (path === null) return;
+                  if (path.toLowerCase().endsWith('.mrpack')) {
+                    // A Modrinth pack gets the same review as every other pack file.
+                    startPackFile(path, path.split(/[\\/]/).pop() ?? 'Pack import');
+                    setStatus('Pack import started in the background.');
+                    return;
+                  }
                   const preview = await previewImportName(path);
                   setImportPending({
                     path,
@@ -2805,18 +3056,37 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </p>
           </div>
 
+          {savedExportPath && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg bg-accent/20 p-3 text-xs text-muted-foreground">
+              <span className="min-w-0 break-all">Saved to {savedExportPath}</span>
+              <button
+                onClick={() => void revealPath(savedExportPath)}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+              >
+                Show in folder
+              </button>
+            </div>
+          )}
+
           {/* Card 1: mrpack (Recommended) */}
           <div className="rounded-xl border border-border bg-card p-4 space-y-3">
             <div className="flex items-start justify-between gap-2">
               <h4 className="font-semibold text-sm">Export as Modrinth Pack (.mrpack)</h4>
-              <span className="rounded-full bg-primary/10 text-primary text-[10px] font-semibold px-2 py-0.5 shrink-0">
+              <span className="rounded-full bg-primary/10 text-primary text-xs font-semibold px-2 py-0.5 shrink-0">
                 Recommended
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
               The industry-standard format for sharing Minecraft modpacks. Compatible with
-              Modrinth, Prism Launcher, and other launchers. Contains mod references, config
-              files, and overrides — not the mod files themselves.
+              Modrinth, Prism Launcher, and other launchers. Lists your mods with download
+              links and checksums; a mod Agora can't find on Modrinth is bundled in the file.
+              Your resource packs, shader packs and datapacks go along too, linked when Modrinth hosts
+              that exact file and bundled otherwise. If a file can't be read, the export
+              stops and names it.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Not included:</span> configs,
+              keybinds, other settings, and saves.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Best for:</span> sharing your
@@ -2835,13 +3105,19 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           <div className="rounded-xl border border-border bg-card p-4 space-y-3">
             <div className="flex items-start justify-between gap-2">
               <h4 className="font-semibold text-sm">Export as Agora Pack (.json)</h4>
-              <span className="rounded-full bg-muted text-muted-foreground text-[10px] font-semibold px-2 py-0.5 shrink-0">
+              <span className="rounded-full bg-muted text-muted-foreground text-xs font-semibold px-2 py-0.5 shrink-0">
                 Agora native
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
               Agora's native pack format. Contains the full mod list with exact versions and
               source references. Reimport into any Agora instance to recreate this loadout.
+              It lists mods but does not include the files, so a mod Agora can't find a download
+              for can't be installed from it; Agora tells you which before saving.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Not included:</span> configs,
+              keybinds, and other settings.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Best for:</span> backing up your
@@ -2860,14 +3136,19 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           <div className="rounded-xl border border-border bg-card p-4 space-y-3">
             <div className="flex items-start justify-between gap-2">
               <h4 className="font-semibold text-sm">Export Reproduction Lockfile</h4>
-              <span className="rounded-full bg-muted text-muted-foreground text-[10px] font-semibold px-2 py-0.5 shrink-0">
+              <span className="rounded-full bg-muted text-muted-foreground text-xs font-semibold px-2 py-0.5 shrink-0">
                 Advanced
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
               A privacy-preserving lockfile recording SHA-256 hashes, exact download sources,
-              mod versions, and all settings. Any installation with the same lockfile reproduces
-              identical artifacts. Private config contents are never included.
+              mod versions, and the game and loader versions. It also fingerprints your config
+              files without copying them. Any installation with the same lockfile reproduces
+              identical artifacts.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Not included:</span> config file
+              contents, memory and Java settings.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Best for:</span> forensic
@@ -2884,6 +3165,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               </button>
               {lockfileText.trim() && (
                 <>
+                  <button
+                    onClick={() => void handleSaveLockfile()}
+                    disabled={lockfileBusy !== null}
+                    className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+                  >
+                    {lockfileBusy === 'save' ? 'Saving…' : 'Save to file…'}
+                  </button>
                   <button
                     onClick={() => void handleCopyLockfile()}
                     disabled={lockfileBusy !== null}
@@ -3073,9 +3361,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <span className="tabular-nums text-primary">
                     {instanceMemoryMode === 'auto'
                       ? `Auto - ${((memoryRecommendation?.recommended_mb ?? instanceJvmMemory) / 1024).toFixed(1)} GB`
-                      : instanceJvmMemory >= 1024
-                        ? `${(instanceJvmMemory / 1024).toFixed(instanceJvmMemory % 1024 === 0 ? 0 : 1)} GB`
-                        : `${instanceJvmMemory} MB`}
+                      : formatMemoryMb(instanceJvmMemory)}
                   </span>
                 </span>
                 <span className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-xs">
@@ -3091,12 +3377,29 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     onChange={(event) => setInstanceMemoryMode(event.target.checked ? 'auto' : 'manual')}
                   />
                 </span>
+                {copiedMemoryLabel && (
+                  <span className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted px-3 py-2 text-xs">
+                    <span>
+                      {copiedMemoryLabel}, when the instance was imported.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setInstanceMemoryMode('auto')}
+                      disabled={recoveryBlocked}
+                      className="rounded-md border border-border px-2 py-1 font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                      Switch to automatic
+                    </button>
+                  </span>
+                )}
+                {/* One MB per step, so the thumb sits on the exact value a copied import
+                    brought in (12064 MB stays 12064 rather than snapping to 12288). */}
                 <input
                   aria-label="Memory allocation"
                   type="range"
                   min={2048}
                   max={32768}
-                  step={512}
+                  step={1}
                   value={instanceJvmMemory}
                   disabled={recoveryBlocked || instanceMemoryMode === 'auto'}
                   onChange={(e) => setInstanceJvmMemory(Number(e.target.value))}
@@ -3424,6 +3727,91 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         />
       )}
 
+      <Dialog
+        open={unlistedChoice !== null}
+        onOpenChange={(open) => { if (!open) setUnlistedChoice(null); }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-hidden flex flex-col gap-3">
+          <DialogTitle className="shrink-0">Mods this profile does not list</DialogTitle>
+          <DialogDescription className="shrink-0">
+            {`Profile "${unlistedChoice?.profile ?? ''}" does not list ${unlistedChoice?.mods.length ?? 0} enabled ${unlistedChoice?.mods.length === 1 ? 'mod' : 'mods'}, such as ones added since it was saved. Keep them on, or switch them off?`}
+          </DialogDescription>
+          <ul className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border p-2 font-mono text-xs">
+            {(unlistedChoice?.mods ?? []).map((mod) => (
+              <li key={mod} className="truncate py-0.5">{mod}</li>
+            ))}
+          </ul>
+          <div className="flex shrink-0 justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setUnlistedChoice(null)}
+              className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const choice = unlistedChoice;
+                setUnlistedChoice(null);
+                if (choice) void runProfileApply(choice.profile, 'keep');
+              }}
+              className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              Keep them on
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const choice = unlistedChoice;
+                setUnlistedChoice(null);
+                if (choice) void runProfileApply(choice.profile, 'off');
+              }}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+            >
+              Switch them off
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={updateReview !== null}
+        onOpenChange={(open) => { if (!open) setUpdateReview(null); }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-hidden flex flex-col gap-3">
+          <DialogTitle className="shrink-0">{`Update "${updateReview?.profile ?? ''}" from the current setup?`}</DialogTitle>
+          <DialogDescription className="shrink-0">
+            {`Saving records every mod, pack and world on this instance as it is now, on or off, and drops the ones that are gone. These changes would be saved (${updateReview?.changes.length ?? 0}):`}
+          </DialogDescription>
+          <ul className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border p-2 text-xs">
+            {(updateReview?.changes ?? []).map((change) => (
+              <li key={`${change.content_type}:${change.filename}`} className="truncate py-0.5">{describeLoadoutChange(change)}</li>
+            ))}
+          </ul>
+          <div className="flex shrink-0 justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setUpdateReview(null)}
+              className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const review = updateReview;
+                setUpdateReview(null);
+                if (review) void saveProfileUpdate(review.profile);
+              }}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+            >
+              Save changes
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Optional dependencies overlay — the standard-editor mirror of the
           high-interaction instance editor's optional panel. Every listed target is
           installed (the dependency graph only reports resolved pairs), so rows
@@ -3434,7 +3822,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onOpenChange={(open) => { if (!open) setOptionalDepsOpen(false); }}
         >
           <DialogContent className="max-h-[85vh] max-w-xl overflow-hidden flex flex-col gap-3">
-            <DialogTitle className="shrink-0">Optional dependencies</DialogTitle>
+            <DialogTitle className="shrink-0">Optional add-ons</DialogTitle>
             <DialogDescription className="shrink-0">
               A few installed mods can use extra add-ons. They're never required — this lists the ones that are already here.
             </DialogDescription>

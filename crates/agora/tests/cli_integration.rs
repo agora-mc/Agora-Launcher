@@ -209,6 +209,9 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["instance", "repair-loader"],
     &["instance", "recommend-memory"],
     &["instance", "delete"],
+    &["instance", "deleted"],
+    &["instance", "restore"],
+    &["instance", "purge"],
     &["mod", "list"],
     &["mod", "search"],
     &["mod", "install"],
@@ -243,6 +246,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["loadout", "create"],
     &["loadout", "list"],
     &["loadout", "apply"],
+    &["loadout", "update"],
     &["loadout", "delete"],
     &["lockfile", "export"],
     &["lockfile", "verify"],
@@ -938,6 +942,146 @@ fn instance_delete_json_output() {
     let parsed = assert_json_stdout(&output);
     assert_eq!(parsed["status"], "deleted");
     assert_eq!(parsed["instanceId"], "json-delete");
+}
+
+// ---------------------------------------------------------------------------
+// Recently deleted: list, restore, purge
+// ---------------------------------------------------------------------------
+
+/// Import a small instance, delete it, and return its Recently deleted entry ID.
+fn import_and_delete(data_dir: &Path, name: &str) -> String {
+    let src = tempdir();
+    let instance_src = src.path().join(name);
+    std::fs::create_dir_all(instance_src.join("mods")).unwrap();
+    std::fs::write(instance_src.join("mods").join("a.jar"), b"mod").unwrap();
+    let import = run_agora(data_dir, &["import", &instance_src.to_string_lossy()]);
+    assert!(import.status.success(), "import should succeed");
+    let delete = run_agora(data_dir, &["instance", "delete", name]);
+    assert!(delete.status.success(), "delete should succeed");
+    let listed = assert_json_stdout(&run_agora_json(data_dir, &["instance", "deleted"]));
+    listed
+        .as_array()
+        .expect("instance deleted --json is an array")
+        .iter()
+        .find(|entry| entry["instance_id"] == name)
+        .unwrap_or_else(|| panic!("{name} is not in Recently deleted: {listed}"))["entry_id"]
+        .as_str()
+        .expect("entry_id is a string")
+        .to_string()
+}
+
+#[test]
+fn instance_deleted_lists_nothing_on_a_fresh_data_root() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let json = run_agora_json(&data_dir, &["instance", "deleted"]);
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    assert_eq!(assert_json_stdout(&json), serde_json::json!([]));
+    let human = run_agora(&data_dir, &["instance", "deleted"]);
+    assert!(human.status.success());
+    assert!(String::from_utf8_lossy(&human.stdout).contains("empty"));
+}
+
+#[test]
+fn deleted_instance_is_listed_with_id_name_time_and_size() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "listed-pack");
+
+    let parsed = assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"]));
+    let entry = &parsed[0];
+    assert_eq!(entry["entry_id"], entry_id.as_str());
+    assert_eq!(entry["name"], "listed-pack");
+    assert!(entry["deleted_at"].is_string(), "{entry}");
+    assert!(entry["size_bytes"].as_u64().unwrap_or(0) >= 3, "{entry}");
+
+    let human = run_agora(&data_dir, &["instance", "deleted"]);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains(&entry_id), "{stdout}");
+    assert!(stdout.contains("listed-pack"), "{stdout}");
+    let row = stdout
+        .lines()
+        .find(|line| line.contains("listed-pack"))
+        .unwrap_or_else(|| panic!("no row for listed-pack:\n{stdout}"));
+    assert!(
+        row.trim_end().ends_with(" B") || row.trim_end().ends_with(" KiB"),
+        "a small instance should show its size in B or KiB: {row}"
+    );
+}
+
+#[test]
+fn restore_brings_a_deleted_instance_back_and_empties_the_list() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "restore-me");
+    assert!(!run_agora(&data_dir, &["get-instance", "restore-me"])
+        .status
+        .success());
+
+    let restore = run_agora_json(&data_dir, &["instance", "restore", &entry_id]);
+    assert!(
+        restore.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restore.stderr)
+    );
+    let parsed = assert_json_stdout(&restore);
+    assert_eq!(parsed["status"], "restored");
+    assert_eq!(parsed["entryId"], entry_id.as_str());
+    assert_eq!(parsed["instanceId"], "restore-me");
+    assert_eq!(parsed["renamed"], false);
+
+    assert!(run_agora(&data_dir, &["get-instance", "restore-me"])
+        .status
+        .success());
+    let paths = assert_json_stdout(&run_agora_json(&data_dir, &["paths"]));
+    let mod_file = Path::new(paths["instances"].as_str().unwrap())
+        .join("restore-me")
+        .join("mods")
+        .join("a.jar");
+    assert!(
+        mod_file.is_file(),
+        "the mod file came back with the instance"
+    );
+    assert_eq!(
+        assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"])),
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn restore_refuses_unknown_and_traversal_entry_ids() {
+    let (_tmp, data_dir) = temp_data_dir();
+    for entry in ["no-such-entry", "../../outside", "..\\..\\outside"] {
+        let output = run_agora(&data_dir, &["instance", "restore", entry]);
+        assert!(!output.status.success(), "restore {entry} should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("no longer available"), "{stderr}");
+    }
+}
+
+#[test]
+fn purge_without_yes_refuses_without_a_terminal_and_keeps_the_entry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "keep-me");
+
+    // The test harness gives the child no terminal, so the prompt cannot run.
+    let output = run_agora(&data_dir, &["instance", "purge", &entry_id]);
+    assert!(!output.status.success(), "purge must not run unconfirmed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--yes"), "{stderr}");
+
+    let listed = assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"]));
+    assert_eq!(listed[0]["entry_id"], entry_id.as_str());
+}
+
+#[test]
+fn purge_unknown_entry_fails_even_with_yes() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["instance", "purge", "no-such-entry", "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No deleted instance"), "{stderr}");
 }
 
 // ---------------------------------------------------------------------------
@@ -2129,6 +2273,270 @@ fn loadout_apply_json_output() {
     let parsed = assert_json_stdout(&output);
     assert_eq!(parsed["status"], "applied");
     assert_eq!(parsed["profile"], "prof");
+}
+
+#[test]
+fn loadout_apply_saves_an_undo_point_the_snapshot_list_shows() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_minimal_instance(&data_dir, "loadout-undo");
+    run_agora(&data_dir, &["loadout", "create", "loadout-undo", "full"]);
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-undo", "full"]);
+    assert!(
+        output.status.success(),
+        "loadout apply should succeed:
+{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("before-loadout"),
+        "stdout should name the undo point:
+{stdout}"
+    );
+
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-undo"]);
+    let parsed = assert_json_stdout(&list);
+    let snapshots: Vec<serde_json::Value> = serde_json::from_value(parsed).unwrap();
+    assert!(
+        snapshots.iter().any(|s| s["label"] == "before-loadout"),
+        "apply from the CLI must save an undo point: {snapshots:?}"
+    );
+}
+
+#[test]
+fn loadout_apply_refuses_a_locked_instance_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_minimal_instance(&data_dir, "loadout-locked");
+    run_agora(&data_dir, &["loadout", "create", "loadout-locked", "all"]);
+
+    // After the profile was saved, lithium was switched off and the instance locked.
+    let instance_dir = data_dir.join("instances").join("loadout-locked");
+    std::fs::rename(
+        instance_dir.join("mods").join("lithium.jar"),
+        instance_dir.join("mods").join("lithium.jar.disabled"),
+    )
+    .unwrap();
+    let path = instance_dir.join("instance_manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    manifest["is_locked"] = serde_json::json!(true);
+    for entry in manifest["mods"].as_array_mut().unwrap() {
+        if entry["filename"] == "lithium.jar" {
+            entry["enabled"] = serde_json::json!(false);
+        }
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    let manifest_before = std::fs::read_to_string(&path).unwrap();
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-locked", "all"]);
+    assert!(
+        !output.status.success(),
+        "apply to a locked instance must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("This instance is locked"),
+        "stderr should carry the core lock message:
+{stderr}"
+    );
+
+    assert!(
+        instance_dir
+            .join("mods")
+            .join("lithium.jar.disabled")
+            .exists(),
+        "lithium must stay off"
+    );
+    assert!(!instance_dir.join("mods").join("lithium.jar").exists());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        manifest_before,
+        "the manifest must not change"
+    );
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-locked"]);
+    let snapshots: Vec<serde_json::Value> =
+        serde_json::from_value(assert_json_stdout(&list)).unwrap();
+    assert!(snapshots.is_empty(), "a refused apply takes no undo point");
+}
+
+/// An instance whose profile was saved with sodium and lithium, then gained
+/// `newer.jar` (on) after the save, so the profile does not list it.
+fn loadout_instance_with_an_unlisted_mod(data_dir: &std::path::Path, id: &str) {
+    create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar"]);
+    run_agora(data_dir, &["loadout", "create", id, "both"]);
+    create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar", "newer.jar"]);
+}
+
+#[test]
+fn loadout_update_refuses_without_a_terminal_unless_yes_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-update-refused");
+    let profile = data_dir
+        .join("instances")
+        .join("loadout-update-refused")
+        .join(".agora_loadouts")
+        .join("both.json");
+    let before = std::fs::read_to_string(&profile).unwrap();
+
+    // Tests have no terminal, so nobody can be asked: the changes are named and
+    // the command refuses.
+    let output = run_agora(
+        &data_dir,
+        &["loadout", "update", "loadout-update-refused", "both"],
+    );
+    assert!(!output.status.success(), "update without --yes must refuse");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("add newer.jar (on)"), "stderr: {stderr}");
+    assert!(stderr.contains("--yes"), "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&profile).unwrap(),
+        before,
+        "a refused update leaves the profile as it was"
+    );
+}
+
+#[test]
+fn loadout_update_with_yes_records_the_setup_so_apply_stops_asking() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-update-yes");
+
+    let output = run_agora_json(
+        &data_dir,
+        &["loadout", "update", "loadout-update-yes", "both", "--yes"],
+    );
+    let parsed = assert_json_stdout(&output);
+    assert_eq!(parsed["status"], "updated", "{parsed}");
+    assert_eq!(parsed["changes"][0]["filename"], "newer.jar", "{parsed}");
+
+    // Apply no longer needs --others: the profile now lists newer.jar.
+    let apply = run_agora(
+        &data_dir,
+        &["loadout", "apply", "loadout-update-yes", "both"],
+    );
+    assert!(
+        apply.status.success(),
+        "apply after an update should not ask: {}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+
+    // And a second update with nothing new says so and writes nothing.
+    let again = run_agora(
+        &data_dir,
+        &["loadout", "update", "loadout-update-yes", "both", "--yes"],
+    );
+    assert!(again.status.success());
+    assert!(String::from_utf8_lossy(&again.stdout).contains("Nothing to save"));
+}
+
+#[test]
+fn loadout_apply_refuses_unlisted_mods_without_a_choice_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-unlisted");
+    let mods = data_dir
+        .join("instances")
+        .join("loadout-unlisted")
+        .join("mods");
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-unlisted", "both"]);
+    assert!(
+        !output.status.success(),
+        "apply must not choose for the user when mods are unlisted"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("newer.jar"),
+        "stderr should name the mod:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--others"),
+        "stderr should name the flag:\n{stderr}"
+    );
+    assert!(
+        mods.join("newer.jar").exists(),
+        "a refused apply changes nothing"
+    );
+
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-unlisted"]);
+    let snapshots: Vec<serde_json::Value> =
+        serde_json::from_value(assert_json_stdout(&list)).unwrap();
+    assert!(snapshots.is_empty(), "a refused apply takes no undo point");
+}
+
+#[test]
+fn loadout_apply_others_off_switches_the_unlisted_mod_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-off");
+    let mods = data_dir.join("instances").join("loadout-off").join("mods");
+
+    let output = run_agora(
+        &data_dir,
+        &["loadout", "apply", "loadout-off", "both", "--others", "off"],
+    );
+    assert!(
+        output.status.success(),
+        "apply --others off should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        mods.join("newer.jar.disabled").exists(),
+        "off switches it off"
+    );
+    assert!(mods.join("sodium.jar").exists());
+    assert!(mods.join("lithium.jar").exists());
+}
+
+#[test]
+fn loadout_apply_others_keep_leaves_the_unlisted_mod_on() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-keep");
+    let mods = data_dir.join("instances").join("loadout-keep").join("mods");
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "loadout",
+            "apply",
+            "loadout-keep",
+            "both",
+            "--others",
+            "keep",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "apply --others keep should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(mods.join("newer.jar").exists(), "keep leaves it on");
+    assert!(!mods.join("newer.jar.disabled").exists());
+}
+
+#[test]
+fn loadout_apply_rejects_an_unknown_others_value() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-bad-choice");
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "loadout",
+            "apply",
+            "loadout-bad-choice",
+            "both",
+            "--others",
+            "maybe",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "a value that is not keep or off is refused"
+    );
+    let mods = data_dir
+        .join("instances")
+        .join("loadout-bad-choice")
+        .join("mods");
+    assert!(mods.join("newer.jar").exists());
 }
 
 #[test]

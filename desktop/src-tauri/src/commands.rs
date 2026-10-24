@@ -340,7 +340,7 @@ pub async fn create_instance(
     instances::create_instance(app, request).await
 }
 
-/// Delete an instance, moving its directory to the OS trash.
+/// Delete an instance, moving it to Recently deleted (restorable for 30 days).
 #[tauri::command]
 pub async fn delete_instance(
     app: tauri::AppHandle,
@@ -348,6 +348,35 @@ pub async fn delete_instance(
     instance_id: String,
 ) -> LauncherResult<()> {
     tokio::task::spawn_blocking(move || instances::delete_instance(&app, &instance_id))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Instances deleted within the last 30 days, newest first.
+#[tauri::command]
+pub async fn list_recently_deleted(
+    app: tauri::AppHandle,
+) -> LauncherResult<Vec<agora_core::recently_deleted::RecentlyDeletedEntry>> {
+    tokio::task::spawn_blocking(move || instances::list_recently_deleted(&app))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Put a deleted instance back (under a free name if its id was reused).
+#[tauri::command]
+pub async fn restore_deleted_instance(
+    app: tauri::AppHandle,
+    entry_id: String,
+) -> LauncherResult<agora_core::recently_deleted::RestoreOutcome> {
+    tokio::task::spawn_blocking(move || instances::restore_deleted_instance(&app, &entry_id))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// "Delete now": send a deleted instance to the OS trash.
+#[tauri::command]
+pub async fn purge_deleted_instance(app: tauri::AppHandle, entry_id: String) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || instances::purge_deleted_instance(&app, &entry_id))
         .await
         .map_err(|_| LauncherError::LocalStateFailed)?
 }
@@ -1511,6 +1540,16 @@ pub async fn get_registry_status(
     Ok(crate::registry_sync::get_status(&app))
 }
 
+/// What the most recent outbound requests reported: reachable, unreachable, or
+/// nothing tried yet. The Privacy page and offline banner show this instead of
+/// the browser's `navigator.onLine`, which says nothing about whether requests
+/// actually get through.
+#[tauri::command]
+pub async fn get_connectivity_status(
+) -> LauncherResult<agora_core::connectivity::ConnectivitySnapshot> {
+    Ok(agora_core::connectivity::snapshot())
+}
+
 /// Extract a pack override zip into an instance directory with full sanitization.
 ///
 /// Implements Â§7.2: directory whitelist, zip-bomb limits, banned extensions,
@@ -2184,31 +2223,127 @@ pub async fn execute_launcher_imports(
     app: tauri::AppHandle,
     plan: agora_core::launcher_import_service::LauncherImportPlan,
 ) -> LauncherResult<agora_core::launcher_import_service::LauncherImportBatchResult> {
-    let ctx = crate::core_context(&app)?;
+    // The wizard listens for "operation-progress"; without a sink the copy runs
+    // silently for minutes behind one spinner.
+    let ctx =
+        crate::core_context(&app)?.with_progress_sink(std::sync::Arc::new(TauriCoreProgressSink {
+            app,
+            event_name: "operation-progress",
+        }));
     agora_core::launcher_import_service::LauncherImportService::new(ctx)
         .execute(plan)
         .await
 }
 
-/// Export an instance as a shareable pack file (Â§6.5c).
+/// Export an instance as a shareable pack file (Â§6.5c). The user picks where the
+/// file goes in a save dialog; `None` means they cancelled.
 #[tauri::command]
 pub async fn export_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     format: String,
-) -> LauncherResult<String> {
-    mod_install::export_instance_pack(&app, &instance_id, &format).await
+) -> LauncherResult<Option<String>> {
+    let file_name = agora_core::export_service::default_export_file_name(&instance_id, &format)?;
+    let (filter_name, extension) = if format == "json" {
+        ("Agora pack", "json")
+    } else {
+        ("Modrinth pack", "mrpack")
+    };
+    let exports_dir = exports_folder(&app)?;
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Export pack")
+        .set_directory(&exports_dir)
+        .set_file_name(&file_name)
+        .add_filter(filter_name, &[extension])
+        .save_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    mod_install::export_instance_pack(&app, &instance_id, &format, handle.path())
+        .await
+        .map(Some)
+}
+
+/// Mods an export in `format` could not carry to a friend (no catalog or
+/// Modrinth source, and the format does not bundle files). The UI names them
+/// before the save dialog opens.
+#[tauri::command]
+pub async fn export_sourceless_mods(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    format: String,
+) -> LauncherResult<Vec<String>> {
+    mod_install::export_sourceless_mods(&app, &instance_id, &format).await
+}
+
+/// The folder exports are offered in by default. Created first so the save dialog can open there.
+fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> {
+    let dir = crate::core_context(app)?.paths.root().join("exports");
+    std::fs::create_dir_all(&dir).map_err(|_| LauncherError::InstanceCreateFailed)?;
+    Ok(dir)
 }
 
 /// Import an instance from a pack file (.mrpack or .agora-pack.json).
+/// `reviewed_sha256` is the fingerprint the review step recorded; a pack file
+/// whose bytes no longer match it is refused. `name` is the instance name the
+/// user chose in the review. `skip_unfetchable` is the user's "Import anyway":
+/// files with no way to be fetched are left out instead of stopping the import.
 #[tauri::command]
 pub async fn import_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     source_path: String,
-) -> LauncherResult<String> {
-    mod_install::import_instance_pack(&app, &source_path).await
+    reviewed_sha256: Option<String>,
+    name: Option<String>,
+    skip_unfetchable: bool,
+) -> LauncherResult<mod_install::PackImportOutcome> {
+    mod_install::import_instance_pack(
+        &app,
+        &source_path,
+        reviewed_sha256.as_deref(),
+        name.as_deref(),
+        skip_unfetchable,
+    )
+    .await
+}
+
+/// What importing a pack file (`.agora-pack.json` or `.mrpack`) would do,
+/// shown before anything is written. Reads the file and settings only.
+#[tauri::command]
+pub async fn plan_pack_import(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    source_path: String,
+) -> LauncherResult<agora_core::agora_pack_import::PackImportPlan> {
+    mod_install::plan_pack_import(&app, &source_path)
+}
+
+/// Remove the copy a `.mrpack` review staged, when the user cancels it.
+#[tauri::command]
+pub async fn discard_pack_review(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    sha256: String,
+) -> LauncherResult<()> {
+    mod_install::discard_pack_review(&app, &sha256)
+}
+
+/// Retry the entries of an Agora pack import that needed an action (Modrinth
+/// off, say) on the instance it created. Entries already installed are skipped.
+/// `allow_modrinth_once` lets just these entries use Modrinth without turning
+/// the Modrinth setting on.
+#[tauri::command]
+pub async fn retry_pack_import_entries(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    entries: Vec<agora_core::agora_pack_import::AgoraPackEntry>,
+    allow_modrinth_once: bool,
+) -> LauncherResult<agora_core::agora_pack_import::PackImportReport> {
+    mod_install::retry_pack_import_entries(&app, &instance_id, entries, allow_modrinth_once).await
 }
 
 /// Whether the Modrinth integration is currently enabled (Â§6.3 toggle).
@@ -2542,13 +2677,16 @@ pub async fn enrich_instance_content(
             let cache_key = row.key.clone();
             InstalledContentMetadata {
                 key: cache_key.clone(),
-                display_name: row.modrinth_id.as_ref().and_then(|id| {
-                    cached
-                        .get(&cache_key)
-                        .filter(|entry| entry.project_id == *id)
-                        .map(|entry| entry.title.clone())
-                        .or_else(|| fetched.get(id).map(|item| item.title.clone()))
-                }),
+                display_name: agora_core::installed_content::enriched_display_name(
+                    &row.metadata_status,
+                    row.modrinth_id.as_ref().and_then(|id| {
+                        cached
+                            .get(&cache_key)
+                            .filter(|entry| entry.project_id == *id)
+                            .map(|entry| entry.title.clone())
+                            .or_else(|| fetched.get(id).map(|item| item.title.clone()))
+                    }),
+                ),
                 icon_url: row.modrinth_id.as_ref().and_then(|id| {
                     cached
                         .get(&cache_key)
@@ -2792,7 +2930,18 @@ pub async fn get_dependency_graph(
     tokio::task::spawn_blocking(move || {
         let mut manifest = load_manifest(&app, &instance_id)?;
         dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        Ok(dependency_ops::build_dependency_graph(&manifest.mods))
+        // Only entries that can satisfy a dependency are nodes: a disabled or
+        // missing mod neither needs nor supplies anything right now.
+        let instance_dir = paths::instance_dir(&app, &instance_id)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
+        let usable: Vec<_> = manifest
+            .mods
+            .iter()
+            .filter(|m| agora_core::dependency_ops::satisfies_dependency(m, &on_disk))
+            .cloned()
+            .collect();
+        Ok(dependency_ops::build_dependency_graph(&usable))
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2831,9 +2980,13 @@ pub async fn explain_mod_presence(
     tokio::task::spawn_blocking(move || {
         let mut manifest = load_manifest(&app, &instance_id)?;
         dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
+        let instance_dir = paths::instance_dir(&app, &instance_id)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
         Ok(agora_core::dependency_ops::explain_presence(
             &manifest.mods,
             &filename,
+            &on_disk,
         ))
     })
     .await
@@ -2926,11 +3079,17 @@ pub async fn get_install_plan(
         dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
 
         let aliases = svc.get_all_mod_aliases()?;
+        let instance_dir = paths::instance_dir(&app, &instance_id)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
         Ok(dependency_ops::build_install_plan_with_aliases(
             manifest_deps,
             &jar_metadata,
             &manifest.mods,
             &dependency_ops::AliasMap::from_pairs(&aliases),
+            &manifest.loader,
+            &manifest.loader_version,
+            &on_disk,
         ))
     })
     .await
@@ -4830,42 +4989,80 @@ pub async fn create_loadout_profile(
     })
 }
 
+/// What saving a profile again would change. Writes nothing; the Update flow
+/// shows this and asks before it calls `update_loadout_profile`.
+#[tauri::command]
+pub async fn preview_loadout_update(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<agora_core::loadout::LoadoutUpdate> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_core::loadout_service::LoadoutService::new(ctx)
+            .update_preview(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Save a profile so it records the instance's current setup. Returns the
+/// changes it made.
+#[tauri::command]
+pub async fn update_loadout_profile(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<agora_core::loadout::LoadoutUpdate> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_core::loadout_service::LoadoutService::new(ctx).update(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Mods that are on but that the profile does not list. The Apply flow asks the
+/// user what to do with them before it calls `apply_loadout_profile`.
+#[tauri::command]
+pub async fn list_loadout_unlisted_mods(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_core::loadout_service::LoadoutService::new(ctx)
+            .unlisted_mods(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 #[tauri::command]
 pub async fn apply_loadout_profile(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     profile_name: String,
+    unlisted_mods: agora_core::loadout::UnlistedMods,
 ) -> LauncherResult<()> {
-    check_not_locked(&app, &instance_id)?;
+    // Core checks the lock and the running game, takes the undo point, and
+    // rolls back on failure. The desktop only hands over the request.
+    let ctx = crate::core_context(&app)?;
     let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     tokio::task::spawn_blocking(move || {
-        let snapshot = agora_core::snapshot::create_snapshot(&instance_dir, Some("before-loadout"))
-            .map_err(|error| LauncherError::Generic {
-                code: "ERR_SNAPSHOT_REQUIRED".into(),
-                message: format!("Could not create the required recovery snapshot: {error}"),
-            })?;
-        if let Err(error) = agora_core::loadout::apply_profile(&instance_dir, &profile_name) {
-            let restored = agora_core::snapshot::restore_snapshot(&instance_dir, &snapshot.id);
-            return Err(LauncherError::Generic {
-                code: "ERR_LOADOUT".into(),
-                message: match restored {
-                    Ok(_) => format!("Loadout application failed and was rolled back: {error}"),
-                    Err(restore_error) => format!(
-                        "Loadout application failed and rollback also failed: {error}; {restore_error}"
-                    ),
-                },
-            });
-        }
-        agora_core::lkg::run_retention(&instance_dir).map_err(|error| LauncherError::Generic {
-            code: "ERR_RETENTION".into(),
-            message: error,
-        })
+        agora_core::loadout_service::LoadoutService::new(ctx).apply(
+            &sanitized,
+            &profile_name,
+            unlisted_mods,
+        )
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -5829,6 +6026,87 @@ pub async fn export_lockfile(
     tokio::task::spawn_blocking(move || export_lockfile_sync(&app, &sanitized))
         .await
         .map_err(|error| lockfile_error("ERR_LOCKFILE_TASK", error.to_string()))?
+}
+
+/// Save the lockfile text the user is looking at to a file they pick. `None` means they cancelled.
+#[tauri::command]
+pub async fn save_lockfile_export(
+    app: tauri::AppHandle,
+    instance_id: String,
+    contents: String,
+) -> LauncherResult<Option<String>> {
+    let sanitized = crate::paths::sanitize_id(&instance_id);
+    if sanitized.is_empty() || sanitized != instance_id {
+        return Err(lockfile_error(
+            "ERR_INVALID_INSTANCE",
+            "The instance ID is invalid.",
+        ));
+    }
+    validate_lockfile_text(&contents)?;
+    let exports_dir = exports_folder(&app)?;
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Save lockfile")
+        .set_directory(&exports_dir)
+        .set_file_name(format!("{sanitized}.lockfile.json"))
+        .add_filter("Lockfile", &["json"])
+        .save_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    // Write beside the target and rename into place, so a failed save never
+    // truncates a file the user agreed to replace.
+    let tmp_path = agora_core::export_service::tmp_sibling_path(&path);
+    let written = std::fs::write(&tmp_path, contents.as_bytes()).map_err(|error| {
+        lockfile_error(
+            "ERR_LOCKFILE_SAVE",
+            format!("Could not save the lockfile: {error}"),
+        )
+    });
+    agora_core::export_service::commit_tmp_file(&tmp_path, &path, written)?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// The text must parse as a JSON object before it reaches disk, so an edit that
+/// broke the lockfile cannot be saved as one.
+fn validate_lockfile_text(contents: &str) -> LauncherResult<()> {
+    match serde_json::from_str::<serde_json::Value>(contents) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        _ => Err(lockfile_error(
+            "ERR_LOCKFILE_INVALID",
+            "The lockfile text is not valid. Fix it or export it again, then save.",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod lockfile_save_tests {
+    use super::validate_lockfile_text;
+
+    #[test]
+    fn accepts_a_json_object() {
+        assert!(validate_lockfile_text(r#"{"formatVersion":1}"#).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_whitespace_and_non_object_json() {
+        for hostile in [
+            "",
+            "   \n",
+            "[]",
+            "null",
+            "\"text\"",
+            "42",
+            "{",
+            "{\"a\":1} trailing",
+        ] {
+            assert!(
+                validate_lockfile_text(hostile).is_err(),
+                "accepted {hostile:?}"
+            );
+        }
+    }
 }
 
 fn export_lockfile_sync(

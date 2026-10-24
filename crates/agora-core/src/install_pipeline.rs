@@ -51,6 +51,9 @@ pub struct InstallExecutionResources<'a> {
     /// Production callers supply the core loader service so an approved loader
     /// switch installs its signed profile before the manifest commit point.
     pub loader_service: Option<&'a crate::loader_service::LoaderService>,
+    /// Verified downloads kept from plan time, so staging does not fetch the
+    /// same file twice. `None` downloads everything, as before.
+    pub download_cache: Option<&'a crate::download_cache::DownloadCache>,
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +287,9 @@ pub enum DepDisposition {
     Excluded,
     /// Could not be resolved — kept for diagnostics.
     Unresolved { reason: String },
+    /// The mod's own jar could not be read, so what it requires is unchecked.
+    /// Blocks until the user installs anyway, like an unresolved requirement.
+    Unchecked { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,6 +378,10 @@ pub struct FileAdd {
     pub size: u64,
     #[serde(default)]
     pub installed_as_dependency: bool,
+    /// The instance already records this file, but it is missing from disk, so
+    /// the add restores it. The review says so, rather than listing a removal.
+    #[serde(default)]
+    pub replaces_missing_file: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,6 +409,19 @@ pub struct FilePromote {
     pub filename: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
+}
+
+/// A disabled file the instance already has, with an intact copy, turned back
+/// on in place. Used instead of downloading the same file again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEnable {
+    /// The entry's plain name, without `.disabled`.
+    pub filename: String,
+    pub content_type: String,
+    /// The mods that need this one, when it is turned on to satisfy them.
+    #[serde(default)]
+    pub needed_by: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +580,11 @@ pub struct PlanOverrides {
     /// leaves the `PendingChoice::LoaderChange` unresolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approve_loader_version: Option<String>,
+    /// Explicit approval to install although a mod's own jar requires a
+    /// dependency that could not be found for this instance. Without it the
+    /// plan is blocked with `ERR_MISSING_DEPENDENCY`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_missing_dependencies: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +724,8 @@ pub struct ResolvedInstallPlan {
     pub files_to_disable: Vec<FileDisable>,
     #[serde(default)]
     pub files_to_promote: Vec<FilePromote>,
+    #[serde(default)]
+    pub files_to_enable: Vec<FileEnable>,
     pub snapshot: SnapshotPlan,
     pub disk_estimate: DiskSpaceEstimate,
     pub warnings: Vec<PlanWarning>,
@@ -961,13 +991,76 @@ impl InstallPipeline {
                 .as_deref()
                 .unwrap_or(&dependency.mod_jar_id);
             if dependency.requirement == Requirement::Required {
+                if let DepDisposition::Unchecked { reason } = &dependency.disposition {
+                    let needed_by = if dependency.requested_by.is_empty() {
+                        "A selected mod".to_string()
+                    } else {
+                        dependency.requested_by.join(", ")
+                    };
+                    if intent.overrides.allow_missing_dependencies {
+                        warnings.push(PlanWarning {
+                            code: "WARN_UNCHECKED_REQUIREMENTS".into(),
+                            message: format!(
+                                "Couldn't check what {dependency_name} needs ({reason}). Installing anyway, as you chose."
+                            ),
+                        });
+                    } else {
+                        blocking_errors.push(PlanError {
+                            code: "ERR_UNCHECKED_REQUIREMENTS".into(),
+                            message: format!(
+                                "Couldn't check what {dependency_name} needs ({reason}). {needed_by} may need something Agora can't verify. Install Anyway continues without that check."
+                            ),
+                        });
+                    }
+                }
                 if let DepDisposition::Unresolved { reason } = &dependency.disposition {
-                    blocking_errors.push(PlanError {
-                        code: "ERR_REQUIRED_DEPENDENCY".into(),
-                        message: format!(
-                            "Required dependency {dependency_name} could not be resolved: {reason}"
-                        ),
-                    });
+                    if dependency.source == DepSource::Jar {
+                        // Named by the mod's own jar, so the user can see who
+                        // needs it. Blocks until the user explicitly installs anyway.
+                        let needed_by = if dependency.requested_by.is_empty() {
+                            "A selected mod".to_string()
+                        } else {
+                            dependency.requested_by.join(", ")
+                        };
+                        if intent.overrides.allow_missing_dependencies {
+                            warnings.push(PlanWarning {
+                                code: "WARN_MISSING_DEPENDENCY".into(),
+                                message: format!(
+                                    "{dependency_name} is missing. {needed_by} needs it and may not start without it. Installing anyway, as you chose."
+                                ),
+                            });
+                        } else {
+                            blocking_errors.push(PlanError {
+                                code: "ERR_MISSING_DEPENDENCY".into(),
+                                message: format!(
+                                    "{needed_by} needs {dependency_name}, which Agora could not find for this instance ({reason}). Install it separately, or use Install Anyway."
+                                ),
+                            });
+                        }
+                    } else {
+                        // Same opt-in as a jar requirement: blocked until the
+                        // user installs anyway, then a named warning.
+                        let needed_by = if dependency.requested_by.is_empty() {
+                            "A selected mod".to_string()
+                        } else {
+                            dependency.requested_by.join(", ")
+                        };
+                        if intent.overrides.allow_missing_dependencies {
+                            warnings.push(PlanWarning {
+                                code: "WARN_MISSING_DEPENDENCY".into(),
+                                message: format!(
+                                    "{dependency_name} is missing. {needed_by} needs it and may not start without it. Installing anyway, as you chose."
+                                ),
+                            });
+                        } else {
+                            blocking_errors.push(PlanError {
+                                code: "ERR_REQUIRED_DEPENDENCY".into(),
+                                message: format!(
+                                    "Required dependency {dependency_name} could not be resolved: {reason}. Install Anyway continues without it."
+                                ),
+                            });
+                        }
+                    }
                 }
             } else if matches!(&intent.optional_deps, OptionalDepsPolicy::Include { .. }) {
                 if let DepDisposition::Unresolved { reason } = &dependency.disposition {
@@ -993,11 +1086,13 @@ impl InstallPipeline {
         let mut files_to_remove = Vec::new();
         let mut files_to_disable = Vec::new();
         let mut files_to_promote = Vec::new();
+        let mut files_to_enable = Vec::new();
         match &operation {
             ResolvedOperation::Install { artifact } => plan_artifact_change(
                 artifact,
                 false,
                 &installed,
+                instance_dir,
                 &intent,
                 &mut files_to_add,
                 &mut files_to_remove,
@@ -1007,11 +1102,13 @@ impl InstallPipeline {
                 &mut warnings,
                 false,
                 &mut files_to_promote,
+                &mut files_to_enable,
             ),
             ResolvedOperation::Update { new_artifact, .. } => plan_artifact_change(
                 new_artifact,
                 true,
                 &installed,
+                instance_dir,
                 &intent,
                 &mut files_to_add,
                 &mut files_to_remove,
@@ -1021,6 +1118,7 @@ impl InstallPipeline {
                 &mut warnings,
                 false,
                 &mut files_to_promote,
+                &mut files_to_enable,
             ),
             ResolvedOperation::Remove {
                 target_filename,
@@ -1057,6 +1155,7 @@ impl InstallPipeline {
                             new_artifact,
                             true,
                             &installed,
+                            instance_dir,
                             &intent,
                             &mut files_to_add,
                             &mut files_to_remove,
@@ -1066,6 +1165,7 @@ impl InstallPipeline {
                             &mut warnings,
                             false,
                             &mut files_to_promote,
+                            &mut files_to_enable,
                         ),
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_BATCH_OPERATION".into(),
@@ -1123,6 +1223,7 @@ impl InstallPipeline {
                             artifact,
                             false,
                             &installed,
+                            instance_dir,
                             &intent,
                             &mut files_to_add,
                             &mut files_to_remove,
@@ -1132,6 +1233,7 @@ impl InstallPipeline {
                             &mut warnings,
                             false,
                             &mut files_to_promote,
+                            &mut files_to_enable,
                         ),
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_BATCH_OPERATION".into(),
@@ -1155,6 +1257,7 @@ impl InstallPipeline {
                             artifact,
                             false,
                             &installed,
+                            instance_dir,
                             &intent,
                             &mut files_to_add,
                             &mut files_to_remove,
@@ -1164,11 +1267,13 @@ impl InstallPipeline {
                             &mut warnings,
                             false,
                             &mut files_to_promote,
+                            &mut files_to_enable,
                         ),
                         ResolvedOperation::Update { new_artifact, .. } => plan_artifact_change(
                             new_artifact,
                             true,
                             &installed,
+                            instance_dir,
                             &intent,
                             &mut files_to_add,
                             &mut files_to_remove,
@@ -1178,6 +1283,7 @@ impl InstallPipeline {
                             &mut warnings,
                             false,
                             &mut files_to_promote,
+                            &mut files_to_enable,
                         ),
                         ResolvedOperation::Remove {
                             target_filename,
@@ -1209,11 +1315,22 @@ impl InstallPipeline {
         }
 
         for dependency in &dependencies {
+            // Under the prompt policy an optional candidate is only offered: it
+            // sits in the pending optional-dependencies choice until the user
+            // picks it, and its file is planned on the follow-up plan. Adding
+            // it here would show files the user has not chosen (and count them).
+            if dependency.requirement == Requirement::Optional
+                && matches!(intent.optional_deps, OptionalDepsPolicy::Prompt)
+            {
+                continue;
+            }
             if let DepDisposition::InstallCandidate { artifact } = &dependency.disposition {
+                let enables_before = files_to_enable.len();
                 plan_artifact_change(
                     artifact,
                     false,
                     &installed,
+                    instance_dir,
                     &intent,
                     &mut files_to_add,
                     &mut files_to_remove,
@@ -1223,7 +1340,11 @@ impl InstallPipeline {
                     &mut warnings,
                     true,
                     &mut files_to_promote,
+                    &mut files_to_enable,
                 );
+                for enable in &mut files_to_enable[enables_before..] {
+                    enable.needed_by = dependency.requested_by.clone();
+                }
             }
         }
         for conflict in &conflicts {
@@ -1269,6 +1390,13 @@ impl InstallPipeline {
         });
         files_to_promote
             .dedup_by(|a, b| a.filename == b.filename && a.content_type == b.content_type);
+        files_to_enable.sort_by(|a, b| {
+            a.filename
+                .cmp(&b.filename)
+                .then(a.content_type.cmp(&b.content_type))
+        });
+        files_to_enable
+            .dedup_by(|a, b| a.filename == b.filename && a.content_type == b.content_type);
         conflicts.sort_by(|a, b| a.conflict_id.cmp(&b.conflict_id));
         conflicts.dedup_by(|a, b| a.conflict_id == b.conflict_id);
         pending_choices.sort_by(|a, b| pending_choice_id(a).cmp(pending_choice_id(b)));
@@ -1307,6 +1435,7 @@ impl InstallPipeline {
             files_to_remove,
             files_to_disable,
             files_to_promote,
+            files_to_enable,
             snapshot: SnapshotPlan {
                 label: String::new(),
                 estimated_bytes: snapshot_bytes,
@@ -1362,6 +1491,7 @@ impl InstallPipeline {
         let scheduler = resources.scheduler;
         let registry_db_path = resources.registry_db_path;
         let loader_service = resources.loader_service;
+        let download_cache = resources.download_cache;
         let fail = |error: String, snapshot_id: Option<String>, rollback_performed: bool| {
             InstallOutcome::Failed {
                 error,
@@ -1462,7 +1592,9 @@ impl InstallPipeline {
             bytes_total: plan.disk_estimate.download_bytes,
             message: "Downloading and verifying every artifact…".into(),
         });
-        if let Err(error) = stage_plan_artifacts(plan, &staging_dir, reporter, cancel).await {
+        if let Err(error) =
+            stage_plan_artifacts(plan, &staging_dir, reporter, cancel, download_cache).await
+        {
             cleanup_staging_dir(scheduler, &staging_dir).await;
             if cancel.is_cancelled() {
                 return InstallOutcome::Cancelled {
@@ -2200,6 +2332,7 @@ fn plan_artifact_change(
     artifact: &ResolvedArtifact,
     require_existing: bool,
     installed: &[&crate::models::InstalledMod],
+    instance_dir: &Path,
     intent: &InstallIntent,
     files_to_add: &mut Vec<FileAdd>,
     files_to_remove: &mut Vec<FileRemove>,
@@ -2209,6 +2342,7 @@ fn plan_artifact_change(
     warnings: &mut Vec<PlanWarning>,
     installed_as_dependency: bool,
     promotions: &mut Vec<FilePromote>,
+    enables: &mut Vec<FileEnable>,
 ) {
     let filename = artifact_filename(artifact);
     if let Err(error) = validate_filename(filename) {
@@ -2237,6 +2371,7 @@ fn plan_artifact_change(
     let same_identity = installed
         .iter()
         .find(|item| artifact_matches_installed(artifact, item));
+    let mut replaces_missing_file = false;
     if require_existing && same_identity.is_none() {
         blocking_errors.push(PlanError {
             code: "ERR_UPDATE_TARGET_MISSING".into(),
@@ -2248,6 +2383,9 @@ fn plan_artifact_change(
         return;
     }
 
+    // The name the new file is written under. Differs from `filename` only when
+    // a missing disabled entry comes back disabled.
+    let mut add_target = filename.to_string();
     if let Some(existing) = same_identity {
         let expected_sha256 = artifact_hash_value(artifact, HashAlgorithm::Sha256);
         let same_content = expected_sha256
@@ -2255,7 +2393,22 @@ fn plan_artifact_change(
             .map(|hash| hash.eq_ignore_ascii_case(&existing.sha256))
             .unwrap_or(false);
         let same_version = existing.version.as_deref() == Some(artifact_version_id(artifact));
-        if same_content && same_version {
+        // The manifest entry says the file is installed, but the file itself
+        // may be gone from disk. Only a present file counts as installed; a
+        // missing one falls through to the replace path, which drops the stale
+        // entry (the apply step skips files that are not there) and adds the
+        // file back. An unreadable path is treated as present, so the planner
+        // never writes over a file it could not check.
+        let file_missing = matches!(
+            instance_dir
+                .join(content_subdir(&existing.content_type))
+                .join(effective_installed_filename(existing))
+                .try_exists(),
+            Ok(false)
+        );
+        // A disabled entry is not installed for dependency purposes: it cannot
+        // satisfy a requirement, so it is replaced by an enabled copy.
+        if same_content && same_version && !file_missing && existing.enabled {
             if !installed_as_dependency && existing.installed_as_dependency {
                 promotions.push(FilePromote {
                     filename: existing.filename.clone(),
@@ -2272,10 +2425,100 @@ fn plan_artifact_change(
             });
             return;
         }
-        files_to_remove.push(FileRemove {
-            filename: effective_installed_filename(existing),
-            content_type: Some(existing.content_type.clone()),
-        });
+        // A disabled entry whose copy is intact keeps the user's choice. An
+        // explicit install leaves it off and says so. A dependency needs it on,
+        // so it is turned on in place rather than downloaded again. A copy that
+        // is not clearly intact falls through to the replace path below.
+        if same_content && same_version && !file_missing && !existing.enabled {
+            match can_enable_in_place(instance_dir, existing) {
+                Ok(true) => {
+                    if !installed_as_dependency && existing.installed_as_dependency {
+                        promotions.push(FilePromote {
+                            filename: existing.filename.clone(),
+                            content_type: Some(existing.content_type.clone()),
+                        });
+                    }
+                    if installed_as_dependency {
+                        enables.push(FileEnable {
+                            filename: existing.filename.clone(),
+                            content_type: existing.content_type.clone(),
+                            needed_by: Vec::new(),
+                        });
+                    } else {
+                        warnings.push(PlanWarning {
+                            code: "ALREADY_INSTALLED".into(),
+                            message: format!(
+                                "{} {} is already installed, turned off. Its file is intact, so nothing is downloaded or changed. Turn it on in the mod list if you want it on.",
+                                artifact_item_id(artifact),
+                                artifact_version_id(artifact)
+                            ),
+                        });
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(message) => {
+                    blocking_errors.push(PlanError {
+                        code: "ERR_FILE_CONFLICT".into(),
+                        message,
+                    });
+                    return;
+                }
+            }
+        }
+        replaces_missing_file = file_missing;
+        if file_missing {
+            // The other on-disk name for this entry: `x.jar.disabled` for an
+            // enabled entry, plain `x.jar` for a disabled one. An enabled entry
+            // whose `.disabled` copy is still there gets that copy removed, so
+            // the replacement leaves one file. A disabled entry with an enabled
+            // copy on disk is a conflict we will not write over.
+            let other_name = if existing.enabled {
+                format!("{}.disabled", existing.filename)
+            } else {
+                existing.filename.clone()
+            };
+            let other_present = instance_dir
+                .join(content_subdir(&existing.content_type))
+                .join(&other_name)
+                .try_exists();
+            match (existing.enabled, other_present) {
+                (true, Ok(true)) => files_to_remove.push(FileRemove {
+                    filename: other_name,
+                    content_type: Some(existing.content_type.clone()),
+                }),
+                (false, Ok(true)) => {
+                    blocking_errors.push(PlanError {
+                        code: "ERR_FILE_CONFLICT".into(),
+                        message: format!(
+                            "{} is on disk as an enabled file, but the instance records it as disabled. Remove or disable that file, then reinstall.",
+                            existing.filename
+                        ),
+                    });
+                    return;
+                }
+                (_, Err(error)) => {
+                    blocking_errors.push(PlanError {
+                        code: "ERR_FILE_CONFLICT".into(),
+                        message: format!("Could not check {} on disk: {error}", other_name),
+                    });
+                    return;
+                }
+                _ => {}
+            }
+            // A disabled entry comes back disabled, under its `.disabled` name.
+            if !existing.enabled {
+                add_target = format!("{filename}.disabled");
+            }
+        }
+        // A missing file has nothing to remove. Listing it as "will be removed"
+        // is what made a Reinstall read as an add and a removal of one jar.
+        if !file_missing {
+            files_to_remove.push(FileRemove {
+                filename: effective_installed_filename(existing),
+                content_type: Some(existing.content_type.clone()),
+            });
+        }
     }
 
     if let Some(collision) = installed.iter().find(|item| {
@@ -2333,13 +2576,36 @@ fn plan_artifact_change(
     }
 
     files_to_add.push(FileAdd {
-        target_filename: filename.to_string(),
+        target_filename: add_target,
         staging_filename: filename.to_string(),
         artifact: artifact.clone(),
         hashes: artifact_hashes(artifact).clone(),
         size: artifact_size(artifact),
         installed_as_dependency,
+        replaces_missing_file,
     });
+}
+
+/// Whether a disabled entry can be turned back on where it is: its `.disabled`
+/// copy is on disk and its bytes match the hash the manifest recorded, and no
+/// enabled file of that name is in the way. A copy that cannot be read is an
+/// error, not a "no": the planner reports it rather than guessing.
+fn can_enable_in_place(
+    instance_dir: &Path,
+    existing: &crate::models::InstalledMod,
+) -> Result<bool, String> {
+    let dir = instance_dir.join(content_subdir(&existing.content_type));
+    let enabled_path = dir.join(&existing.filename);
+    let enabled_present = enabled_path
+        .try_exists()
+        .map_err(|e| format!("Could not check {} on disk: {e}", existing.filename))?;
+    if enabled_present {
+        return Ok(false);
+    }
+    let disabled_name = format!("{}.disabled", existing.filename);
+    let hash = crate::helpers::hash_file_sha256(&dir.join(&disabled_name))
+        .map_err(|e| format!("Could not read {disabled_name} to check it: {e}"))?;
+    Ok(hash.eq_ignore_ascii_case(&existing.sha256))
 }
 
 /// Filenames (normalized) that one removal operation, or a batch of them,
@@ -2965,6 +3231,7 @@ struct PlanFingerprintMaterial<'a> {
     files_to_remove: &'a [FileRemove],
     files_to_disable: &'a [FileDisable],
     files_to_promote: &'a [FilePromote],
+    files_to_enable: &'a [FileEnable],
     loader_change: &'a Option<LoaderChangePlan>,
     instance_state_hash: &'a str,
     registry_revision: &'a str,
@@ -2981,6 +3248,7 @@ fn compute_plan_fingerprint(plan: &ResolvedInstallPlan) -> Result<String, String
         files_to_remove: &plan.files_to_remove,
         files_to_disable: &plan.files_to_disable,
         files_to_promote: &plan.files_to_promote,
+        files_to_enable: &plan.files_to_enable,
         loader_change: &plan.loader_change,
         instance_state_hash: &plan.instance_state_hash,
         registry_revision: &plan.registry_revision,
@@ -2992,6 +3260,7 @@ async fn stage_plan_artifacts(
     staging_dir: &Path,
     reporter: &dyn ProgressReporter,
     cancel: &CancellationToken,
+    download_cache: Option<&crate::download_cache::DownloadCache>,
 ) -> Result<(), String> {
     if staging_dir.exists() {
         std::fs::remove_dir_all(staging_dir)
@@ -3009,38 +3278,8 @@ async fn stage_plan_artifacts(
         validate_filename(&file.staging_filename)?;
         let contents = match &file.artifact {
             ResolvedArtifact::Download(download) => match &download.source {
-                ArtifactSource::Download { url } if download.metadata.provider.is_some() => {
-                    stage_provider_download(url, download)
-                        .await
-                        .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
-                }
                 ArtifactSource::Download { url } => {
-                    let strategy = download
-                        .metadata
-                        .download_strategy
-                        .as_deref()
-                        .unwrap_or_default();
-                    // Hand-pinned strategies are SHA-256-pinned in the signed
-                    // registry, so the curator-reviewed host from that manifest
-                    // row authorizes the request. `technic_pack` additionally
-                    // permits plain HTTP: the hash is out-of-band, so transport
-                    // is not the trust anchor.
-                    if matches!(strategy, "direct_hash" | "technic_pack") {
-                        let pinned_host =
-                            download.metadata.pinned_host.as_deref().ok_or_else(|| {
-                                format!(
-                                    "{} uses {strategy} but carries no pinned host",
-                                    download.item_id
-                                )
-                            })?;
-                        crate::download::download_pinned_bytes_standalone(url, pinned_host)
-                            .await
-                            .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
-                    } else {
-                        crate::download::download_mod_bytes_standalone(url)
-                            .await
-                            .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
-                    }
+                    fetch_download_bytes_cached(download_cache, download, url).await?
                 }
                 ArtifactSource::LocalFile { path } => std::fs::read(path).map_err(|e| {
                     format!("failed to read local artifact {}: {e}", download.item_id)
@@ -3092,6 +3331,66 @@ async fn stage_plan_artifacts(
     Ok(())
 }
 
+/// [`fetch_download_bytes`], reusing a copy already verified against the same
+/// published hashes when the cache has one. The result is not trusted either
+/// way: callers verify it, and a cached copy was re-verified on the way out.
+pub(crate) async fn fetch_download_bytes_cached(
+    cache: Option<&crate::download_cache::DownloadCache>,
+    download: &ResolvedDownload,
+    url: &str,
+) -> Result<Vec<u8>, String> {
+    match cache {
+        Some(cache) => {
+            cache
+                .get_or_fetch(&download.hashes, &download.filename, || {
+                    fetch_download_bytes(download, url)
+                })
+                .await
+        }
+        None => fetch_download_bytes(download, url).await,
+    }
+}
+
+/// Fetch the bytes of a planned download under the host policy staging uses.
+///
+/// Shared with the plan-time read of a jar's requirements, so the review reads
+/// the same bytes the install would write.
+pub(crate) async fn fetch_download_bytes(
+    download: &ResolvedDownload,
+    url: &str,
+) -> Result<Vec<u8>, String> {
+    if download.metadata.provider.is_some() {
+        return stage_provider_download(url, download)
+            .await
+            .map_err(|e| format!("failed to download {}: {e}", download.item_id));
+    }
+    let strategy = download
+        .metadata
+        .download_strategy
+        .as_deref()
+        .unwrap_or_default();
+    // Hand-pinned strategies are SHA-256-pinned in the signed
+    // registry, so the curator-reviewed host from that manifest
+    // row authorizes the request. `technic_pack` additionally
+    // permits plain HTTP: the hash is out-of-band, so transport
+    // is not the trust anchor.
+    if matches!(strategy, "direct_hash" | "technic_pack") {
+        let pinned_host = download.metadata.pinned_host.as_deref().ok_or_else(|| {
+            format!(
+                "{} uses {strategy} but carries no pinned host",
+                download.item_id
+            )
+        })?;
+        crate::download::download_pinned_bytes_standalone(url, pinned_host)
+            .await
+            .map_err(|e| format!("failed to download {}: {e}", download.item_id))
+    } else {
+        crate::download::download_mod_bytes_standalone(url)
+            .await
+            .map_err(|e| format!("failed to download {}: {e}", download.item_id))
+    }
+}
+
 /// Fetch a provider-planned artifact under the provider's download scope.
 ///
 /// In scope: HTTPS to a declared host, redirects held to the same list.
@@ -3139,7 +3438,7 @@ fn verify_file_add(contents: &[u8], add: &FileAdd) -> Result<(), String> {
     verify_bytes(contents, &add.hashes)
 }
 
-fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
+pub(crate) fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
     use sha1::Digest as _;
 
     if hashes.values.is_empty() {
@@ -3192,6 +3491,19 @@ fn prepare_manifest(
         manifest.loader_version = change.to_version.clone();
     }
 
+    // Snapshot before any removal: replacing a file removes its old entry
+    // first, and the new entry must still inherit what the user and the pack
+    // had decided about it.
+    let previous_entries: Vec<crate::models::InstalledMod> = manifest
+        .mods
+        .iter()
+        .chain(manifest.resourcepacks.iter())
+        .chain(manifest.shaders.iter())
+        .chain(manifest.datapacks.iter())
+        .chain(manifest.worlds.iter())
+        .cloned()
+        .collect();
+
     for remove in &plan.files_to_remove {
         remove_manifest_entry(
             &mut manifest,
@@ -3201,6 +3513,9 @@ fn prepare_manifest(
     }
     for disable in &plan.files_to_disable {
         set_manifest_enabled(&mut manifest, &disable.filename, false);
+    }
+    for enable in &plan.files_to_enable {
+        set_manifest_enabled(&mut manifest, &enable.filename, true);
     }
     for promote in &plan.files_to_promote {
         promote_manifest_entry(
@@ -3241,7 +3556,13 @@ fn prepare_manifest(
             // installs stamp their own provenance; see PackOrigin.
             pack_managed: false,
             installed_as_dependency: add.installed_as_dependency,
-            filename: add.target_filename.clone(),
+            // A `.disabled` target is a disabled entry: the record keeps the plain
+            // name and says so in `enabled`, as `effective_installed_filename` reads it.
+            filename: add
+                .target_filename
+                .strip_suffix(".disabled")
+                .unwrap_or(&add.target_filename)
+                .to_string(),
             registry_id: metadata.registry_id.clone(),
             modrinth_id: metadata.modrinth_id.clone(),
             source: match metadata.source_type {
@@ -3274,7 +3595,7 @@ fn prepare_manifest(
                     .clone()
                     .or_else(|| metadata.modrinth_id.clone())
             }),
-            enabled: true,
+            enabled: !add.target_filename.ends_with(".disabled"),
             content_type: normalized_content_type(&metadata.content_type).into(),
             depends_on: jar.depends_on,
             optional_deps: jar.optional_deps,
@@ -3285,6 +3606,8 @@ fn prepare_manifest(
                 .map(|pm| pm.mod_id.clone())
                 .collect(),
         };
+        let mut installed = installed;
+        carry_forward_ownership(&previous_entries, &mut installed);
         remove_manifest_identity(&mut manifest, &installed);
         content_entries_mut(&mut manifest, &installed.content_type).push(installed);
     }
@@ -3306,6 +3629,7 @@ fn prepare_manifest(
 struct ApplyJournal {
     removed: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     disabled: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    enabled: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     added: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
@@ -3374,6 +3698,26 @@ fn apply_transaction(
             journal.disabled.push((disabled, live));
         }
 
+        for enable in &plan.files_to_enable {
+            let live = instance_dir
+                .join(content_subdir(&enable.content_type))
+                .join(&enable.filename);
+            let disabled = live.with_file_name(format!("{}.disabled", enable.filename));
+            let enabled_present = live
+                .try_exists()
+                .map_err(|e| format!("could not check {} before enabling: {e}", enable.filename))?;
+            if enabled_present {
+                return Err(format!(
+                    "enabled destination already exists: {}",
+                    live.display()
+                ));
+            }
+            check_test_failpoint("enable-rename")?;
+            std::fs::rename(&disabled, &live)
+                .map_err(|e| format!("failed to enable {}: {e}", enable.filename))?;
+            journal.enabled.push((live, disabled));
+        }
+
         for add in &plan.files_to_add {
             let staged = staging_dir.join("artifacts").join(&add.staging_filename);
             if !staged.is_file() {
@@ -3439,6 +3783,13 @@ fn rollback_apply(
             }
             if let Err(error) = std::fs::rename(live, staged) {
                 errors.push(format!("added {}: {error}", live.display()));
+            }
+        }
+    }
+    for (live, disabled) in journal.enabled.iter().rev() {
+        if live.exists() && !disabled.exists() {
+            if let Err(error) = std::fs::rename(live, disabled) {
+                errors.push(format!("enabled {}: {error}", live.display()));
             }
         }
     }
@@ -3560,6 +3911,29 @@ fn promote_manifest_entry(
                 entry.installed_as_dependency = false;
             }
         }
+    }
+}
+
+/// An update replaces a manifest entry with a fresh one. Pack ownership
+/// (`pack_managed`, shown as the "Pack" tag) and the user's update pin belong
+/// to the mod, not to the file, so they carry over from the entry being
+/// replaced; a brand-new install keeps the defaults.
+fn carry_forward_ownership(
+    previous: &[crate::models::InstalledMod],
+    incoming: &mut crate::models::InstalledMod,
+) {
+    let identity = installed_identity(incoming);
+    let replaced = previous.iter().find(|item| {
+        item.filename == incoming.filename
+            || identity
+                .as_ref()
+                .zip(installed_identity(item).as_ref())
+                .map(|(a, b)| a.eq_ignore_ascii_case(b))
+                .unwrap_or(false)
+    });
+    if let Some(old) = replaced {
+        incoming.pack_managed |= old.pack_managed;
+        incoming.update_pinned |= old.update_pinned;
     }
 }
 
@@ -3774,6 +4148,7 @@ mod tests {
                 warnings: vec![],
                 blockers: vec![],
                 recommendations: vec![],
+                missing_files: vec![],
                 scan_token: "test-scan".into(),
             },
         };
@@ -3894,6 +4269,527 @@ mod tests {
             before
         );
         assert!(!instance_dir.join(".agora").exists());
+    }
+
+    #[test]
+    fn reinstalling_a_listed_mod_whose_file_is_gone_adds_the_file_back() {
+        // Regression: a manifest entry at the same version with no file on disk
+        // was planned as "already installed; no duplicate file will be added",
+        // so Reinstall from the Health Check or Browse did nothing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["mods"] = serde_json::json!([{
+            "filename": "fabric-api.jar",
+            "registry_id": "fabric-api",
+            "source": "curated",
+            "sha256": "a".repeat(64),
+            "installed_at": "2026-01-01T00:00:00Z",
+            "version": "1.0",
+        }]);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let intent = InstallIntent {
+            action: InstallAction::Install {
+                source_type: SourceType::Curated,
+                item_id: "fabric-api".into(),
+                candidate_version: Some("1.0".into()),
+            },
+            target_instance: "test".into(),
+            optional_deps: OptionalDepsPolicy::ExcludeAll,
+            requested_by: RequestSource::Interactive,
+            overrides: PlanOverrides::default(),
+        };
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "fabric-api",
+                    "fabric-api.jar",
+                    "a".repeat(64),
+                    ArtifactSource::Download {
+                        url: "https://cdn.modrinth.com/data/file.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let plan_now = || {
+            rt.block_on(async {
+                InstallPipeline
+                    .resolve_plan(
+                        intent.clone(),
+                        &instance_dir,
+                        prepared.clone(),
+                        &NoopReporter,
+                    )
+                    .await
+                    .unwrap()
+            })
+        };
+
+        // Control: with the file on disk the entry really is installed.
+        std::fs::write(instance_dir.join("mods").join("fabric-api.jar"), b"jar").unwrap();
+        let present = plan_now();
+        assert!(present.files_to_add.is_empty());
+        assert!(present
+            .warnings
+            .iter()
+            .any(|w| w.code == "ALREADY_INSTALLED"));
+
+        // The file is gone: the plan adds it back. Nothing is listed for removal,
+        // because there is no file to remove; the add replaces the missing one.
+        std::fs::remove_file(instance_dir.join("mods").join("fabric-api.jar")).unwrap();
+        let missing = plan_now();
+        assert_eq!(missing.files_to_add.len(), 1);
+        assert!(missing.files_to_add[0].replaces_missing_file);
+        assert!(
+            missing.files_to_remove.is_empty(),
+            "a missing file is restored, not removed: {:?}",
+            missing.files_to_remove
+        );
+        assert!(!missing
+            .warnings
+            .iter()
+            .any(|w| w.code == "ALREADY_INSTALLED"));
+        assert!(missing.is_fully_resolved());
+    }
+
+    const REINSTALL_BYTES: &[u8] = b"new jar";
+
+    /// A curated fabric-api entry at version 1.0 with the given enabled state.
+    fn write_reinstall_manifest(instance_dir: &Path, enabled: bool) {
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["mods"] = serde_json::json!([{
+            "filename": "fabric-api.jar",
+            "registry_id": "fabric-api",
+            "source": "curated",
+            "sha256": "a".repeat(64),
+            "installed_at": "2026-01-01T00:00:00Z",
+            "version": "1.0",
+            "enabled": enabled,
+        }]);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn reinstall_prepared_plan(instance_dir: &Path, intent: InstallIntent) -> ResolvedInstallPlan {
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "fabric-api",
+                    "fabric-api.jar",
+                    crate::download::sha256_hex(REINSTALL_BYTES),
+                    ArtifactSource::Download {
+                        url: "https://cdn.modrinth.com/data/file.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            InstallPipeline
+                .resolve_plan(intent, instance_dir, prepared, &NoopReporter)
+                .await
+                .unwrap()
+        })
+    }
+
+    fn reinstall_intent() -> InstallIntent {
+        InstallIntent {
+            action: InstallAction::Install {
+                source_type: SourceType::Curated,
+                item_id: "fabric-api".into(),
+                candidate_version: Some("1.0".into()),
+            },
+            target_instance: "test".into(),
+            optional_deps: OptionalDepsPolicy::ExcludeAll,
+            requested_by: RequestSource::Interactive,
+            overrides: PlanOverrides::default(),
+        }
+    }
+
+    /// Stages the planned file and runs the same manifest-prepare and apply
+    /// steps the pipeline runs, so the test sees what is left on disk.
+    fn apply_planned_file(instance_dir: &Path, plan: &ResolvedInstallPlan, bytes: &[u8]) {
+        let staging = instance_dir.parent().unwrap().join("staging");
+        std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        let staged_name = &plan.files_to_add[0].staging_filename;
+        std::fs::write(staging.join("artifacts").join(staged_name), bytes).unwrap();
+        prepare_manifest(plan, instance_dir, &staging).unwrap();
+        apply_transaction(plan, instance_dir, &staging).unwrap();
+    }
+
+    #[test]
+    fn reinstalling_an_enabled_mod_left_only_as_disabled_leaves_one_enabled_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_reinstall_manifest(&instance_dir, true);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), b"old copy").unwrap();
+
+        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert!(plan
+            .files_to_remove
+            .iter()
+            .any(|remove| remove.filename == "fabric-api.jar.disabled"));
+        assert_eq!(plan.files_to_add[0].target_filename, "fabric-api.jar");
+
+        apply_planned_file(&instance_dir, &plan, REINSTALL_BYTES);
+        assert!(mods.join("fabric-api.jar").is_file());
+        assert!(!mods.join("fabric-api.jar.disabled").exists());
+        let next: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let entries = next["mods"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["filename"], "fabric-api.jar");
+        assert_eq!(entries[0]["enabled"], true);
+    }
+
+    /// Writes the curated fabric-api entry with the real hash of REINSTALL_BYTES,
+    /// so the planner's "same content" check can actually succeed.
+    fn write_matching_fabric_api_entry(instance_dir: &Path, enabled: bool) {
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["mods"] = serde_json::json!([{
+            "filename": "fabric-api.jar",
+            "registry_id": "fabric-api",
+            "source": "curated",
+            "sha256": crate::download::sha256_hex(REINSTALL_BYTES),
+            "installed_at": "2026-01-01T00:00:00Z",
+            "version": "1.0",
+            "enabled": enabled,
+        }]);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_disabled_entry_is_reported_intact_and_left_off_by_a_reinstall() {
+        // Control: the same entry, enabled with its file present, is installed.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, true);
+        std::fs::write(
+            instance_dir.join("mods").join("fabric-api.jar"),
+            REINSTALL_BYTES,
+        )
+        .unwrap();
+        let installed = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert!(installed.files_to_add.is_empty());
+        assert!(installed
+            .warnings
+            .iter()
+            .any(|w| w.code == "ALREADY_INSTALLED"));
+
+        // Disabled with an intact copy: the user chose "off", so a plain
+        // reinstall reports the file as intact and changes nothing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
+        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert!(plan.files_to_add.is_empty(), "nothing is downloaded");
+        assert!(
+            plan.files_to_enable.is_empty(),
+            "a reinstall does not turn it on"
+        );
+        assert!(plan.files_to_remove.is_empty());
+        assert!(plan.is_fully_resolved());
+        assert!(plan.warnings.iter().any(|w| {
+            w.code == "ALREADY_INSTALLED"
+                && w.message.contains("turned off")
+                && w.message.contains("intact")
+        }));
+        apply_planned_enable(&instance_dir, &plan);
+        assert!(
+            mods.join("fabric-api.jar.disabled").is_file(),
+            "the copy stays off"
+        );
+        assert!(!mods.join("fabric-api.jar").exists());
+        let next: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(next["mods"][0]["enabled"], false);
+    }
+
+    /// The plan for "sodium", which needs fabric-api, with fabric-api pulled in
+    /// as a dependency of it.
+    fn dependency_plan_for_fabric_api(instance_dir: &Path) -> ResolvedInstallPlan {
+        let mut intent = reinstall_intent();
+        intent.action = InstallAction::Install {
+            source_type: SourceType::Curated,
+            item_id: "sodium".into(),
+            candidate_version: Some("1.0".into()),
+        };
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "sodium",
+                    "sodium.jar",
+                    crate::download::sha256_hex(b"sodium bytes"),
+                    ArtifactSource::Download {
+                        url: "https://cdn.modrinth.com/data/sodium.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![ResolvedDep {
+                requested_by: vec!["sodium".into()],
+                pinned_version: None,
+                mod_jar_id: "fabric-api".into(),
+                requirement: Requirement::Required,
+                source: DepSource::Manifest,
+                display_name: None,
+                page_url: None,
+                disposition: DepDisposition::InstallCandidate {
+                    artifact: Box::new(test_artifact(
+                        "fabric-api",
+                        "fabric-api.jar",
+                        crate::download::sha256_hex(REINSTALL_BYTES),
+                        ArtifactSource::Download {
+                            url: "https://cdn.modrinth.com/data/file.jar".into(),
+                        },
+                        SourceType::Curated,
+                    )),
+                },
+            }],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            InstallPipeline
+                .resolve_plan(intent, instance_dir, prepared, &NoopReporter)
+                .await
+                .unwrap()
+        })
+    }
+
+    /// Applies a dependency plan the way the pipeline does, staging the one
+    /// file it adds (sodium) from the bytes its hash was made from.
+    fn apply_dependency_plan(instance_dir: &Path, plan: &ResolvedInstallPlan) {
+        let staging = instance_dir.parent().unwrap().join("staging");
+        std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        for add in &plan.files_to_add {
+            std::fs::write(
+                staging.join("artifacts").join(&add.staging_filename),
+                b"sodium bytes",
+            )
+            .unwrap();
+        }
+        prepare_manifest(plan, instance_dir, &staging).unwrap();
+        apply_transaction(plan, instance_dir, &staging).unwrap();
+    }
+
+    /// Applies a plan that only turns files on, the way the pipeline does:
+    /// the manifest is prepared first, then the files move.
+    fn apply_planned_enable(instance_dir: &Path, plan: &ResolvedInstallPlan) {
+        let staging = instance_dir.parent().unwrap().join("staging");
+        std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        prepare_manifest(plan, instance_dir, &staging).unwrap();
+        apply_transaction(plan, instance_dir, &staging).unwrap();
+    }
+
+    #[test]
+    fn a_disabled_dependency_with_an_intact_copy_is_turned_on_and_names_who_needs_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
+
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert!(
+            plan.files_to_add
+                .iter()
+                .all(|add| add.target_filename != "fabric-api.jar"),
+            "an intact copy is not downloaded again"
+        );
+        assert_eq!(plan.files_to_enable.len(), 1);
+        assert_eq!(plan.files_to_enable[0].filename, "fabric-api.jar");
+        assert_eq!(
+            plan.files_to_enable[0].needed_by,
+            vec!["sodium".to_string()]
+        );
+
+        apply_dependency_plan(&instance_dir, &plan);
+        assert!(
+            mods.join("fabric-api.jar").is_file(),
+            "the copy is on again"
+        );
+        assert!(!mods.join("fabric-api.jar.disabled").exists());
+        let next: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let fabric = next["mods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["filename"] == "fabric-api.jar")
+            .unwrap();
+        assert_eq!(fabric["enabled"], true);
+    }
+
+    #[test]
+    fn a_disabled_copy_that_no_longer_matches_its_hash_is_downloaded_again() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        std::fs::write(
+            instance_dir.join("mods").join("fabric-api.jar.disabled"),
+            b"tampered",
+        )
+        .unwrap();
+
+        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert!(
+            plan.files_to_enable.is_empty(),
+            "a copy that fails its recorded hash is not turned on"
+        );
+        assert_eq!(plan.files_to_add.len(), 1);
+        assert_eq!(plan.files_to_add[0].target_filename, "fabric-api.jar");
+        assert!(plan
+            .files_to_remove
+            .iter()
+            .any(|remove| remove.filename == "fabric-api.jar.disabled"));
+    }
+
+    #[test]
+    fn a_disabled_dependency_with_a_tampered_copy_is_downloaded_again() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        std::fs::write(
+            instance_dir.join("mods").join("fabric-api.jar.disabled"),
+            b"tampered",
+        )
+        .unwrap();
+
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert!(plan.files_to_enable.is_empty());
+        assert!(plan
+            .files_to_add
+            .iter()
+            .any(|add| add.target_filename == "fabric-api.jar"));
+    }
+
+    #[test]
+    fn a_disabled_dependency_is_not_turned_on_over_an_enabled_file_of_the_same_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
+        std::fs::write(mods.join("fabric-api.jar"), b"enabled copy").unwrap();
+
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert!(
+            plan.files_to_enable.is_empty(),
+            "the planner must not rename over an enabled file"
+        );
+    }
+
+    #[test]
+    fn a_failed_apply_turns_the_disabled_dependency_back_off() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert_eq!(plan.files_to_enable.len(), 1);
+
+        // Fails after the copy has been turned on, so the rollback must undo it.
+        let staging = instance_dir.parent().unwrap().join("staging");
+        std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        for add in &plan.files_to_add {
+            std::fs::write(
+                staging.join("artifacts").join(&add.staging_filename),
+                b"sodium bytes",
+            )
+            .unwrap();
+        }
+        prepare_manifest(&plan, &instance_dir, &staging).unwrap();
+        set_install_failpoint(Some("manifest-rename"));
+        let result = apply_transaction(&plan, &instance_dir, &staging);
+        set_install_failpoint(None);
+
+        assert!(result.is_err(), "the injected failure must surface");
+        assert!(
+            mods.join("fabric-api.jar.disabled").is_file(),
+            "rollback puts the copy back as it was"
+        );
+        assert!(!mods.join("fabric-api.jar").exists());
+    }
+
+    #[test]
+    fn reinstalling_a_disabled_mod_keeps_it_disabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_reinstall_manifest(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+
+        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert_eq!(
+            plan.files_to_add[0].target_filename,
+            "fabric-api.jar.disabled"
+        );
+
+        apply_planned_file(&instance_dir, &plan, REINSTALL_BYTES);
+        assert!(mods.join("fabric-api.jar.disabled").is_file());
+        assert!(!mods.join("fabric-api.jar").exists());
+        let next: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let entries = next["mods"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["filename"], "fabric-api.jar");
+        assert_eq!(entries[0]["enabled"], false);
+    }
+
+    #[test]
+    fn reinstalling_a_disabled_mod_while_an_enabled_copy_exists_is_refused() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_reinstall_manifest(&instance_dir, false);
+        std::fs::write(
+            instance_dir.join("mods").join("fabric-api.jar"),
+            b"enabled copy",
+        )
+        .unwrap();
+
+        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert!(plan
+            .blocking_errors
+            .iter()
+            .any(|error| error.code == "ERR_FILE_CONFLICT"));
+        assert!(!plan.is_fully_resolved());
     }
 
     #[test]
@@ -4095,6 +4991,384 @@ mod tests {
             plan.pending_choices.as_slice(),
             [PendingChoice::OptionalDependencies { options, .. }] if options.len() == 1
         ));
+    }
+
+    #[test]
+    fn prompted_optional_dependencies_are_not_added_until_chosen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let required_path = tmp.path().join("required.jar");
+        let optional_path = tmp.path().join("optional.jar");
+        std::fs::write(&required_path, b"required").unwrap();
+        std::fs::write(&optional_path, b"optional").unwrap();
+        let build_prepared = || PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "root",
+                    "root.jar",
+                    "a".repeat(64),
+                    ArtifactSource::Download {
+                        url: "https://example.com/root.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![
+                ResolvedDep {
+                    requested_by: Vec::new(),
+                    pinned_version: None,
+                    mod_jar_id: "required-dep".into(),
+                    requirement: Requirement::Required,
+                    source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
+                    disposition: DepDisposition::InstallCandidate {
+                        artifact: Box::new(test_artifact(
+                            "required-dep",
+                            "required.jar",
+                            crate::download::sha256_hex(b"required"),
+                            ArtifactSource::LocalFile {
+                                path: required_path.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        )),
+                    },
+                },
+                ResolvedDep {
+                    requested_by: Vec::new(),
+                    pinned_version: None,
+                    mod_jar_id: "optional-dep".into(),
+                    requirement: Requirement::Optional,
+                    source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
+                    disposition: DepDisposition::InstallCandidate {
+                        artifact: Box::new(test_artifact(
+                            "optional-dep",
+                            "optional.jar",
+                            crate::download::sha256_hex(b"optional"),
+                            ArtifactSource::LocalFile {
+                                path: optional_path.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        )),
+                    },
+                },
+            ],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let file_names = |plan: &ResolvedInstallPlan| {
+            plan.files_to_add
+                .iter()
+                .map(|file| file.target_filename.clone())
+                .collect::<Vec<_>>()
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        // Prompt: the required file is planned, the unchosen optional one is
+        // only offered as a pending choice.
+        let mut prompt_intent = local_intent("root");
+        prompt_intent.optional_deps = OptionalDepsPolicy::Prompt;
+        let prompted = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                prompt_intent,
+                &instance_dir,
+                build_prepared(),
+                &NoopReporter,
+            ))
+            .unwrap();
+        assert_eq!(file_names(&prompted), vec!["required.jar", "root.jar"]);
+        assert!(matches!(
+            prompted.pending_choices.as_slice(),
+            [PendingChoice::OptionalDependencies { .. }]
+        ));
+
+        // Once the user picks it, the follow-up plan adds its file too.
+        let mut chosen_intent = local_intent("root");
+        chosen_intent.optional_deps = OptionalDepsPolicy::Include {
+            deps: vec!["optional-dep".into()],
+        };
+        let chosen = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                chosen_intent,
+                &instance_dir,
+                build_prepared(),
+                &NoopReporter,
+            ))
+            .unwrap();
+        assert_eq!(
+            file_names(&chosen),
+            vec!["optional.jar", "required.jar", "root.jar"]
+        );
+    }
+
+    /// A plan for installing `root` whose only dependency is a requirement the
+    /// root's own jar declared (`source: Jar`).
+    fn jar_requirement_prepared(disposition: DepDisposition) -> PreparedPlan {
+        PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "xaeros-minimap",
+                    "xaeros.jar",
+                    "a".repeat(64),
+                    ArtifactSource::Download {
+                        url: "https://example.com/xaeros.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![ResolvedDep {
+                requested_by: vec!["xaeros-minimap".into()],
+                pinned_version: None,
+                mod_jar_id: "fabric-api".into(),
+                requirement: Requirement::Required,
+                source: DepSource::Jar,
+                display_name: Some("Fabric API".into()),
+                page_url: None,
+                disposition,
+            }],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        }
+    }
+
+    /// Fabric API as a found, downloadable file.
+    fn found_fabric_api(tmp: &tempfile::TempDir) -> DepDisposition {
+        let path = tmp.path().join("fabric-api.jar");
+        std::fs::write(&path, b"fabric-api").unwrap();
+        DepDisposition::InstallCandidate {
+            artifact: Box::new(test_artifact(
+                "fabric-api",
+                "fabric-api.jar",
+                crate::download::sha256_hex(b"fabric-api"),
+                ArtifactSource::LocalFile {
+                    path: path.to_string_lossy().into_owned(),
+                },
+                SourceType::Curated,
+            )),
+        }
+    }
+
+    fn resolve_with_overrides(
+        tmp: &tempfile::TempDir,
+        disposition: DepDisposition,
+        allow_missing: bool,
+    ) -> ResolvedInstallPlan {
+        let instance_dir = make_instance(tmp);
+        let mut intent = local_intent("xaeros-minimap");
+        intent.overrides.allow_missing_dependencies = allow_missing;
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(
+                intent,
+                &instance_dir,
+                jar_requirement_prepared(disposition),
+                &NoopReporter,
+            ))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_jar_requirement_found_for_the_instance_is_added_to_the_plan() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = resolve_with_overrides(&tmp, found_fabric_api(&tmp), false);
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        assert!(!plan
+            .warnings
+            .iter()
+            .any(|w| w.code == "WARN_MISSING_DEPENDENCY"));
+        let names: Vec<_> = plan
+            .files_to_add
+            .iter()
+            .map(|f| f.target_filename.as_str())
+            .collect();
+        assert!(names.contains(&"fabric-api.jar"), "{names:?}");
+        assert!(plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn a_jar_requirement_that_cannot_be_found_blocks_and_names_who_needs_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = resolve_with_overrides(
+            &tmp,
+            DepDisposition::Unresolved {
+                reason: "it is not in the Agora catalog".into(),
+            },
+            false,
+        );
+        let blocking = plan
+            .blocking_errors
+            .iter()
+            .find(|e| e.code == "ERR_MISSING_DEPENDENCY")
+            .expect("missing dependency must block");
+        assert!(
+            blocking.message.contains("xaeros-minimap needs Fabric API"),
+            "{}",
+            blocking.message
+        );
+        assert!(blocking.message.contains("Install Anyway"));
+        assert!(!plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn installing_anyway_turns_the_missing_jar_requirement_into_a_named_warning() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = resolve_with_overrides(
+            &tmp,
+            DepDisposition::Unresolved {
+                reason: "it is not in the Agora catalog".into(),
+            },
+            true,
+        );
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|w| w.code == "WARN_MISSING_DEPENDENCY")
+            .expect("installing anyway must still say what is missing");
+        assert!(
+            warning.message.contains("Fabric API is missing"),
+            "{}",
+            warning.message
+        );
+        assert!(plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn the_install_anyway_override_turns_an_unresolved_registry_dependency_into_a_warning() {
+        // A required dependency the registry or Modrinth cannot resolve gets the
+        // same opt-in as a jar requirement: it blocks until the user installs
+        // anyway, and then the plan names what is missing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let mut prepared = jar_requirement_prepared(DepDisposition::Unresolved {
+            reason: "no build".into(),
+        });
+        prepared.dependencies[0].source = DepSource::Manifest;
+        let mut intent = local_intent("xaeros-minimap");
+        intent.overrides.allow_missing_dependencies = true;
+        let plan = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(intent, &instance_dir, prepared, &NoopReporter))
+            .unwrap();
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|w| w.code == "WARN_MISSING_DEPENDENCY")
+            .expect("installing anyway must name what is missing");
+        assert!(
+            warning.message.contains("Fabric API is missing"),
+            "{}",
+            warning.message
+        );
+    }
+
+    #[test]
+    fn an_unresolved_registry_dependency_still_blocks_without_install_anyway() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let mut prepared = jar_requirement_prepared(DepDisposition::Unresolved {
+            reason: "no build".into(),
+        });
+        prepared.dependencies[0].source = DepSource::Manifest;
+        let plan = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(
+                local_intent("xaeros-minimap"),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+        let blocking = plan
+            .blocking_errors
+            .iter()
+            .find(|e| e.code == "ERR_REQUIRED_DEPENDENCY")
+            .expect("an unresolved required dependency must block by default");
+        assert!(
+            blocking.message.contains("Install Anyway"),
+            "{}",
+            blocking.message
+        );
+        assert!(!plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn an_unreadable_jar_blocks_until_installed_anyway_and_says_so() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let run = |allow: bool| {
+            let mut intent = local_intent("xaeros-minimap");
+            intent.overrides.allow_missing_dependencies = allow;
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(InstallPipeline.resolve_plan(
+                    intent,
+                    &instance_dir,
+                    jar_requirement_prepared(DepDisposition::Unchecked {
+                        reason: "the jar is not a valid archive".into(),
+                    }),
+                    &NoopReporter,
+                ))
+                .unwrap()
+        };
+
+        let blocked = run(false);
+        let error = blocked
+            .blocking_errors
+            .iter()
+            .find(|e| e.code == "ERR_UNCHECKED_REQUIREMENTS")
+            .expect("unchecked requirements must block until the user decides");
+        assert!(
+            error
+                .message
+                .contains("Couldn't check what Fabric API needs"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("Install Anyway"));
+        assert!(!blocked.is_fully_resolved());
+
+        let anyway = run(true);
+        assert!(
+            anyway.blocking_errors.is_empty(),
+            "{:?}",
+            anyway.blocking_errors
+        );
+        assert!(anyway
+            .warnings
+            .iter()
+            .any(|w| w.code == "WARN_UNCHECKED_REQUIREMENTS"));
+        assert!(anyway.is_fully_resolved());
+    }
+
+    #[test]
+    fn a_download_is_only_accepted_when_it_matches_a_published_hash() {
+        let hashes = |algorithm, value: &str| HashSpec {
+            values: vec![HashedValue {
+                algorithm,
+                value: value.into(),
+            }],
+        };
+        let good = crate::download::sha256_hex(b"jar bytes");
+        assert!(verify_bytes(b"jar bytes", &hashes(HashAlgorithm::Sha256, &good)).is_ok());
+        assert!(verify_bytes(b"other bytes", &hashes(HashAlgorithm::Sha256, &good)).is_err());
+        // Nothing to check against must not pass as "verified".
+        assert!(verify_bytes(b"jar bytes", &HashSpec { values: vec![] }).is_err());
     }
 
     #[test]
@@ -4870,6 +6144,94 @@ mod tests {
     }
 
     #[test]
+    fn test_update_keeps_pack_ownership_and_pin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        seed_installed_mod(&instance_dir, "alpha", "alpha-1.jar", "1.0", b"alpha old");
+        seed_installed_mod(&instance_dir, "beta", "beta-1.jar", "1.0", b"beta old");
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        // allow-raw-instance-manifest
+        let mut seeded: crate::models::InstanceManifest =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        seeded.mods[0].pack_managed = true;
+        seeded.mods[0].update_pinned = true;
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&seeded).unwrap()).unwrap();
+        let alpha_source = tmp.path().join("alpha-2.jar");
+        let beta_source = tmp.path().join("beta-2.jar");
+        std::fs::write(&alpha_source, b"alpha new").unwrap();
+        std::fs::write(&beta_source, b"beta new").unwrap();
+        let operation =
+            |id: &str, file: &str, src: &Path, bytes: &[u8]| ResolvedOperation::Update {
+                old_version_id: "1.0".into(),
+                new_artifact: test_artifact_with_version(
+                    id,
+                    file,
+                    "2.0",
+                    crate::download::sha256_hex(bytes),
+                    ArtifactSource::LocalFile {
+                        path: src.to_string_lossy().into_owned(),
+                    },
+                    SourceType::Curated,
+                ),
+            };
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchUpdate {
+                operations: vec![
+                    operation("alpha", "alpha-2.jar", &alpha_source, b"alpha new"),
+                    operation("beta", "beta-2.jar", &beta_source, b"beta new"),
+                ],
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                batch_update_intent(),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+        let outcome = runtime.block_on(InstallPipeline.execute_plan(
+            &plan,
+            &instance_dir,
+            "registry-rev",
+            &NoopReporter,
+            &CancellationToken::new(),
+        ));
+        assert!(
+            matches!(outcome, InstallOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        let after = crate::helpers::read_manifest(&manifest_path).unwrap();
+        let alpha = after
+            .mods
+            .iter()
+            .find(|m| m.filename == "alpha-2.jar")
+            .unwrap();
+        let beta = after
+            .mods
+            .iter()
+            .find(|m| m.filename == "beta-2.jar")
+            .unwrap();
+        assert!(
+            alpha.pack_managed,
+            "an updated pack mod must stay pack-owned"
+        );
+        assert!(
+            alpha.update_pinned,
+            "an updated pinned mod must stay pinned"
+        );
+        assert!(
+            !beta.pack_managed,
+            "a user-added mod must not become pack-owned"
+        );
+        assert!(!beta.update_pinned);
+    }
+
+    #[test]
     fn batch_install_item_content_type_defaults_to_mod_and_round_trips() {
         let item: BatchInstallItem = serde_json::from_str(
             r#"{"sourceType":"modrinth","itemId":"x","candidateVersion":null}"#,
@@ -5043,6 +6405,97 @@ mod tests {
         );
         assert!(!instance_dir.join("mods/alpha-2.jar").exists());
         assert!(!instance_dir.join("mods/beta-2.jar").exists());
+    }
+
+    #[test]
+    fn test_curator_warning_reaches_the_plan_for_an_updated_item() {
+        // An update is the one route where a warned item is already installed,
+        // so its new file has to reach files_to_add for the review to warn.
+        // This runs the real planner rather than building files_to_add by hand.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        seed_installed_mod(&instance_dir, "alpha", "alpha-1.jar", "1.0", b"alpha old");
+        seed_installed_mod(&instance_dir, "beta", "beta-1.jar", "1.0", b"beta old");
+        let alpha_source = tmp.path().join("alpha-2.jar");
+        let beta_source = tmp.path().join("beta-2.jar");
+        std::fs::write(&alpha_source, b"alpha new").unwrap();
+        std::fs::write(&beta_source, b"beta new").unwrap();
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchUpdate {
+                operations: vec![
+                    ResolvedOperation::Update {
+                        old_version_id: "1.0".into(),
+                        new_artifact: test_artifact_with_version(
+                            "alpha",
+                            "alpha-2.jar",
+                            "2.0",
+                            crate::download::sha256_hex(b"alpha new"),
+                            ArtifactSource::LocalFile {
+                                path: alpha_source.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        ),
+                    },
+                    ResolvedOperation::Update {
+                        old_version_id: "1.0".into(),
+                        new_artifact: test_artifact_with_version(
+                            "beta",
+                            "beta-2.jar",
+                            "2.0",
+                            crate::download::sha256_hex(b"beta new"),
+                            ArtifactSource::LocalFile {
+                                path: beta_source.to_string_lossy().into_owned(),
+                            },
+                            SourceType::Curated,
+                        ),
+                    },
+                ],
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(InstallPipeline.resolve_plan(
+                batch_update_intent(),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let added: Vec<Option<&str>> = plan
+            .files_to_add
+            .iter()
+            .map(|add| match &add.artifact {
+                ResolvedArtifact::Download(download) => download.metadata.registry_id.as_deref(),
+                ResolvedArtifact::LocalFile(local) => local.metadata.registry_id.as_deref(),
+            })
+            .collect();
+        assert!(
+            added.contains(&Some("alpha")),
+            "updated alpha not in files_to_add: {added:?}"
+        );
+
+        let warnings = crate::install_service::curator_warning_plan_warnings(
+            &plan,
+            &[crate::registry::CuratorWarning {
+                item_id: "alpha".into(),
+                name: "Alpha".into(),
+                warning: "Do not use Y with alpha.".into(),
+            }],
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, "WARN_CURATOR_WARNING");
+        assert_eq!(
+            warnings[0].message,
+            "Curator warning for Alpha: Do not use Y with alpha."
+        );
     }
 
     #[test]
@@ -5311,6 +6764,7 @@ mod tests {
             hashes,
             size: 0,
             installed_as_dependency: false,
+            replaces_missing_file: false,
         }
     }
 
@@ -6494,6 +7948,7 @@ mod tests {
             files_to_remove: vec![],
             files_to_disable: vec![],
             files_to_promote: vec![],
+            files_to_enable: vec![],
             snapshot: SnapshotPlan {
                 label: "test-snapshot".into(),
                 estimated_bytes: 0,

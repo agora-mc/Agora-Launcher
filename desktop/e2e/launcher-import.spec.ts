@@ -81,7 +81,7 @@ async function installLauncherImportMock(page: Page, opts: ImportFlowMockOptions
           if (command === 'check_instance_updates') return Promise.resolve([]);
           if (command === 'batch_check_compat') return Promise.resolve({});
           if (command === 'get_instance_detail') {
-            return Promise.resolve({ row: null, manifest: null });
+            return Promise.resolve({ row: null, manifest: null, pack_gaps: [] });
           }
           if (command === 'list_snapshots') return Promise.resolve([]);
           if (command === 'list_loadout_profiles') return Promise.resolve([]);
@@ -91,6 +91,7 @@ async function installLauncherImportMock(page: Page, opts: ImportFlowMockOptions
           // --- Launcher import commands ---
           if (command === 'discover_launcher_imports') {
             const disc: Record<string, unknown> = {
+              instances_root: '/mock/agora/instances',
               prism: {
                 launcher: {
                   installation_key: 'default', kind: 'prism', display_name: 'Prism Launcher',
@@ -193,11 +194,20 @@ async function installLauncherImportMock(page: Page, opts: ImportFlowMockOptions
           if (command === 'execute_launcher_imports') {
             const plan = args.plan as Record<string, unknown>;
             (window as any).__lastExecutePlan = plan;
-            return Promise.resolve({
-              outcomes: [
-                { status: 'imported', instance_id: 'my-pack', warnings: [] },
-              ],
-            });
+            const outcomes = [
+              { status: 'imported', instance_id: 'my-pack', warnings: [] },
+            ];
+            // A test can hold the copy open to watch the progress UI, then finish it.
+            if ((window as any).__deferExecute) {
+              const items = (plan.items as Array<{ destination_id: string }>) ?? [];
+              const deferred = items.map((item) => ({
+                status: 'imported', instance_id: item.destination_id, warnings: [],
+              }));
+              return new Promise((resolve) => {
+                (window as any).__finishExecute = () => resolve({ outcomes: deferred });
+              });
+            }
+            return Promise.resolve({ outcomes });
           }
 
           if (command === 'pick_directory') {
@@ -306,7 +316,7 @@ async function installOnboardingMockWithImport(page: Page) {
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command === 'get_lkg_marker') return Promise.resolve(null);
         if (command === 'get_auth_status') return Promise.resolve(true);
-        if (command === 'get_github_profile') return Promise.resolve(null);
+        if (command === 'get_github_profile') return Promise.resolve({ login: 'tester', avatar_url: '' });
         if (command === 'get_flag_rate_limit') return Promise.resolve(null);
         if (command === 'list_mod_reviews') return Promise.resolve([]);
         if (command === 'get_curated_annotation') return Promise.resolve(null);
@@ -323,7 +333,7 @@ async function installOnboardingMockWithImport(page: Page) {
         if (command === 'check_instance_crash') return Promise.resolve(null);
         if (command === 'check_instance_updates') return Promise.resolve([]);
         if (command === 'batch_check_compat') return Promise.resolve({});
-        if (command === 'get_instance_detail') return Promise.resolve({ row: null, manifest: null });
+        if (command === 'get_instance_detail') return Promise.resolve({ row: null, manifest: null, pack_gaps: [] });
         if (command === 'list_snapshots') return Promise.resolve([]);
         if (command === 'list_loadout_profiles') return Promise.resolve([]);
         if (command === 'restore_snapshot') return Promise.resolve(null);
@@ -466,7 +476,7 @@ test.describe('Launcher Import — My Instances entry', () => {
     await expect(page.getByText('My Renamed Pack')).toBeVisible();
 
     // Settings preview
-    await expect(page.getByText('Memory: 4096 MB')).toBeVisible();
+    await expect(page.getByText(/^Memory: 4 GB, copied from /)).toBeVisible();
     await expect(page.getByText('Java: /usr/lib/jvm/java-21-openjdk/bin/java')).toBeVisible();
 
     // Size info (appears in item detail as "85.0 MB · 142 files" and in summary footer)
@@ -509,6 +519,46 @@ test.describe('Launcher Import — My Instances entry', () => {
       return c['list_instances'] ?? 0;
     });
     expect(listCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  test('import shows byte progress, says the originals are kept, and names the result', async ({ page }) => {
+    await installLauncherImportMock(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: 'My Instances' }).click();
+    await page.getByRole('button', { name: 'Import Instances' }).click();
+    await expect(page.getByRole('heading', { name: 'Import from Other Launchers' })).toBeVisible({ timeout: 5000 });
+
+    await page.getByLabel('Select My Pack').click();
+    await page.getByRole('button', { name: 'Review (1)' }).click();
+    await expect(page.getByRole('heading', { name: 'Review Import Plan' })).toBeVisible({ timeout: 3000 });
+
+    // The review says what happens to the originals and where the copies go.
+    await expect(page.getByText('Your originals are not changed.')).toBeVisible();
+    await expect(page.getByText('/mock/agora/instances')).toBeVisible();
+
+    // Hold the copy open, then send the backend's events: "Importing" first (the
+    // wizard only listens after that), then a copy event with byte totals.
+    await page.evaluate(() => { (window as any).__deferExecute = true; });
+    await page.getByRole('button', { name: 'Import 1 Instance' }).click();
+    await expect(page.getByRole('heading', { name: 'Importing Instances' })).toBeVisible({ timeout: 5000 });
+    await page.evaluate(() => {
+      const emit = (payload: unknown) => {
+        const id = (window as any).__tauriEventListeners.get('operation-progress');
+        (window as any).__callbacks.get(id)({ event: 'operation-progress', payload });
+      };
+      const base = { operationId: 'op-1', subLabel: 'My Renamed Pack', progress: null };
+      emit({ ...base, phase: 'staging', message: 'Importing My Renamed Pack (1 of 1)', bytesDownloaded: 0, bytesTotal: 1_200_000_000 });
+      emit({ ...base, phase: 'staging', message: 'Copying My Renamed Pack (1 of 1)', progress: 0.5, bytesDownloaded: 600_000_000, bytesTotal: 1_200_000_000 });
+    });
+    await expect(page.getByText('Copying My Renamed Pack (1 of 1)')).toBeVisible();
+    await expect(page.getByText('50%', { exact: true })).toBeVisible();
+    await expect(page.getByText('600.0 MB of 1.2 GB')).toBeVisible();
+
+    await page.evaluate(() => (window as any).__finishExecute());
+    await expect(page.getByRole('heading', { name: 'Import Results' })).toBeVisible({ timeout: 5000 });
+    // The result names the instance by its display name, not its id.
+    await expect(page.getByText('My Pack', { exact: true })).toBeVisible();
+    await expect(page.getByText('my-pack', { exact: true })).toHaveCount(0);
   });
 
   test('preserve settings can be toggled off and reflects in plan args', async ({ page }) => {
@@ -556,7 +606,7 @@ test.describe('Launcher Import — My Instances entry', () => {
     await expect(page.getByRole('heading', { name: 'Review Import Plan' })).toBeVisible({ timeout: 3000 });
 
     // Click Back
-    await page.getByRole('button', { name: 'Back to selection' }).click();
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Import from Other Launchers' })).toBeVisible();
   });
 });
@@ -800,17 +850,20 @@ test.describe('Launcher Import — onboarding Bring Your Instances step', () => 
     await expect(javaSwitch).toHaveAttribute('aria-checked', 'false');
     await page.getByRole('button', { name: 'Continue' }).click();
 
-    // GitHub step
+    // GitHub step — a token is already stored and its profile confirms the
+    // account, so it says who is signed in and offers Continue.
     await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible();
-    await page.getByRole('button', { name: "I'll do this later" }).click();
+    await expect(page.getByText('@tester')).toBeVisible();
+    await expect(page.getByRole('button', { name: "I'll do this later" })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Continue' }).click();
 
-    // Registry step — mock returns ready, so Finish should be available
+    // Registry step — mock returns ready, so Continue should be available
     await expect(page.getByRole('heading', { name: 'Download Catalog' })).toBeVisible({ timeout: 5000 });
 
-    // Click Finish on Registry step (button label when registry is ready)
-    const registryFinish = page.getByRole('button', { name: 'Finish' });
-    await expect(registryFinish).toBeVisible();
-    await registryFinish.click();
+    // Click Continue on Registry step (button label when registry is ready)
+    const registryContinue = page.getByRole('button', { name: 'Continue', exact: true });
+    await expect(registryContinue).toBeVisible();
+    await registryContinue.click();
 
     // Import step — Bring Your Instances
     await expect(page.getByRole('heading', { name: 'Bring Your Instances' })).toBeVisible({ timeout: 5000 });

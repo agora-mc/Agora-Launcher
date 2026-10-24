@@ -980,7 +980,7 @@ pub async fn resolve(request: ResolveRequest) -> LauncherResult<ResolvedLaunchPl
 /// Every download is gated by the policy embedded in `resolved.network_policy`.
 /// Cache hits are validated and returned without network access.
 pub async fn materialize(resolved: ResolvedLaunchPlan) -> LauncherResult<MaterializedLaunchPlan> {
-    materialize_with_progress(resolved, None).await
+    Box::pin(materialize_with_progress(resolved, None)).await
 }
 
 /// [`materialize`] that reports verified-file counts for the client JAR,
@@ -2025,7 +2025,10 @@ pub async fn wait_and_classify(
     game_dir: &Path,
     secrets: &[&str],
 ) -> LauncherResult<crate::lkg::LaunchOutcome> {
-    wait_and_classify_with_progress(child, game_dir, secrets, None).await
+    Box::pin(wait_and_classify_with_progress(
+        child, game_dir, secrets, None,
+    ))
+    .await
 }
 
 /// Bounded line count retained for crash-triage after streaming.
@@ -2796,7 +2799,8 @@ async fn download_sha1_atomic(
         .get(url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(crate::http_client::transport_failure_from)?;
+    crate::connectivity::record_reachable();
     if !response.status().is_success() {
         return Err(LauncherError::Generic {
             code: "ERR_DOWNLOAD_HTTP".into(),
@@ -2809,7 +2813,7 @@ async fn download_sha1_atomic(
     let bytes = response
         .bytes()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?
+        .map_err(crate::http_client::transport_failure_from)?
         .to_vec();
     if !artifact_matches(&bytes, Some(&resolved_sha1), expected_size) {
         return Err(LauncherError::HashMismatch);
@@ -2859,7 +2863,8 @@ async fn resolve_sidecar_sha1(
         .get(&sidecar_url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(crate::http_client::transport_failure_from)?;
+    crate::connectivity::record_reachable();
     let final_url = response.url().as_str();
     ensure_artifact_url_for_category(final_url, category)?;
     if !response.status().is_success() {
@@ -2874,7 +2879,7 @@ async fn resolve_sidecar_sha1(
     let text = response
         .text()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(crate::http_client::transport_failure_from)?;
     let hash = parse_sha1_sidecar(&text).ok_or_else(|| LauncherError::Generic {
         code: "ERR_ARTIFACT_HASH_INVALID".into(),
         message: format!("Artifact SHA-1 sidecar is invalid: {sidecar_url}"),
@@ -3852,8 +3857,12 @@ pub(crate) async fn load_json_cache_first<T: serde::de::DeserializeOwned>(
     // Phase 3: Fetch fresh data from the network. Transport errors fall back
     // to the stale cache; integrity/parse errors never do.
     let response = match client.get(url).send().await {
-        Ok(r) => r,
+        Ok(r) => {
+            crate::connectivity::record_reachable();
+            r
+        }
         Err(_) => {
+            crate::connectivity::record_unreachable();
             if let Some(parsed) = stale_parsed {
                 return Ok(parsed);
             }
@@ -3874,7 +3883,7 @@ pub(crate) async fn load_json_cache_first<T: serde::de::DeserializeOwned>(
             if let Some(parsed) = stale_parsed {
                 return Ok(parsed);
             }
-            return Err(LauncherError::NetworkOffline);
+            return Err(crate::http_client::transport_failure());
         }
     };
 
@@ -4112,7 +4121,8 @@ async fn download_verified_inner(
         .get(url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(crate::http_client::transport_failure_from)?;
+    crate::connectivity::record_reachable();
     // Defense-in-depth: verify the final response URL is category-safe.
     let final_url = response.url().as_str();
     ensure_artifact_url_for_category(final_url, category)?;
@@ -4126,7 +4136,7 @@ async fn download_verified_inner(
         .bytes()
         .await
         .map(|b| b.to_vec())
-        .map_err(|_| LauncherError::NetworkOffline)
+        .map_err(crate::http_client::transport_failure_from)
 }
 
 #[cfg(test)]
@@ -6367,9 +6377,14 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line))
-            .await
-            .unwrap();
+        let _outcome = Box::pin(wait_and_classify_with_progress(
+            child,
+            tmp.path(),
+            &[],
+            Some(&on_line),
+        ))
+        .await
+        .unwrap();
 
         let collected = lines.lock().unwrap();
         assert!(
@@ -6390,12 +6405,12 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(
+        let _outcome = Box::pin(wait_and_classify_with_progress(
             child,
             tmp.path(),
             &["super-sensitive-value"],
             Some(&on_line),
-        )
+        ))
         .await
         .unwrap();
 
@@ -6433,7 +6448,12 @@ $output.Write($after, 0, $after.Length)
 
         tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line)),
+            Box::pin(wait_and_classify_with_progress(
+                child,
+                tmp.path(),
+                &[],
+                Some(&on_line),
+            )),
         )
         .await
         .expect("non-UTF-8 output must not stop draining the child pipe")
@@ -6471,9 +6491,14 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line))
-            .await
-            .unwrap();
+        let _outcome = Box::pin(wait_and_classify_with_progress(
+            child,
+            tmp.path(),
+            &[],
+            Some(&on_line),
+        ))
+        .await
+        .unwrap();
 
         let collected = lines.lock().unwrap();
         assert!(

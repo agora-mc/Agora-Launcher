@@ -193,6 +193,7 @@ async function updatesSectionMock(page: Page) {
             };
             return Promise.resolve({
               row,
+              pack_gaps: [],
               manifest: {
                 instance_id: instanceId, name: row.name, created_from_pack: null,
                 minecraft_version: '1.21', loader: 'fabric', loader_version: '0.16.0',

@@ -6,6 +6,7 @@ import {
   Info,
   PackageMinus,
   PackagePlus,
+  Power,
   PowerOff,
   ShieldCheck,
   TriangleAlert,
@@ -23,11 +24,13 @@ import {
   cancelInstall,
   subscribeProgress,
   planNeedsUserReview,
+  isCuratorWarning,
 } from '../lib/installFlow';
 import {
   describeRestoreCoverage,
   formatError,
   getSetting,
+  listSnapshots,
   parseLauncherError,
   restoreSnapshot,
 } from '../lib/tauri';
@@ -35,7 +38,7 @@ import { emitTourSignal } from '../features/tour/tourSignals';
 import { LoaderChooser } from './LoaderChooser';
 import { DatapackWorldsNote } from './DatapackWorldsNote';
 import { useControllerLayer } from '@/features/controller/useControllerLayer';
-import { cn } from '@/lib/utils';
+import { cn, formatDateTime } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // User choices model
@@ -59,7 +62,7 @@ type FlowState =
   | { phase: 'closed' };
 
 type FlowAction =
-  | { type: 'resolved'; plan: ResolvedInstallPlan }
+  | { type: 'resolved'; plan: ResolvedInstallPlan; choices?: PlanChoices }
   | { type: 'resolve-error'; error: string; code?: string }
   | { type: 'patch-choice'; modJarId: string; included: boolean }
   | { type: 'resolve-conflict'; conflictId: string; resolution: string }
@@ -78,7 +81,7 @@ function flowReducer(state: FlowState, action: FlowAction): FlowState {
       return {
         phase: 'review',
         plan: action.plan,
-        choices: defaultChoices(action.plan),
+        choices: action.choices ?? defaultChoices(action.plan),
         dirty: false,
       };
 
@@ -166,6 +169,30 @@ function defaultChoices(plan: ResolvedInstallPlan): PlanChoices {
         .map((c) => [c.conflictId, c.chosen!]),
     ),
   };
+}
+
+/**
+ * Choices for a re-review, after the user changed an extra and Agora re-planned.
+ * A tick or untick on an extra the previous review already showed sticks; an
+ * extra that only this plan brings in gets the usual default for this install.
+ */
+function carryOptionalChoices(
+  plan: ResolvedInstallPlan,
+  previousPlan: ResolvedInstallPlan,
+  previous: PlanChoices,
+): PlanChoices {
+  const choices = defaultChoices(plan);
+  const shown = new Set(
+    previousPlan.dependencies
+      .filter((dep) => dep.requirement === 'optional')
+      .map((dep) => dep.modJarId),
+  );
+  for (const dep of plan.dependencies) {
+    if (dep.requirement !== 'optional' || !shown.has(dep.modJarId)) continue;
+    if (previous.optionalIncluded.has(dep.modJarId)) choices.optionalIncluded.add(dep.modJarId);
+    else choices.optionalIncluded.delete(dep.modJarId);
+  }
+  return choices;
 }
 
 function failedBatchItemId(intent: InstallIntent, message: string): string | undefined {
@@ -261,9 +288,14 @@ export function InstallFlow({
   const [settingAlwaysAutoConfirm, setSettingAlwaysAutoConfirm] = useState(false);
   const initialPlanRef = useRef<ResolvedInstallPlan | null>(initialPlan ?? null);
   const recheckPlanRef = useRef<ResolvedInstallPlan | null>(null);
+  const recheckChoicesRef = useRef<PlanChoices | null>(null);
   const forceFinalReviewRef = useRef(false);
   const [newlyAddedFiles, setNewlyAddedFiles] = useState<Set<string>>(new Set());
   const [reviewNotice, setReviewNotice] = useState<string | null>(null);
+  // Whether focus was inside the panel when the install outcome arrived. The
+  // result replaces the corner panel with the modal, so that focus would
+  // otherwise fall to the page; the result moves it to its primary action.
+  const [resultFocusInPanel, setResultFocusInPanel] = useState(false);
 
   useEffect(() => {
     if (!background) return;
@@ -289,6 +321,7 @@ export function InstallFlow({
     if (!open) return;
     setResolutionIntent(intent);
     recheckPlanRef.current = null;
+    recheckChoicesRef.current = null;
     forceFinalReviewRef.current = false;
     setNewlyAddedFiles(new Set());
     setReviewNotice(null);
@@ -316,22 +349,30 @@ export function InstallFlow({
           const plan = await resolveInstallPlan(resolutionIntent);
           if (!cancelled) {
             const previousPlan = recheckPlanRef.current;
+            const previousChoices = recheckChoicesRef.current;
+            let choices: PlanChoices | undefined;
             if (previousPlan) {
               recheckPlanRef.current = null;
+              recheckChoicesRef.current = null;
               forceFinalReviewRef.current = true;
               const previousFiles = new Set(previousPlan.filesToAdd.map((file) => file.targetFilename));
-              setNewlyAddedFiles(new Set(
-                plan.filesToAdd
-                  .map((file) => file.targetFilename)
-                  .filter((filename) => !previousFiles.has(filename)),
-              ));
-              setReviewNotice('New options have been checked. Review the highlighted additions before installing.');
+              const added = plan.filesToAdd
+                .map((file) => file.targetFilename)
+                .filter((filename) => !previousFiles.has(filename));
+              setNewlyAddedFiles(new Set(added));
+              // Only say something new was checked when something new was added;
+              // an untick re-plans with fewer files and needs no notice.
+              if (added.length > 0) {
+                setReviewNotice('New options have been checked. Review the highlighted additions before installing.');
+              }
+              if (previousChoices) choices = carryOptionalChoices(plan, previousPlan, previousChoices);
             }
-            dispatch({ type: 'resolved', plan });
+            dispatch({ type: 'resolved', plan, choices });
           }
         } catch (e) {
           if (!cancelled) {
             recheckPlanRef.current = null;
+            recheckChoicesRef.current = null;
             forceFinalReviewRef.current = false;
             const parsed = parseLauncherError(e);
           dispatch({ type: 'resolve-error', error: parsed.message, code: parsed.code });
@@ -369,6 +410,7 @@ export function InstallFlow({
         });
         const outcome = await applyInstallPlan(state.plan);
         if (!cancelled) {
+          setResultFocusInPanel(panelRef.current?.contains(document.activeElement) ?? false);
           dispatch({ type: 'outcome', outcome });
           // The guided walkthrough waits on the install actually landing, which
           // the dialog closing cannot distinguish from a cancel.
@@ -401,31 +443,48 @@ export function InstallFlow({
       onClose?.();
       return;
     }
-    if (state.phase === 'resolving' || state.phase === 'error') {
+    // The result is a dismissal too: its header Close is this same handler, and
+    // Escape on the modal result presses that Close.
+    if (state.phase === 'resolving' || state.phase === 'error' || state.phase === 'result') {
       dispatch({ type: 'close' });
       onClose?.();
     }
   }, [state, onClose]);
 
-  const handleConfirm = useCallback(() => {
+  /**
+   * Re-plan from the open review. Every replan that starts here sends the
+   * user's optional-extra choices with it and keeps the ticks the review shows,
+   * so no path can reset what the user chose. Only valid during review: the
+   * error screen has no choices to keep.
+   */
+  const replanFromReview = useCallback((change: (current: InstallIntent) => InstallIntent) => {
     if (state.phase !== 'review') return;
-    if (state.dirty || state.plan.pendingChoices.length > 0) {
-      recheckPlanRef.current = state.plan;
-      forceFinalReviewRef.current = false;
-      setNewlyAddedFiles(new Set());
-      setReviewNotice(null);
-      setResolutionIntent({
-        ...resolutionIntent,
+    recheckPlanRef.current = state.plan;
+    recheckChoicesRef.current = state.choices;
+    forceFinalReviewRef.current = false;
+    setNewlyAddedFiles(new Set());
+    setReviewNotice(null);
+    setResolutionIntent((current) => {
+      const next = change(current);
+      return {
+        ...next,
         optionalDeps: {
           type: 'include',
           deps: [...state.choices.optionalIncluded].sort(),
         },
         overrides: {
-          ...resolutionIntent.overrides,
+          ...next.overrides,
           forceConflictResolution: Object.fromEntries(state.choices.conflictResolutions),
         },
-      });
-      dispatch({ type: 'retry' });
+      };
+    });
+    dispatch({ type: 'retry' });
+  }, [state]);
+
+  const handleConfirm = useCallback(() => {
+    if (state.phase !== 'review') return;
+    if (state.dirty || state.plan.pendingChoices.length > 0) {
+      replanFromReview((current) => current);
       return;
     }
     if (background) {
@@ -436,7 +495,16 @@ export function InstallFlow({
     } else {
       dispatch({ type: 'confirm' });
     }
-  }, [background, onBackgroundStart, onClose, state, resolutionIntent]);
+  }, [background, onBackgroundStart, onClose, state, replanFromReview]);
+
+  // Explicit opt-in past a missing required dependency: replan with the
+  // override, so the review shows the named warning before anything is written.
+  const handleInstallAnyway = useCallback(() => {
+    replanFromReview((current) => ({
+      ...current,
+      overrides: { ...current.overrides, allowMissingDependencies: true },
+    }));
+  }, [replanFromReview]);
 
   const handleClose = useCallback(() => {
     dispatch({ type: 'close' });
@@ -476,15 +544,14 @@ export function InstallFlow({
    * transaction, so we just re-resolve with the approval recorded.
    */
   const handleChooseLoaderVersion = useCallback((version: string) => {
-    setResolutionIntent((current) => ({
+    replanFromReview((current) => ({
       ...current,
       overrides: {
         ...current.overrides,
         approveLoaderVersion: version,
       },
     }));
-    dispatch({ type: 'retry' });
-  }, []);
+  }, [replanFromReview]);
 
   /**
    * Escape hatch from a loader mismatch: don't switch the loader, skip the
@@ -503,7 +570,7 @@ export function InstallFlow({
     // resolved plan is guaranteed to exist.
     if (action.type === 'batch-install' && state.phase === 'review') {
       const itemsToSkip = loaderMismatchSkipItems(state.plan);
-      setResolutionIntent((current) => ({
+      replanFromReview((current) => ({
         ...current,
         overrides: {
           ...current.overrides,
@@ -512,9 +579,8 @@ export function InstallFlow({
           ],
         },
       }));
-      dispatch({ type: 'retry' });
     }
-  }, [resolutionIntent, state.phase, onClose]);
+  }, [resolutionIntent, state, onClose, replanFromReview]);
 
   // Only claims controller input while it is actually asking something. The
   // corner progress panel must not, or an install running in the background
@@ -546,14 +612,13 @@ export function InstallFlow({
           const skippedItemId = failedBlockingBatchItemId(state.plan);
           const onSkip = skippedItemId
             ? () => {
-              setResolutionIntent((current) => ({
+              replanFromReview((current) => ({
                 ...current,
                 overrides: {
                   ...current.overrides,
                   skipItems: [...new Set([...(current.overrides.skipItems ?? []), skippedItemId])],
                 },
               }));
-              dispatch({ type: 'retry' });
             }
             : undefined;
           return <ReviewView
@@ -564,6 +629,7 @@ export function InstallFlow({
            onToggleOptional={(id, inc) => dispatch({ type: 'patch-choice', modJarId: id, included: inc })}
            onResolveConflict={(id, res) => dispatch({ type: 'resolve-conflict', conflictId: id, resolution: res })}
              onRetry={() => dispatch({ type: 'retry' })}
+             onInstallAnyway={handleInstallAnyway}
              onSkip={onSkip}
              onChooseLoaderVersion={handleChooseLoaderVersion}
              onSkipLoaderMismatch={handleSkipLoaderMismatch}
@@ -579,6 +645,7 @@ export function InstallFlow({
           instanceId={intent.targetInstance}
           onOpenInstance={() => onOpenInstance?.(intent.targetInstance)}
           onClose={handleClose}
+          focusPrimary={resultFocusInPanel}
         />;
       case 'error':
         {
@@ -645,6 +712,7 @@ export function InstallFlow({
       </div>
       <button
         onClick={handleCancel}
+        data-modal-close=""
         className="shrink-0 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
         aria-label="Close install panel"
       >
@@ -681,17 +749,27 @@ export function InstallFlow({
   // z-61 keeps it above the pack-indicator stacking context when both are
   // visible; pack progress remains readable alongside via vertical stacking.
   // `aria-modal="false"` states that the rest of the app stays live behind it.
+  // Escape closes the corner panel while focus is inside it. It is not modal,
+  // so the page-wide modal handler does not see it, and nothing else would.
   return createPortal(
     <aside
+      ref={panelRef}
       className="fixed bottom-4 right-4 z-61 flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
       data-tour="install-review-dialog"
       role="dialog"
       aria-modal="false"
       aria-labelledby="install-review-title"
       aria-live="polite"
+      onKeyDown={(event) => {
+        // Not while an install runs: there Escape would only send a cancel
+        // request that the panel keeps waiting on, so a stray key must not start one.
+        if (event.key !== 'Escape' || event.defaultPrevented || state.phase === 'executing') return;
+        event.preventDefault();
+        handleCancel();
+      }}
     >
       {header}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div data-install-review-body className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {renderContent()}
       </div>
     </aside>,
@@ -720,6 +798,7 @@ function ReviewView({
   onToggleOptional,
   onResolveConflict,
   onRetry,
+  onInstallAnyway,
   onSkip,
   onChooseLoaderVersion,
   onSkipLoaderMismatch,
@@ -733,6 +812,7 @@ function ReviewView({
   onToggleOptional: (id: string, inc: boolean) => void;
   onResolveConflict: (id: string, res: string) => void;
   onRetry: () => void;
+  onInstallAnyway: () => void;
   onSkip?: () => void;
   onChooseLoaderVersion: (version: string) => void;
   onSkipLoaderMismatch: () => void;
@@ -761,15 +841,26 @@ function ReviewView({
         : 'Install';
   // Every file the plan touches, named. Counts alone answer "how much"; a
   // removal review in particular is useless without "which one".
+  // A file the instance records but that is gone from mods/ is restored, not
+  // added: say so, and never list it as removed.
+  const restoredNames = new Set(
+    plan.filesToAdd
+      .filter((file) => file.replacesMissingFile)
+      .map((file) => file.targetFilename.replace(/\.disabled$/, '')),
+  );
+  const enabledFiles = plan.filesToEnable ?? [];
   const changeItems: ChangeItem[] = [
     ...operationArtifacts(plan.operation)
       .filter((artifact) => artifact.metadata.version)
-      .map((artifact) => ({
-        kind: 'add' as const,
-        filename: artifact.filename,
-        tag: artifact.metadata.version as string,
-        isNew: newlyAddedFiles.has(artifact.filename),
-      })),
+      .map((artifact) => {
+        const restores = restoredNames.has(artifact.filename);
+        return {
+          kind: 'add' as const,
+          filename: artifact.filename,
+          tag: restores ? 'restores missing file' : artifact.metadata.version as string,
+          isNew: !restores && newlyAddedFiles.has(artifact.filename),
+        };
+      }),
     ...plan.filesToRemove.map((file) => ({
       kind: 'remove' as const,
       filename: file.filename,
@@ -780,6 +871,12 @@ function ReviewView({
       kind: 'disable' as const,
       filename: file.filename,
       tag: 'turned off',
+      isNew: false,
+    })),
+    ...enabledFiles.map((file) => ({
+      kind: 'enable' as const,
+      filename: file.filename,
+      tag: 'turned on',
       isNew: false,
     })),
   ];
@@ -793,10 +890,17 @@ function ReviewView({
   const satisfiedRequired = requiredDeps.filter((dep) => dep.disposition.type === 'reuse-existing');
   const pendingRequired = requiredDeps.filter((dep) => dep.disposition.type !== 'reuse-existing');
 
-  const addCount = plan.filesToAdd.length;
+  const restoreCount = plan.filesToAdd.filter((file) => file.replacesMissingFile).length;
+  const addCount = plan.filesToAdd.length - restoreCount;
   const removeCount = plan.filesToRemove.length;
   const disableCount = plan.filesToDisable.length;
-  const touchesFiles = addCount + removeCount + disableCount > 0;
+  const enableCount = enabledFiles.length;
+  const touchesFiles = addCount + restoreCount + removeCount + disableCount + enableCount > 0;
+
+  // The curator's own cautions come first and get their own heading; the rest
+  // of the plan warnings keep their existing list.
+  const curatorWarnings = plan.warnings.filter(isCuratorWarning);
+  const otherWarnings = plan.warnings.filter((warning) => !isCuratorWarning(warning));
 
   return (
     <div className="space-y-4">
@@ -875,11 +979,21 @@ function ReviewView({
             {addCount > 0 && (
               <ChangeChip icon={PackagePlus} tone="add" label={`${addCount} ${pluralFiles(addCount)} added`} />
             )}
+            {restoreCount > 0 && (
+              <ChangeChip icon={PackagePlus} tone="add" label={`Restores ${restoreCount} missing ${pluralFiles(restoreCount)}`} />
+            )}
             {removeCount > 0 && (
               <ChangeChip icon={PackageMinus} tone="remove" label={`${removeCount} ${pluralFiles(removeCount)} will be removed`} />
             )}
             {disableCount > 0 && (
               <ChangeChip icon={PowerOff} tone="neutral" label={`${disableCount} ${pluralFiles(disableCount)} turned off`} />
+            )}
+            {enableCount > 0 && (
+              <ChangeChip
+                icon={Power}
+                tone="add"
+                label={enableChipLabel(enabledFiles)}
+              />
             )}
           </div>
         ) : (
@@ -895,7 +1009,7 @@ function ReviewView({
                 <span
                   className={cn(
                     'min-w-0 truncate font-medium text-foreground',
-                    item.kind !== 'add' && 'line-through decoration-muted-foreground/60',
+                    (item.kind === 'remove' || item.kind === 'disable') && 'line-through decoration-muted-foreground/60',
                   )}
                   title={item.filename}
                 >
@@ -972,9 +1086,7 @@ function ReviewView({
       {satisfiedRequired.length > 0 && (
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
           <CircleCheck className="h-3.5 w-3.5 shrink-0 text-green-600" aria-hidden="true" />
-          {satisfiedRequired.length === 1
-            ? 'One required dependency is already installed.'
-            : `${satisfiedRequired.length} required dependencies are already installed.`}
+          {satisfiedRequiredSentence(satisfiedRequired)}
         </p>
       )}
 
@@ -987,15 +1099,28 @@ function ReviewView({
         </div>
       )}
 
+      {/* Curator warnings — the curator asked for these to be read before installing */}
+      {curatorWarnings.length > 0 && (
+        <section className="rounded-lg border border-amber-600/50 bg-amber-100 p-3 dark:bg-amber-900/30">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200">
+            <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Curator warnings
+          </h3>
+          <ul className="mt-2 space-y-1 text-xs text-amber-800 dark:text-amber-200">
+            {curatorWarnings.map((w, i) => <li key={i}>{w.message}</li>)}
+          </ul>
+        </section>
+      )}
+
       {/* Warnings — worth reading, but they do not stop anything */}
-      {plan.warnings.length > 0 && (
+      {otherWarnings.length > 0 && (
         <section className="rounded-lg border border-amber-500/30 bg-amber-50 p-3 dark:bg-amber-900/20">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-300">
             <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
             Worth knowing
           </h3>
           <ul className="mt-2 space-y-1 text-xs text-amber-700 dark:text-amber-300">
-            {plan.warnings.map((w, i) => <li key={i}>{w.message}</li>)}
+            {otherWarnings.map((w, i) => <li key={i}>{w.message}</li>)}
           </ul>
         </section>
       )}
@@ -1004,8 +1129,10 @@ function ReviewView({
       <div className="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
         <ShieldCheck className="mt-px h-4 w-4 shrink-0 text-green-600" aria-hidden="true" />
         <p>
-          Agora saves a restore point before anything is written, so this can be undone in one
-          click if it goes wrong.
+          Agora saves a restore point before anything is written. It is automatic and covers mods,
+          configs, worlds, resource and shader packs, datapacks and options, but not logs or
+          screenshots. You can roll back from the result screen, or later from the instance&apos;s
+          Snapshots tab. The 5 most recent automatic restore points are kept.
         </p>
       </div>
 
@@ -1022,6 +1149,7 @@ function ReviewView({
           <FileList title="Files added" files={plan.filesToAdd.map((file) => file.targetFilename)} />
           <FileList title="Files to be removed" files={plan.filesToRemove.map((file) => file.filename)} />
           <FileList title="Files turned off" files={plan.filesToDisable.map((file) => file.filename)} />
+          <FileList title="Files turned on" files={(plan.filesToEnable ?? []).map((file) => file.filename)} />
           {satisfiedRequired.length > 0 && (
             <FileList
               title="Required dependencies already installed"
@@ -1036,10 +1164,25 @@ function ReviewView({
       </details>
 
       {/* Actions */}
-      <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-3">
+      {/* Pinned to the bottom of the scrolling body, so at large text sizes the
+          buttons stay on screen and it is the review above them that scrolls. */}
+      <div
+        data-install-review-actions
+        className="sticky bottom-0 z-10 -mx-5 -mb-4 flex flex-wrap justify-end gap-2 border-t border-border bg-card px-5 pb-4 pt-3"
+      >
         {plan.blockingErrors.length > 0 && (
           <button onClick={onRetry} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
             Try Again
+          </button>
+        )}
+        {plan.blockingErrors.some((error) => error.code === 'ERR_MISSING_DEPENDENCY'
+          || error.code === 'ERR_UNCHECKED_REQUIREMENTS'
+          || error.code === 'ERR_REQUIRED_DEPENDENCY') && (
+          <button
+            onClick={onInstallAnyway}
+            className="rounded-lg border border-amber-500/50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+          >
+            Install Anyway
           </button>
         )}
         {onSkip && (
@@ -1071,7 +1214,7 @@ function ReviewView({
 
 /** One named file the plan touches, with the tag shown on its right. */
 interface ChangeItem {
-  kind: 'add' | 'remove' | 'disable';
+  kind: 'add' | 'remove' | 'disable' | 'enable';
   filename: string;
   tag: string;
   isNew: boolean;
@@ -1090,6 +1233,15 @@ function ReviewSection({ title, hint, children }: {
       <div className="mt-2 space-y-1.5">{children}</div>
     </section>
   );
+}
+
+/** "Turns on x" for one file, with who needs it when a dependency turns it on. */
+function enableChipLabel(files: { filename: string; neededBy?: string[] }[]): string {
+  if (files.length !== 1) return `Turns on ${files.length} ${pluralFiles(files.length)}`;
+  const [file] = files;
+  const needers = file.neededBy ?? [];
+  if (needers.length === 0) return `Turns on ${file.filename}`;
+  return `Turns on ${file.filename} because ${needers.join(', ')} ${needers.length === 1 ? 'needs' : 'need'} it`;
 }
 
 function ChangeChip({ icon: Icon, label, tone }: {
@@ -1147,11 +1299,24 @@ function pluralFiles(count: number): string {
 function DepRow({ dep, checked, onToggle, highlighted }: { dep: ResolvedDep; checked: boolean; onToggle: (id: string, inc: boolean) => void; highlighted: boolean }) {
   const isOptional = dep.requirement === 'optional';
   const displayName = dep.displayName ?? dep.modJarId;
-  const status = depStatus(dep);
+  // The label follows the box for an extra the plan could add: an unticked
+  // one is not included, and a ticked one is added once the review re-runs.
+  const status = isOptional && (dep.disposition.type === 'install-candidate' || dep.disposition.type === 'excluded')
+    ? checked
+      ? dep.disposition.type === 'install-candidate'
+        ? { label: 'Will be added', tone: 'text-muted-foreground' }
+        : { label: 'Will be added when you review changes', tone: 'text-muted-foreground' }
+      : { label: 'Not included', tone: 'text-muted-foreground' }
+    : depStatus(dep);
   const details = (
     <span className="min-w-0 flex-1">
       <span className="block truncate text-sm font-medium" title={displayName}>{displayName}</span>
       <span className={cn('block text-xs', status.tone)}>{status.label}</span>
+      {dep.source === 'jar' && (dep.requestedBy?.length ?? 0) > 0 && (
+        <span className="block text-xs text-muted-foreground">
+          Needed by {dep.requestedBy?.join(', ')}
+        </span>
+      )}
     </span>
   );
 
@@ -1161,10 +1326,16 @@ function DepRow({ dep, checked, onToggle, highlighted }: { dep: ResolvedDep; che
       highlighted && 'border-primary/40 bg-primary/10',
     )}>
       {isOptional ? (
-        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
+        // An extra that cannot be found for this instance cannot be ticked:
+        // ticking it only turned into a blocking error at the next plan.
+        <label className={cn(
+          'flex min-w-0 flex-1 items-start gap-2',
+          dep.disposition.type === 'unresolved' ? 'cursor-not-allowed opacity-70' : 'cursor-pointer',
+        )}>
           <input
             type="checkbox"
             checked={checked}
+            disabled={dep.disposition.type === 'unresolved'}
             onChange={(e) => onToggle(dep.modJarId, e.target.checked)}
             className="mt-0.5 rounded-sm"
             aria-label={`Include optional dependency ${displayName}`}
@@ -1202,9 +1373,25 @@ function depStatus(dep: ResolvedDep): { label: string; tone: string } {
       return { label: 'Not included', tone: 'text-muted-foreground' };
     case 'unresolved':
       return { label: `Could not be found — ${dep.disposition.reason}`, tone: 'text-red-700 dark:text-red-300' };
+    case 'unchecked':
+      return { label: `Couldn't check what this mod needs — ${dep.disposition.reason}`, tone: 'text-red-700 dark:text-red-300' };
     default:
       return { label: '', tone: 'text-muted-foreground' };
   }
+}
+
+/** Says which required dependencies were already there, by name when there are few. */
+function satisfiedRequiredSentence(deps: ResolvedDep[]): string {
+  const names = deps.map((dep) => dep.displayName?.trim() || dep.modJarId);
+  if (names.length === 1) return `${names[0]} is already installed.`;
+  if (names.length <= 3) {
+    const last = names[names.length - 1];
+    const list = names.length === 2
+      ? `${names[0]} and ${last}`
+      : `${names.slice(0, -1).join(', ')} and ${last}`;
+    return `${list} are already installed.`;
+  }
+  return `${names.length} required dependencies are already installed.`;
 }
 
 function dependencyIsNew(dep: ResolvedDep, newlyAddedFiles: Set<string>): boolean {
@@ -1329,12 +1516,15 @@ function installPhaseLabel(phase: ProgressEvent['phase']): string {
   }
 }
 
-function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
+function ResultView({ outcome, instanceId, onOpenInstance, onClose, focusPrimary }: {
   outcome: InstallOutcome;
   instanceId: string;
   onOpenInstance: () => void;
   onClose: () => void;
+  /** Focus was in the panel the install ran in: keep it there, on the primary action. */
+  focusPrimary: boolean;
 }) {
+  const primaryRef = useRef<HTMLButtonElement>(null);
   const [rollbackState, setRollbackState] = useState<'idle' | 'restoring' | 'restored'>('idle');
   const [rollbackError, setRollbackError] = useState<string | null>(null);
   const [rollbackNote, setRollbackNote] = useState<string | null>(null);
@@ -1342,6 +1532,22 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
     outcome.type === 'success' || outcome.type === 'health-rollback' || outcome.type === 'failed'
       ? outcome.snapshotId
       : undefined;
+  // The success screen names the restore point by its label and time. The id
+  // stays available below for support.
+  const [snapshotInfo, setSnapshotInfo] = useState<{ label: string | null; createdAt: string } | null>(null);
+  useEffect(() => {
+    if (outcome.type !== 'success') return;
+    let cancelled = false;
+    listSnapshots(instanceId)
+      .then((snapshots) => {
+        const found = snapshots.find((snapshot) => snapshot.id === outcome.snapshotId);
+        if (!cancelled && found) setSnapshotInfo({ label: found.label, createdAt: found.created_at });
+      })
+      .catch(() => {
+        // The id is still shown below, so the restore point stays findable.
+      });
+    return () => { cancelled = true; };
+  }, [instanceId, outcome]);
   const canRestore =
     rollbackState !== 'restored'
     && (
@@ -1349,6 +1555,12 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
       || outcome.type === 'health-rollback'
       || (outcome.type === 'failed' && Boolean(outcome.snapshotId) && !outcome.rollbackPerformed)
     );
+  // Open Instance is the way forward when the install landed; otherwise Close is.
+  const showOpenInstance = outcome.type === 'success' || outcome.type === 'health-rollback' || rollbackState === 'restored';
+
+  useEffect(() => {
+    if (focusPrimary) primaryRef.current?.focus();
+  }, [focusPrimary]);
 
   const rollback = async () => {
     if (!snapshotId) return;
@@ -1372,8 +1584,14 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
             All verified changes were applied successfully.
           </div>
           <p className="text-xs text-muted-foreground">
-            Recovery snapshot: {outcome.snapshotId}
+            Recovery snapshot: {snapshotInfo
+              ? `${snapshotInfo.label || 'Restore point'}, ${formatDateTime(snapshotInfo.createdAt)}`
+              : 'saved before the install'}
           </p>
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none">Support reference</summary>
+            <p className="mt-1 break-all font-mono">{outcome.snapshotId}</p>
+          </details>
         </>
       )}
       {outcome.type === 'health-rollback' && (
@@ -1439,7 +1657,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
         </div>
       )}
       <div className="flex justify-end gap-2">
-        <button onClick={onClose} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
+        <button ref={showOpenInstance ? undefined : primaryRef} onClick={onClose} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
           Close
         </button>
         {canRestore && (
@@ -1451,8 +1669,8 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
             {rollbackState === 'restoring' ? 'Restoring…' : 'Roll Back'}
           </button>
         )}
-        {(outcome.type === 'success' || outcome.type === 'health-rollback' || rollbackState === 'restored') && (
-          <button onClick={onOpenInstance} data-tour="install-open-instance" className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+        {showOpenInstance && (
+          <button ref={primaryRef} onClick={onOpenInstance} data-tour="install-open-instance" className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
             Open Instance
           </button>
         )}

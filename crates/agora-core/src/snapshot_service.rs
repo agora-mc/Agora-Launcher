@@ -68,7 +68,7 @@ impl SnapshotService {
         // The undo snapshot covers exactly what the restore will replace.
         // Matching the scope means undoing a configuration-only restore does
         // not copy gigabytes of world data it was never going to touch.
-        let label = format!("pre-restore-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+        let label = pre_restore_label(chrono::Utc::now());
         let scope_refs: Vec<&str> = scope.iter().map(String::as_str).collect();
         snapshot::create_snapshot_scoped(&instance_dir, Some(&label), &scope_refs).map_err(
             |error| LauncherError::Generic {
@@ -118,6 +118,52 @@ impl SnapshotService {
         let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
         snapshot::restore_scope(&instance_dir, snapshot_id).map_err(snapshot_error)
     }
+
+    /// Return an unlocked instance to the snapshot taken when it was last locked.
+    ///
+    /// Goes through [`restore`](Self::restore), so the undo snapshot and the
+    /// instance lock rules are the same as any other restore. An instance with
+    /// no lock snapshot (locked before they existed) gets a plain refusal, not
+    /// a guess at an older state.
+    pub fn revert_to_lock(&self, instance_id: &str) -> LauncherResult<RestoreOutcome> {
+        let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
+        let conn = crate::db::local_state_connection(&self.ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        let row = crate::db::get_instance(&conn, instance_id)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            })?
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_INSTANCE_NOT_FOUND".into(),
+                message: format!("Instance '{instance_id}' not found"),
+            })?;
+        if row.is_locked {
+            return Err(LauncherError::Generic {
+                code: "ERR_INSTANCE_LOCKED".into(),
+                message: "Unlock the instance before reverting it.".into(),
+            });
+        }
+        let mut dated = Vec::new();
+        for lock in snapshot::lock_snapshots(&instance_dir).map_err(snapshot_error)? {
+            let time = chrono::DateTime::parse_from_rfc3339(&lock.created_at).map_err(|error| {
+                snapshot_error(format!(
+                    "lock snapshot {} has an unreadable time, so Agora will not guess which to revert to: {error}",
+                    lock.id
+                ))
+            })?;
+            dated.push((time, lock));
+        }
+        let newest = dated
+            .into_iter()
+            .max_by_key(|(time, _)| *time)
+            .map(|(_, lock)| lock)
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_NO_LOCK_SNAPSHOT".into(),
+                message: "This instance has no lock snapshot to revert to. Lock it once to take one; Revert then returns to that point.".into(),
+            })?;
+        self.restore(instance_id, &newest.id)
+    }
 }
 
 fn snapshot_error(message: String) -> LauncherError {
@@ -127,10 +173,34 @@ fn snapshot_error(message: String) -> LauncherError {
     }
 }
 
+/// Label for the undo snapshot a restore takes. The stamp is local time because
+/// the Snapshots list shows each snapshot's time in local time, and the label
+/// is the name a person reads next to it.
+fn pre_restore_label(at: chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "pre-restore-{}",
+        at.with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn pre_restore_label_stamps_the_local_clock_the_list_shows() {
+        use chrono::TimeZone;
+        let at = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 24, 5, 11, 23)
+            .unwrap();
+        let local = at.with_timezone(&chrono::Local);
+
+        assert_eq!(
+            pre_restore_label(at),
+            format!("pre-restore-{}", local.format("%Y%m%d-%H%M%S"))
+        );
+    }
 
     fn service() -> (SnapshotService, Ctx, String) {
         let root = std::env::temp_dir().join(format!(

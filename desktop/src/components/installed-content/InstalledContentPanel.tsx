@@ -30,11 +30,21 @@ const columnLabels: Record<ContentColumn, string> = {
   agora_score: 'Agora score', modrinth_downloads: 'Modrinth downloads', update_status: 'Update status', loader_mod_id: 'Loader mod ID',
 };
 
+
 /**
- * The actions column stays pinned to the right edge while the table scrolls
- * sideways, so a row's buttons never need a horizontal scroll to reach.
+ * Gives each row of the Actions table the height of the matching row in the
+ * scrolling table. Both tables list their rows in the same order: header, then
+ * each group's header row and its rows.
  */
-const STICKY_ACTIONS = 'sticky right-0 bg-[hsl(var(--card))] shadow-[-8px_0_8px_-8px_hsl(var(--foreground)/0.25)]';
+function matchRowHeights(scrollTable: HTMLTableElement, actionsTable: HTMLTableElement) {
+  const scrollRows = scrollTable.querySelectorAll('tr');
+  const actionsRows = actionsTable.querySelectorAll('tr');
+  if (scrollRows.length !== actionsRows.length) return;
+  actionsRows.forEach((row, index) => {
+    const height = scrollRows[index].getBoundingClientRect().height;
+    row.style.height = height > 0 ? `${height}px` : '';
+  });
+}
 
 const allColumns: ContentColumn[] = ['name', 'author', 'source', 'size', 'installed', 'enabled', 'update_status', 'actions', 'version', 'categories', 'curation', 'agora_score', 'modrinth_downloads', 'loader_mod_id'];
 const titleForType: Record<InstalledContentPanelProps['contentType'], string> = {
@@ -166,6 +176,31 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     return next;
   });
   const filterCount = filters.categories.length + (filters.curation === 'all' ? 0 : 1) + (filters.source === 'all' ? 0 : 1) + (filters.enabled === 'all' ? 0 : 1);
+  // Two tables side by side: the scrolling one holds every column except
+  // Actions, and the Actions table sits beside it outside the scroll box. Nothing
+  // can slide under Actions, whatever the width or column order. Each row of the
+  // Actions table takes the height of the matching row in the scrolling table.
+  const scrollColumns = columns.filter((column) => column !== 'actions');
+  const showActions = columns.includes('actions');
+  const scrollTableRef = useRef<HTMLTableElement>(null);
+  const actionsTableRef = useRef<HTMLTableElement>(null);
+  const rowSizeObserver = useRef<ResizeObserver | null>(null);
+  useLayoutEffect(() => {
+    const scrollTable = scrollTableRef.current;
+    const actionsTable = actionsTableRef.current;
+    if (scrollTable && actionsTable) matchRowHeights(scrollTable, actionsTable);
+    // Only the scrolling table is observed: resizing the Actions rows must not
+    // feed back into this observer.
+    if (typeof ResizeObserver === 'undefined' || !scrollTable || !actionsTable) return;
+    if (!rowSizeObserver.current) rowSizeObserver.current = new ResizeObserver(() => {
+      const current = scrollTableRef.current;
+      const actions = actionsTableRef.current;
+      if (current && actions) matchRowHeights(current, actions);
+    });
+    rowSizeObserver.current.disconnect();
+    rowSizeObserver.current.observe(scrollTable);
+  });
+  useEffect(() => () => rowSizeObserver.current?.disconnect(), []);
   const contentLabel = titleForType[props.contentType].replace('Installed ', '');
   const selectedRows = rows.filter((row) => selectedKeys.has(row.key));
   const visibleSelectedCount = visibleRows.filter((row) => selectedKeys.has(row.key)).length;
@@ -304,11 +339,23 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     }
   };
 
-  const updateForRow = (row: InstalledContentRow) =>
-    (row.update_pinned ? undefined : updatesByFilename[row.filename]);
+  // A row with `needs_minecraft` is a note ("newer builds need Minecraft X"),
+  // not an update: it is never offered, counted or applied.
+  const updateForRow = (row: InstalledContentRow) => {
+    const update = row.update_pinned ? undefined : updatesByFilename[row.filename];
+    return update?.needs_minecraft || update?.uncertain ? undefined : update;
+  };
+  const uncertainForRow = (row: InstalledContentRow) => {
+    const update = row.update_pinned ? undefined : updatesByFilename[row.filename];
+    return update?.uncertain ? update : undefined;
+  };
+  const minecraftNoteForRow = (row: InstalledContentRow) =>
+    (row.update_pinned ? undefined : updatesByFilename[row.filename]?.needs_minecraft ?? undefined);
   const updateStatusForRow = (row: InstalledContentRow) => {
     if (row.update_pinned) return 'pinned';
     if (updateForRow(row)) return 'available';
+    if (minecraftNoteForRow(row)) return 'needs_minecraft';
+    if (uncertainForRow(row)) return 'uncertain';
     if (!updatesChecked) return 'unchecked';
     return row.registry_id || row.modrinth_id ? 'current' : 'unavailable';
   };
@@ -346,7 +393,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     const sortColumn = column === 'name' ? 'name' : column === 'size' ? 'size' : column === 'installed' ? 'installed' : column === 'author' ? 'author' : column === 'source' ? 'source' : column === 'enabled' ? 'enabled' : column === 'agora_score' ? 'agora_score' : column === 'modrinth_downloads' ? 'modrinth_downloads' : null;
     const active = sortColumn && sort.column === sortColumn && sort.direction;
     return (
-      <th key={column} scope="col" aria-sort={sortColumn ? (active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none') : 'none'} className={`sticky top-0 z-10 px-3 py-2 text-left text-xs font-semibold text-muted-foreground whitespace-nowrap ${column === 'actions' ? STICKY_ACTIONS : 'bg-card'}`}>
+      <th key={column} scope="col" aria-sort={sortColumn ? (active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none') : 'none'} className={`sticky top-0 z-10 px-3 py-2 text-left text-xs font-semibold text-muted-foreground whitespace-nowrap bg-card`}>
         {sortColumn ? (
           <button
             type="button"
@@ -404,7 +451,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
       // Rendered ONLY when an update actually exists, so the column stays quiet.
       const rowUpdate = updateForRow(row);
       const rowUpdatable = updateStatusForRow(row) === 'available' && rowUpdate;
-      return <td key={column} className={`px-3 py-2 text-right ${STICKY_ACTIONS}`}><div className="flex items-center justify-end gap-1">
+      return <td key={column} className="px-3 py-2 text-right"><div className="flex items-center justify-end gap-1">
         {rowUpdatable ? (
           <button
             type="button"
@@ -452,6 +499,13 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
         const status = updateStatusForRow(row);
         return <td key={column} className="px-3 py-2 text-sm whitespace-nowrap">
           {status === 'available' && update ? <button type="button" disabled={props.locked} onClick={() => props.onApplyUpdate?.(row, update)} className="rounded-full bg-primary/10 px-2 py-1 text-primary hover:bg-primary/20 disabled:opacity-50" title={`Update to ${update.latest_version}`}>Update available</button> : null}
+          {status === 'needs_minecraft' ? <span className="text-muted-foreground" title="A newer version exists, but it is built for a different Minecraft version than this instance.">Newer versions need Minecraft {minecraftNoteForRow(row)}</span> : null}
+          {status === 'uncertain' ? (() => {
+            const maybe = uncertainForRow(row)!;
+            const when = maybe.latest_released ? ` (${new Date(maybe.latest_released).toLocaleDateString()})` : '';
+            return <span className="text-muted-foreground">Another version is available (can&apos;t tell if it&apos;s newer){' '}
+              <button type="button" disabled={props.locked} onClick={() => props.onApplyUpdate?.(row, maybe)} className="underline hover:text-foreground disabled:opacity-50" title="Not counted as an update and not part of Update All. Choose it yourself if you want it.">Install {maybe.latest_version}{when}</button></span>;
+          })() : null}
           {status === 'current' ? <span className="text-muted-foreground">Up to date</span> : null}
           {status === 'unavailable' ? <span className="text-muted-foreground">Unavailable</span> : null}
           {status === 'unchecked' ? <span className="text-muted-foreground">Not checked</span> : null}
@@ -465,7 +519,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
   return <section className="rounded-xl border border-border bg-card p-4" onDragOver={props.onDrop ? (event) => { event.preventDefault(); } : undefined} onDrop={props.onDrop}>
     <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
       <div><h3 className="font-semibold text-sm">{titleForType[props.contentType]} ({props.rows.length})</h3><p className="mt-1 text-xs text-muted-foreground">Manage installed {contentLabel.toLowerCase()} without changing their safe removal workflow.</p>{props.contentType === 'datapack' ? <p className="mt-1 max-w-2xl text-xs text-muted-foreground">{DATAPACK_SYNC_EXPLAINER}{props.onSyncWorlds ? <> <button type="button" onClick={props.onSyncWorlds} disabled={props.locked} className="font-medium text-primary hover:underline disabled:opacity-50">Sync now</button></> : null}</p> : null}</div>
-      <div className="flex flex-wrap items-center gap-2">{props.onUpdateAll && availableUpdates.length > 0 ? <button type="button" onClick={handleUpdateAll} disabled={props.locked} className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? props.lockedReason ?? `Unlock the instance to update ${contentLabel.toLowerCase()}.` : `Review one plan updating ${availableUpdates.length} ${contentLabel.toLowerCase()}`} aria-label={`Update all ${availableUpdates.length} ${contentLabel.toLowerCase()}`}><ArrowUpCircle className="h-4 w-4" aria-hidden="true" />Update All ({availableUpdates.length})</button> : null}<button type="button" onClick={props.onAdd} disabled={props.locked} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? props.lockedReason ?? `Unlock the instance to add ${contentLabel.toLowerCase()}.` : undefined}>{props.locked ? (props.lockedReason ? 'Unavailable' : 'Locked') : props.addLabel}</button>{props.extraActions}</div>
+      <div className="flex flex-wrap items-center gap-2">{props.onUpdateAll && availableUpdates.length > 0 ? <div data-testid="update-all-group" className="mr-3 flex items-center border-r border-border pr-5"><button type="button" onClick={handleUpdateAll} disabled={props.locked} className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? props.lockedReason ?? `Unlock the instance to update ${contentLabel.toLowerCase()}.` : `Review one plan updating ${availableUpdates.length} ${contentLabel.toLowerCase()}`} aria-label={`Update all ${availableUpdates.length} ${contentLabel.toLowerCase()}`}><ArrowUpCircle className="h-4 w-4" aria-hidden="true" />Update All ({availableUpdates.length})</button></div> : null}<button type="button" onClick={props.onAdd} disabled={props.locked} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? props.lockedReason ?? `Unlock the instance to add ${contentLabel.toLowerCase()}.` : undefined}>{props.locked ? (props.lockedReason ? 'Unavailable' : 'Locked') : props.addLabel}</button>{props.extraActions}</div>
     </div>
     {props.locked && props.lockedReason ? <p className="mb-3 rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs text-foreground" role="status">{props.lockedReason}</p> : null}
     {selectedRows.length > 0 ? <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2 text-xs"><span className="font-medium">{selectedRows.length} selected</span><button type="button" onClick={() => void handleBulkToggle(true)} disabled={props.locked || bulkBusy} className="rounded-sm border border-input bg-background px-2 py-1 hover:bg-accent disabled:opacity-50">Enable selected</button><button type="button" onClick={() => void handleBulkToggle(false)} disabled={props.locked || bulkBusy} className="rounded-sm border border-input bg-background px-2 py-1 hover:bg-accent disabled:opacity-50">Disable selected</button><button type="button" onClick={handleBulkRemove} disabled={props.locked || bulkBusy} className="rounded-sm border border-destructive/40 bg-background px-2 py-1 text-destructive hover:bg-destructive/10 disabled:opacity-50">Remove selected</button><button type="button" onClick={() => setSelectedKeys(new Set())} className="ml-auto text-primary hover:underline">Clear selection</button></div> : null}
@@ -482,12 +536,12 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     </div>
     {(filterCount > 0 || query) ? <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">{query ? <span className="rounded-full bg-muted px-2 py-1">Search: {normalizeSearchText(query)} <button type="button" onClick={() => setQuery('')} aria-label="Clear search">×</button></span> : null}{filters.categories.map((category) => <button type="button" key={category} onClick={() => toggleCategory(category)} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Category: {category} ×</button>)}{filters.source !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, source: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Source: {filters.source} ×</button> : null}{filters.curation !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, curation: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Curation: {curationLabel(filters.curation)} ×</button> : null}{filters.enabled !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, enabled: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">State: {filters.enabled} ×</button> : null}<button type="button" onClick={clearFilters} className="font-medium text-primary hover:underline">Clear filters</button></div> : null}
     <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground"><span>Showing {visibleRows.length} of {props.rows.length}</span>{filterCount > 0 && !query ? <button type="button" onClick={clearFilters} className="text-primary hover:underline">Clear filters</button> : null}</div>
-    {props.rows.length === 0 ? <p className="mt-4 text-sm text-muted-foreground">No {contentLabel.toLowerCase()} installed.</p> : visibleRows.length === 0 ? <div className="mt-4 rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No installed content matches your search and filters.<br /><button type="button" onClick={() => { setQuery(''); clearFilters(); }} className="mt-2 font-medium text-primary hover:underline">Clear filters</button></div> : <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[800px] border-collapse text-left"><thead><tr className="border-b border-border"><th scope="col" className="sticky top-0 z-10 w-10 bg-card px-3 py-2"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleSelection} disabled={props.locked || visibleRows.length === 0} aria-label={allVisibleSelected ? 'Deselect visible rows' : 'Select visible rows'} /></th>{columns.map(renderHeader)}</tr></thead>{groups.map((group) => {
+    {props.rows.length === 0 ? <p className="mt-4 text-sm text-muted-foreground">No {contentLabel.toLowerCase()} installed.</p> : visibleRows.length === 0 ? <div className="mt-4 rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No installed content matches your search and filters.<br /><button type="button" onClick={() => { setQuery(''); clearFilters(); }} className="mt-2 font-medium text-primary hover:underline">Clear filters</button></div> : <div className="mt-3 flex items-start"><div className="min-w-0 flex-1 overflow-x-auto"><table ref={scrollTableRef} className="w-full min-w-[800px] border-collapse text-left"><thead><tr className="border-b border-border"><th scope="col" className="sticky top-0 z-10 w-10 bg-card px-3 py-2"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleSelection} disabled={props.locked || visibleRows.length === 0} aria-label={allVisibleSelected ? 'Deselect visible rows' : 'Select visible rows'} /></th>{scrollColumns.map(renderHeader)}</tr></thead>{groups.map((group) => {
       const isCollapsed = collapsedGroups.has(group.key);
       const anyDisabled = group.rows.some((row) => !row.enabled);
       return <tbody key={group.key}>
         {groupBy !== 'none' ? <tr className="border-b border-border bg-muted/40">
-          <td colSpan={columns.length + 1} className="px-3 py-1.5">
+          <td colSpan={scrollColumns.length + 1} className="px-3 py-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <button type="button" onClick={() => toggleGroupCollapsed(group.key)} aria-expanded={!isCollapsed} className="inline-flex items-center gap-1 font-semibold hover:text-primary">
                 {isCollapsed ? <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />}
@@ -499,8 +553,14 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
             </div>
           </td>
         </tr> : null}
-        {isCollapsed ? null : group.rows.map((row) => <tr key={row.key} className={`border-b border-border last:border-0 ${!row.enabled ? 'opacity-65' : ''}`}><td className="w-10 px-3 py-2"><input type="checkbox" checked={selectedKeys.has(row.key)} onChange={() => toggleSelected(row.key)} disabled={props.locked} aria-label={`Select ${row.display_name}`} /></td>{columns.map((column) => renderCell(row, column))}</tr>)}
+        {isCollapsed ? null : group.rows.map((row) => <tr key={row.key} className={`border-b border-border last:border-0 ${!row.enabled ? 'opacity-65' : ''}`}><td className="w-10 px-3 py-2"><input type="checkbox" checked={selectedKeys.has(row.key)} onChange={() => toggleSelected(row.key)} disabled={props.locked} aria-label={`Select ${row.display_name}`} /></td>{scrollColumns.map((column) => renderCell(row, column))}</tr>)}
       </tbody>;
-    })}</table></div>}
+    })}</table></div>{showActions ? <div className="shrink-0 pl-2"><table ref={actionsTableRef} className="border-collapse text-left"><thead><tr className="border-b border-border"><th scope="col" className="bg-card px-3 py-2 text-left text-xs font-semibold text-muted-foreground whitespace-nowrap">{columnLabels.actions}</th></tr></thead>{groups.map((group) => {
+      const isCollapsed = collapsedGroups.has(group.key);
+      return <tbody key={group.key}>
+        {groupBy !== 'none' ? <tr className="border-b border-border bg-muted/40"><td className="px-3 py-1.5" /></tr> : null}
+        {isCollapsed ? null : group.rows.map((row) => <tr key={row.key} className={`border-b border-border last:border-0 ${!row.enabled ? 'opacity-65' : ''}`}>{renderCell(row, 'actions')}</tr>)}
+      </tbody>;
+    })}</table></div> : null}</div>}
   </section>;
 }

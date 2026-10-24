@@ -8,6 +8,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { InstanceEditor } from './InstanceEditor';
 import { PackInstallProvider } from '../components/PackInstallProgress';
+import type { HealthReport } from '../lib/tauri';
 
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -29,6 +30,7 @@ function detail(id: string) {
     },
     snapshot_readiness: 'ready',
     snapshot_error: null,
+    pack_gaps: [],
   };
 }
 
@@ -65,6 +67,8 @@ beforeEach(() => {
         return edges;
       case 'list_loadout_profiles':
         return [{ name: 'Fast', enabled_mods: [], created_at: '2026-01-01T00:00:00Z' }];
+      case 'list_loadout_unlisted_mods':
+        return [];
       case 'list_instance_templates':
       case 'list_snapshots':
       case 'list_capturable_template_files':
@@ -93,11 +97,87 @@ describe('optional dependency count', () => {
     expect(button.textContent).not.toMatch(/\(\d+\)/);
 
     await act(async () => { release(); });
-    await waitFor(() => expect(button.textContent).toContain('(3)'));
+    await waitFor(() => expect(button.textContent).toContain('all installed'));
 
     fireEvent.click(button);
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getAllByText('recommends')).toHaveLength(3);
+  });
+});
+
+describe('readiness line', () => {
+  const cleanHealth = { score: {}, warnings: [], blockers: [], recommendations: [], scan_token: 't' } as unknown as HealthReport;
+
+  function renderWith(health: HealthReport | null) {
+    return render(
+      <PackInstallProvider>
+        <InstanceEditor instanceId="alpha" onBack={() => undefined} healthReport={health} />
+      </PackInstallProvider>,
+    );
+  }
+
+  it('says ready to play, and that Java downloads on first launch, when the setting is automatic', async () => {
+    renderWith(cleanHealth);
+    const line = await screen.findByTestId('instance-readiness');
+    await waitFor(() => expect(line.textContent).toContain('downloads on first launch'));
+    expect(within(line).getByText('Ready to play')).toBeTruthy();
+    expect(line.textContent).toContain('Minecraft 1.21 with Fabric 0.16.9');
+  });
+
+  it('says not ready and counts mod problems from the health report', async () => {
+    renderWith({ ...cleanHealth, blockers: [{} as HealthReport['blockers'][number]] });
+    const line = await screen.findByTestId('instance-readiness');
+    expect(within(line).getByText('Not ready: 1 mod problem to fix')).toBeTruthy();
+    expect(line.textContent).not.toContain('Ready to play');
+  });
+
+  it('is not ready while a pack mod is missing, even when every installed mod is healthy', async () => {
+    const previous = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (command: string, args: { instanceId?: string } = {}) =>
+      command === 'get_instance_detail'
+        ? { ...detail(args.instanceId ?? 'alpha'), pack_gaps: [{ filename: 'xaero.jar', display_name: 'xaero.jar', status: 'needs_action', reason: 'Needs Modrinth' }] }
+        : previous?.(command, args));
+    renderWith(cleanHealth);
+    const line = await screen.findByTestId('instance-readiness');
+    await waitFor(() => expect(within(line).getByText('Not ready: 1 pack mod is not installed')).toBeTruthy());
+    expect(line.textContent).toContain('Mods look healthy');
+    expect(line.textContent).not.toContain('Ready to play');
+  });
+
+  it('makes no download promise when automatic Java is switched off in Settings', async () => {
+    const previous = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (command: string, args: { key?: string } = {}) =>
+      command === 'get_setting' && args.key === 'java_runtime_mode' ? 'manual' : previous?.(command, args));
+    renderWith(cleanHealth);
+    const line = await screen.findByTestId('instance-readiness');
+    await waitFor(() => expect(line.textContent).toContain('automatic downloads are off'));
+    expect(line.textContent).not.toContain('downloads on first launch');
+  });
+});
+
+describe('instance header controls', () => {
+  it('says what Revert returns to, and that it can be undone', async () => {
+    render(editor('alpha'));
+    const revert = await screen.findByRole('button', { name: 'Revert' });
+    const title = revert.getAttribute('title') ?? '';
+    expect(title).toContain('lock snapshot');
+    expect(title).toContain('undo');
+  });
+
+  it('says plainly when there is no lock snapshot, and reverts nothing', async () => {
+    const previous = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (command: string, args: { instanceId?: string } = {}) =>
+      command === 'list_snapshots' ? [] : previous?.(command, args));
+    render(editor('alpha'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Revert' }));
+    await screen.findByText(/has no lock snapshot to revert to/);
+    expect(invokeMock.mock.calls.some(([command]) => command === 'revert_instance')).toBe(false);
+  });
+
+  it('explains Lock on the button itself, where a hover reaches it', async () => {
+    render(editor('alpha'));
+    const lock = await screen.findByRole('button', { name: 'Lock' });
+    expect(lock.getAttribute('title')).toContain('stops mod changes');
   });
 });
 
@@ -111,7 +191,7 @@ describe('installed content details', () => {
     await screen.findByText('lookup-me');
     expect(screen.getByRole('status', { name: 'Loading author' })).toBeTruthy();
     expect(screen.getByText('Loading details…')).toBeTruthy();
-    expect(within(screen.getByRole('table')).queryByText('Unknown')).toBeNull();
+    expect(within(screen.getAllByRole('table')[0]).queryByText('Unknown')).toBeNull();
 
     await act(async () => { finish([{ key: row.key, display_name: 'Lookup Mod', icon_url: null, author: 'Some Author' }]); });
     await screen.findByText('Some Author');
@@ -122,7 +202,7 @@ describe('installed content details', () => {
     content = [contentRow('nothing-found.jar')];
     render(editor('alpha'));
     await screen.findByText('nothing-found');
-    await within(screen.getByRole('table')).findByText('Unknown');
+    await within(screen.getAllByRole('table')[0]).findByText('Unknown');
     expect(screen.queryByText('Loading details…')).toBeNull();
   });
 
@@ -131,7 +211,7 @@ describe('installed content details', () => {
     content = [contentRow('hand-made.jar', { modrinth_id: null, metadata_status: 'unavailable' })];
     render(editor('alpha'));
     await screen.findByText('hand-made');
-    expect(within(screen.getByRole('table')).getByText('Unknown')).toBeTruthy();
+    expect(within(screen.getAllByRole('table')[0]).getByText('Unknown')).toBeTruthy();
   });
 });
 
@@ -140,9 +220,9 @@ describe('instance banners', () => {
     const view = render(editor('alpha'));
     fireEvent.click(await screen.findByRole('button', { name: 'Loadout Profiles' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
-    await screen.findByText('Profile "Fast" applied.');
+    await screen.findByText(/Profile "Fast" applied\./);
 
     view.rerender(editor('beta'));
-    await waitFor(() => expect(screen.queryByText('Profile "Fast" applied.')).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Profile "Fast" applied\./)).toBeNull());
   });
 });

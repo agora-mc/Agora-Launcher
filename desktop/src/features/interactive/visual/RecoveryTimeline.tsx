@@ -26,8 +26,8 @@ export interface RecoveryTimelineProps {
 
 const ROLE_LABEL: Record<VisualSnapshot['role'], string> = {
   manual: 'Manual snapshot',
-  'known-good': 'Known good',
-  'current-known-good': 'Current known good',
+  'known-good': 'Launched fine before',
+  'current-known-good': 'Last setup that launched fine',
   'undo-restore': 'Undo restore point',
   automatic: 'Automatic return point',
 };

@@ -54,6 +54,18 @@ pub fn modrinth_project_type(content_type: &str) -> &str {
     }
 }
 
+/// Project types that a loader filter must not hide. Only an all-types search
+/// keeps them; a single content type is never widened.
+fn loader_exempt_types(content_type: Option<&str>) -> Vec<String> {
+    match content_type {
+        None => crate::modrinth::LOADER_EXEMPT_PROJECT_TYPES
+            .iter()
+            .map(|t| t.to_string())
+            .collect(),
+        Some(_) => Vec::new(),
+    }
+}
+
 fn modrinth_sort(sort: ProviderSort) -> ModrinthSort {
     match sort {
         ProviderSort::Relevance => ModrinthSort::Relevance,
@@ -326,6 +338,7 @@ impl ContentProvider for ModrinthProvider {
                 .as_deref()
                 .map(modrinth_project_type)
                 .map(str::to_string),
+            loader_exempt_types: loader_exempt_types(request.content_type.as_deref()),
         };
         let page = crate::modrinth::search_modrinth_http(&params).await?;
         let has_more = page.total_hits > u64::from(request.offset) + page.results.len() as u64;
@@ -465,6 +478,17 @@ impl ContentProvider for ModrinthProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loader_exemption_applies_only_to_all_types() {
+        assert_eq!(
+            loader_exempt_types(None),
+            vec!["resourcepack", "shader", "datapack"]
+        );
+        assert!(loader_exempt_types(Some("mod")).is_empty());
+        assert!(loader_exempt_types(Some("pack")).is_empty());
+        assert!(loader_exempt_types(Some("")).is_empty());
+    }
 
     fn version(id: &str, published: &str, kind: &str) -> ModrinthVersion {
         serde_json::from_value(serde_json::json!({

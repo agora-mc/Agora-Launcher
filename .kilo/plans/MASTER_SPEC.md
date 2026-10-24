@@ -183,6 +183,7 @@ README.md                   # Code of Engagement (full text, see §5)
 | `base_categories` | string[] | Official curated categories |
 | `community_categories` | string[] | Freeform community tags (dynamic; auto-discovered by compiler) |
 | `curator_note` | string | Human-written markdown write-up for display and AI semantic context |
+| `curator_warning` | string | Optional plain-text install caution, at most 300 characters. Shown on the mod page and in the install review; never blocks |
 | `icon_url` | string | CDN URL for the mod's icon image. For `github_release` strategy, curators provide this manually (e.g., pointing to the repo's `raw.githubusercontent.com` assets or the `launcher-media` repo). For `modrinth_id`, auto-populated from Modrinth API. For `direct_hash`, manually provided. |
 | `gallery_urls` | string[] | Array of CDN URLs for gallery/screenshot images. Auto-populated from Modrinth API or manually provided |
 | `governance.immune` | boolean | If `true`, bypasses all automated triage and vote penalties |
@@ -651,7 +652,7 @@ The Rust backend communicates errors to the React UI using standardized error co
 
 | Error Code | Severity | User-Facing Message | Recommended Action |
 |---|---|---|---|
-| `ERR_NETWORK_OFFLINE` | Info | *"You're offline. Using cached data."* | Continue with cached DB; show Degraded Mode banner |
+| `ERR_NETWORK_OFFLINE` | Info | *"No internet connection: Agora couldn't reach the server."* (or *"Couldn't download X: no internet connection."*) | Continue with cached DB when one exists and say so; otherwise name what failed. Connection status comes from recent request outcomes, not `navigator.onLine` |
 | `ERR_REGISTRY_DOWNLOAD_FAILED` | Warning | *"Could not download the latest registry. Using cached version."* | Retry later; check network |
 | `ERR_REGISTRY_SIGNATURE_INVALID` | Critical | *"Registry signature check failed. The database may be compromised."* | Block DB load; use last known-good cached DB; notify curators |
 | `ERR_SCHEMA_TOO_NEW` | Critical | *"This registry requires a newer launcher version. Please update the app."* | Open GitHub Releases page for app update |
@@ -1237,9 +1238,9 @@ Users can export any existing instance as a shareable pack:
 ### 6.5d Instance Deletion
 
 1. Right-click on instance card → "Delete Instance" or settings menu → "Delete Instance".
-2. Confirmation modal: *"This will permanently delete the instance directory including all mods, configs, and saves. This cannot be undone."*
-3. On confirmation, the instance directory is moved to the OS trash/recycle bin (using platform-specific APIs like Windows `SHFileOperation` or macOS `NSWorkspace`) rather than immediately deleted.
-4. User can recover from trash if accidental.
+2. Confirmation modal states what happens: *"Removes Agora's copy of <name>. Your <launcher> files aren't touched. You can restore it from Recently deleted for 30 days."* (the launcher sentence only for imports).
+3. On confirmation the instance folder is renamed (same volume, atomic) into `<data>/recently-deleted/<entry>/instance`, with an `entry.json` holding its database rows (instance, import provenance, pack inventory, launch history, update cache). Any failure leaves the instance untouched. A pack-locked instance, or one whose lock another operation holds, is refused as before.
+4. My Instances lists entries under Recently deleted with **Restore** (original id, or a free `<id>-restored` name when taken, said plainly) and **Delete now** (OS trash). A startup cleanup moves entries older than 30 days, or beyond a 20 GiB total (oldest first), to the OS trash; a failed move leaves the entry in place. Links inside an instance are never followed, and are detached before an entry goes to the OS trash.
 
 ---
 

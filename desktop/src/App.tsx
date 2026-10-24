@@ -1,9 +1,11 @@
 ﻿import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { isTextEntryTarget } from '@/lib/keyboardTargets';
 import { listen } from '@tauri-apps/api/event';
 import { Sidebar } from './components/Sidebar';
 import { CommandPalette } from './components/command-palette';
 import { Home } from './pages/Home';
 import { Browse } from './pages/Browse';
+import { requestBrowseSearch } from './lib/browseSearchRequest';
 import { Instances } from './pages/Instances';
 import { Governance } from './pages/Governance';
 import { Guide } from './pages/Guide';
@@ -39,7 +41,7 @@ import { useProcessController } from './lib/useProcessController';
 import { useInstanceHealthMonitor } from './lib/useInstanceHealthMonitor';
 import { useRegistryState } from './lib/useRegistryState';
 import { BrandMark } from './components/BrandMark';
-import { PackInstallProvider } from './components/PackInstallProgress';
+import { PackImportReports, PackInstallProvider } from './components/PackInstallProgress';
 import { GUIDE_TOPICS } from './data/guideContent';
 import { LabShell } from './features/interactive/lab/LabShell';
 import type { StandardDestination } from './features/interactive/domain/intents';
@@ -57,6 +59,8 @@ import { usePluginLaunchGate } from './features/plugins/usePluginLaunchGate';
 import { useController } from './features/controller/ControllerProvider';
 import { ControllerRootBindings, cycleTab } from './features/controller/ControllerRootBindings';
 import { focusMemoryKey, useFocusMemory } from './features/controller/useFocusMemory';
+import { moveFocusForRoute, routeFocusTarget } from './lib/routeFocus';
+import { focusSkipTarget } from './lib/skipLink';
 import { BookOpen, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -382,6 +386,26 @@ function AppContent() {
     previousDestinationRef.current = destination;
   }, [destination]);
 
+  // After a page change, focus moves to the new page's heading so the next Tab
+  // starts inside the page (see lib/routeFocus). The first render is not a
+  // page change, so it never moves focus. Keyed on the destination's value, not
+  // its object: restoring the same destination from history (StrictMode and
+  // reloads both do) hands back a new object for the same page.
+  const routeKey = focusMemoryKey(destination);
+  const lastRouteRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastRouteRef.current === routeKey) return;
+    const firstRoute = lastRouteRef.current === null;
+    lastRouteRef.current = routeKey;
+    if (firstRoute) return;
+    const frame = requestAnimationFrame(() => {
+      const main = mainRef.current;
+      if (!main) return;
+      moveFocusForRoute(main, appShellRef.current?.querySelector('aside') ?? null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [routeKey]);
+
   // A desktop shortcut carrying `--launch <id>` reaches an already-running app
   // through the single-instance plugin, which forwards it as `cli-launch`.
   // Navigating to the instance rather than launching outright is deliberate:
@@ -453,11 +477,7 @@ function AppContent() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        const target = e.target instanceof HTMLElement ? e.target : null;
-        const tag = target?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable || target?.getAttribute('role') === 'textbox') {
-          return;
-        }
+        if (isTextEntryTarget(e.target)) return;
         e.preventDefault();
         setCommandPaletteOpen((prev) => !prev);
       }
@@ -833,7 +853,18 @@ function AppContent() {
       <AmbienceProvider>
       <AmbienceEnabledBridge onChange={setAmbienceEnabled} />
       <QueuedTourStarter />
-      <div ref={appShellRef} className="app-shell flex h-screen w-screen overflow-hidden gap-3 p-3">
+      <div ref={appShellRef} className="app-shell flex h-screen w-full overflow-hidden gap-3 p-3">
+        {/* First in the Tab order: skips past the sidebar straight to the page. */}
+        <button
+          type="button"
+          className="skip-link"
+          onClick={() => {
+            const main = mainRef.current;
+            if (main) focusSkipTarget(routeFocusTarget(main), { preventScroll: true });
+          }}
+        >
+          Skip to content
+        </button>
         <ControllerRootBindings
           rootRef={appShellRef}
           onOpenPalette={() => setCommandPaletteOpen(true)}
@@ -897,6 +928,11 @@ function AppContent() {
             initialReport={processState.healthReport}
             onConfirm={approveLaunch}
             onCancel={cancelLaunch}
+            onFindMod={(query) => {
+              requestBrowseSearch(query);
+              cancelLaunch();
+              navigateToBrowse(processState.instanceId ?? undefined);
+            }}
             onSwitchLoader={switchLoaderAndRetry}
           />
         ) : healthReview && (
@@ -907,6 +943,12 @@ function AppContent() {
             onCancel={() => setHealthReview(null)}
             onSwitchLoader={switchLoaderFromHealthReview}
             reviewOnly
+            onFindMod={(query) => {
+              requestBrowseSearch(query);
+              const id = healthReview.instanceId;
+              setHealthReview(null);
+              navigateToBrowse(id);
+            }}
             onReportChanged={(report) => {
               healthMonitor.updateReport(healthReview.instanceId, report);
               setHealthReview((current) => current && current.instanceId === healthReview.instanceId
@@ -916,7 +958,8 @@ function AppContent() {
           />
         )}
 
-        <main ref={mainRef} className={`flex-1 overflow-y-auto bg-background p-6 text-background-foreground rounded-xl border border-border ${effectiveTab === 'living-background' ? 'living-bg-active' : ''}`}>
+        <main ref={mainRef} tabIndex={-1} className={`flex-1 overflow-y-auto bg-background p-6 text-background-foreground rounded-xl border border-border ${effectiveTab === 'living-background' ? 'living-bg-active' : ''}`}>
+          <PackImportReports />
           <div className="contents">
             {!isKnownDestType ? (
               <NotFoundView
@@ -967,6 +1010,8 @@ function AppContent() {
                         onLaunch={launchWithControlify}
                         processState={processState}
                         onKillProcess={killProcess}
+                        healthReports={healthMonitor.reports}
+                        onReviewHealth={openHealthReview}
                       />
                     }
                   />

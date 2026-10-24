@@ -289,6 +289,7 @@ export function AppearanceInterfaceSettings() {
           <input
             type="range"
             aria-label="Text scale"
+            aria-valuetext={`${Math.round(preferences.fontScale * 100)}%`}
             min="0.85"
             max="2"
             step="0.05"
@@ -303,6 +304,7 @@ export function AppearanceInterfaceSettings() {
           <input
             type="range"
             aria-label="Border thickness"
+            aria-valuetext={`${Math.round(preferences.borderThickness * 100)}%`}
             min="1"
             max="3"
             step="0.25"
@@ -337,6 +339,7 @@ export function AppearanceInterfaceSettings() {
           </select>
           <span className="block text-xs text-muted-foreground">
             Controls nonessential animations, transitions, and smooth scrolling throughout the app.
+            With Reduce motion, the living background stays on as a still picture: nothing drifts or moves.
             {motionPin === 'reduced' ? ' Simple interaction mode keeps this on Reduce motion.' : ''}
           </span>
         </label>
@@ -396,24 +399,22 @@ export function AppearanceResetControls({ onResetLayout }: { onResetLayout: () =
  * without it.
  */
 export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLivingBackground?: () => void }) {
-  const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground, motionSuppressed } = useAmbience();
-  const { setPreferences } = useUiPreferences();
+  const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground } = useAmbience();
   // The interaction preference is owned by the Interface sub-page; read it
   // directly so this card can tell "the world is off because of Simple mode"
-  // from "off because the user chose Reduce motion".
+  // from "the user turned it off".
   const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(true); }, []);
   if (!loaded) return null;
 
-  const suppressed = motionSuppressed || interaction === 'simple';
+  const suppressed = interaction === 'simple';
 
-  /** Leave Simple mode and pin Full motion so the living background can run. */
-  const enableLivingBackgroundMotion = () => {
+  /** Leave Simple mode so the living background can run again. */
+  const leaveSimpleMode = () => {
     setInteraction('standard');
     savePreference('standard');
     suspendHighInteraction();
-    setPreferences({ motion: 'full' });
   };
 
   return (
@@ -450,18 +451,18 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
       {onOpenLivingBackground && suppressed && (
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2.5 space-y-2" role="alert">
           <p className="text-sm font-semibold text-red-700 dark:text-red-300">
-            To use the living background you must disable reduced motion and Simple mode.
+            To use the living background you must leave Simple interaction mode.
           </p>
           <p className="text-xs text-muted-foreground">
-            The world is movement — weather, animals, day and night — so it stays off while motion is
-            reduced or Simple interaction mode is selected. Your other ambience settings are kept.
+            Simple mode keeps the world off, as the quiet version of the workbench. Your other ambience
+            settings are kept.
           </p>
           <button
             type="button"
-            onClick={enableLivingBackgroundMotion}
+            onClick={leaveSimpleMode}
             className="rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
-            Disable Simple mode and use full motion
+            Leave Simple mode
           </button>
         </div>
       )}
@@ -471,7 +472,7 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
           type="checkbox"
           aria-label="Living background"
           checked={enabled}
-          disabled={motionSuppressed}
+          disabled={suppressed}
           onChange={(event) => setEnabled(event.target.checked)}
           className="mt-0.5 h-5 w-5 accent-primary disabled:opacity-50"
         />
@@ -481,11 +482,10 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
             A gentle living world — hills, weather, animals and small discoveries — behind every page.
             Purely decorative.
           </span>
-          {motionSuppressed ? (
+          {suppressed ? (
             <span className="mt-1 block text-xs text-muted-foreground">
-              Off because motion is reduced — the world is movement, so there is nothing honest to show
-              while it is held still. Set Motion to Full (or leave Simple interaction mode) to bring it
-              back; your other ambience settings are kept.
+              Off in Simple interaction mode. Leave Simple mode to bring it back; your other ambience
+              settings are kept.
             </span>
           ) : null}
         </span>
@@ -571,7 +571,7 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
           </label>
 
           <p className="text-xs text-muted-foreground">
-            Reducing motion switches the living background off entirely.
+            With Reduce motion on, the living background holds still as one picture instead of moving.
           </p>
         </>
       )}

@@ -50,6 +50,16 @@ pub struct ProviderFailure {
     pub message: String,
 }
 
+/// Matches that the instance's version and loader filters hid from an empty
+/// page. `more` means `count` is a floor: a source had further pages, or did
+/// not answer the count.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenByFilters {
+    pub count: u64,
+    pub more: bool,
+}
+
 /// One page of Browse, plus which providers failed to contribute to it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +68,10 @@ pub struct BrowseResult {
     pub page: BrowsePage,
     #[serde(default)]
     pub provider_failures: Vec<ProviderFailure>,
+    /// Set only when the filtered first page is empty under an instance's
+    /// version or loader filter: how many matches that filter hid.
+    #[serde(default)]
+    pub hidden_by_filters: Option<HiddenByFilters>,
 }
 
 /// Curated download strategies the user has left enabled (Axis A, §20.2).
@@ -251,7 +265,9 @@ pub async fn search(
         sort: request.sort.clone().unwrap_or_else(|| "net_score".into()),
         mc_version: request.mc_version.clone(),
         // A mod loader says nothing about a resource pack, shader or data
-        // pack, so it is not a filter for them.
+        // pack. With a single non-mod content type it is not a filter at all;
+        // in an all-types search it narrows mods and modpacks, and each source
+        // keeps the packs out of that filter.
         loader: request.loader.clone().filter(|_| {
             request
                 .content_type
@@ -259,6 +275,12 @@ pub async fn search(
                 .is_none_or(crate::resolver::is_mod_content)
         }),
         provider_filters: request.provider_filters.clone(),
+    };
+    let narrowed = filters.mc_version.is_some() || filters.loader.is_some();
+    let unfiltered = BrowseFilters {
+        mc_version: None,
+        loader: None,
+        ..filters.clone()
     };
     let providers: Vec<String> = registry
         .usable_providers()
@@ -295,7 +317,7 @@ pub async fn search(
     let (provider_items, cursors, provider_failures) = fetch_round(
         registry,
         &filters,
-        providers.into_iter().map(|id| (id, 0)).collect(),
+        providers.iter().map(|id| (id.clone(), 0)).collect(),
         super::low_security_allowed(ctx),
     )
     .await;
@@ -305,9 +327,73 @@ pub async fn search(
 
     let mut page = browse_cache::get_page(cache, 0).await;
     page.has_more = page.has_more || cache.read().await.has_more_upstream();
+    // An empty page under a version or loader filter can mean every match is
+    // for another version or loader. Count those, so the empty state can say
+    // so. Asked only in that case, so a normal search costs nothing extra.
+    let hidden_by_filters = if narrowed && page.items.is_empty() {
+        Some(
+            count_hidden_by_filters(
+                ctx,
+                registry,
+                &unfiltered,
+                &providers,
+                request.query.as_deref(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     Ok(BrowseResult {
         page,
         provider_failures,
+        hidden_by_filters,
+    })
+}
+
+/// How many matches the instance's version and loader filters hid: the same
+/// query asked without them. Nothing is cached; this only sizes the message.
+async fn count_hidden_by_filters(
+    ctx: &Ctx,
+    registry: &ProviderRegistry,
+    unfiltered: &BrowseFilters,
+    providers: &[String],
+    query: Option<&str>,
+) -> LauncherResult<HiddenByFilters> {
+    let catalog = RegistryService::new(ctx.clone());
+    let mean_approval = catalog.mean_approval();
+    // The filtered search already read this catalog, so a missing one means
+    // an empty catalog here, as it does there.
+    let curated = match catalog.browse_items(
+        unfiltered.content_type.as_deref(),
+        unfiltered.category.as_deref(),
+        &curated_sort(&unfiltered.sort),
+        &enabled_curated_strategies(ctx),
+        None,
+        None,
+        query,
+        CURATED_LIMIT,
+    ) {
+        Ok(items) => items,
+        Err(LauncherError::RegistryMissing) => Vec::new(),
+        Err(e) => {
+            return Err(LauncherError::Generic {
+                code: "ERR_REGISTRY".into(),
+                message: e.to_string(),
+            })
+        }
+    };
+    let (provider_items, cursors, failures) = fetch_round(
+        registry,
+        unfiltered,
+        providers.iter().map(|id| (id.clone(), 0)).collect(),
+        super::low_security_allowed(ctx),
+    )
+    .await;
+    let count = browse_cache::merge_items(curated, provider_items, mean_approval).len() as u64;
+    Ok(HiddenByFilters {
+        count,
+        more: !failures.is_empty() || cursors.values().any(|cursor| cursor.has_more),
     })
 }
 
@@ -379,6 +465,7 @@ pub async fn load_more(
     Ok(BrowseResult {
         page,
         provider_failures,
+        hidden_by_filters: None,
     })
 }
 
@@ -554,6 +641,129 @@ mod tests {
         .await
         .unwrap();
         assert!(load_more(&ctx, &registry, &cache, "old", 1).await.is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A provider whose projects only have builds for one Minecraft version.
+    struct OneVersion {
+        total: u32,
+        serves: &'static str,
+    }
+
+    #[async_trait]
+    impl ContentProvider for OneVersion {
+        fn descriptor(&self) -> ProviderDescriptor {
+            numbered("d.e/one-version", 0, false, false).descriptor()
+        }
+        async fn search(&self, request: SearchRequest) -> LauncherResult<ProviderPage> {
+            let serves = request
+                .minecraft_version
+                .as_deref()
+                .is_none_or(|wanted| wanted == self.serves);
+            let total = if serves { self.total } else { 0 };
+            let hits = (0..total)
+                .map(|n| ProviderHit {
+                    summary: ProjectSummary {
+                        id: format!("v{n}"),
+                        title: format!("create {n}"),
+                        content_type: "mod".into(),
+                        downloads: Some(u64::from(1_000 - n)),
+                        ..Default::default()
+                    },
+                    native: None,
+                })
+                .collect();
+            Ok(ProviderPage {
+                hits,
+                total: Some(u64::from(total)),
+                has_more: false,
+            })
+        }
+        async fn project(&self, _: &str) -> LauncherResult<ProjectDetail> {
+            unimplemented!()
+        }
+        async fn versions(&self, _: VersionsRequest) -> LauncherResult<VersionsResponse> {
+            unimplemented!()
+        }
+        async fn resolve(&self, _: ResolveRequest) -> LauncherResult<InstallPlan> {
+            unimplemented!()
+        }
+    }
+
+    fn version_request(query_key: &str, mc_version: &str) -> BrowseRequest {
+        BrowseRequest {
+            query_key: query_key.into(),
+            mc_version: Some(mc_version.into()),
+            loader: Some("fabric".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_filtered_page_counts_what_the_version_filter_hid() {
+        let (ctx, root) = ctx();
+        let registry = ProviderRegistry::from_providers(vec![Arc::new(OneVersion {
+            total: 3,
+            serves: "1.20.1",
+        })]);
+        let cache = browse_cache::new_cache();
+
+        let result = search(&ctx, &registry, &cache, version_request("q", "1.21"))
+            .await
+            .unwrap();
+
+        assert!(result.page.items.is_empty());
+        assert_eq!(
+            result.hidden_by_filters,
+            Some(HiddenByFilters {
+                count: 3,
+                more: false
+            })
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_filtered_page_with_results_counts_nothing() {
+        let (ctx, root) = ctx();
+        let registry = ProviderRegistry::from_providers(vec![Arc::new(OneVersion {
+            total: 3,
+            serves: "1.20.1",
+        })]);
+        let cache = browse_cache::new_cache();
+
+        let result = search(&ctx, &registry, &cache, version_request("q", "1.20.1"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.page.items.len(), 3);
+        assert_eq!(result.hidden_by_filters, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn an_unfiltered_empty_search_has_no_filter_to_blame() {
+        let (ctx, root) = ctx();
+        let registry = ProviderRegistry::from_providers(vec![Arc::new(OneVersion {
+            total: 0,
+            serves: "1.20.1",
+        })]);
+        let cache = browse_cache::new_cache();
+
+        let result = search(
+            &ctx,
+            &registry,
+            &cache,
+            BrowseRequest {
+                query_key: "q".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.page.items.is_empty());
+        assert_eq!(result.hidden_by_filters, None);
         let _ = std::fs::remove_dir_all(root);
     }
 

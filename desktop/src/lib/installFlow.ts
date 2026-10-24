@@ -51,6 +51,11 @@ export interface PlanOverrides {
    * leaves the `loader-change` pending choice unresolved.
    */
   approveLoaderVersion?: string;
+  /**
+   * Explicit approval to install although a mod's own jar requires something
+   * Agora could not find. Without it the plan is blocked (`ERR_MISSING_DEPENDENCY`).
+   */
+  allowMissingDependencies?: boolean;
 }
 
 export interface InstallIntent {
@@ -72,6 +77,8 @@ export interface ResolvedInstallPlan {
   filesToAdd: FileAdd[];
   filesToRemove: FileRemove[];
   filesToDisable: FileDisable[];
+  /** Optional: plans from before this field existed, and test fixtures, omit it. */
+  filesToEnable?: FileEnable[];
   snapshot: SnapshotPlan;
   diskEstimate: DiskSpaceEstimate;
   warnings: PlanWarning[];
@@ -133,8 +140,10 @@ export function planNeedsUserReview(
     || plan.conflicts.length > 0
     || plan.filesToRemove.length > 0
     || plan.filesToDisable.length > 0
+    || (plan.filesToEnable?.length ?? 0) > 0
     || plan.dependencies.some((dependency) =>
       dependency.disposition.type === 'unresolved'
+      || dependency.disposition.type === 'unchecked'
       || (!options.ignoreDependencies && dependency.disposition.type === 'install-candidate'),
     );
 }
@@ -184,7 +193,9 @@ export type DepDisposition =
   | { type: 'install-candidate'; artifact: ResolvedArtifact }
   | { type: 'included-in-batch'; targetFilename: string }
   | { type: 'excluded' }
-  | { type: 'unresolved'; reason: string };
+  | { type: 'unresolved'; reason: string }
+  /** The mod's own jar could not be read, so what it requires is unchecked. */
+  | { type: 'unchecked'; reason: string };
 
 export interface DepConflict {
   conflictId: string;
@@ -200,15 +211,38 @@ export interface DepConflict {
 export type ConflictKind = 'version-conflict' | 'duplicate-mod' | 'loader-mismatch' | 'game-version-mismatch' | 'incompatible-mod' | 'broken-reverse-dep';
 export type ConflictResolution = 'replace' | 'skip' | 'disable-existing' | 'abort' | 'remove-anyway';
 
-export interface FileAdd { targetFilename: string; stagingFilename: string; artifact: ResolvedArtifact; hashes: HashSpec; size: number; }
+export interface FileAdd {
+  targetFilename: string;
+  stagingFilename: string;
+  artifact: ResolvedArtifact;
+  hashes: HashSpec;
+  size: number;
+  /** The instance already records this file and it is missing from disk: the add restores it. */
+  replacesMissingFile?: boolean;
+}
 export interface FileRemove { filename: string; }
 export interface FileDisable { filename: string; }
+/** A disabled file the instance already has, turned back on in place rather than downloaded. */
+export interface FileEnable {
+  filename: string;
+  contentType: string;
+  /** The mods that need this one. Set only when it is turned on to satisfy them. */
+  neededBy?: string[];
+}
 
 export interface SnapshotPlan { label: string; estimatedBytes: number; }
 export interface DiskSpaceEstimate { downloadBytes: number; snapshotBytes: number; applyOverheadBytes: number; peakAdditionalBytes: number; postCommitDeltaBytes: number; }
 
 export interface PlanWarning { code: string; message: string; }
 export interface PlanError { code: string; message: string; }
+
+/** Plan-warning code for a curator's install warning on an item the plan writes. Set by core. */
+export const CURATOR_WARNING_CODE = 'WARN_CURATOR_WARNING';
+
+/** True for the curator's own caution about an item, which the review shows up front. */
+export function isCuratorWarning(warning: PlanWarning): boolean {
+  return warning.code === CURATOR_WARNING_CODE;
+}
 
 export type PendingChoice =
   | { type: 'optional-dependencies'; choiceId: string; options: OptionalDepOption[] }

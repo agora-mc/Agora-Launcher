@@ -5,7 +5,9 @@
 //! or any MCP-protocol crate. Every operation takes a `&Ctx` (introduced
 //! later). For now this crate only hosts the pure data/error modules moved
 //! out of the desktop crate in Phase 1A.
+#![warn(clippy::large_futures)]
 
+pub mod agora_pack_import;
 pub mod app_paths;
 pub mod artifact_receipt;
 pub mod auth;
@@ -15,6 +17,7 @@ pub mod browse_cache;
 pub mod change_feed;
 pub mod clone;
 pub mod community_image;
+pub mod connectivity;
 pub mod controller_service;
 pub mod crash_diagnostics;
 pub mod crash_evidence;
@@ -27,6 +30,7 @@ pub mod datapack_sync;
 pub mod db;
 pub mod dependency_ops;
 pub mod download;
+pub mod download_cache;
 pub mod error;
 pub mod event_sink;
 pub mod export_service;
@@ -69,6 +73,7 @@ pub mod loader_compatibility;
 pub mod loader_manifests;
 pub mod loader_service;
 pub mod loadout;
+pub mod loadout_service;
 pub mod lock_manager;
 pub mod lockfile;
 pub mod log_sanitizer;
@@ -99,6 +104,7 @@ pub mod process_session_manager;
 pub mod providers;
 pub mod prune_service;
 pub mod ranking;
+pub mod recently_deleted;
 pub mod registry;
 pub mod registry_sync;
 pub mod resolver;
@@ -110,6 +116,7 @@ pub mod settings;
 pub mod shared_folder;
 pub mod snapshot;
 pub mod snapshot_service;
+pub mod source_identify;
 pub mod state;
 pub mod task_scheduler;
 pub mod technic;

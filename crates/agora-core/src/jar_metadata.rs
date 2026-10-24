@@ -66,6 +66,71 @@ const DEPENDENCY_IGNORE_LIST: &[&str] = &[
     "neoforge",
 ];
 
+/// Mod ids a loader ships inside itself, as `(loader, mod id, first loader
+/// version that ships it)`. A dependency on one of these is met by the loader,
+/// so no jar has to be found for it.
+///
+/// Sources: the MixinExtras README (https://github.com/LlamaLad7/MixinExtras)
+/// says "FabricLoader 0.15.0+ includes MixinExtras already" and "NeoForge
+/// 20.2.84+ includes MixinExtras already". Fabric Loader's release PR is
+/// FabricMC/fabric-loader#854 ("Include MixinExtras"). The same README tells
+/// Forge mods to depend on MixinExtras, so Forge is not listed. Quilt is not
+/// stated anywhere we checked, so it is not listed either.
+///
+/// Not verified: the exact mod id each loader exposes for the bundled library
+/// (the README gives none), and the MixinExtras version it bundles. A
+/// dependency's version range is not checked against that bundled version.
+const LOADER_BUNDLED_MODS: &[(&str, &str, &str)] = &[
+    ("fabric", "mixinextras", "0.15.0"),
+    ("neoforge", "mixinextras", "20.2.84"),
+];
+
+/// True when `dependency` is a platform id that needs no jar: the game, Java,
+/// the loader's own identity, or a library `loader` ships at `loader_version`.
+/// Every place that judges a dependency should ask this one question.
+pub fn is_platform_dependency(dependency: &str, loader: &str, loader_version: &str) -> bool {
+    matches!(
+        dependency,
+        "minecraft" | "java" | "fabricloader" | "fabric_loader" | "quilt_loader" | "quilt-loader"
+    ) || dependency.eq_ignore_ascii_case(loader)
+        || (loader == "neoforge" && dependency == "forge")
+        || is_loader_bundled_mod(dependency, loader, loader_version)
+}
+
+fn is_loader_bundled_mod(dependency: &str, loader: &str, loader_version: &str) -> bool {
+    LOADER_BUNDLED_MODS.iter().any(|(bundler, id, since)| {
+        bundler.eq_ignore_ascii_case(loader)
+            && id.eq_ignore_ascii_case(dependency)
+            && loader_version_at_least(release_part_of(loader, loader_version), since)
+    })
+}
+
+/// The release number a loader version is a build of. NeoForge publishes its
+/// betas as `<release>-beta` (e.g. `21.3.20-beta`), and a beta of a release
+/// ships what that release ships, so the suffix is dropped for NeoForge only.
+/// Fabric's published versions carry no such suffix (checked against
+/// https://maven.fabricmc.net/net/fabricmc/fabric-loader/maven-metadata.xml),
+/// so for any other loader the version is left alone and refused as before.
+fn release_part_of<'a>(loader: &str, version: &'a str) -> &'a str {
+    match version.strip_suffix("-beta") {
+        Some(release) if loader.eq_ignore_ascii_case("neoforge") => release,
+        _ => version,
+    }
+}
+
+/// Whether `version` is a plain dotted-number release at or after `since`.
+/// Anything else (empty, pre-release like `0.20.1-alpha`, build metadata,
+/// surrounding spaces) is not trusted, so the dependency stays a normal jar
+/// requirement and is reported as missing if no jar provides it.
+fn loader_version_at_least(version: &str, since: &str) -> bool {
+    let is_plain_release = !version.is_empty()
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+    is_plain_release
+        && crate::version_match::compare_versions(version, since) != std::cmp::Ordering::Less
+}
+
 /// Maximum nesting depth for explicitly declared nested JARs.
 const MAX_NESTING_DEPTH: u32 = 4;
 
@@ -840,6 +905,9 @@ fn parse_from_archive<R: Read + Seek>(
         if name == "META-INF/MANIFEST.MF" {
             if let Some(content) = read_entry_utf8_bounded(archive, i, MAX_METADATA_TEXT_BYTES) {
                 manifest_impl_version = parse_manifest_version(&content);
+                if include_forge || include_neoforge {
+                    forge_jarjar_paths.extend(parse_manifest_embedded_mods(&content));
+                }
             }
             continue;
         }
@@ -1804,24 +1872,69 @@ fn extract_jarjar_paths(content: &str) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
+/// Unfold a `META-INF/MANIFEST.MF` main section into `(name, value)` pairs.
+///
+/// The JAR manifest format (JDK "JAR File Specification") wraps lines at 72
+/// bytes: a line starting with a single space continues the previous header's
+/// value. Parsing stops at the first blank line (end of the main section).
+fn manifest_main_attributes(content: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for raw in content.lines() {
+        if raw.is_empty() {
+            if out.is_empty() {
+                continue;
+            }
+            break;
+        }
+        if let Some(rest) = raw.strip_prefix(' ') {
+            if let Some((_, value)) = out.last_mut() {
+                value.push_str(rest);
+            }
+            continue;
+        }
+        if raw.starts_with('#') {
+            continue;
+        }
+        if let Some(colon) = raw.find(':') {
+            out.push((
+                raw[..colon].trim().to_string(),
+                raw[colon + 1..].trim().to_string(),
+            ));
+        }
+    }
+    out
+}
+
 /// Parse a `META-INF/MANIFEST.MF` file and extract the
 /// `Implementation-Version` attribute value (if present).
 fn parse_manifest_version(content: &str) -> Option<String> {
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let colon = line.find(':')?;
-        let key = line[..colon].trim();
-        if key.eq_ignore_ascii_case("Implementation-Version") {
-            let val = line[colon + 1..].trim();
-            if !val.is_empty() {
-                return Some(val.to_string());
-            }
-        }
-    }
-    None
+    manifest_main_attributes(content)
+        .into_iter()
+        .find(|(key, value)| {
+            key.eq_ignore_ascii_case("Implementation-Version") && !value.is_empty()
+        })
+        .map(|(_, value)| value)
+}
+
+/// Paths of nested mod jars declared by the `Embedded-Dependencies-Mod`
+/// manifest attribute. Sinytra Connector (and its Fabric-on-Forge bridge
+/// builds) ship their mod this way, with no `META-INF/jarjar/metadata.json`:
+/// the manifest names the embedded jar (observed in
+/// `Connector-1.0.0-beta.48+1.20.1.jar`: `Embedded-Dependencies-Mod:
+/// META-INF/jarjar/Connector-...-mod.jar`) and Connector's own mod locator
+/// loads it at startup. Comma separates multiple paths.
+fn parse_manifest_embedded_mods(content: &str) -> Vec<String> {
+    manifest_main_attributes(content)
+        .into_iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("Embedded-Dependencies-Mod"))
+        .flat_map(|(_, value)| {
+            value
+                .split(',')
+                .map(|part| part.trim().to_string())
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2897,6 +3010,131 @@ type="required"
             .any(|dependency| dependency == "statuemenus"));
     }
 
+    fn connector_style_jar(manifest: &str, nested_name: &str, nested: &[u8]) -> std::path::PathBuf {
+        build_test_jar_binary(&[
+            ("META-INF/MANIFEST.MF", manifest.as_bytes()),
+            (nested_name, nested),
+        ])
+    }
+
+    #[test]
+    fn manifest_embedded_dependencies_mod_supplies_nested_mod_id() {
+        // Sinytra Connector: no top-level mods.toml and no jarjar metadata.json;
+        // the manifest wraps the nested path across lines.
+        let nested = build_jar_bytes(&[(
+            "META-INF/mods.toml",
+            br#"modLoader="javafml"
+[[mods]]
+modId="connectormod"
+version="1.0"
+"#,
+        )]);
+        let jar = connector_style_jar(
+            "Manifest-Version: 1.0
+Embedded-Dependencies-Mod: META-INF/jarjar/Connector-1
+ .0-mod.jar
+Implementation-Version: 1.0
+
+",
+            "META-INF/jarjar/Connector-1.0-mod.jar",
+            &nested,
+        );
+        let parsed = parse_jar_metadata_for_loader_with_status(&jar, "forge");
+        let _ = std::fs::remove_file(&jar);
+        assert_eq!(
+            parsed.status,
+            ParseStatus::Complete,
+            "{:?}",
+            parsed.diagnostics
+        );
+        assert!(parsed
+            .metadata
+            .provided_mods
+            .iter()
+            .any(|p| p.mod_id == "connectormod"));
+        assert_eq!(parsed.metadata.mod_version.as_deref(), Some("1.0"));
+    }
+
+    #[test]
+    fn manifest_embedded_mod_missing_or_malformed_is_a_warning_not_a_provider() {
+        let jar = connector_style_jar(
+            "Manifest-Version: 1.0
+Embedded-Dependencies-Mod: META-INF/jarjar/gone.jar
+
+",
+            "META-INF/jarjar/other.jar",
+            b"not a zip",
+        );
+        let parsed = parse_jar_metadata_for_loader_with_status(&jar, "forge");
+        let _ = std::fs::remove_file(&jar);
+        assert_eq!(parsed.status, ParseStatus::Partial);
+        assert!(parsed.metadata.provided_mods.is_empty());
+
+        let jar = connector_style_jar(
+            "Manifest-Version: 1.0
+Embedded-Dependencies-Mod: META-INF/jarjar/bad.jar
+
+",
+            "META-INF/jarjar/bad.jar",
+            b"not a zip",
+        );
+        let parsed = parse_jar_metadata_for_loader_with_status(&jar, "forge");
+        let _ = std::fs::remove_file(&jar);
+        assert_eq!(parsed.status, ParseStatus::Partial);
+        assert!(parsed.metadata.provided_mods.is_empty());
+    }
+
+    #[test]
+    fn manifest_embedded_mod_unsafe_path_is_rejected() {
+        let jar = connector_style_jar(
+            "Manifest-Version: 1.0
+Embedded-Dependencies-Mod: ../../evil.jar, C:/evil.jar
+
+",
+            "x.txt",
+            b"x",
+        );
+        let parsed = parse_jar_metadata_for_loader_with_status(&jar, "forge");
+        let _ = std::fs::remove_file(&jar);
+        assert_eq!(parsed.status, ParseStatus::Partial);
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == ParseDiagnosticKind::NestedPathUnsafe));
+    }
+
+    #[test]
+    fn manifest_embedded_mod_ignored_for_fabric_scope() {
+        let nested = build_jar_bytes(&[("fabric.mod.json", br#"{"id":"inner"}"#)]);
+        let jar = connector_style_jar(
+            "Manifest-Version: 1.0
+Embedded-Dependencies-Mod: a.jar
+
+",
+            "a.jar",
+            &nested,
+        );
+        let parsed = parse_jar_metadata_for_loader_with_status(&jar, "fabric");
+        let _ = std::fs::remove_file(&jar);
+        assert!(parsed.metadata.provided_mods.is_empty());
+    }
+
+    #[test]
+    fn oversized_nested_entry_is_partial_not_provider() {
+        let big = vec![0u8; (MAX_ENTRY_BYTES + 1) as usize];
+        let jar = build_test_jar_binary(&[
+            (
+                "fabric.mod.json",
+                br#"{"id":"outer","jars":[{"file":"big.jar"}]}"# as &[u8],
+            ),
+            ("big.jar", &big),
+        ]);
+        let parsed = parse_jar_metadata_for_loader_with_status(&jar, "fabric");
+        let _ = std::fs::remove_file(&jar);
+        assert_eq!(parsed.status, ParseStatus::Partial);
+        assert!(parsed.metadata.provided_mods.is_empty());
+    }
+
     #[test]
     fn malformed_metadata_is_partial_and_valid_metadata_free_jar_is_complete() {
         let malformed = build_test_jar(&[("fabric.mod.json", "{not-json")]);
@@ -3374,5 +3612,133 @@ type="required"
             .expect("language loader decl");
         assert_eq!(loader_decl.target_id, "javafml");
         assert!(loader_decl.version_ranges.is_empty());
+    }
+
+    #[test]
+    fn fabric_loader_provides_mixinextras_from_015_on() {
+        assert!(is_platform_dependency("mixinextras", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("mixinextras", "fabric", "0.15.0"));
+        assert!(!is_platform_dependency("mixinextras", "fabric", "0.14.22"));
+        assert!(!is_platform_dependency("mixinextras", "fabric", "0.5.0"));
+    }
+
+    #[test]
+    fn mixinextras_is_not_provided_when_the_loader_version_is_unreadable() {
+        for version in [
+            "",
+            " 0.20.1",
+            "0.20.1-beta.2",
+            "0.15.0+build.7",
+            "latest",
+            "0..1",
+        ] {
+            assert!(
+                !is_platform_dependency("mixinextras", "fabric", version),
+                "{version:?} must not count as a bundled MixinExtras"
+            );
+        }
+    }
+
+    #[test]
+    fn neoforge_provides_mixinextras_from_20_2_84_on() {
+        assert!(is_platform_dependency("mixinextras", "neoforge", "20.2.84"));
+        assert!(is_platform_dependency("mixinextras", "neoforge", "21.1.77"));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "20.2.83"
+        ));
+        assert!(!is_platform_dependency("mixinextras", "neoforge", "20.1.0"));
+    }
+
+    #[test]
+    fn a_neoforge_beta_of_a_release_that_ships_mixinextras_counts() {
+        // NeoForge publishes betas as `<release>-beta`; `21.3.20-beta` is a
+        // build of the 21.3.20 line, which is past the 20.2.84 threshold.
+        assert!(is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20-beta"
+        ));
+        assert!(is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "20.2.84-beta"
+        ));
+        assert!(is_platform_dependency(
+            "mixinextras",
+            "NeoForge",
+            "21.3.20-beta"
+        ));
+        // Below the threshold a beta is still below it.
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "20.2.83-beta"
+        ));
+    }
+
+    #[test]
+    fn a_beta_suffix_is_only_stripped_for_neoforge_and_garbage_stays_refused() {
+        // Fabric publishes no `-beta` versions, so its suffix is not trusted.
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "fabric",
+            "0.16.10-beta"
+        ));
+        assert!(!is_platform_dependency("mixinextras", "neoforge", "-beta"));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20-beta-beta"
+        ));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20 -beta"
+        ));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20-alpha"
+        ));
+        assert!(!is_platform_dependency(
+            "mixinextras",
+            "neoforge",
+            "21.3.20-beta.2"
+        ));
+        assert!(!is_platform_dependency("mixinextras", "neoforge", ""));
+    }
+
+    #[test]
+    fn forge_and_quilt_do_not_get_a_bundled_mixinextras() {
+        assert!(!is_platform_dependency("mixinextras", "forge", "47.2.0"));
+        assert!(!is_platform_dependency("mixinextras", "quilt", "0.27.0"));
+    }
+
+    #[test]
+    fn a_loader_does_not_provide_mixinextras_to_another_loader() {
+        assert!(!is_platform_dependency("mixinextras", "forge", "21.1.77"));
+        assert!(!is_platform_dependency("mixinextras", "quilt", "21.1.77"));
+    }
+
+    #[test]
+    fn game_java_and_the_loader_itself_are_always_platform() {
+        assert!(is_platform_dependency("minecraft", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("java", "fabric", ""));
+        assert!(is_platform_dependency("fabricloader", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("fabric_loader", "fabric", ""));
+        assert!(is_platform_dependency("quilt_loader", "quilt", ""));
+        assert!(is_platform_dependency("quilt-loader", "quilt", ""));
+        assert!(is_platform_dependency("neoforge", "neoforge", ""));
+        assert!(is_platform_dependency("forge", "neoforge", ""));
+        assert!(is_platform_dependency("MIXINEXTRAS", "FABRIC", "0.20.1"));
+    }
+
+    #[test]
+    fn ordinary_mods_are_never_platform() {
+        assert!(!is_platform_dependency("some-mod", "fabric", "0.20.1"));
+        assert!(!is_platform_dependency("fabric-api", "fabric", "0.20.1"));
+        assert!(!is_platform_dependency("", "fabric", "0.20.1"));
     }
 }

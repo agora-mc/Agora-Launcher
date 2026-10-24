@@ -2,11 +2,18 @@ use crate::error::{LauncherError, LauncherResult};
 use crate::http_client::{self, ClientCategory, HttpClients};
 use crate::loader_manifests;
 use sha1::{Digest as Sha1Digest, Sha1};
-use sha2::Sha256;
+use sha2::{Sha256, Sha512};
 
 /// Raw SHA-256 hex digest of a byte slice.
 pub fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
+/// Lowercase SHA-512 hex digest of a byte slice.
+pub fn sha512_hex(data: &[u8]) -> String {
+    let mut hasher = Sha512::new();
     hasher.update(data);
     hex::encode(hasher.finalize())
 }

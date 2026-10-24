@@ -351,5 +351,32 @@ class TestGovernanceEventsTable(_CompileFixtures):
             conn.close()
 
 
+class TestCuratorWarningCompiled(_CompileFixtures):
+    """A curator_warning in a manifest lands in curator_reviews; absent means NULL."""
+
+    def test_xaeros_minimap_warning_is_compiled(self):
+        conn = self._open_db()
+        try:
+            row = conn.execute(
+                "SELECT curator_warning FROM curator_reviews WHERE item_id = 'xaeros-minimap'"
+            ).fetchone()
+            self.assertIsNotNone(row, "xaeros-minimap has no curator_reviews row")
+            self.assertIsNotNone(row[0], "xaeros-minimap warning was not compiled")
+            self.assertIn("XaeroPlus", row[0])
+        finally:
+            conn.close()
+
+    def test_item_without_warning_stores_null(self):
+        conn = self._open_db()
+        try:
+            row = conn.execute(
+                "SELECT curator_warning FROM curator_reviews WHERE item_id = 'sodium'"
+            ).fetchone()
+            self.assertIsNotNone(row, "sodium has no curator_reviews row")
+            self.assertIsNone(row[0])
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

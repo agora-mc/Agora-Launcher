@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CategoryChips } from '@/components/browse/CategoryChips';
 import { Check, ChevronDown, Download, Leaf, List, LayoutGrid, Search } from 'lucide-react';
 import {
   browseSearch,
@@ -14,6 +15,8 @@ import {
   listManifestLoaders,
   listManifestMcVersions,
   listProviderCategories,
+  setContentProviderEnabled,
+  type ProviderDescriptor,
   type BrowseItemCached,
   type CategoryInfo,
   type ProviderFailure,
@@ -25,7 +28,9 @@ import {
   type InstanceRow,
 } from '../lib/tauri';
 import { takeOfferedBrowseContext } from '../lib/browseContextHandoff';
-import { contentTypeUnavailableReason, loaderFilterApplies } from '../lib/browseFilters';
+import { contentTypeUnavailableReason, hiddenResultsSentence, loaderFilterApplies } from '../lib/browseFilters';
+import { focusSkipTarget } from '../lib/skipLink';
+import type { BrowsePage } from '../lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
 import { loadPreference } from '../features/interactive/live/presentationPreference';
 import { RegistryStatusView } from '../components/registry-status-view';
@@ -44,6 +49,11 @@ import {
   parkBrowseSnapshot,
   takeBrowseSnapshot,
   clearBrowseSnapshot,
+  saveBrowseContextChoice,
+  peekBrowseContextChoice,
+  pickBrowseContextInstance,
+  browseResultsStale,
+  shouldOfferModrinthSearch,
   type BrowseSnapshot,
 } from './browseSession';
 import {
@@ -56,6 +66,7 @@ import {
 import type { BrowseItemContext as ItemContext } from '../components/browse/types';
 import '../components/browse/browse-cards.css';
 import { agoraRepositoryUrl } from '../lib/brandConfig';
+import { onBrowseSearchRequest, takeBrowseSearchRequest } from '../lib/browseSearchRequest';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -480,7 +491,8 @@ function BrowseContent({
     return simpleBrowse || !catalogAvailable ? SIMPLE_DEFAULT_SORT : 'net_score';
   });
   const [category, setCategory] = useState<string | null>(null);
-  const [contentType, setContentType] = useState<string | null>(initialContentType ?? 'mod');
+  // Every content type by default, so packs are not hidden on a fresh install.
+  const [contentType, setContentType] = useState<string | null>(initialContentType ?? null);
   const [mcVersion, setMcVersion] = useState<string | null>(null);
   // The loader the user (or the instance context) chose. What the search
   // actually uses is `loader`: mod loaders only mean something for mods, so
@@ -488,7 +500,8 @@ function BrowseContent({
   // is not tagged fabric.
   const [modLoader, setLoader] = useState<string | null>(null);
   const loader = loaderFilterApplies(contentType) ? modLoader : null;
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(() => takeBrowseSearchRequest() ?? '');
+  useEffect(() => onBrowseSearchRequest(setQuery), []);
   const debouncedQuery = useDebounce(query, 250);
   const [layout, setLayout] = useState<'list' | 'grid'>(() => {
     try {
@@ -504,6 +517,7 @@ function BrowseContent({
   // Scroll offset to reapply after a restored list paints. `null` means this
   // mount did not restore anything, so scrolling must be left alone.
   const restoredScrollRef = useRef<number | null>(null);
+  const resultsRegionRef = useRef<HTMLDivElement>(null);
   // Bazaar shelf order, mirrored here so it can be snapshotted with the list.
   const bazaarSettledOrderRef = useRef<string[]>([]);
   /**
@@ -512,7 +526,7 @@ function BrowseContent({
    * page: previously only `mod` was ever fetched, so every other stall showed an
    * empty shelf. "Everything" clears the content type entirely.
    */
-  const [bazaarStall, setBazaarStallState] = useState<string>(() => contentTypeToStall(initialContentType ?? 'mod'));
+  const [bazaarStall, setBazaarStallState] = useState<string>(() => contentTypeToStall(initialContentType ?? null));
   const setBazaarStall = useCallback((stallId: string) => {
     setBazaarStallState(stallId);
     setContentType(stallId === 'all' ? null : stallId);
@@ -524,8 +538,21 @@ function BrowseContent({
   const [metaError, setMetaError] = useState<string | null>(null);
   const [searchLoading, setSearchLoading] = useState(true);
   const [searchError, setSearchError] = useState<string | null>(null);
+  // The query key the list on screen was loaded for. Anything else is stale.
+  const [resultsKey, setResultsKey] = useState<string | null>(null);
+  // Browse waits for the instance context before its first search, so the
+  // unfiltered list never flashes before the instance's filters apply.
+  const [contextReady, setContextReady] = useState(false);
+  // Bumped to re-run the current query, e.g. after Modrinth is turned on.
+  const [searchRun, setSearchRun] = useState(0);
+  // Modrinth's provider entry, read for the empty-result offer. `null` until
+  // read; a failed read offers nothing.
+  const [modrinthProvider, setModrinthProvider] = useState<ProviderDescriptor | null>(null);
   // Sources that failed this query. Browse still shows everyone else.
   const [providerFailures, setProviderFailures] = useState<ProviderFailure[]>([]);
+  // Matches the instance's version or loader filter hid, when that filter left
+  // the list empty. Lets the empty state say so instead of looking like a dead end.
+  const [hiddenByFilters, setHiddenByFilters] = useState<BrowsePage['hiddenByFilters']>(null);
   const [loadMoreLoading, setLoadMoreLoading] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   // Tracks the 0-indexed page displayed. Starts at 0; incremented after each
@@ -763,11 +790,29 @@ function BrowseContent({
         // Taken only on the live run, so StrictMode's discarded first effect
         // cannot consume the hand-off. An explicit instance in the route wins.
         const offered = takeOfferedBrowseContext();
-        if (offered && !initialInstanceId && result.some((row) => row.instance_id === offered)) {
-          void selectInstanceContext(offered);
+        if (initialInstanceId) {
+          // The route's instance is selected by the effect below, which opens
+          // the gate. If it is not in the list, nothing else will, so open it here.
+          if (!result.some((row) => row.instance_id === initialInstanceId)) setContextReady(true);
+          return;
         }
+        // Otherwise: the hand-off, then the user's earlier choice, then the most
+        // recently used instance. Browse shows which one it is and can change it.
+        const chosen = pickBrowseContextInstance({ offered, choice: peekBrowseContextChoice(), rows: result });
+        if (!chosen) {
+          setContextReady(true);
+          return;
+        }
+        if (offered !== null && chosen === offered) saveBrowseContextChoice(chosen);
+        void selectInstanceContext(chosen).finally(() => {
+          if (!cancelled) setContextReady(true);
+        });
       })
-      .catch((cause) => { if (!cancelled) setContextError(formatError(cause)); });
+      .catch((cause) => {
+        if (cancelled) return;
+        setContextError(formatError(cause));
+        setContextReady(true);
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -775,7 +820,12 @@ function BrowseContent({
     setActiveInstanceId(instanceId);
     setContextError(null);
     setActiveInstance(null);
-    if (!instanceId) return;
+    if (!instanceId) {
+      // "No instance context" also drops the version and loader it had applied.
+      setMcVersion(null);
+      setLoader(null);
+      return;
+    }
     setContextLoading(true);
     try {
       const detail = await getInstanceDetail(instanceId);
@@ -793,7 +843,7 @@ function BrowseContent({
   useEffect(() => {
     if (!initialInstanceId || activeInstanceId === initialInstanceId) return;
     if (!instances.some((instance) => instance.instance_id === initialInstanceId)) return;
-    void selectInstanceContext(initialInstanceId);
+    void selectInstanceContext(initialInstanceId).finally(() => setContextReady(true));
   }, [activeInstanceId, initialInstanceId, instances]);
 
   const handleSortChange = (next: SortOption) => {
@@ -814,6 +864,15 @@ function BrowseContent({
   }, [activeInstance]);
 
   const hasActiveFilters = category !== null || contentType !== null || mcVersion !== null || loader !== null || query.trim() !== '';
+  const hiddenSentence = hiddenByFilters
+    ? hiddenResultsSentence(hiddenByFilters, mcVersion, loader)
+    : null;
+  // Drops the instance's version and loader filters for this search, so the
+  // matches that were hidden show. Clear Filters puts them back.
+  const showHiddenResults = () => {
+    setMcVersion(null);
+    setLoader(null);
+  };
 
   const contextFor = (item: BrowseItem): ItemContext | null => {
     if (!activeInstance) return null;
@@ -902,6 +961,11 @@ function BrowseContent({
     [sort, category, contentType, mcVersion, loader, debouncedQuery],
   );
 
+  // The list on screen belongs to an older query, or the typed query is still
+  // waiting out its debounce. Either way it is not shown as results.
+  const resultsStale = browseResultsStale({ resultsKey, queryKey, query, debouncedQuery });
+  const listLoading = searchLoading || resultsStale;
+
   // Clear the selection whenever the filter set changes so stale selections
   // never survive into a different result set. Pagination (load-more) keeps
   // the selection because it leaves the query key unchanged.
@@ -954,6 +1018,41 @@ function BrowseContent({
     if (!isAvailable) setCategory(null);
   }, [category, metaLoading, visibleCuratedCategories, visibleProviderCategories]);
 
+  // ---- Modrinth's switch, for the offer under an empty search ----
+  useEffect(() => {
+    let cancelled = false;
+    void listContentProviders()
+      .then((providers) => {
+        if (cancelled) return;
+        setModrinthProvider(
+          Array.isArray(providers) ? providers.find((provider) => provider.id === 'modrinth') ?? null : null,
+        );
+      })
+      .catch(() => {
+        // No provider read means no offer. Browse still works without it.
+        if (!cancelled) setModrinthProvider(null);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Same setting as Settings > Services > Modrinth Integration. The search is
+  // re-run so the results include Modrinth straight away.
+  const [enablingModrinth, setEnablingModrinth] = useState(false);
+  const enableModrinthSearch = async () => {
+    setEnablingModrinth(true);
+    try {
+      const providers = await setContentProviderEnabled('modrinth', true);
+      setModrinthProvider(providers.find((provider) => provider.id === 'modrinth') ?? null);
+      clearBrowseSnapshot();
+      setSearchRun((run) => run + 1);
+      showToast('Modrinth search is on.');
+    } catch (cause) {
+      showToast(formatError(cause), 'error');
+    } finally {
+      setEnablingModrinth(false);
+    }
+  };
+
   // ---- Load loaders and MC versions (static metadata) ----
   useEffect(() => {
     let cancelled = false;
@@ -977,7 +1076,8 @@ function BrowseContent({
   // than written at each mutation site so no future code path can update the
   // list and forget to persist it.
   useEffect(() => {
-    if (searchLoading) return;
+    // Only a list that belongs to the current query may be saved under its key.
+    if (listLoading) return;
     const snapshot: BrowseSnapshot = {
       queryKey,
       items,
@@ -989,7 +1089,7 @@ function BrowseContent({
       bazaarSettledOrder: bazaarSettledOrderRef.current,
     };
     saveBrowseSnapshot(snapshot);
-  }, [queryKey, items, hasMore, currentPage, bazaarMode, searchLoading]);
+  }, [queryKey, items, hasMore, currentPage, bazaarMode, listLoading]);
 
   // Reapply the saved scroll offset once the restored list has painted.
   useEffect(() => {
@@ -1005,6 +1105,9 @@ function BrowseContent({
 
   // ---- Main search effect — uses generation counter for stale-response protection ----
   useEffect(() => {
+    // Wait for the instance context: its filters are part of the first query.
+    if (!contextReady) return;
+
     // Returning from a mod detail page with the same filters restores the
     // already-loaded pages instead of refetching page 0, so the user lands
     // back where they were rather than at the top of a one-page list.
@@ -1015,6 +1118,8 @@ function BrowseContent({
       setItems(restored.items);
       setHasMore(restored.hasMore);
       setCurrentPage(restored.currentPage);
+      setHiddenByFilters(null);
+      setResultsKey(queryKey);
       // A snapshot taken in High Interaction must not drag the Bazaar back into
       // Simple mode after the preference changed underneath it.
       setBazaarMode(restored.bazaarMode && !simpleBrowse);
@@ -1036,6 +1141,7 @@ function BrowseContent({
     setLoadMoreLoading(false);
     setLoadMoreError(null);
     setCurrentPage(0);
+    setHiddenByFilters(null);
     inFlightLoadMoreRef.current = null;
 
     let cancelled = false;
@@ -1053,6 +1159,7 @@ function BrowseContent({
 
           if (!cancelled && inFlightSearchRef.current === generation) {
             setItems(curatedOnlyItems(registryItems));
+            setResultsKey(queryKey);
             setHasMore(false);
             setProviderFailures([]);
           }
@@ -1069,13 +1176,16 @@ function BrowseContent({
 
           if (!cancelled && inFlightSearchRef.current === generation) {
             setItems(page.items);
+            setResultsKey(queryKey);
             setHasMore(page.hasMore);
             setProviderFailures(page.providerFailures ?? []);
+            setHiddenByFilters(page.hiddenByFilters ?? null);
           }
         }
       } catch (e) {
         if (!cancelled && inFlightSearchRef.current === generation) {
           setSearchError(formatError(e));
+          setResultsKey(queryKey);
           setItems([]);
           setHasMore(false);
         }
@@ -1091,10 +1201,10 @@ function BrowseContent({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryKey]);
+  }, [queryKey, contextReady, searchRun]);
 
   const loadNextPage = useCallback(() => {
-    if (!hasMore || searchLoading || loadMoreLoading) return;
+    if (!hasMore || listLoading || loadMoreLoading) return;
     const capturedGeneration = generationRef.current;
     inFlightLoadMoreRef.current = capturedGeneration;
     const nextPage = currentPage + 1;
@@ -1129,7 +1239,7 @@ function BrowseContent({
           inFlightLoadMoreRef.current = null;
         }
       });
-  }, [currentPage, hasMore, loadMoreLoading, queryKey, searchLoading]);
+  }, [currentPage, hasMore, listLoading, loadMoreLoading, queryKey]);
 
   // ---- Infinite scroll ----
   //
@@ -1207,6 +1317,7 @@ function BrowseContent({
             </div>
             <button
               onClick={() => setPickerOpen(false)}
+              data-modal-close=""
               className="shrink-0 rounded-sm border border-input px-2 py-1 text-xs hover:bg-accent"
               aria-label="Close picker"
             >
@@ -1313,9 +1424,10 @@ function BrowseContent({
           ownedIds={bazaarOwnedIds}
           onOpenMod={(item) => handleSelectItem(item.id)}
           onExit={() => setBazaarMode(false)}
-          hasMore={hasMore && !searchLoading}
+          hasMore={hasMore && !listLoading}
           loadMoreLoading={loadMoreLoading}
           onLoadMore={loadNextPage}
+          loading={listLoading}
           onInstallBag={handleBazaarInstall}
           stall={bazaarStall}
           onStallChange={setBazaarStall}
@@ -1351,9 +1463,26 @@ function BrowseContent({
         </div>
         <p className="text-muted-foreground">
           Curated mods, packs, shaders, resource packs, and more.
-          {simpleBrowse ? '' : ' High Interaction fans can wander The Bazaar instead.'}
         </p>
+        {simpleBrowse ? null : (
+          <p className="text-sm text-muted-foreground mt-1">
+            The Bazaar is a playful, browse-by-stalls view of the same catalog.
+          </p>
+        )}
       </section>
+
+      {/* Keyboard users skip the instance context, community pitch, search and
+          filters, which is a dozen or more Tab stops before the first result. */}
+      <button
+        type="button"
+        className="skip-link"
+        onClick={() => {
+          const region = resultsRegionRef.current;
+          if (region) focusSkipTarget(region);
+        }}
+      >
+        Skip to results
+      </button>
 
       {/* Catalog offline banner */}
       <RegistryStatusView
@@ -1369,12 +1498,17 @@ function BrowseContent({
           Discover for an instance
         </label>
         <p className="mt-1 text-xs text-muted-foreground">
-          Select an instance to apply its exact Minecraft version and loader and see installed/update labels.
+          {activeInstance
+            ? `Results follow ${activeInstance.row.name}'s Minecraft version, and its mod loader for mods and modpacks. Items it already has are marked. Pick another instance, or No instance context to clear this.`
+            : 'Choose an instance to match results to its Minecraft version and mod loader, and to mark what it already has.'}
         </p>
         <select
           id="browse-instance-context"
           value={activeInstanceId}
-          onChange={(event) => { void selectInstanceContext(event.target.value); }}
+          onChange={(event) => {
+            saveBrowseContextChoice(event.target.value);
+            void selectInstanceContext(event.target.value);
+          }}
           disabled={contextLoading}
           className="mt-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm disabled:opacity-50"
         >
@@ -1543,40 +1677,18 @@ function BrowseContent({
               dropdown above picks the same categories from one control instead
               of dozens of chips competing with the results underneath. */}
           {simpleBrowse ? null : (
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setCategory(null)}
-              className={[
-                'px-3 py-1 rounded-full text-sm border transition-colors',
-                category === null
-                  ? 'bg-primary text-primary-foreground border-primary'
-                  : 'border-border hover:bg-accent',
-              ].join(' ')}
-            >
-              All
-            </button>
-            {visibleProviderCategories.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                onClick={() => setCategory(item.id)}
-                className={[
-                  'px-3 py-1 rounded-full text-sm border transition-colors',
-                  category === item.id
-                    ? 'bg-primary text-primary-foreground border-primary'
-                    : 'border-border hover:bg-accent',
-                ].join(' ')}
-              >
-                {item.label}
-              </button>
-            ))}
+          <CategoryChips
+            label="Source categories"
+            chips={visibleProviderCategories}
+            selected={category}
+            onSelect={setCategory}
+          >
             {!metaLoading && visibleProviderCategories.length === 0 && (
               <span className="self-center text-xs text-muted-foreground">
                 {contentTypeUnavailableReason(contentType) ? 'Categories are not available for this content type.' : 'No source categories are available for this content type.'}
               </span>
             )}
-          </div>
+          </CategoryChips>
           )}
         </div>
       )}
@@ -1614,58 +1726,10 @@ function BrowseContent({
           <div className="mt-2 flex gap-2">
             <button
               onClick={() => {
+                // Re-run the current query through the search effect.
+                clearBrowseSnapshot();
                 setSearchError(null);
-                setSearchLoading(true);
-                // Bump generation to re-trigger the search effect
-                generationRef.current += 1;
-                const newGen = generationRef.current;
-                inFlightSearchRef.current = newGen;
-                setItems([]);
-                setHasMore(false);
-
-                // Re-run the current query
-                const run = async () => {
-                  try {
-                    if (sort === 'for_you') {
-                      // simplified for_you retry
-                      const registryItems = await forYouItems(
-                        mcVersion ?? undefined,
-                        loader ?? undefined,
-                        undefined,
-                        undefined,
-                        debouncedQuery.trim() || undefined,
-                      );
-                      if (inFlightSearchRef.current === newGen) {
-                        setItems(curatedOnlyItems(registryItems));
-                        setHasMore(false);
-                      }
-                    } else {
-                      const page = await browseSearch(
-                        queryKey,
-                        debouncedQuery.trim() || undefined,
-                        contentType ?? undefined,
-                        category ?? undefined,
-                        sort,
-                        mcVersion ?? undefined,
-                        loader ?? undefined,
-                      );
-                      if (inFlightSearchRef.current === newGen) {
-                        setItems(page.items);
-                        setHasMore(page.hasMore);
-                      }
-                    }
-                  } catch (e) {
-                    if (inFlightSearchRef.current === newGen) {
-                      setSearchError(formatError(e));
-                    }
-                  } finally {
-                    if (inFlightSearchRef.current === newGen) {
-                      setSearchLoading(false);
-                      inFlightSearchRef.current = null;
-                    }
-                  }
-                };
-                run();
+                setSearchRun((run) => run + 1);
               }}
               className="rounded-lg bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
             >
@@ -1683,14 +1747,28 @@ function BrowseContent({
         </div>
       )}
 
+      <div ref={resultsRegionRef} id="browse-results" tabIndex={-1} className="space-y-6">
       {/* Loading or results */}
-      {searchLoading ? (
+      {listLoading ? (
         <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center text-muted-foreground">
           Loading items…
         </div>
       ) : items.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center">
-          <p className="text-muted-foreground">No items to display.</p>
+          {hiddenSentence ? (
+            <>
+              <p className="text-muted-foreground" data-testid="browse-hidden-by-filters">{hiddenSentence}</p>
+              <button
+                type="button"
+                onClick={showHiddenResults}
+                className="mt-2 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+              >
+                Show them
+              </button>
+            </>
+          ) : (
+            <p className="text-muted-foreground">No items to display.</p>
+          )}
           {contentTypeUnavailableReason(contentType) && (
             <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
               {contentTypeUnavailableReason(contentType)}
@@ -1703,6 +1781,40 @@ function BrowseContent({
             >
               Clear Filters
             </button>
+          )}
+          {shouldOfferModrinthSearch({
+            provider: modrinthProvider,
+            query: debouncedQuery,
+            sort,
+            resultCount: items.length,
+            loading: listLoading,
+            hasError: searchError !== null,
+          }) && (
+            <div
+              data-testid="browse-modrinth-offer"
+              className="mx-auto mt-4 max-w-xl rounded-lg border border-border bg-muted/30 p-4 text-left"
+            >
+              <p className="text-sm">
+                Not in the curated catalog. Search Modrinth too? Your searches will be sent to Modrinth.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void enableModrinthSearch()}
+                  disabled={enablingModrinth}
+                  className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Turn on Modrinth search
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.dispatchEvent(new CustomEvent('agora-navigate', { detail: 'settings' }))}
+                  className="text-sm font-medium text-primary hover:underline"
+                >
+                  Open Settings &gt; Services
+                </button>
+              </div>
+            </div>
           )}
         </div>
       ) : layout === 'grid' ? (
@@ -1739,7 +1851,7 @@ function BrowseContent({
           </button>
         </div>
       )}
-      {hasMore && !searchLoading && (
+      {hasMore && !listLoading && (
         <div
           ref={attachSentinel}
           data-testid="browse-load-sentinel"
@@ -1748,9 +1860,10 @@ function BrowseContent({
           {loadMoreLoading ? 'Loading more…' : ''}
         </div>
       )}
-      {!hasMore && items.length > 0 && (
+      {!hasMore && !listLoading && items.length > 0 && (
         <p className="py-4 text-center text-xs text-muted-foreground">All results loaded</p>
       )}
+      </div>
 
       {/* Bulk-selection install bar */}
       {selectedItems.size > 0 && (

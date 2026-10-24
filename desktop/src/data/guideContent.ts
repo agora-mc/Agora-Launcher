@@ -82,7 +82,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Keep Pack release selected: it installs the exact mod builds the curator tested. Flexible lets you pick another Minecraft version, but mods without a build for it are left out, and the install stops if a required one is missing.',
             'Set the instance name, then choose Check pack. It lists the Minecraft version and loader, how many mods will be installed, anything left out or missing, and each mod with its version. It does not show memory or download size; adjust memory afterwards in the instance editor.',
             'Launch the new instance. Resolve any health warnings before selecting Launch Anyway.',
-            'Play for at least 60 seconds so Agora can establish a Last Known Good recovery point.',
+            'Play for at least 60 seconds so Agora can save the last setup that launched fine (Last Known Good) as a recovery point.',
           ],
         },
       ],
@@ -200,10 +200,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Change one variable at a time',
           body: 'For large instances, treat changes as experiments. Create a snapshot, install one coherent group, launch, and confirm stability before continuing. Loadout profiles can isolate feature groups without deleting files.',
           steps: [
-            'Start from a known-good snapshot.',
+            'Start from a snapshot of a setup that launched fine.',
             'Apply a reviewed install plan.',
             'Launch and exercise the affected game area.',
-            'If stable, name a new snapshot or let a successful session promote the Last Known Good state.',
+            'If stable, name a new snapshot or let a successful session mark the last setup that launched fine (Last Known Good).',
             'If unstable, restore and revise the dependency or version choice.',
           ],
         },
@@ -227,7 +227,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Read Home from top to bottom',
-          body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. Last Known Good offers recovery when one exists. Compatible recommendations use your recent instance version and loader.',
+          body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. The last setup that launched fine (Last Known Good) offers recovery when one exists. Compatible recommendations use your recent instance version and loader.',
           bullets: [
             'A catalog alert means discovery data is missing or unavailable.',
             'A crash alert means the latest instance did not exit cleanly.',
@@ -268,11 +268,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Understand Home signals',
-          body: 'The Last Known Good card points to an explicitly promoted pre-launch snapshot, not merely the newest snapshot. Recommendations rank category overlap and then filter against the active instance\'s Minecraft version and loader.',
+          body: 'The card for the last setup that launched fine (Last Known Good) points to an explicitly promoted pre-launch snapshot, not merely the newest snapshot. Recommendations rank category overlap and then filter against the active instance\'s Minecraft version and loader.',
           callout: {
             tone: 'note',
             title: 'Recovery is deliberate',
-            text: 'Restoring a Last Known Good state creates an undo snapshot first, so the current state is not silently discarded.',
+            text: 'Restoring the last setup that launched fine (Last Known Good) creates an undo snapshot first, so the current state is not silently discarded.',
           },
         },
         {
@@ -320,11 +320,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Use instance cards',
-          body: 'Each card shows the instance name, loader, Minecraft version, last launch, and lock state. Launch starts the game, Edit opens the full editor, Troubleshoot opens diagnostic tools, and Delete permanently removes the instance after confirmation.',
+          body: 'Each card shows the instance name, loader, Minecraft version, last launch, and lock state. Launch starts the game, Edit opens the full editor, Troubleshoot opens diagnostic tools, and Delete removes the Agora copy of the instance after confirmation. Anything you imported from another launcher is left alone, and the deleted instance waits in Recently deleted (below the cards) for 30 days, where you can Restore it or Delete it now.',
           callout: {
             tone: 'warning',
             title: 'Export before deleting',
-            text: 'Snapshots are local recovery points, not an external backup. Export anything you need before deleting an instance.',
+            text: 'Snapshots are local recovery points, not an external backup. Recently deleted keeps an instance for 30 days, then moves it to your Recycle Bin; export anything you need to keep for good.',
           },
         },
         {
@@ -354,7 +354,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Separate by compatibility boundary',
           body: 'Create a new instance when changing Minecraft major/minor versions, switching loaders, evaluating an uncertain pack, or maintaining distinct server requirements. Reusing one instance across those boundaries makes rollback and diagnosis harder.',
           bullets: [
-            'Keep a locked, known-good play instance.',
+            'Keep a locked play instance that is known to work.',
             'Use a disposable test instance for major updates and unverified manual files.',
             'Clone from a lockfile when exact reproducibility matters.',
           ],
@@ -542,7 +542,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Batch changes strategically',
           body: 'Group updates that belong to one compatibility family, such as a library and its dependents. Avoid updating every subsystem at once on a large instance. Smaller batches produce clearer diffs and make crash investigation more decisive.',
           steps: [
-            'Snapshot the known-good baseline.',
+            'Snapshot the working setup as a baseline.',
             'Select one coherent update group.',
             'Review changed artifacts and hashes.',
             'Apply, launch, and test.',
@@ -773,7 +773,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Crash diagnosis and recovery',
     shortTitle: 'Crashes & recovery',
     category: 'Recover',
-    description: 'Use Crash Doctor, evidence-based testing, and Last Known Good recovery.',
+    description: 'Use Crash Doctor, evidence-based testing, and recovery to the last setup that launched fine (Last Known Good).',
     keywords: ['crash doctor', 'crash report', 'suspect', 'disable relaunch', 'restore'],
     basic: {
       summary: 'Crashes are usually solved fastest by preserving the current state, reading the first useful evidence, and testing one likely cause at a time. Crash Doctor guides that process.',
@@ -809,7 +809,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Recover instead of investigate',
-          body: 'If you need to play immediately, restore the Last Known Good state from Home or the Snapshots tab. Use Restore All & Close in Crash Doctor to undo its test changes.',
+          body: 'If you need to play immediately, restore the last setup that launched fine (Last Known Good) from Home or the Snapshots tab. Use Restore All & Close in Crash Doctor to undo its test changes.',
           callout: {
             tone: 'tip',
             title: 'Keep the crash report',
@@ -852,13 +852,13 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     shortTitle: 'Snapshots & loadouts',
     category: 'Recover',
     description: 'Create restore points and switch between groups of enabled mods.',
-    keywords: ['snapshot', 'last known good', 'loadout', 'profile', 'diff', 'restore'],
+    keywords: ['snapshot', 'last known good', 'last setup that launched fine', 'loadout', 'profile', 'diff', 'restore'],
     basic: {
-      summary: 'Snapshots restore files to an earlier state. Loadout profiles remember which installed mods are enabled. They solve different problems and work well together.',
+      summary: 'Snapshots restore files to an earlier state. Loadout profiles remember which mods, resource packs, shader packs, data packs and worlds are switched on. They solve different problems and work well together.',
       outcomes: [
         'Create, compare, restore, and delete snapshots.',
-        'Understand automatic Last Known Good promotion.',
-        'Save and apply an enabled-mod loadout.',
+        'Understand how the last setup that launched fine (Last Known Good) is saved automatically.',
+        'Save and apply a loadout profile, and know what it covers.',
       ],
       sections: [
         {
@@ -870,13 +870,13 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Show diff lists added, removed, and modified files relative to the snapshot. Restore returns the instance to that state and first creates an undo snapshot. Delete removes only the selected recovery point. Automatic pre-launch recovery intentionally excludes saves so launch does not rescan large worlds; full manual and transactional snapshots use a broader scope.',
           callout: {
             tone: 'note',
-            title: 'Last Known Good is automatic',
-            text: 'After a successful play session of at least 60 seconds, Agora can promote the exact pre-launch snapshot as the current Last Known Good state. Last Known Good protects mod and configuration state, not world saves.',
+            title: 'The last setup that launched fine is saved automatically',
+            text: 'After a successful play session of at least 60 seconds, Agora can save the exact pre-launch snapshot as the last setup that launched fine (Last Known Good). That protects mod and configuration state, not world saves.',
           },
         },
         {
           title: 'Create a loadout profile',
-          body: 'Open Loadout Profiles, name the current enabled-mod arrangement, and save it. Apply another profile to switch enabled states without removing files. Relaunch Minecraft after applying a profile.',
+          body: 'Open Loadout Profiles, name the profile, and save it. A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off, and its entry says how many of each it covers. Apply sets every item the profile records to that state. A mod it does not list, such as one added since it was saved, is asked about when you apply: keep it on, or switch it off. Packs and worlds it does not list keep their state. After you add or remove mods, use Update from setup on the profile: Agora lists every change first, and saves the profile as the instance is now when you confirm. Applying first saves an undo point under Snapshots, labelled before-loadout (only the newest is kept). Configs, versions and the loader are not part of a profile. Relaunch Minecraft after applying a profile.',
         },
         {
           title: 'Export and import a backup',
@@ -923,7 +923,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     shortTitle: 'Packs & sharing',
     category: 'Manage',
     description: 'Move complete instances between machines and verify that another instance matches.',
-    keywords: ['pack', 'mrpack', 'import', 'export', 'lockfile', 'clone', 'repair'],
+    keywords: ['pack', 'mrpack', 'import', 'export', 'lockfile', 'clone', 'repair', 'friend', 'another computer', 'transfer', 'share', 'send'],
     basic: {
       summary: 'Packs are the easiest way to distribute a coordinated instance. Agora supports Modrinth packs and its native pack format, while reproduction lockfiles focus on proving exact file state.',
       outcomes: [
@@ -934,10 +934,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Import a pack',
-          body: 'Open an instance with Edit, then use the Import tab (Select File & Import, for a .mrpack or Prism .zip) or Import Pack on the Mods tab (.mrpack or Agora pack file). A .mrpack opens a short review where you can rename the new instance before it is created. Agora prepares the loader and required content before promoting the new instance.',
+          body: 'On My Instances, click Import pack file at the top and pick a .mrpack or an Agora pack file. (In an instance\'s editor, the Import pack as new instance button at the top does the same, and the Other launchers & files tab has Select File & Import for a .mrpack or Prism .zip.) Either kind of pack opens a review before anything is created: the new instance\'s name, every file with where it comes from (a Modrinth or other download, or a copy inside the pack), what is left out, and anything that would stop the import. Agora prepares the loader and required content before promoting the new instance, and the finished instance shows which file it was imported from.',
           steps: [
             'Choose the pack file from a trusted source.',
-            'Check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
+            'In the review, check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
+            'Read the list of files and what is left out, then choose Import. Cancel leaves nothing behind.',
             'Leave save symlinking off unless you understand how shared save paths behave.',
             'Wait for preparation and health validation to finish.',
             'Launch once and verify the pack before adding more content.',
@@ -959,8 +960,23 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           },
         },
         {
+          title: 'Send a setup to a friend or another computer',
+          body: 'Open the instance with Edit, go to the Export tab, and choose Export as Modrinth Pack (.mrpack). It works for any setup: mods Agora can find on Modrinth are listed with download links, and every other mod is included as a file inside the pack, so nothing is missing on the other end. Your resource packs, shader packs and datapacks go along too (linked when Modrinth hosts that exact file, otherwise included as files), because you chose them. Disabled mods are included and arrive disabled. Send the saved file however you like. Configs, keybinds, and settings are not included, and neither are saves or snapshots.',
+          steps: [
+            'On the Export tab, pick Export as Modrinth Pack (.mrpack) and choose where to save it.',
+            'Send the file to your friend, or copy it to the other computer.',
+            'In Agora there, go to My Instances, click Import pack file, and pick the file. Prism, Modrinth App and other launchers can open a .mrpack too.',
+            'Review the name and the file list, choose Import, let Agora finish preparing, then launch once to check it.',
+          ],
+          callout: {
+            tone: 'note',
+            title: 'The Agora pack (.json) is lighter but needs sources',
+            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along; the Agora pack never carries resource packs, shader packs or datapacks. Disabled mods stay disabled on the other side, and the import review marks them. The pack carries the instance name you see in Agora.',
+          },
+        },
+        {
           title: 'Choose an export',
-          body: 'The editor labels the formats Export as Modrinth Pack (.mrpack) and Export as Agora Pack (.json). The Agora-native file is written as .agora-pack.json. The exported file location opens in your system file manager after a successful export.',
+          body: 'The editor labels the formats Export as Modrinth Pack (.mrpack) and Export as Agora Pack (.json). The Agora-native file is written as .agora-pack.json. You pick where the file is saved in a save dialog. After a successful export, the editor shows the saved location with a Show in folder button.',
         },
         {
           title: 'Share responsibly',
@@ -1230,7 +1246,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         {
           title: 'Prepare for offline play',
           steps: [
-            'Update the Agora catalog.',
+            'Update the Agora catalog while you are online. If it never downloaded (the first run had no internet), Browse and the Home banner say so: connect, then use Download Catalog or Retry. Until it has downloaded once, there is no catalog to browse offline.',
             'Launch each required instance once so game and loader files are present.',
             'Confirm the selected Java runtime is installed.',
             'Download planned mods and packs before disconnecting.',
@@ -1259,7 +1275,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Audit degraded behavior',
-          body: 'When a feature fails, compare its service consent with its endpoint permission and the live Online/Offline indicator. Individual endpoint preferences are persisted and enforced by the Rust backend; Lockdown Mode is a global backend block that overrides them.'
+          body: 'When a feature fails, compare its service consent with its endpoint permission and the connection status on the Privacy page, which reports whether Agora\'s last request reached its server. Individual endpoint preferences are persisted and enforced by the Rust backend; Lockdown Mode is a global backend block that overrides them.'
         },
         {
           title: 'Protect shared diagnostics',
