@@ -182,6 +182,11 @@ agora instance delete
 agora instance deleted
 agora instance restore
 agora instance purge
+agora instance health <INSTANCE_ID> | --all
+agora instance revert <INSTANCE_ID>
+agora instance loader-version <INSTANCE_ID> <VERSION> [--yes]
+agora instance java <INSTANCE_ID> [--path <FILE> | --clear-path] [--memory <MB>] [--jvm-args <ARGS>]
+agora instance wrapper <INSTANCE_ID> [<COMMAND> | --clear]
 ```
 
 Examples:
@@ -190,6 +195,9 @@ Examples:
 agora instance recommend-memory <INSTANCE_ID>
 agora instance lock <INSTANCE_ID>
 agora instance clone <SOURCE_ID> "Debug Copy" --no-saves
+agora instance health --all
+agora instance java <INSTANCE_ID> --memory 6144 --jvm-args "-Dexample.flag=true"
+agora instance wrapper <INSTANCE_ID> "mangohud --dlsym"
 ```
 
 Clone flags can omit saves, mods, resource packs, shader packs, screenshots, configuration, `servers.dat`, or options. Hard-link and symlink modes change filesystem behavior and should be used only when the destination and source relationship is understood.
@@ -204,6 +212,14 @@ agora instance restore <ENTRY_ID>
 agora instance purge <ENTRY_ID> --yes
 ```
 
+`instance health` runs the same cached health check the desktop app uses. With `--all` it checks every instance, prints the whole table, and then exits nonzero if any instance is red or cannot be read. `instance revert` returns an unlocked instance to the snapshot taken when it was last locked, and takes an undo point first. It refuses an instance that was never locked.
+
+`instance loader-version` shows the current loader, the compatible versions for the enabled mods, and the recommendation, then asks before switching. A version outside the compatible list is refused before anything changes. `--yes` skips the question.
+
+`instance java` with no options shows the current settings. `--path` must name an existing file, and `--clear-path` goes back to the global Java setting. `--memory` is in MB; Agora keeps heap sizes between 2048 and 32768 and says so when it adjusts one. Setting memory makes the choice manual, as creation does. `--jvm-args` replaces the instance's arguments.
+
+`instance wrapper` sets the command the game is launched under, for example a frame-timing overlay. It is checked the way the launcher reads it, so an unmatched quote is refused. An empty command or `--clear` removes it.
+
 ### Mods and content
 
 ```text
@@ -216,10 +232,22 @@ agora mod update-all <INSTANCE>
 agora mod pin <INSTANCE> <FILE>
 agora mod unpin <INSTANCE> <FILE>
 agora mod changelog <INSTANCE> <FILE>
-agora mod enable <INSTANCE> <FILE>
+agora mod enable <INSTANCE> <FILE> [--with-deps]
 agora mod disable <INSTANCE> <FILE>
 agora mod worlds <INSTANCE> <FILE> --worlds <A,B> | --all
 agora mod sync-datapacks <INSTANCE>
+agora mod graph <INSTANCE>
+agora mod orphans <INSTANCE>
+agora mod why <INSTANCE> <FILE>
+agora mod disable-plan <INSTANCE> <FILE>
+```
+
+Examples:
+
+```bash
+agora mod graph <INSTANCE_ID>
+agora mod why <INSTANCE_ID> <FILE>
+agora mod enable <INSTANCE_ID> <FILE> --with-deps
 ```
 
 Common planning options:
@@ -242,6 +270,10 @@ Common planning options:
 The default source is Agora's curated strategy. Use `--source modrinth` only when the optional Modrinth integration and its network permissions are enabled.
 
 `mod enable` and `mod disable` fail with a clear error and a nonzero exit when the named file does not exist. Confirm the filename with `mod list` if the error is unexpected.
+
+`mod graph` lists every dependency between installed mods that are switched on. `mod orphans` lists dependency-installed mods that no user-installed mod still needs. `mod why` traces one file back to the mod that asked for it. `mod disable-plan` shows which installed mods declare a dependency on a file, so you can see what switching it off would affect; it changes nothing. These four only read the instance.
+
+`mod enable --with-deps` also re-enables the required dependencies of the file that are switched off. It is best-effort, as in the desktop app: a dependency that cannot be re-enabled is reported as a warning, and the file itself is still enabled.
 
 Minecraft only loads data packs from inside a world, so Agora copies enabled data packs into the instance's worlds before each launch and after installs and removals. `mod worlds` limits one data pack to the named world folders (or `--all` to go back to every world), and `mod sync-datapacks` runs the copy now, for example for a world created since the last launch. Agora only removes or replaces data pack files it placed itself.
 
@@ -293,6 +325,25 @@ agora loadout delete <INSTANCE> <NAME>
 A loadout records the on/off state of mods, resource packs, shader packs, data packs and worlds. Applying one sets each item it records to that state. An enabled mod it does not list (one added since it was saved, say) is a choice: `--others keep` leaves it on and `--others off` switches it off. When there are such mods and no `--others` is given, apply refuses and names them, so nothing changes. Packs and worlds it does not list are left as they are. Apply refuses a locked instance, and an instance whose game is running or starting, and changes nothing in either case. Before switching, apply saves an undo point labelled `before-loadout` (only the newest is kept). `loadout update` saves a profile again from the instance's current setup, so a mod added since it was saved stops being unlisted. It lists what would change (added, turned on or off, or dropped because it is gone) and asks first on an interactive terminal. Without a terminal it changes nothing and names the changes; pass `--yes` once the person using this computer has agreed. It does not touch the instance, so a locked instance or a running game does not block it.
 
 A loadout does not revert mod versions or configuration files.
+
+### Templates
+
+```text
+agora template list
+agora template create <NAME> [--from <INSTANCE> --include <FILE>...] [--memory <MB>] [--gc <GC>] [--java-path <FILE>] [--jvm-args <ARGS>] [--description <TEXT>]
+agora template apply <TEMPLATE_ID> <INSTANCE>
+agora template delete <TEMPLATE_ID> [--yes]
+```
+
+Examples:
+
+```bash
+agora template create "Sodium options" --from <INSTANCE_ID> --include config/sodium-options.json
+agora template create "Big heap" --memory 8192 --gc low_latency
+agora template apply <TEMPLATE_ID> <INSTANCE_ID>
+```
+
+A template keeps chosen configuration files and JVM settings so you can copy them to another instance. Only the files named with `--include` are captured, by path relative to the source instance; `--include` needs `--from`. A template with no files and no JVM setting is refused. Applying a template copies its files over the same paths in the target instance, and takes an undo point first when it copies any. A JVM setting the template does not name is left alone. Deleting a template asks first; without a terminal, pass `--yes`.
 
 ### Reproduction lockfiles
 
