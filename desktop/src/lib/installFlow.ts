@@ -77,6 +77,8 @@ export interface ResolvedInstallPlan {
   filesToAdd: FileAdd[];
   filesToRemove: FileRemove[];
   filesToDisable: FileDisable[];
+  /** Optional: plans from before this field existed, and test fixtures, omit it. */
+  filesToEnable?: FileEnable[];
   snapshot: SnapshotPlan;
   diskEstimate: DiskSpaceEstimate;
   warnings: PlanWarning[];
@@ -138,6 +140,7 @@ export function planNeedsUserReview(
     || plan.conflicts.length > 0
     || plan.filesToRemove.length > 0
     || plan.filesToDisable.length > 0
+    || (plan.filesToEnable?.length ?? 0) > 0
     || plan.dependencies.some((dependency) =>
       dependency.disposition.type === 'unresolved'
       || dependency.disposition.type === 'unchecked'
@@ -219,6 +222,8 @@ export interface FileAdd {
 }
 export interface FileRemove { filename: string; }
 export interface FileDisable { filename: string; }
+/** A disabled file the instance already has, turned back on in place rather than downloaded. */
+export interface FileEnable { filename: string; contentType: string; }
 
 export interface SnapshotPlan { label: string; estimatedBytes: number; }
 export interface DiskSpaceEstimate { downloadBytes: number; snapshotBytes: number; applyOverheadBytes: number; peakAdditionalBytes: number; postCommitDeltaBytes: number; }

@@ -679,6 +679,21 @@ enum ModsCmd {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum UnlistedModsArg {
+    Keep,
+    Off,
+}
+
+impl From<UnlistedModsArg> for agora_core::loadout::UnlistedMods {
+    fn from(arg: UnlistedModsArg) -> Self {
+        match arg {
+            UnlistedModsArg::Keep => Self::Keep,
+            UnlistedModsArg::Off => Self::Off,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ModSourceArg {
     Curated,
     Modrinth,
@@ -773,7 +788,14 @@ enum LoadoutCmd {
     /// List all loadout profiles for an instance.
     List { instance: String },
     /// Apply a loadout profile (enable/disable content to match).
-    Apply { instance: String, name: String },
+    Apply {
+        instance: String,
+        name: String,
+        /// What to do with enabled mods the profile does not list. Required
+        /// when there are any; `keep` leaves them on, `off` switches them off.
+        #[arg(long = "others", value_enum)]
+        others: Option<UnlistedModsArg>,
+    },
     /// Delete a loadout profile.
     Delete { instance: String, name: String },
 }
@@ -3708,15 +3730,33 @@ async fn run_loadout_command(
                 print_table(&["Name", "Created", "Entries"], &rows);
             }
         }
-        LoadoutCmd::Apply { instance, name } => {
+        LoadoutCmd::Apply {
+            instance,
+            name,
+            others,
+        } => {
             let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
             if !instance_dir.exists() {
                 anyhow::bail!("Instance '{}' not found", instance);
             }
             // Same core service the desktop uses: the lock, the running-game
             // check and the undo point are not things a second front end skips.
-            agora_core::loadout_service::LoadoutService::new(ctx.clone())
-                .apply(&instance, &name)?;
+            let service = agora_core::loadout_service::LoadoutService::new(ctx.clone());
+            let unlisted = service.unlisted_mods(&instance, &name)?;
+            let choice = match (others, unlisted.is_empty()) {
+                (Some(choice), _) => choice.into(),
+                // Nothing would be switched off either way, so there is nothing to ask.
+                (None, true) => agora_core::loadout::UnlistedMods::Keep,
+                (None, false) => anyhow::bail!(
+                    "Loadout '{}' does not list {} enabled mod(s) on '{}': {}. \
+                     Rerun with --others keep to leave them on, or --others off to switch them off.",
+                    name,
+                    unlisted.len(),
+                    instance,
+                    unlisted.join(", ")
+                ),
+            };
+            service.apply(&instance, &name, choice)?;
             if json {
                 println!(
                     "{}",
@@ -4975,6 +5015,7 @@ mod tests {
     use super::OutputFormat;
     use super::PackCmd;
     use super::SilentReporter;
+    use super::UnlistedModsArg;
     use agora_core::dependency_ops;
     use agora_core::error::LauncherError;
     use agora_core::install_pipeline::{
@@ -6223,9 +6264,43 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Loadout {
-                action: LoadoutCmd::Apply { .. }
+                action: LoadoutCmd::Apply { others: None, .. }
             }
         ));
+    }
+
+    #[test]
+    fn loadout_apply_takes_an_others_choice_and_refuses_anything_else() {
+        let cli = Cli::try_parse_from([
+            "agora",
+            "loadout",
+            "apply",
+            "my-instance",
+            "my-profile",
+            "--others",
+            "off",
+        ])
+        .expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Loadout {
+                action: LoadoutCmd::Apply {
+                    others: Some(UnlistedModsArg::Off),
+                    ..
+                }
+            }
+        ));
+
+        assert!(Cli::try_parse_from([
+            "agora",
+            "loadout",
+            "apply",
+            "my-instance",
+            "my-profile",
+            "--others",
+            "maybe",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -6398,6 +6473,7 @@ mod tests {
             files_to_remove: vec![],
             files_to_disable: vec![],
             files_to_promote: vec![],
+            files_to_enable: vec![],
             snapshot: SnapshotPlan {
                 label: "".into(),
                 estimated_bytes: 0,
@@ -6458,6 +6534,7 @@ mod tests {
             files_to_remove: vec![],
             files_to_disable: vec![],
             files_to_promote: vec![],
+            files_to_enable: vec![],
             snapshot: SnapshotPlan {
                 label: "".into(),
                 estimated_bytes: 0,

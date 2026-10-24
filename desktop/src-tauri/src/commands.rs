@@ -4968,19 +4968,43 @@ pub async fn create_loadout_profile(
     })
 }
 
+/// Mods that are on but that the profile does not list. The Apply flow asks the
+/// user what to do with them before it calls `apply_loadout_profile`.
+#[tauri::command]
+pub async fn list_loadout_unlisted_mods(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_core::loadout_service::LoadoutService::new(ctx)
+            .unlisted_mods(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 #[tauri::command]
 pub async fn apply_loadout_profile(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     profile_name: String,
+    unlisted_mods: agora_core::loadout::UnlistedMods,
 ) -> LauncherResult<()> {
     // Core checks the lock and the running game, takes the undo point, and
     // rolls back on failure. The desktop only hands over the request.
     let ctx = crate::core_context(&app)?;
     let sanitized = paths::sanitize_id(&instance_id);
     tokio::task::spawn_blocking(move || {
-        agora_core::loadout_service::LoadoutService::new(ctx).apply(&sanitized, &profile_name)
+        agora_core::loadout_service::LoadoutService::new(ctx).apply(
+            &sanitized,
+            &profile_name,
+            unlisted_mods,
+        )
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?

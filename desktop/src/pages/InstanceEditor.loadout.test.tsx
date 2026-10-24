@@ -40,6 +40,9 @@ type Profile = {
 };
 
 let profiles: Profile[] = [];
+// Enabled mods the profile does not list, as the core reports them.
+let unlisted: string[] = [];
+let unlistedFailure: string | null = null;
 
 function calls(command: string) {
   return invokeMock.mock.calls.filter(([name]) => name === command);
@@ -48,6 +51,8 @@ function calls(command: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   profiles = [];
+  unlisted = [];
+  unlistedFailure = null;
   invokeMock.mockImplementation(async (command: string) => {
     switch (command) {
       case 'get_instance_detail': return detail();
@@ -61,6 +66,9 @@ beforeEach(() => {
       case 'list_loadout_profiles': return profiles;
       case 'create_loadout_profile': return undefined;
       case 'apply_loadout_profile': return undefined;
+      case 'list_loadout_unlisted_mods':
+        if (unlistedFailure) throw new Error(unlistedFailure);
+        return unlisted;
       case 'get_mod_groups': return {};
       default: return null;
     }
@@ -109,7 +117,7 @@ describe('loadout profile coverage', () => {
     await openLoadoutTab();
 
     expect(await screen.findByText(
-      'Switches on: 1 mod, 1 resource pack, 0 shader packs, 0 data packs, 0 worlds. Mods it does not list are switched off; other items it does not list are left alone.',
+      'Switches on: 1 mod, 1 resource pack, 0 shader packs, 0 data packs, 0 worlds. Mods it does not list are asked about when you apply; other items it does not list are left alone.',
     )).toBeTruthy();
   });
 
@@ -120,10 +128,10 @@ describe('loadout profile coverage', () => {
     expect(await screen.findByText(/Saved before counts were recorded: 2 items switched on\./)).toBeTruthy();
   });
 
-  it('explains that Apply switches off unlisted mods but leaves unlisted packs and worlds alone', async () => {
+  it('explains that Apply asks about unlisted mods but leaves unlisted packs and worlds alone', async () => {
     await openLoadoutTab();
-    expect(screen.getByText(/A mod it does not list is switched off\./)).toBeTruthy();
-    expect(screen.getByText(/Packs and worlds it does not list, such as ones added since it was saved, are left as they are\./)).toBeTruthy();
+    expect(screen.getByText(/A mod it does not list, such as one added since it was saved, is asked about when you apply/)).toBeTruthy();
+    expect(screen.getByText(/Packs and worlds it does not list are left as they are\./)).toBeTruthy();
   });
 });
 
@@ -135,6 +143,67 @@ describe('applying a loadout profile', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
 
     expect(await screen.findByText(/Profile "Fast" applied\. Before switching, Agora saved an undo point under Snapshots, labelled before-loadout/)).toBeTruthy();
-    expect(calls('apply_loadout_profile')[0][1]).toEqual({ instanceId: 'alpha', profileName: 'Fast' });
+    expect(calls('apply_loadout_profile')[0][1]).toEqual({ instanceId: 'alpha', profileName: 'Fast', unlistedMods: 'keep' });
+  });
+
+  it('applies without asking when every enabled mod is listed, since there is nothing to switch off', async () => {
+    profiles = [{ name: 'Fast', enabled_mods: [], created_at: '2026-01-01T00:00:00Z', covers: null }];
+    await openLoadoutTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+
+    await waitFor(() => expect(calls('apply_loadout_profile')).toHaveLength(1));
+    expect(screen.queryByText('Mods this profile does not list')).toBeNull();
+  });
+
+  it('asks about unlisted mods, naming them, and applies with Keep when the user keeps them', async () => {
+    profiles = [{ name: 'Fast', enabled_mods: [], created_at: '2026-01-01T00:00:00Z', covers: null }];
+    unlisted = ['newer.jar', 'extra.jar'];
+    await openLoadoutTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    expect(await screen.findByText('Mods this profile does not list')).toBeTruthy();
+    expect(screen.getByText('newer.jar')).toBeTruthy();
+    expect(screen.getByText('extra.jar')).toBeTruthy();
+    expect(calls('apply_loadout_profile')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep them on' }));
+    await waitFor(() => expect(calls('apply_loadout_profile')).toHaveLength(1));
+    expect(calls('apply_loadout_profile')[0][1]).toEqual({ instanceId: 'alpha', profileName: 'Fast', unlistedMods: 'keep' });
+  });
+
+  it('switches unlisted mods off only when the user chooses that', async () => {
+    profiles = [{ name: 'Fast', enabled_mods: [], created_at: '2026-01-01T00:00:00Z', covers: null }];
+    unlisted = ['newer.jar'];
+    await openLoadoutTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch them off' }));
+
+    await waitFor(() => expect(calls('apply_loadout_profile')).toHaveLength(1));
+    expect(calls('apply_loadout_profile')[0][1]).toEqual({ instanceId: 'alpha', profileName: 'Fast', unlistedMods: 'off' });
+  });
+
+  it('applies nothing when the user cancels the question', async () => {
+    profiles = [{ name: 'Fast', enabled_mods: [], created_at: '2026-01-01T00:00:00Z', covers: null }];
+    unlisted = ['newer.jar'];
+    await openLoadoutTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByText('Mods this profile does not list')).toBeNull());
+    expect(calls('apply_loadout_profile')).toHaveLength(0);
+  });
+
+  it('applies nothing and says why when the unlisted mods cannot be read', async () => {
+    profiles = [{ name: 'Fast', enabled_mods: [], created_at: '2026-01-01T00:00:00Z', covers: null }];
+    unlistedFailure = 'Profile could not be read.';
+    await openLoadoutTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+
+    expect(await screen.findByText(/Profile could not be read\./)).toBeTruthy();
+    expect(calls('apply_loadout_profile')).toHaveLength(0);
   });
 });

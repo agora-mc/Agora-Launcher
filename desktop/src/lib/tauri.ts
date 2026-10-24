@@ -2890,8 +2890,14 @@ export const listLoadoutProfiles = (instanceId: string) =>
 export const createLoadoutProfile = (instanceId: string, name: string) =>
   invoke<LoadoutProfile>('create_loadout_profile', { instanceId, name });
 
-export const applyLoadoutProfile = (instanceId: string, profileName: string) =>
-  invoke<void>('apply_loadout_profile', { instanceId, profileName });
+/** What applying a profile does with enabled mods it does not list. `keep` leaves them on; `off` switches them off. */
+export type UnlistedModsChoice = 'keep' | 'off';
+
+export const listLoadoutUnlistedMods = (instanceId: string, profileName: string) =>
+  invoke<string[]>('list_loadout_unlisted_mods', { instanceId, profileName });
+
+export const applyLoadoutProfile = (instanceId: string, profileName: string, unlistedMods: UnlistedModsChoice) =>
+  invoke<void>('apply_loadout_profile', { instanceId, profileName, unlistedMods });
 
 export const deleteLoadoutProfile = (instanceId: string, profileName: string) =>
   invoke<void>('delete_loadout_profile', { instanceId, profileName });

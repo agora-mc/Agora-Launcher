@@ -107,6 +107,8 @@ beforeEach(() => {
         return undefined;
       case 'apply_loadout_profile':
         return undefined;
+      case 'list_loadout_unlisted_mods':
+        return [];
       case 'get_mod_groups': return {};
       default: return null;
     }

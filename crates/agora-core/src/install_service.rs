@@ -1019,6 +1019,7 @@ mod curated_conflict_tests {
             files_to_remove: removes,
             files_to_disable: vec![],
             files_to_promote: vec![],
+            files_to_enable: vec![],
             snapshot: SnapshotPlan {
                 label: String::new(),
                 estimated_bytes: 0,

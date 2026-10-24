@@ -224,6 +224,39 @@ describe('install review: restoring a missing file', () => {
   });
 });
 
+describe('install review: turning on a disabled copy', () => {
+  it('says the file is turned on, and does not say it is added or downloaded', async () => {
+    const turningOn = planWith([]);
+    turningOn.operation = {
+      type: 'install',
+      artifact: { filename: 'fabric-api.jar', metadata: { version: '0.97.3' } } as never,
+    };
+    turningOn.filesToEnable = [{ filename: 'fabric-api.jar', contentType: 'mod' }];
+    installFlowMocks.resolveInstallPlan.mockResolvedValue(turningOn);
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+    const review = panel();
+
+    expect(await within(review).findByText('Turns on fabric-api.jar')).toBeInTheDocument();
+    expect(within(review).getByText('turned on')).toBeInTheDocument();
+    expect(within(review).queryByText(/1 file added/)).not.toBeInTheDocument();
+    expect(within(review).queryByText(/will be removed/)).not.toBeInTheDocument();
+  });
+
+  it('counts several copies turned on in one line', async () => {
+    const turningOnMany = planWith([]);
+    turningOnMany.filesToEnable = [
+      { filename: 'a.jar', contentType: 'mod' },
+      { filename: 'b.jar', contentType: 'mod' },
+    ];
+    installFlowMocks.resolveInstallPlan.mockResolvedValue(turningOnMany);
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+
+    expect(await within(panel()).findByText('Turns on 2 files')).toBeInTheDocument();
+  });
+});
+
 describe('install review: a required mod the jar declares', () => {
   const missing = (): ResolvedDep => dep('fabric-api', { type: 'unresolved', reason: 'it is not in the Agora catalog' }, {
     source: 'jar',
