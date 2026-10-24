@@ -223,7 +223,12 @@ export interface FileAdd {
 export interface FileRemove { filename: string; }
 export interface FileDisable { filename: string; }
 /** A disabled file the instance already has, turned back on in place rather than downloaded. */
-export interface FileEnable { filename: string; contentType: string; }
+export interface FileEnable {
+  filename: string;
+  contentType: string;
+  /** The mods that need this one. Set only when it is turned on to satisfy them. */
+  neededBy?: string[];
+}
 
 export interface SnapshotPlan { label: string; estimatedBytes: number; }
 export interface DiskSpaceEstimate { downloadBytes: number; snapshotBytes: number; applyOverheadBytes: number; peakAdditionalBytes: number; postCommitDeltaBytes: number; }

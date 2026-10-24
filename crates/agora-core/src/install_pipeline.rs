@@ -419,6 +419,9 @@ pub struct FileEnable {
     /// The entry's plain name, without `.disabled`.
     pub filename: String,
     pub content_type: String,
+    /// The mods that need this one, when it is turned on to satisfy them.
+    #[serde(default)]
+    pub needed_by: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,6 +1325,7 @@ impl InstallPipeline {
                 continue;
             }
             if let DepDisposition::InstallCandidate { artifact } = &dependency.disposition {
+                let enables_before = files_to_enable.len();
                 plan_artifact_change(
                     artifact,
                     false,
@@ -1338,6 +1342,9 @@ impl InstallPipeline {
                     &mut files_to_promote,
                     &mut files_to_enable,
                 );
+                for enable in &mut files_to_enable[enables_before..] {
+                    enable.needed_by = dependency.requested_by.clone();
+                }
             }
         }
         for conflict in &conflicts {
@@ -2418,9 +2425,10 @@ fn plan_artifact_change(
             });
             return;
         }
-        // A disabled copy that is still intact is turned back on, not downloaded
-        // again. Anything that is not clearly intact falls through to the replace
-        // path below, which downloads the file.
+        // A disabled entry whose copy is intact keeps the user's choice. An
+        // explicit install leaves it off and says so. A dependency needs it on,
+        // so it is turned on in place rather than downloaded again. A copy that
+        // is not clearly intact falls through to the replace path below.
         if same_content && same_version && !file_missing && !existing.enabled {
             match can_enable_in_place(instance_dir, existing) {
                 Ok(true) => {
@@ -2430,10 +2438,22 @@ fn plan_artifact_change(
                             content_type: Some(existing.content_type.clone()),
                         });
                     }
-                    enables.push(FileEnable {
-                        filename: existing.filename.clone(),
-                        content_type: existing.content_type.clone(),
-                    });
+                    if installed_as_dependency {
+                        enables.push(FileEnable {
+                            filename: existing.filename.clone(),
+                            content_type: existing.content_type.clone(),
+                            needed_by: Vec::new(),
+                        });
+                    } else {
+                        warnings.push(PlanWarning {
+                            code: "ALREADY_INSTALLED".into(),
+                            message: format!(
+                                "{} {} is already installed, turned off. Its file is intact, so nothing is downloaded or changed. Turn it on in the mod list if you want it on.",
+                                artifact_item_id(artifact),
+                                artifact_version_id(artifact)
+                            ),
+                        });
+                    }
                     return;
                 }
                 Ok(false) => {}
@@ -4467,7 +4487,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_entry_is_turned_on_not_reported_installed() {
+    fn a_disabled_entry_is_reported_intact_and_left_off_by_a_reinstall() {
         // Control: the same entry, enabled with its file present, is installed.
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
@@ -4484,26 +4504,105 @@ mod tests {
             .iter()
             .any(|w| w.code == "ALREADY_INSTALLED"));
 
-        // Disabled: it cannot satisfy anyone, so the planner turns its intact
-        // copy back on rather than downloading the same bytes again.
+        // Disabled with an intact copy: the user chose "off", so a plain
+        // reinstall reports the file as intact and changes nothing.
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         write_matching_fabric_api_entry(&instance_dir, false);
-        std::fs::write(
-            instance_dir.join("mods").join("fabric-api.jar.disabled"),
-            REINSTALL_BYTES,
-        )
-        .unwrap();
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
         let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
-        assert!(!plan.warnings.iter().any(|w| w.code == "ALREADY_INSTALLED"));
+        assert!(plan.files_to_add.is_empty(), "nothing is downloaded");
         assert!(
-            plan.files_to_add.is_empty(),
-            "an intact copy is not downloaded again"
+            plan.files_to_enable.is_empty(),
+            "a reinstall does not turn it on"
         );
-        assert_eq!(plan.files_to_enable.len(), 1);
-        assert_eq!(plan.files_to_enable[0].filename, "fabric-api.jar");
         assert!(plan.files_to_remove.is_empty());
         assert!(plan.is_fully_resolved());
+        assert!(plan.warnings.iter().any(|w| {
+            w.code == "ALREADY_INSTALLED"
+                && w.message.contains("turned off")
+                && w.message.contains("intact")
+        }));
+        apply_planned_enable(&instance_dir, &plan);
+        assert!(
+            mods.join("fabric-api.jar.disabled").is_file(),
+            "the copy stays off"
+        );
+        assert!(!mods.join("fabric-api.jar").exists());
+        let next: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(next["mods"][0]["enabled"], false);
+    }
+
+    /// The plan for "sodium", which needs fabric-api, with fabric-api pulled in
+    /// as a dependency of it.
+    fn dependency_plan_for_fabric_api(instance_dir: &Path) -> ResolvedInstallPlan {
+        let mut intent = reinstall_intent();
+        intent.action = InstallAction::Install {
+            source_type: SourceType::Curated,
+            item_id: "sodium".into(),
+            candidate_version: Some("1.0".into()),
+        };
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "sodium",
+                    "sodium.jar",
+                    crate::download::sha256_hex(b"sodium bytes"),
+                    ArtifactSource::Download {
+                        url: "https://cdn.modrinth.com/data/sodium.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![ResolvedDep {
+                requested_by: vec!["sodium".into()],
+                pinned_version: None,
+                mod_jar_id: "fabric-api".into(),
+                requirement: Requirement::Required,
+                source: DepSource::Manifest,
+                display_name: None,
+                page_url: None,
+                disposition: DepDisposition::InstallCandidate {
+                    artifact: Box::new(test_artifact(
+                        "fabric-api",
+                        "fabric-api.jar",
+                        crate::download::sha256_hex(REINSTALL_BYTES),
+                        ArtifactSource::Download {
+                            url: "https://cdn.modrinth.com/data/file.jar".into(),
+                        },
+                        SourceType::Curated,
+                    )),
+                },
+            }],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            InstallPipeline
+                .resolve_plan(intent, instance_dir, prepared, &NoopReporter)
+                .await
+                .unwrap()
+        })
+    }
+
+    /// Applies a dependency plan the way the pipeline does, staging the one
+    /// file it adds (sodium) from the bytes its hash was made from.
+    fn apply_dependency_plan(instance_dir: &Path, plan: &ResolvedInstallPlan) {
+        let staging = instance_dir.parent().unwrap().join("staging");
+        std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        for add in &plan.files_to_add {
+            std::fs::write(
+                staging.join("artifacts").join(&add.staging_filename),
+                b"sodium bytes",
+            )
+            .unwrap();
+        }
+        prepare_manifest(plan, instance_dir, &staging).unwrap();
+        apply_transaction(plan, instance_dir, &staging).unwrap();
     }
 
     /// Applies a plan that only turns files on, the way the pipeline does:
@@ -4516,16 +4615,28 @@ mod tests {
     }
 
     #[test]
-    fn an_intact_disabled_copy_is_turned_on_in_place_and_the_manifest_says_so() {
+    fn a_disabled_dependency_with_an_intact_copy_is_turned_on_and_names_who_needs_it() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         write_matching_fabric_api_entry(&instance_dir, false);
         let mods = instance_dir.join("mods");
         std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
 
-        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
-        apply_planned_enable(&instance_dir, &plan);
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert!(
+            plan.files_to_add
+                .iter()
+                .all(|add| add.target_filename != "fabric-api.jar"),
+            "an intact copy is not downloaded again"
+        );
+        assert_eq!(plan.files_to_enable.len(), 1);
+        assert_eq!(plan.files_to_enable[0].filename, "fabric-api.jar");
+        assert_eq!(
+            plan.files_to_enable[0].needed_by,
+            vec!["sodium".to_string()]
+        );
 
+        apply_dependency_plan(&instance_dir, &plan);
         assert!(
             mods.join("fabric-api.jar").is_file(),
             "the copy is on again"
@@ -4535,9 +4646,13 @@ mod tests {
             &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
         )
         .unwrap();
-        let entries = next["mods"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["enabled"], true);
+        let fabric = next["mods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["filename"] == "fabric-api.jar")
+            .unwrap();
+        assert_eq!(fabric["enabled"], true);
     }
 
     #[test]
@@ -4565,7 +4680,26 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_entry_is_not_turned_on_over_an_enabled_file_of_the_same_name() {
+    fn a_disabled_dependency_with_a_tampered_copy_is_downloaded_again() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        std::fs::write(
+            instance_dir.join("mods").join("fabric-api.jar.disabled"),
+            b"tampered",
+        )
+        .unwrap();
+
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert!(plan.files_to_enable.is_empty());
+        assert!(plan
+            .files_to_add
+            .iter()
+            .any(|add| add.target_filename == "fabric-api.jar"));
+    }
+
+    #[test]
+    fn a_disabled_dependency_is_not_turned_on_over_an_enabled_file_of_the_same_name() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         write_matching_fabric_api_entry(&instance_dir, false);
@@ -4573,7 +4707,7 @@ mod tests {
         std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
         std::fs::write(mods.join("fabric-api.jar"), b"enabled copy").unwrap();
 
-        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
         assert!(
             plan.files_to_enable.is_empty(),
             "the planner must not rename over an enabled file"
@@ -4581,18 +4715,25 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_apply_turns_the_disabled_copy_back_off() {
+    fn a_failed_apply_turns_the_disabled_dependency_back_off() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         write_matching_fabric_api_entry(&instance_dir, false);
         let mods = instance_dir.join("mods");
         std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
-        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
         assert_eq!(plan.files_to_enable.len(), 1);
 
         // Fails after the copy has been turned on, so the rollback must undo it.
         let staging = instance_dir.parent().unwrap().join("staging");
         std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        for add in &plan.files_to_add {
+            std::fs::write(
+                staging.join("artifacts").join(&add.staging_filename),
+                b"sodium bytes",
+            )
+            .unwrap();
+        }
         prepare_manifest(&plan, &instance_dir, &staging).unwrap();
         set_install_failpoint(Some("manifest-rename"));
         let result = apply_transaction(&plan, &instance_dir, &staging);

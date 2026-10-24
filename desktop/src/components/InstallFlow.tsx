@@ -991,7 +991,7 @@ function ReviewView({
               <ChangeChip
                 icon={Power}
                 tone="add"
-                label={enableCount === 1 ? `Turns on ${enabledFiles[0].filename}` : `Turns on ${enableCount} ${pluralFiles(enableCount)}`}
+                label={enableChipLabel(enabledFiles)}
               />
             )}
           </div>
@@ -1232,6 +1232,15 @@ function ReviewSection({ title, hint, children }: {
       <div className="mt-2 space-y-1.5">{children}</div>
     </section>
   );
+}
+
+/** "Turns on x" for one file, with who needs it when a dependency turns it on. */
+function enableChipLabel(files: { filename: string; neededBy?: string[] }[]): string {
+  if (files.length !== 1) return `Turns on ${files.length} ${pluralFiles(files.length)}`;
+  const [file] = files;
+  const needers = file.neededBy ?? [];
+  if (needers.length === 0) return `Turns on ${file.filename}`;
+  return `Turns on ${file.filename} because ${needers.join(', ')} ${needers.length === 1 ? 'needs' : 'need'} it`;
 }
 
 function ChangeChip({ icon: Icon, label, tone }: {

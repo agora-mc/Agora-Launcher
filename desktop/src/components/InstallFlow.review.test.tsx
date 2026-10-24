@@ -257,6 +257,32 @@ describe('install review: turning on a disabled copy', () => {
   });
 });
 
+describe('install review: who needs a disabled mod turned on', () => {
+  it('says which mod needs the turned-on file', async () => {
+    const dependencyOn = planWith([]);
+    dependencyOn.filesToEnable = [{ filename: 'fabric-api.jar', contentType: 'mod', neededBy: ['sodium'] }];
+    installFlowMocks.resolveInstallPlan.mockResolvedValue(dependencyOn);
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+
+    expect(
+      await within(panel()).findByText('Turns on fabric-api.jar because sodium needs it'),
+    ).toBeInTheDocument();
+  });
+
+  it('uses the plural verb when several mods need it', async () => {
+    const shared = planWith([]);
+    shared.filesToEnable = [{ filename: 'fabric-api.jar', contentType: 'mod', neededBy: ['sodium', 'iris'] }];
+    installFlowMocks.resolveInstallPlan.mockResolvedValue(shared);
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+
+    expect(
+      await within(panel()).findByText('Turns on fabric-api.jar because sodium, iris need it'),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('install review: a required mod the jar declares', () => {
   const missing = (): ResolvedDep => dep('fabric-api', { type: 'unresolved', reason: 'it is not in the Agora catalog' }, {
     source: 'jar',
