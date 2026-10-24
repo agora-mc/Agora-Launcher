@@ -1376,6 +1376,7 @@ fn touches_instances(command: &Commands) -> bool {
             | Commands::Export { .. }
             | Commands::Loadout { .. }
             | Commands::Lockfile { .. }
+            | Commands::Bisect { .. }
     )
 }
 

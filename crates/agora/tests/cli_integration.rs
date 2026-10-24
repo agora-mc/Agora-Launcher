@@ -3810,3 +3810,31 @@ fn bisect_run_refuses_json_because_it_prompts() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not print JSON"));
     assert!(!bisect_session_file(&data_dir, "bisect-run-json").exists());
 }
+
+#[test]
+fn bisect_start_refuses_a_locked_instance_and_writes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-locked");
+    let manifest_path = data_dir
+        .join("instances")
+        .join("bisect-locked")
+        .join("instance_manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["is_locked"] = serde_json::Value::Bool(true);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let output = run_agora(&data_dir, &["bisect", "start", "bisect-locked"]);
+    assert!(
+        !output.status.success(),
+        "a locked instance must refuse a bisect"
+    );
+    assert!(!bisect_session_file(&data_dir, "bisect-locked").exists());
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-locked");
+    assert_eq!(on.len(), 4);
+    assert!(off.is_empty());
+}

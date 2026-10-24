@@ -456,27 +456,29 @@ fn apply_profile_items(
     unlisted: UnlistedMods,
 ) -> Result<(), String> {
     let mut manifest = read_manifest(instance_dir)?;
-    for entry in all_content_entries_mut(&mut manifest) {
-        let should_enable = match recorded_state(profile, entry) {
+    apply_enabled_flags(instance_dir, &mut manifest, |entry| {
+        match recorded_state(profile, entry) {
             Some(enabled) => Some(enabled),
             None if is_mod_kind(&entry.content_type) && unlisted == UnlistedMods::Off => {
                 Some(false)
             }
             None => None,
-        };
-        if let Some(should_enable) = should_enable {
-            set_entry_enabled(instance_dir, entry, should_enable)?;
         }
-    }
-    write_manifest(instance_dir, &manifest)
+    })
 }
 
+/// The renames a change has made so far, as `(from, to)`, in the order made.
+/// Kept so a change that fails part-way can put each file back.
+type RenameJournal = Vec<(std::path::PathBuf, std::path::PathBuf)>;
+
 /// Enable or disable one entry: rename its file to match and update its flag.
-/// A file that is missing on disk only has its flag changed.
+/// A file that is missing on disk only has its flag changed. Each rename is
+/// recorded in `journal` before the next step, so the caller can undo it.
 fn set_entry_enabled(
     instance_dir: &Path,
     entry: &mut InstalledMod,
     should_enable: bool,
+    journal: &mut RenameJournal,
 ) -> Result<(), String> {
     if entry.enabled == should_enable {
         return Ok(());
@@ -492,6 +494,7 @@ fn set_entry_enabled(
         if disabled.exists() {
             fs::rename(&disabled, &original)
                 .map_err(|e| format!("Cannot enable {}: {e}", entry.filename))?;
+            journal.push((disabled, original));
         }
         entry.enabled = true;
     } else {
@@ -499,10 +502,74 @@ fn set_entry_enabled(
         if original.exists() {
             fs::rename(&original, &disabled)
                 .map_err(|e| format!("Cannot disable {}: {e}", entry.filename))?;
+            journal.push((original, disabled));
         }
         entry.enabled = false;
     }
     Ok(())
+}
+
+/// Set the enabled flag of every entry `decide` names (`None` leaves it alone),
+/// renaming its file to match, and write the manifest.
+///
+/// All or nothing. If any rename or the manifest write fails, the renames
+/// already made are undone in reverse, and `manifest` is left as it was, so the
+/// files and the manifest still agree. Both the loadout and the bisect go
+/// through here.
+fn apply_enabled_flags(
+    instance_dir: &Path,
+    manifest: &mut InstanceManifest,
+    decide: impl Fn(&InstalledMod) -> Option<bool>,
+) -> Result<(), String> {
+    let mut updated = manifest.clone();
+    let mut journal = RenameJournal::new();
+    let attempt = set_flags_recording_renames(instance_dir, &mut updated, &decide, &mut journal)
+        .and_then(|()| write_manifest(instance_dir, &updated));
+    match attempt {
+        Ok(()) => {
+            *manifest = updated;
+            Ok(())
+        }
+        Err(error) => match undo_renames(&journal) {
+            Ok(()) => Err(error),
+            Err(undo) => Err(format!(
+                "{error}. Putting back the files already renamed also failed, so some files may not match the manifest: {undo}"
+            )),
+        },
+    }
+}
+
+fn set_flags_recording_renames(
+    instance_dir: &Path,
+    manifest: &mut InstanceManifest,
+    decide: &impl Fn(&InstalledMod) -> Option<bool>,
+    journal: &mut RenameJournal,
+) -> Result<(), String> {
+    for entry in all_content_entries_mut(manifest) {
+        if let Some(should_enable) = decide(entry) {
+            set_entry_enabled(instance_dir, entry, should_enable, journal)?;
+        }
+    }
+    Ok(())
+}
+
+/// Rename every journalled file back, newest first. Every rename is attempted
+/// even after one fails; the first failure is what is reported.
+fn undo_renames(journal: &RenameJournal) -> Result<(), String> {
+    let mut first_failure = None;
+    for (from, to) in journal.iter().rev() {
+        if let Err(error) = fs::rename(to, from) {
+            first_failure.get_or_insert(format!(
+                "cannot move {} back to {}: {error}",
+                to.display(),
+                from.display()
+            ));
+        }
+    }
+    match first_failure {
+        None => Ok(()),
+        Some(failure) => Err(failure),
+    }
 }
 
 /// Make exactly `enabled` the enabled set, renaming jars and updating the
@@ -525,6 +592,8 @@ pub fn apply_enabled_set(instance_dir: &Path, enabled: &[String]) -> Result<(), 
 /// disable every resource pack in the instance.
 ///
 /// Pass `Some("mod")` to leave the other content types exactly as they are.
+///
+/// All or nothing: see [`apply_enabled_flags`].
 pub fn apply_enabled_set_scoped(
     instance_dir: &Path,
     enabled: &[String],
@@ -533,16 +602,13 @@ pub fn apply_enabled_set_scoped(
     let mut manifest = read_manifest(instance_dir)?;
     let enabled_set: std::collections::HashSet<String> = enabled.iter().cloned().collect();
 
-    for entry in all_content_entries_mut(&mut manifest) {
+    apply_enabled_flags(instance_dir, &mut manifest, |entry| {
         if only_content_type.is_some_and(|wanted| entry.content_type != wanted) {
-            continue;
+            None
+        } else {
+            Some(enabled_set.contains(&entry.filename))
         }
-        let should_enable = enabled_set.contains(&entry.filename);
-        set_entry_enabled(instance_dir, entry, should_enable)?;
-    }
-
-    write_manifest(instance_dir, &manifest)?;
-    Ok(())
+    })
 }
 
 /// Delete a loadout profile.
@@ -1443,5 +1509,89 @@ mod tests {
         let profiles = list_profiles(&dir).unwrap();
         assert_eq!(profiles.len(), 1, "same file, not a second profile");
         assert_eq!(profiles[0].name, "Pvp: fast");
+    }
+
+    // --- A rename that fails part-way through a change ---------------------
+
+    #[test]
+    fn a_shared_enable_set_that_fails_midway_puts_back_the_renamed_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["a.jar", "b.jar", "c.jar", "d.jar"]);
+        let manifest_before = fs::read(dir.join("instance_manifest.json")).unwrap();
+        // Disabling b and d renames b first. A directory where d's disabled name
+        // should go makes the second rename fail after b has moved.
+        fs::create_dir_all(dir.join("mods").join("d.jar.disabled")).unwrap();
+
+        let error = apply_enabled_set(&dir, &["a.jar".to_string(), "c.jar".to_string()])
+            .expect_err("the second rename must fail");
+        assert!(error.contains("d.jar"), "{error}");
+        assert!(
+            dir.join("mods").join("b.jar").exists(),
+            "b.jar is back under its name"
+        );
+        assert!(!dir.join("mods").join("b.jar.disabled").exists());
+        assert_eq!(
+            fs::read(dir.join("instance_manifest.json")).unwrap(),
+            manifest_before,
+            "the manifest is not written when a rename fails"
+        );
+    }
+
+    #[test]
+    fn a_shared_enable_set_whose_manifest_write_fails_puts_back_every_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["a.jar", "b.jar", "c.jar", "d.jar"]);
+        let manifest_before = fs::read(dir.join("instance_manifest.json")).unwrap();
+        // Every rename succeeds; then the manifest's temporary file cannot be
+        // written, so the write fails after the renames are done.
+        fs::create_dir_all(dir.join("instance_manifest.json.tmp")).unwrap();
+
+        assert!(apply_enabled_set(&dir, &["a.jar".to_string(), "c.jar".to_string()]).is_err());
+        for name in ["a.jar", "b.jar", "c.jar", "d.jar"] {
+            assert!(
+                dir.join("mods").join(name).exists(),
+                "{name} is back under its name"
+            );
+        }
+        let disabled: Vec<_> = fs::read_dir(dir.join("mods"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".disabled"))
+            .collect();
+        assert!(
+            disabled.is_empty(),
+            "no file is left disabled: {disabled:?}"
+        );
+        assert_eq!(
+            fs::read(dir.join("instance_manifest.json")).unwrap(),
+            manifest_before
+        );
+    }
+
+    #[test]
+    fn a_loadout_that_fails_midway_puts_back_the_files_it_renamed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["a.jar", "b.jar", "c.jar", "d.jar"]);
+        create_profile(&dir, "all").unwrap();
+        // Switch b and d off, so that applying "all" has to switch both back on.
+        apply_enabled_set(&dir, &["a.jar".to_string(), "c.jar".to_string()]).unwrap();
+        let manifest_before = fs::read(dir.join("instance_manifest.json")).unwrap();
+        // Enabling d renames d.jar.disabled to d.jar; a directory at d.jar makes
+        // that fail after b has been switched back on.
+        fs::create_dir_all(dir.join("mods").join("d.jar")).unwrap();
+
+        let error =
+            apply_profile(&dir, "all", UnlistedMods::Keep).expect_err("enabling d must fail");
+        assert!(error.contains("d.jar"), "{error}");
+        assert!(
+            dir.join("mods").join("b.jar.disabled").exists(),
+            "b.jar is off again"
+        );
+        assert!(!dir.join("mods").join("b.jar").exists());
+        assert_eq!(
+            fs::read(dir.join("instance_manifest.json")).unwrap(),
+            manifest_before,
+            "the manifest still records b and d as off"
+        );
     }
 }

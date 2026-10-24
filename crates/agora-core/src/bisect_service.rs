@@ -14,6 +14,8 @@ use serde::Serialize;
 use crate::bisect::{self, BisectSession, BisectTrial, TrialOutcome};
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
+use crate::install_service::InstallService;
+use crate::instance_runtime;
 use crate::lock_manager::LockResource;
 use crate::models::InstanceManifest;
 
@@ -48,6 +50,8 @@ impl BisectService {
         prime_suspects: &[String],
     ) -> LauncherResult<BisectView> {
         let instance_dir = self.instance_dir(instance_id)?;
+        self.refuse_locked(instance_id)?;
+        self.refuse_running(instance_id)?;
         if bisect::read_session(&instance_dir)
             .map_err(bisect_error)?
             .is_some()
@@ -73,6 +77,8 @@ impl BisectService {
     pub fn apply_trial(&self, instance_id: &str) -> LauncherResult<BisectView> {
         let _guard = self.lock(instance_id, "bisect-trial")?;
         let instance_dir = self.instance_dir(instance_id)?;
+        self.refuse_locked(instance_id)?;
+        self.refuse_running(instance_id)?;
         let view = self.view_of(&instance_dir, instance_id)?;
         let Some(trial) = view.trial.as_ref() else {
             return Err(bisect_error("No bisect is in progress.".into()));
@@ -121,10 +127,14 @@ impl BisectService {
     /// baseline before clearing the session is the whole safety story: the
     /// baseline is the only record of what was on when the bisect started.
     /// With no bisect running this does nothing. Holds the instance lock.
+    ///
+    /// A locked instance can still be restored: putting the baseline back is
+    /// the way out, so only a running game refuses it.
     pub fn cancel(&self, instance_id: &str) -> LauncherResult<()> {
         let _guard = self.lock(instance_id, "bisect-cancel")?;
         let instance_dir = self.instance_dir(instance_id)?;
         if let Some(session) = bisect::read_session(&instance_dir).map_err(bisect_error)? {
+            self.refuse_running(instance_id)?;
             bisect::apply_enabled_set(&instance_dir, &session.baseline_enabled)
                 .map_err(bisect_error)?;
         }
@@ -139,6 +149,17 @@ impl BisectService {
         self.ctx
             .lock_manager
             .acquire(LockResource::Instance(instance_id.to_string()), operation)
+    }
+
+    /// The refusals [`crate::loadout_service::LoadoutService`] makes before it
+    /// changes an instance: a locked instance, and a game that is running or
+    /// starting.
+    fn refuse_locked(&self, instance_id: &str) -> LauncherResult<()> {
+        InstallService::new(self.ctx.clone()).check_not_locked(instance_id)
+    }
+
+    fn refuse_running(&self, instance_id: &str) -> LauncherResult<()> {
+        instance_runtime::check_idle(&self.ctx.paths, instance_id)
     }
 
     fn instance_dir(&self, instance_id: &str) -> LauncherResult<PathBuf> {
@@ -470,5 +491,147 @@ mod tests {
         let session = view.session.unwrap();
         assert!(!session.suspects.contains(&"b.jar".to_string()));
         assert_eq!(session.suspects.len(), 2);
+    }
+
+    // --- Locked instances and running games --------------------------------
+
+    /// Mark the instance's manifest locked (or not), as the install lock does.
+    fn set_locked(dir: &Path, locked: bool) {
+        let path = dir.join("instance_manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        manifest["is_locked"] = serde_json::Value::Bool(locked);
+        fs::write(path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    }
+
+    fn assert_locked(error: LauncherError) {
+        assert!(
+            matches!(error, LauncherError::InstanceLocked),
+            "expected InstanceLocked, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_locked_instance_refuses_start_and_apply_and_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, dir) = setup(&tmp, &four_mods());
+        set_locked(&dir, true);
+        let service = BisectService::new(ctx);
+
+        assert_locked(service.start("demo", &[]).unwrap_err());
+        assert!(
+            !bisect::session_path(&dir).exists(),
+            "a refused start writes nothing"
+        );
+
+        // A session started before the lock: apply is refused and renames nothing.
+        set_locked(&dir, false);
+        service.start("demo", &[]).unwrap();
+        set_locked(&dir, true);
+        assert_locked(service.apply_trial("demo").unwrap_err());
+        assert_eq!(
+            enabled_files(&dir).len(),
+            4,
+            "a refused apply moves nothing"
+        );
+    }
+
+    #[test]
+    fn a_locked_instance_can_still_be_cancelled_back_to_its_baseline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, dir) = setup(&tmp, &four_mods());
+        let service = BisectService::new(ctx);
+        service.start("demo", &[]).unwrap();
+        service.apply_trial("demo").unwrap();
+        assert_eq!(enabled_files(&dir).len(), 2);
+
+        set_locked(&dir, true);
+        service.cancel("demo").unwrap();
+        assert_eq!(enabled_files(&dir).len(), 4, "cancel restores every mod");
+        assert!(!bisect::session_path(&dir).exists());
+    }
+
+    #[test]
+    fn a_running_game_refuses_start_apply_and_cancel_and_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, dir) = setup(&tmp, &four_mods());
+        let paths = ctx.paths.clone();
+        let service = BisectService::new(ctx);
+        service.start("demo", &[]).unwrap();
+        service.apply_trial("demo").unwrap();
+        let session_before = fs::read_to_string(bisect::session_path(&dir)).unwrap();
+        let on_before = enabled_files(&dir);
+
+        // A launch that has not finished starting counts as running.
+        crate::instance_runtime::publish_starting(&paths, "demo").unwrap();
+        assert!(
+            service.cancel("demo").is_err(),
+            "cancel must refuse a starting game"
+        );
+        assert!(
+            service.apply_trial("demo").is_err(),
+            "apply must refuse a starting game"
+        );
+        assert_eq!(enabled_files(&dir), on_before);
+        assert_eq!(
+            fs::read_to_string(bisect::session_path(&dir)).unwrap(),
+            session_before,
+            "a refused cancel keeps the session"
+        );
+        crate::instance_runtime::clear(&paths, "demo", None).unwrap();
+
+        // A launch whose process is alive counts as running too.
+        let identity = crate::process_identity::capture(std::process::id()).unwrap();
+        crate::instance_runtime::publish_running(&paths, "demo", "gen-test", identity).unwrap();
+        let cancel = service.cancel("demo").unwrap_err();
+        assert_eq!(cancel.code(), "ERR_INSTANCE_RUNNING");
+        assert_eq!(enabled_files(&dir), on_before);
+        crate::instance_runtime::clear(&paths, "demo", None).unwrap();
+
+        // Once the game is gone, the same cancel goes through.
+        service.cancel("demo").unwrap();
+        assert_eq!(enabled_files(&dir).len(), 4);
+    }
+
+    #[test]
+    fn a_running_game_refuses_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, dir) = setup(&tmp, &four_mods());
+        crate::instance_runtime::publish_starting(&ctx.paths, "demo").unwrap();
+        assert!(BisectService::new(ctx).start("demo", &[]).is_err());
+        assert!(!bisect::session_path(&dir).exists());
+    }
+
+    // --- A rename that fails part-way through a trial ----------------------
+
+    #[test]
+    fn a_trial_that_fails_midway_puts_back_the_files_it_renamed_and_keeps_the_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, dir) = setup(&tmp, &four_mods());
+        let service = BisectService::new(ctx);
+        service.start("demo", &[]).unwrap();
+        let session_before = fs::read_to_string(bisect::session_path(&dir)).unwrap();
+        let manifest_before = fs::read(dir.join("instance_manifest.json")).unwrap();
+        // The trial turns c.jar and then d.jar off. A directory where d.jar's
+        // disabled name should go makes the second rename fail after c.jar moved.
+        fs::create_dir_all(dir.join("mods").join("d.jar.disabled")).unwrap();
+
+        assert!(service.apply_trial("demo").is_err());
+        assert!(
+            dir.join("mods").join("c.jar").exists(),
+            "c.jar is back under its name"
+        );
+        assert!(!dir.join("mods").join("c.jar.disabled").exists());
+        assert!(dir.join("mods").join("d.jar").exists());
+        assert_eq!(
+            fs::read(dir.join("instance_manifest.json")).unwrap(),
+            manifest_before,
+            "the manifest is not written"
+        );
+        assert_eq!(
+            fs::read_to_string(bisect::session_path(&dir)).unwrap(),
+            session_before,
+            "the session still describes the trial, so it can be retried"
+        );
     }
 }
