@@ -4,7 +4,7 @@ import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } f
 import { listen } from '@tauri-apps/api/event';
 import { requestEditorTab } from '../lib/editorDeepLink';
 import { useExternalInstanceChanges } from '../lib/externalChanges';
-import { importSourceLabel } from '../lib/importDisplay';
+import { importSourceLabel, isFileImportSource } from '../lib/importDisplay';
 import {
   cancelJavaRuntime,
   cloneInstance,
@@ -690,7 +690,7 @@ function InstanceCard({
           <div className="min-w-0">
             <h3 className="wrap-break-word font-semibold">{instance.name}</h3>
             {instance.import_source && (
-              <span className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              <span className={`mt-1 inline-flex max-w-full break-all rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground ${isFileImportSource(instance.import_source) ? '' : 'uppercase tracking-wide'}`}>
                 Imported from {importedFrom ?? 'another launcher'}
               </span>
             )}
@@ -722,7 +722,7 @@ function InstanceCard({
               )}
             </p>
             {importedFrom ? (
-              <p className="text-xs text-muted-foreground mt-0.5">
+              <p className="text-xs text-muted-foreground mt-0.5 break-all">
                 Imported{createdLabel ? ` ${createdLabel}` : ''} from {importedFrom}
               </p>
             ) : createdLabel && (

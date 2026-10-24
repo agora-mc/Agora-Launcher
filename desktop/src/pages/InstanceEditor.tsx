@@ -1319,22 +1319,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setStatus(null);
     const path = await pickOpenFile('Import pack as new instance', ['mrpack', 'agora-pack.json', 'json']);
     if (path === null) return;
-    if (path.toLowerCase().endsWith('.mrpack')) {
-      // Same name review as the Import tab, so a name clash can be renamed.
-      try {
-        const preview = await previewImportName(path);
-        setImportPending({
-          path,
-          name: preview.suggested_name,
-          nameTaken: preview.name_taken,
-          originalName: preview.default_name,
-        });
-        setActiveTab('import');
-      } catch (e) {
-        setError(formatError(e));
-      }
-      return;
-    }
+    // Both pack formats open the same review (name, files and where they come
+    // from, what is left out) before anything is written.
     startPackFile(path, path.split(/[\\/]/).pop() ?? 'Pack import');
     setStatus('Pack import started in the background.');
   };
@@ -2926,6 +2912,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 try {
                   const path = await pickOpenFile('Import Instance', ['mrpack', 'zip']);
                   if (path === null) return;
+                  if (path.toLowerCase().endsWith('.mrpack')) {
+                    // A Modrinth pack gets the same review as every other pack file.
+                    startPackFile(path, path.split(/[\\/]/).pop() ?? 'Pack import');
+                    setStatus('Pack import started in the background.');
+                    return;
+                  }
                   const preview = await previewImportName(path);
                   setImportPending({
                     path,
@@ -2991,11 +2983,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               The industry-standard format for sharing Minecraft modpacks. Compatible with
               Modrinth, Prism Launcher, and other launchers. Lists your mods with download
               links and checksums; a mod Agora can't find on Modrinth is bundled in the file.
-              If one of those mods can't be read, the export stops and names it.
+              Your resource packs and shader packs go along too, linked when Modrinth hosts
+              that exact file and bundled otherwise. If a file can't be read, the export
+              stops and names it.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Not included:</span> configs,
-              keybinds, and other settings.
+              keybinds, other settings, and saves.
             </p>
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Best for:</span> sharing your

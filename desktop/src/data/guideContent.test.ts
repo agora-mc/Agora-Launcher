@@ -9,4 +9,13 @@ describe('Packs & sharing guide', () => {
     const text = JSON.stringify(topic).toLowerCase();
     expect(text).toContain('another computer');
   });
+
+  it('points at the buttons that exist for pack import, and says what an export carries', () => {
+    const topic = GUIDE_TOPICS.find((t) => t.id === 'packs-sharing');
+    const text = JSON.stringify(topic);
+    // The primary control is on My Instances; it was once described as being on the Mods tab.
+    expect(text).toContain('Import pack file');
+    expect(text).not.toContain('on the Mods tab');
+    expect(text).toContain('resource packs and shader packs');
+  });
 });

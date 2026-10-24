@@ -39,6 +39,11 @@ const plan: PackImportPlan = {
   ],
   file_sha256: 'b'.repeat(64),
   file_size: 1234,
+  name_taken: false,
+  suggested_name: 'Friend Pack',
+  left_out: [],
+  problems: [],
+  notes: [],
 };
 
 function Starter({ path = 'C:\\friend.agora-pack.json' }: { path?: string }) {
@@ -96,7 +101,7 @@ describe('pack import review', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(1));
     // The import is held to the exact bytes that were reviewed.
-    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\friend.agora-pack.json', reviewedSha256: plan.file_sha256 });
+    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\friend.agora-pack.json', reviewedSha256: plan.file_sha256, name: 'Friend Pack' });
   });
 
   it('Cancel leaves nothing behind', async () => {
@@ -129,12 +134,30 @@ describe('pack import review', () => {
     }
   });
 
-  it('a .mrpack starts straight away, as before', async () => {
+  it('a .mrpack is reviewed too, and imports under the free name the review suggested', async () => {
+    answer({ plan_pack_import: () => ({ ...plan, suggested_name: 'Friend Pack (2)', name_taken: true }) });
     renderImport('C:\\packs\\friend.mrpack');
+    await screen.findByTestId('pack-import-review');
+    expect(callsTo('plan_pack_import')[0][1]).toEqual({ sourcePath: 'C:\\packs\\friend.mrpack' });
+    expect(callsTo('import_instance_pack')).toHaveLength(0);
+    expect((screen.getByLabelText('Instance name') as HTMLInputElement).value).toBe('Friend Pack (2)');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import as a copy' }));
     await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(1));
-    expect(callsTo('plan_pack_import')).toHaveLength(0);
-    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\packs\\friend.mrpack', reviewedSha256: null });
-    expect(screen.queryByTestId('pack-import-review')).toBeNull();
+    expect(callsTo('import_instance_pack')[0][1]).toEqual({
+      sourcePath: 'C:\\packs\\friend.mrpack',
+      reviewedSha256: plan.file_sha256,
+      name: 'Friend Pack (2)',
+    });
+  });
+
+  it('imports under the name the user typed over the suggestion', async () => {
+    renderImport('C:\\packs\\friend.mrpack');
+    const field = await screen.findByLabelText('Instance name');
+    fireEvent.change(field, { target: { value: '  Sam\'s pack ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(1));
+    expect(callsTo('import_instance_pack')[0][1]).toMatchObject({ name: "Sam's pack" });
   });
 });
 

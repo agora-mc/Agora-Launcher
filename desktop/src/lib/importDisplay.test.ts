@@ -5,6 +5,7 @@ import {
   formatMemoryMb,
   importProgressPercent,
   importSourceLabel,
+  isFileImportSource,
   outcomeDisplayName,
   readCopiedMemory,
 } from './importDisplay';
@@ -52,6 +53,13 @@ describe('importSourceLabel', () => {
     expect(importSourceLabel(null)).toBeNull();
     expect(importSourceLabel('CURSEFORGE ')).toBe('CurseForge');
     expect(importSourceLabel('<img src=x>')).toBeNull();
+  });
+
+  it('names the pack file an instance was imported from', () => {
+    expect(importSourceLabel('mrpack:spiff-fabric-1.20.4.mrpack')).toBe('spiff-fabric-1.20.4.mrpack');
+    expect(isFileImportSource('mrpack:spiff-fabric-1.20.4.mrpack')).toBe(true);
+    expect(isFileImportSource('prism')).toBe(false);
+    expect(importSourceLabel('mrpack:')).toBe('a pack file');
   });
 });
 

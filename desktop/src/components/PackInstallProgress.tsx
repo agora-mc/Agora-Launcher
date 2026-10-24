@@ -66,9 +66,9 @@ type PackInstallContextValue = {
   startPlan: (plan: ResolvedInstallPlan, label: string, instanceName?: string, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => void;
   startModrinthPack: (downloadUrl: string, label: string, packIconUrl?: string | null) => void;
   /**
-   * Import a pack file as a new instance. An .agora-pack.json is reviewed
-   * first (nothing is written until the user chooses Import); an .mrpack starts
-   * right away, as it always has.
+   * Import a pack file as a new instance. Both formats are reviewed first:
+   * nothing is written until the user chooses Import, and the new instance's
+   * name can be changed there.
    */
   startPackFile: (sourcePath: string, label: string) => void;
   /** Start a corner task that resolves an install intent in the background. */
@@ -164,12 +164,14 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
   const [taskMap, setTaskMap] = useState<Record<string, PackInstallTask>>({});
   const [revision, setRevision] = useState(0);
   const [importReports, setImportReports] = useState<Record<string, PackImportReport>>({});
-  /** The .agora-pack.json the user is reviewing, if any. Nothing is written until Import. */
+  /** The pack file (.agora-pack.json or .mrpack) the user is reviewing, if any. Nothing is written until Import. */
   const [review, setReview] = useState<{
     sourcePath: string;
     label: string;
     plan: PackImportPlan | null;
     error: string | null;
+    /** The name for the new instance; starts as the plan's free suggestion. */
+    name: string;
   } | null>(null);
 
   useEffect(() => {
@@ -385,29 +387,27 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       .catch((cause) => failTask(id, formatError(cause)));
   };
 
-  /** `reviewedSha256` is the fingerprint the review recorded (.agora-pack.json only). */
-  const beginPackFileImport = (sourcePath: string, label: string, reviewedSha256?: string) => {
+  /** `reviewedSha256` is the fingerprint the review recorded; `name` is the instance name chosen there. */
+  const beginPackFileImport = (sourcePath: string, label: string, reviewedSha256?: string, name?: string) => {
     const id = `pack-file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setTaskMap((current) => ({
       ...current,
       [id]: initialTask(id, label, 'pack-file', null, label),
     }));
-    void importInstancePack(sourcePath, reviewedSha256)
+    void importInstancePack(sourcePath, reviewedSha256, name)
       .then((outcome) => completeImportedTask(id, outcome.instance_id, label, outcome.report))
       .catch((cause) => failTask(id, formatError(cause)));
   };
 
   const startPackFile = (sourcePath: string, label: string) => {
-    if (sourcePath.toLowerCase().endsWith('.mrpack')) {
-      beginPackFileImport(sourcePath, label);
-      return;
-    }
     // Review first. The plan only reads the file and settings, so cancelling
     // leaves nothing behind.
-    setReview({ sourcePath, label, plan: null, error: null });
+    setReview({ sourcePath, label, plan: null, error: null, name: '' });
     void planPackImport(sourcePath)
       .then((plan) => setReview((current) => (
-        current?.sourcePath === sourcePath ? { ...current, plan } : current
+        current?.sourcePath === sourcePath
+          ? { ...current, plan, name: plan.suggested_name || plan.pack_name }
+          : current
       )))
       .catch((cause) => setReview((current) => (
         current?.sourcePath === sourcePath ? { ...current, error: formatError(cause) } : current
@@ -416,10 +416,11 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
 
   const confirmReview = () => {
     if (!review?.plan) return;
-    const { sourcePath, label, plan } = review;
+    const { sourcePath, label, plan, name } = review;
+    if (name.trim() === '') return;
     setReview(null);
     // The import is held to the exact bytes that were reviewed.
-    beginPackFileImport(sourcePath, label, plan.file_sha256);
+    beginPackFileImport(sourcePath, label, plan.file_sha256, name.trim());
   };
 
   const updateImportReport = (instanceId: string, report: PackImportReport | null) => {
@@ -456,6 +457,8 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
           label={review.label}
           plan={review.plan}
           error={review.error}
+          name={review.name}
+          onNameChange={(name) => setReview((current) => (current ? { ...current, name } : current))}
           onImport={confirmReview}
           onCancel={() => setReview(null)}
         />

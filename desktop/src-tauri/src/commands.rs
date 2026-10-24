@@ -2287,20 +2287,28 @@ fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> 
 }
 
 /// Import an instance from a pack file (.mrpack or .agora-pack.json).
-/// `reviewed_sha256` is the fingerprint the review step recorded; an Agora pack
-/// whose bytes no longer match it is refused.
+/// `reviewed_sha256` is the fingerprint the review step recorded; a pack file
+/// whose bytes no longer match it is refused. `name` is the instance name the
+/// user chose in the review.
 #[tauri::command]
 pub async fn import_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     source_path: String,
     reviewed_sha256: Option<String>,
+    name: Option<String>,
 ) -> LauncherResult<mod_install::PackImportOutcome> {
-    mod_install::import_instance_pack(&app, &source_path, reviewed_sha256.as_deref()).await
+    mod_install::import_instance_pack(
+        &app,
+        &source_path,
+        reviewed_sha256.as_deref(),
+        name.as_deref(),
+    )
+    .await
 }
 
-/// What importing an `.agora-pack.json` would do, shown before anything is
-/// written. Reads the file and settings only.
+/// What importing a pack file (`.agora-pack.json` or `.mrpack`) would do,
+/// shown before anything is written. Reads the file and settings only.
 #[tauri::command]
 pub async fn plan_pack_import(
     app: tauri::AppHandle,

@@ -5,7 +5,15 @@ import { test, expect, type Page } from '@playwright/test';
 
 async function installMock(
   page: Page,
-  options: { instances: Record<string, unknown>[]; pickedPath: string | null; report?: unknown },
+  options: {
+    instances: Record<string, unknown>[];
+    pickedPath: string | null;
+    report?: unknown;
+    /** Fields merged over the review plan the mock returns. */
+    plan?: Record<string, unknown>;
+    /** Fields merged over the instance the import creates. */
+    importedExtra?: Record<string, unknown>;
+  },
 ) {
   await page.addInitScript(({ options }) => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
@@ -42,6 +50,7 @@ async function installMock(
               instance_id: 'imported-pack', name: 'Imported Pack', minecraft_version: '1.21',
               loader: 'fabric', loader_version: '0.16.9', is_locked: false, last_launched_at: null,
               created_at: '2026-10-21T10:00:00Z',
+              ...(options.importedExtra ?? {}),
             }]
             : options.instances);
         }
@@ -59,6 +68,12 @@ async function installMock(
             ],
             file_sha256: 'c'.repeat(64),
             file_size: 512,
+            name_taken: false,
+            suggested_name: 'Imported Pack',
+            left_out: [],
+            problems: [],
+            notes: [],
+            ...(options.plan ?? {}),
           });
         }
         if (command === 'import_instance_pack') {
@@ -204,6 +219,38 @@ test.describe('My Instances: import a pack file', () => {
 
     await page.getByRole('button', { name: 'Dismiss import results' }).click();
     await expect(summary).toHaveCount(0);
+  });
+
+  test('a .mrpack is reviewed with a free name, and the new instance says which file it came from', async ({ page }) => {
+    await installMock(page, {
+      instances: [],
+      pickedPath: 'C:\\packs\\spiff-fabric-1.20.4.mrpack',
+      plan: {
+        name_taken: true,
+        suggested_name: 'Imported Pack (2)',
+        entries: [
+          { name: 'mods/sodium.jar', display_name: 'sodium.jar', source: 'modrinth', checkable: true, reason: null, action: null },
+          { name: 'shaderpacks/BSL.zip', display_name: 'BSL.zip', source: 'bundled', checkable: false, reason: null, action: null },
+        ],
+        left_out: ['saves/world/level.dat (outside the folders Agora copies from a pack)'],
+      },
+      importedExtra: { name: 'Imported Pack (2)', import_source: 'mrpack:spiff-fabric-1.20.4.mrpack' },
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'My Instances' }).click();
+    await page.getByRole('button', { name: 'Import pack file' }).last().click();
+
+    const review = page.getByTestId('pack-import-review');
+    await expect(review.getByLabel('Instance name')).toHaveValue('Imported Pack (2)');
+    await expect(review).toContainText('1 from Modrinth, 1 bundled in the pack');
+    await expect(review).toContainText('saves/world/level.dat');
+    expect(await calls(page, 'import_instance_pack')).toHaveLength(0);
+    await review.getByRole('button', { name: 'Import as a copy' }).click();
+
+    await expect(page.getByRole('heading', { name: 'Imported Pack (2)' })).toBeVisible();
+    await expect(page.getByText(/^Imported .* from spiff-fabric-1\.20\.4\.mrpack$/)).toBeVisible();
+    const imports = await calls(page, 'import_instance_pack');
+    expect((imports[0].args as Record<string, unknown>).name).toBe('Imported Pack (2)');
   });
 
   test('header button works with existing instances and cancelling imports nothing', async ({ page }) => {

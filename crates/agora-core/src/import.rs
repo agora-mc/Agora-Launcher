@@ -166,14 +166,11 @@ fn manifest_path_key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn mrpack_override_path(
-    entry_name: &str,
-    custom_prefix: &str,
-    policy: OverridePolicy,
-) -> Option<PathBuf> {
-    let normalized = entry_name.replace('\\', "/");
+/// The part of an archive entry name after its overrides folder, or `None`
+/// for an entry that is not under one.
+fn override_relative<'a>(normalized: &'a str, custom_prefix: &str) -> Option<&'a str> {
     let standard_prefixes = ["overrides/", "client-overrides/", "client_overrides/"];
-    let relative = standard_prefixes
+    standard_prefixes
         .iter()
         .find_map(|prefix| normalized.strip_prefix(prefix))
         .or_else(|| {
@@ -181,7 +178,16 @@ fn mrpack_override_path(
             (!prefix.is_empty())
                 .then(|| normalized.strip_prefix(&format!("{prefix}/")))
                 .flatten()
-        })?;
+        })
+}
+
+fn mrpack_override_path(
+    entry_name: &str,
+    custom_prefix: &str,
+    policy: OverridePolicy,
+) -> Option<PathBuf> {
+    let normalized = entry_name.replace('\\', "/");
+    let relative = override_relative(&normalized, custom_prefix)?;
 
     if relative.is_empty() || relative.ends_with('/') || !policy.admits(relative) {
         return None;
@@ -951,6 +957,248 @@ pub fn import_mrpack_with_progress(
         loader_version,
         imported_mods,
         linked_saves: false,
+    })
+}
+
+/// Most names listed under "left out" before the rest are counted.
+const PLAN_LISTED_NAMES: usize = 40;
+
+/// What importing an `.mrpack` would do, read from the archive alone: each
+/// file the pack lists with where it would come from (a download or a copy
+/// inside the pack), what the import skips, and anything that would stop it.
+/// Writes nothing and downloads nothing. The refusals reported here are the
+/// ones [`import_mrpack_with_progress`] would raise, found before anything is
+/// created.
+///
+/// `file_sha256`, `file_size` and the name fields are left for the caller,
+/// which has the file's fingerprint and the instance list.
+pub fn plan_mrpack(
+    mrpack_path: &Path,
+    override_policy: OverridePolicy,
+) -> LauncherResult<crate::agora_pack_import::PackImportPlan> {
+    use crate::agora_pack_import::{
+        AgoraPackInstance, PackImportPlan, PlannedEntry, PlannedSource,
+    };
+
+    let file = fs::File::open(mrpack_path)
+        .map_err(|e| import_error("ERR_IMPORT_OPEN", format!("Cannot open mrpack: {e}")))?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|e| import_error("ERR_IMPORT_ZIP", format!("Invalid zip: {e}")))?;
+    let index: MrpackIndex = {
+        let entry = archive
+            .by_name("modrinth.index.json")
+            .map_err(|_| import_error("ERR_IMPORT_MISSING_INDEX", "Missing modrinth.index.json"))?;
+        serde_json::from_reader(entry).map_err(|e| {
+            import_error(
+                "ERR_IMPORT_PARSE_INDEX",
+                format!("Invalid modrinth.index.json: {e}"),
+            )
+        })?
+    };
+    let name = if index.name.is_empty() {
+        mrpack_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    } else {
+        index.name.clone()
+    };
+    let (minecraft_version, loader, loader_version) = parse_mrpack_deps(&index.dependencies);
+
+    let mut entries: Vec<PlannedEntry> = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    let mut jar_in_mods = false;
+    let is_mod_jar = |path: &str| {
+        let lower = path.to_ascii_lowercase();
+        lower.starts_with("mods/") && (lower.ends_with(".jar") || lower.ends_with(".jar.disabled"))
+    };
+    let file_name_of = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
+
+    for listed in &index.files {
+        let key = manifest_path_key(&relative_archive_path(&listed.path));
+        let display = file_name_of(&key);
+        let safe = !key.is_empty()
+            && relative_archive_path(&listed.path)
+                .components()
+                .all(|c| matches!(c, Component::Normal(_)));
+        let has_sha1 = listed
+            .hashes
+            .get("sha1")
+            .is_some_and(|h| !h.trim().is_empty());
+        let embedded_size = archive.by_name(&key).ok().map(|e| e.size());
+        let first_url = listed.downloads.first();
+        let checked_url = first_url.map(|u| validate_mrpack_download_url(u));
+
+        let (source, mut reason) = match (&checked_url, embedded_size) {
+            (Some(Ok(url)), _) if url.host_str() == Some("cdn.modrinth.com") => {
+                (PlannedSource::Modrinth, None)
+            }
+            (Some(Ok(_)), _) => (PlannedSource::Download, None),
+            (_, Some(_)) => (PlannedSource::Bundled, None),
+            (Some(Err(_)), None) => (
+                PlannedSource::CannotGet,
+                Some(format!(
+                    "Its download link is not from a host Agora allows, and the file is not inside the pack: {}",
+                    first_url.map(String::as_str).unwrap_or("")
+                )),
+            ),
+            (None, None) => (
+                PlannedSource::CannotGet,
+                Some("The pack gives no download link and does not contain the file.".to_string()),
+            ),
+        };
+        if !safe {
+            reason = Some("Its path would leave the instance folder.".to_string());
+        } else if !has_sha1 {
+            reason = Some(
+                "The pack gives no SHA-1 hash for it, so Agora cannot check it and will not import it."
+                    .to_string(),
+            );
+        } else if embedded_size.is_some_and(|size| size > MAX_MRPACK_FILE_BYTES as u64)
+            && source == PlannedSource::Bundled
+        {
+            reason = Some("The copy inside the pack is over the 500 MB limit.".to_string());
+        }
+        let blocked = reason.is_some();
+        if blocked {
+            problems.push(format!(
+                "{key} cannot be imported, and the import stops at a file like this."
+            ));
+        }
+        if is_mod_jar(&key) {
+            jar_in_mods = true;
+        }
+        entries.push(PlannedEntry {
+            name: key.clone(),
+            display_name: if display == key { None } else { Some(display) },
+            source: if blocked {
+                PlannedSource::CannotGet
+            } else {
+                source
+            },
+            checkable: has_sha1,
+            reason,
+            action: None,
+            arrives_disabled: key.to_ascii_lowercase().ends_with(".disabled"),
+        });
+    }
+
+    // Overrides: files the pack copies into the instance folder.
+    let mut left_out: Vec<String> = Vec::new();
+    let mut left_out_extra = 0usize;
+    let mut settings_files = 0usize;
+    let mut override_files = 0usize;
+    let mut override_bytes = 0u64;
+    for i in 0..archive.len() {
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
+        let Ok(raw_name) = entry.name().map(|n| n.to_string()) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let normalized = manifest_path_key(&relative_archive_path(&raw_name));
+        if normalized.starts_with("server-overrides/")
+            || normalized.starts_with("server_overrides/")
+        {
+            if left_out.len() < PLAN_LISTED_NAMES {
+                left_out.push(format!(
+                    "{normalized} (files for a server, not for this game)"
+                ));
+            } else {
+                left_out_extra += 1;
+            }
+            continue;
+        }
+        let Some(relative) = override_relative(&normalized, &index.overrides) else {
+            continue;
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        let Some(path) = mrpack_override_path(&raw_name, &index.overrides, override_policy) else {
+            if left_out.len() < PLAN_LISTED_NAMES {
+                left_out.push(format!(
+                    "{relative} (outside the folders Agora copies from a pack; Reduced security mode in Settings allows more)"
+                ));
+            } else {
+                left_out_extra += 1;
+            }
+            continue;
+        };
+        let key = manifest_path_key(&path);
+        if override_policy.forbids(&key) {
+            problems.push(format!(
+                "The pack contains {key}, which Agora does not allow among a pack's extra files (programs, scripts and mods). The import would stop."
+            ));
+            continue;
+        }
+        override_files += 1;
+        override_bytes = override_bytes.saturating_add(entry.size());
+        if is_mod_jar(&key) {
+            jar_in_mods = true;
+        }
+        let lower = key.to_ascii_lowercase();
+        let content_folder = ["mods/", "resourcepacks/", "shaderpacks/", "datapacks/"]
+            .iter()
+            .any(|prefix| lower.starts_with(prefix));
+        if content_folder {
+            entries.push(PlannedEntry {
+                display_name: Some(file_name_of(&key)),
+                name: key,
+                source: PlannedSource::Bundled,
+                checkable: false,
+                reason: None,
+                action: None,
+                arrives_disabled: lower.ends_with(".disabled"),
+            });
+        } else {
+            settings_files += 1;
+        }
+    }
+    if left_out_extra > 0 {
+        left_out.push(format!("and {left_out_extra} more"));
+    }
+    if override_files > MAX_MRPACK_OVERRIDE_FILES || override_bytes > MAX_MRPACK_OVERRIDE_BYTES {
+        problems.push(
+            "The pack's extra files are more than Agora will extract (5000 files or 2 GB), so the import would stop."
+                .to_string(),
+        );
+    }
+    if settings_files > 0 {
+        notes.push(format!(
+            "Also copies {settings_files} settings and data file{} (config, scripts and the like) from the pack.",
+            if settings_files == 1 { "" } else { "s" }
+        ));
+    }
+    if loader.is_empty() && jar_in_mods {
+        problems.push(
+            "The pack contains mods but names no mod loader, so Agora cannot tell which one they need. The import would stop."
+                .to_string(),
+        );
+    }
+
+    Ok(PackImportPlan {
+        pack_name: name.clone(),
+        instance: AgoraPackInstance {
+            id: None,
+            name: Some(name.clone()),
+            minecraft_version,
+            loader,
+            loader_version,
+        },
+        entries,
+        file_sha256: String::new(),
+        file_size: 0,
+        name_taken: false,
+        suggested_name: name,
+        left_out,
+        problems,
+        notes,
     })
 }
 
