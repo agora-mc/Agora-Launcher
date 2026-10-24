@@ -168,6 +168,23 @@ agora plugin install package ./example-plugin.zip
 
 Use `--registry-repo` only for an intentional development or sandbox catalog. A different repository changes the trust and governance boundary.
 
+### Registry review and governance
+
+These commands only read. They never vote, and they never post to GitHub.
+
+| Command | Purpose |
+| --- | --- |
+| `agora registry under-review` | List registry items under review, lowest score first |
+| `agora registry reviews <ITEM>` | Show the curator reviews recorded for one item |
+| `agora registry audit-log [--limit N]` | Show recent audit log entries, newest first (1-1000, default 200) |
+| `agora registry resolutions [--limit N]` | Show recent triage resolutions (1-1000, default 50) |
+| `agora governance summary <ITEM>` | Show the vote counts and status for one item |
+| `agora governance events [--item <ITEM>] [--limit N]` | List governance events, newest first (1-1000, default 100) |
+| `agora governance config` | Show the governance repository and environment this build uses |
+| `agora governance diagnostics` | Run the governance setup checks, local and GitHub |
+
+These queries read the installed registry, so they fail with an error when none is installed; run `agora registry sync` first. `governance diagnostics` prints one line per check and exits with status 1 when any check fails. Its GitHub checks are read-only requests. When GitHub is unreachable or you are not signed in, those checks report their own failure rather than passing.
+
 ### Instances
 
 ```text
@@ -349,12 +366,16 @@ agora plugin remove <PLUGIN_ID>
 agora plugin remove <PLUGIN_ID> --purge-data
 agora plugin log <PLUGIN_ID> --lines 200
 agora plugin disable-all
+agora plugin settings <PLUGIN_ID>
+agora plugin set <PLUGIN_ID> <KEY> <VALUE>
 agora plugin check-update [PLUGIN_ID]
 agora plugin update <PLUGIN_ID>
 agora plugin update <PLUGIN_ID> --yes
 agora plugin keygen --out <PATH> --key-id <ID>
 agora plugin sign <DOCUMENT> --key <PATH> --key-id <ID>
 ```
+
+`plugin settings` prints the settings a plugin declares, with their types and current values. `plugin set` writes one of them. The value is read as JSON (`true`, `42`, `"text"`); text that is not valid JSON is taken as a plain string. Core checks the value against the type the plugin declared and refuses a wrong type or an undeclared key, so nothing is stored in that case.
 
 `plugin list` reads the core-resolved install state without starting plugins. Its status column explains why an installed plugin is not runnable, including disabled plugins, incompatible host APIs, dependency problems, cycles, and recorded activation failures. `plugin status` is a convenience alias.
 
@@ -380,6 +401,19 @@ agora provider plan-digest <PROVIDER_ID>:<PROJECT_ID>@<VERSION_ID>
 ```
 
 `provider list` shows the official providers (Modrinth, Technic) and every plugin provider, with why one is unusable right now. Enabling or disabling a plugin's provider enables or disables that plugin. `plan-digest` resolves one pack version and prints the digest a curator pins as `sha256` for a `provider_pack` catalog entry (see `REGISTRY_CURATION_REFERENCE.md`).
+
+```text
+agora pack install --provider <PROVIDER_ID> --project <PROJECT_ID>
+agora pack install --provider <PROVIDER_ID> --project <PROJECT_ID> --version <VERSION_ID> --name <NAME>
+agora technic search <QUERY> --limit 20
+agora technic install <SLUG>
+agora technic install <SLUG> --build <BUILD> --name <NAME>
+agora technic install <SLUG> --minecraft <VERSION> --loader <LOADER> --loader-version <VERSION>
+```
+
+`pack install --provider` installs a provider's modpack as a **new** instance, through the same registry the desktop uses. It cannot be combined with a manifest path and instance. `--version` is optional; without it the provider chooses.
+
+Technic consent is off by default. It is stored as the `technic_enabled` setting, and zip packs also need `allow_unverified_packs`; `agora settings set technic_enabled true` changes it. `technic search` and `technic install` are refused while the setting is off. Solder packs install at their recommended build unless `--build` names one. Zip packs carry no metadata, so you must give their Minecraft version, loader, and loader version. Core checks both settings on every call, whatever flags you pass.
 
 ### Updates
 

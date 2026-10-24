@@ -5,6 +5,7 @@
 //!
 //! Flag review, admin-alert repo creation, and rate-limit paths are removed.
 
+use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
 use crate::registry::RegistryService;
 use rusqlite::Connection;
@@ -937,6 +938,488 @@ pub fn is_development_registry() -> bool {
     {
         false
     }
+}
+
+// ---------------------------------------------------------------------------
+// Governance network diagnostics (read-only GitHub checks 5-13)
+// ---------------------------------------------------------------------------
+
+/// Run the network-based diagnostic checks (repo metadata, labels, triage
+/// category, issue templates).
+///
+/// All checks are read-only GitHub API calls.  Every API call that returns 401
+/// triggers exactly one refresh-and-retry before reporting a permanent failure.
+pub async fn run_network_diagnostics(ctx: &Ctx) -> Vec<DiagnosticCheck> {
+    let diagnostic_token = match crate::auth::get_valid_access_token().await {
+        Some(token) => token,
+        None => {
+            return vec![
+                DiagnosticCheck {
+                    id: "repository_metadata_readable".into(),
+                    status: DiagnosticStatus::Fail,
+                    message: "Cannot check: no GitHub token available".into(),
+                },
+                DiagnosticCheck {
+                    id: "issues_enabled".into(),
+                    status: DiagnosticStatus::Warning,
+                    message: "Cannot check: no GitHub token".into(),
+                },
+                DiagnosticCheck {
+                    id: "discussions_enabled".into(),
+                    status: DiagnosticStatus::Warning,
+                    message: "Cannot check: no GitHub token".into(),
+                },
+                DiagnosticCheck {
+                    id: "triage_category_exists".into(),
+                    status: DiagnosticStatus::Warning,
+                    message: "Cannot check: no GitHub token".into(),
+                },
+                DiagnosticCheck {
+                    id: "community_review_label_exists".into(),
+                    status: DiagnosticStatus::Warning,
+                    message: "Cannot check: no GitHub token".into(),
+                },
+                DiagnosticCheck {
+                    id: "registry_submission_label_exists".into(),
+                    status: DiagnosticStatus::Warning,
+                    message: "Cannot check: no GitHub token".into(),
+                },
+                DiagnosticCheck {
+                    id: "registry_vote_label_exists".into(),
+                    status: DiagnosticStatus::Warning,
+                    message: "Cannot check: no GitHub token".into(),
+                },
+                DiagnosticCheck {
+                    id: "review_form_exists".into(),
+                    status: DiagnosticStatus::Warning,
+                    message: "Cannot check: no GitHub token".into(),
+                },
+                DiagnosticCheck {
+                    id: "mod_submission_exists".into(),
+                    status: DiagnosticStatus::Warning,
+                    message: "Cannot check: no GitHub token".into(),
+                },
+            ];
+        }
+    };
+
+    let repo = resolve_governance_repo();
+    let http_clients = &ctx.http_clients;
+
+    let mut checks = Vec::new();
+    let (owner, repo_name) = repo.split_once('/').unwrap_or(("", ""));
+
+    // ---- Helper: execute an API call with 401 refresh-and-retry ----
+    async fn call_with_401_retry<T, F, Fut>(failed_token: &str, f: F) -> Result<T, String>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let first = f().await;
+        match &first {
+            Err(msg) if msg.contains("401") => {
+                eprintln!("[governance] 401 on API call; attempting token refresh");
+                if crate::auth::try_refresh_after_401_with_token(failed_token)
+                    .await
+                    .is_ok()
+                {
+                    return f().await;
+                }
+                first
+            }
+            _ => first,
+        }
+    }
+
+    // 5. repository_metadata_readable (also yields issues + discussions)
+    match call_with_401_retry(&diagnostic_token, || get_repo_meta(http_clients, &repo)).await {
+        Ok(meta) => {
+            checks.push(DiagnosticCheck {
+                id: "repository_metadata_readable".into(),
+                status: DiagnosticStatus::Pass,
+                message: format!("Repository {} is accessible with token", repo),
+            });
+            checks.push(DiagnosticCheck {
+                id: "issues_enabled".into(),
+                status: if meta.has_issues {
+                    DiagnosticStatus::Pass
+                } else {
+                    DiagnosticStatus::Warning
+                },
+                message: if meta.has_issues {
+                    "Issues are enabled on the governance repository".into()
+                } else {
+                    "Issues are disabled; governance vote issues require issues enabled".into()
+                },
+            });
+            checks.push(DiagnosticCheck {
+                id: "discussions_enabled".into(),
+                status: if meta.has_discussions {
+                    DiagnosticStatus::Pass
+                } else {
+                    DiagnosticStatus::Warning
+                },
+                message: if meta.has_discussions {
+                    "Discussions are enabled on the governance repository".into()
+                } else {
+                    "Discussions are disabled; triage polls require discussions enabled".into()
+                },
+            });
+        }
+        Err(msg) => {
+            checks.push(DiagnosticCheck {
+                id: "repository_metadata_readable".into(),
+                status: DiagnosticStatus::Fail,
+                message: msg.clone(),
+            });
+            checks.push(DiagnosticCheck {
+                id: "issues_enabled".into(),
+                status: DiagnosticStatus::Warning,
+                message: format!("Cannot check issues: {msg}"),
+            });
+            checks.push(DiagnosticCheck {
+                id: "discussions_enabled".into(),
+                status: DiagnosticStatus::Warning,
+                message: format!("Cannot check discussions: {msg}"),
+            });
+        }
+    }
+
+    // 8. triage_category_exists
+    match call_with_401_retry(&diagnostic_token, || {
+        check_triage_category(http_clients, owner, repo_name)
+    })
+    .await
+    {
+        Ok(true) => checks.push(DiagnosticCheck {
+            id: "triage_category_exists".into(),
+            status: DiagnosticStatus::Pass,
+            message: "Triage discussion category exists on the repository".into(),
+        }),
+        Ok(false) => checks.push(DiagnosticCheck {
+            id: "triage_category_exists".into(),
+            status: DiagnosticStatus::Warning,
+            message:
+                "Triage discussion category not found; triage polls require a \"Triage\" category"
+                    .into(),
+        }),
+        Err(msg) => checks.push(DiagnosticCheck {
+            id: "triage_category_exists".into(),
+            status: DiagnosticStatus::Warning,
+            message: format!("Cannot check triage category: {msg}"),
+        }),
+    }
+
+    // 9-11. Label existence checks
+    let known_labels: Option<Vec<String>> = match call_with_401_retry(&diagnostic_token, || {
+        list_repo_labels(http_clients, owner, repo_name)
+    })
+    .await
+    {
+        Ok(labels) => Some(labels),
+        Err(msg) => {
+            for (check_id, label) in [
+                ("community_review_label_exists", "community-review"),
+                ("registry_submission_label_exists", "registry-submission"),
+                ("registry_vote_label_exists", "registry-vote"),
+            ] {
+                checks.push(DiagnosticCheck {
+                    id: check_id.into(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Cannot check \"{label}\" label: {msg}"),
+                });
+            }
+            None
+        }
+    };
+
+    if let Some(known_labels) = known_labels {
+        for (check_id, label_name) in [
+            ("community_review_label_exists", "community-review"),
+            ("registry_submission_label_exists", "registry-submission"),
+            ("registry_vote_label_exists", "registry-vote"),
+        ] {
+            let found = known_labels.iter().any(|l| l == label_name);
+            checks.push(DiagnosticCheck {
+                id: check_id.into(),
+                status: if found {
+                    DiagnosticStatus::Pass
+                } else {
+                    DiagnosticStatus::Warning
+                },
+                message: if found {
+                    format!("\"{label_name}\" label exists on the repository")
+                } else {
+                    format!("\"{label_name}\" label not found; governance workflows require it")
+                },
+            });
+        }
+    }
+
+    // 12-13. Issue template existence checks
+    for (check_id, template_path, display) in [
+        (
+            "review_form_exists",
+            ".github/ISSUE_TEMPLATE/review-form.yml",
+            "review-form.yml",
+        ),
+        (
+            "mod_submission_exists",
+            ".github/ISSUE_TEMPLATE/mod-submission.yml",
+            "mod-submission.yml",
+        ),
+    ] {
+        let tmpl_result = call_with_401_retry(&diagnostic_token, || {
+            let path = template_path.to_owned();
+            async move { check_template_exists(http_clients, owner, repo_name, &path).await }
+        })
+        .await;
+        match tmpl_result {
+            Ok(true) => checks.push(DiagnosticCheck {
+                id: check_id.into(),
+                status: DiagnosticStatus::Pass,
+                message: format!("\"{display}\" issue template exists"),
+            }),
+            Ok(false) => checks.push(DiagnosticCheck {
+                id: check_id.into(),
+                status: DiagnosticStatus::Warning,
+                message: format!("\"{display}\" issue template not found"),
+            }),
+            Err(msg) => checks.push(DiagnosticCheck {
+                id: check_id.into(),
+                status: DiagnosticStatus::Warning,
+                message: format!("Cannot check \"{display}\": {msg}"),
+            }),
+        }
+    }
+
+    checks
+}
+
+// ---------------------------------------------------------------------------
+// GitHub API helpers (read-only)
+// ---------------------------------------------------------------------------
+
+pub fn github_headers(token: &str, accept: Option<&str>) -> Vec<(String, String)> {
+    let mut headers = vec![
+        ("Authorization".to_string(), format!("Bearer {token}")),
+        ("User-Agent".to_string(), "agora-launcher".to_string()),
+    ];
+    if let Some(accept) = accept {
+        headers.push(("Accept".to_string(), accept.to_string()));
+    }
+    headers
+}
+
+pub async fn checked_github_graphql(
+    http_clients: &crate::http_client::HttpClients,
+    token: &str,
+    body: &serde_json::Value,
+) -> LauncherResult<reqwest::Response> {
+    let body = serde_json::to_vec(body).map_err(|error| LauncherError::Generic {
+        code: "ERR_JSON_ENCODE".to_string(),
+        message: format!("Failed to encode GitHub GraphQL request: {error}"),
+    })?;
+    crate::http_client::checked_send(
+        http_clients,
+        crate::http_client::ClientCategory::GitHub,
+        reqwest::Method::POST,
+        "https://api.github.com/graphql",
+        &github_headers(token, None),
+        Some(body),
+        Some("application/json"),
+    )
+    .await
+}
+
+async fn checked_github_get(
+    http_clients: &crate::http_client::HttpClients,
+    url: &str,
+    token: &str,
+) -> LauncherResult<reqwest::Response> {
+    crate::http_client::checked_request_with_headers(
+        http_clients,
+        crate::http_client::ClientCategory::GitHub,
+        url,
+        github_headers(token, Some("application/vnd.github+json")),
+    )
+    .await
+}
+
+struct RepoMeta {
+    has_issues: bool,
+    has_discussions: bool,
+}
+
+/// Fetch repository metadata (issues + discussions enabled).
+async fn get_repo_meta(
+    http_clients: &crate::http_client::HttpClients,
+    repo: &str,
+) -> Result<RepoMeta, String> {
+    let token = crate::auth::get_token().ok_or("No token available".to_string())?;
+    let url = format!("https://api.github.com/repos/{}", repo);
+    let resp = checked_github_get(http_clients, &url, &token)
+        .await
+        .map_err(|e| format!("Network error getting repo metadata: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("401".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API returned HTTP {}", resp.status()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RepoResponse {
+        has_issues: bool,
+        has_discussions: bool,
+    }
+
+    let response_text =
+        crate::http_client::checked_response_text(resp, crate::http_client::ClientCategory::GitHub)
+            .await
+            .map_err(|e| format!("Parse error: {e}"))?;
+    let body: RepoResponse =
+        serde_json::from_str(&response_text).map_err(|e| format!("JSON parse error: {e}"))?;
+
+    Ok(RepoMeta {
+        has_issues: body.has_issues,
+        has_discussions: body.has_discussions,
+    })
+}
+
+/// Run a GraphQL query to check for a discussion category named "Triage".
+async fn check_triage_category(
+    http_clients: &crate::http_client::HttpClients,
+    owner: &str,
+    repo: &str,
+) -> Result<bool, String> {
+    let token = crate::auth::get_token().ok_or("No token available".to_string())?;
+    let query = serde_json::json!({
+        "query": r#"
+            query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                    discussionCategories(first: 20) {
+                        nodes { name slug }
+                    }
+                }
+            }
+        "#,
+        "variables": { "owner": owner, "repo": repo },
+    });
+
+    let resp = checked_github_graphql(http_clients, &token, &query)
+        .await
+        .map_err(|e| format!("Network error checking triage category: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("401".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GraphQL query failed: HTTP {}", resp.status()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GraphQLResponse {
+        data: Option<GraphQLData>,
+    }
+    #[derive(serde::Deserialize)]
+    struct GraphQLData {
+        repository: Option<GraphQLRepo>,
+    }
+    #[derive(serde::Deserialize)]
+    struct GraphQLRepo {
+        discussion_categories: Option<GraphQLCategories>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GraphQLCategories {
+        nodes: Option<Vec<GraphQLCategory>>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GraphQLCategory {
+        name: String,
+        slug: String,
+    }
+
+    let response_text =
+        crate::http_client::checked_response_text(resp, crate::http_client::ClientCategory::GitHub)
+            .await
+            .map_err(|e| format!("Parse error: {e}"))?;
+    let body: GraphQLResponse =
+        serde_json::from_str(&response_text).map_err(|e| format!("JSON parse error: {e}"))?;
+
+    let categories = body
+        .data
+        .and_then(|d| d.repository)
+        .and_then(|r| r.discussion_categories)
+        .and_then(|c| c.nodes)
+        .unwrap_or_default();
+
+    Ok(categories.iter().any(|cat| {
+        cat.name.eq_ignore_ascii_case("Triage") || cat.slug.eq_ignore_ascii_case("triage")
+    }))
+}
+
+/// Fetch all label names from the repository.
+async fn list_repo_labels(
+    http_clients: &crate::http_client::HttpClients,
+    owner: &str,
+    repo: &str,
+) -> Result<Vec<String>, String> {
+    let token = crate::auth::get_token().ok_or("No token available".to_string())?;
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/labels?per_page=100");
+    let resp = checked_github_get(http_clients, &url, &token)
+        .await
+        .map_err(|e| format!("Network error listing labels: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("401".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API returned HTTP {}", resp.status()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct LabelResponse {
+        name: String,
+    }
+
+    let response_text =
+        crate::http_client::checked_response_text(resp, crate::http_client::ClientCategory::GitHub)
+            .await
+            .map_err(|e| format!("Parse error: {e}"))?;
+    let body: Vec<LabelResponse> =
+        serde_json::from_str(&response_text).map_err(|e| format!("JSON parse error: {e}"))?;
+
+    Ok(body.into_iter().map(|l| l.name).collect())
+}
+
+/// Check whether a specific file exists in the `.github/ISSUE_TEMPLATE/`
+/// directory via the read-only Contents API.
+async fn check_template_exists(
+    http_clients: &crate::http_client::HttpClients,
+    owner: &str,
+    repo: &str,
+    path: &str,
+) -> Result<bool, String> {
+    let token = crate::auth::get_token().ok_or("No token available".to_string())?;
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/contents/{path}");
+    let resp = checked_github_get(http_clients, &url, &token)
+        .await
+        .map_err(|e| format!("Network error checking template: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("401".to_string());
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API returned HTTP {}", resp.status()));
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
