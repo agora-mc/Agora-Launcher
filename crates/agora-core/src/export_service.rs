@@ -1313,5 +1313,26 @@ mod round_trip_tests {
             "disabled stays disabled"
         );
         assert!(root.join("shaderpacks").join("BSL.zip").is_file());
+
+        // The manifest, not just the files: a disabled mod is recorded under its
+        // logical name and switched off, so the mod table and the State filter
+        // see it as disabled.
+        let manifest = crate::helpers::read_manifest(&root.join("instance_manifest.json")).unwrap();
+        let mods: Vec<(&str, bool)> = manifest
+            .mods
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(
+            mods,
+            vec![("curseforge-only.jar", true), ("off.jar", false)],
+            "mods as recorded in the manifest"
+        );
+        let shaders: Vec<(&str, bool)> = manifest
+            .shaders
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(shaders, vec![("BSL.zip", true)]);
     }
 }

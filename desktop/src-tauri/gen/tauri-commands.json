@@ -3,9 +3,9 @@
   "generator": "scripts/check_tauri_bindings.py",
   "limitation": "Name-presence only, not type signatures. A true generator would need a Rust proc-macro crate or TypeScript compiler plugin.",
   "summary": {
-    "registered_rust": 251,
-    "defined_rust": 251,
-    "ts_wrappers": 251,
+    "registered_rust": 254,
+    "defined_rust": 254,
+    "ts_wrappers": 254,
     "rust_only": 0,
     "ts_only": 0,
     "defined_not_registered": 0
@@ -194,6 +194,7 @@
       "plugin_surfaces",
       "plugins_enabled",
       "preview_import_name",
+      "preview_loadout_update",
       "preview_pack_instance_name",
       "preview_pack_update",
       "preview_plugin_folder",
@@ -263,6 +264,7 @@
       "update_instance_java",
       "update_instance_jvm",
       "update_instance_template",
+      "update_loadout_profile",
       "verify_lockfile"
     ],
     "defined": [
@@ -448,6 +450,7 @@
       "plugin_surfaces",
       "plugins_enabled",
       "preview_import_name",
+      "preview_loadout_update",
       "preview_pack_instance_name",
       "preview_pack_update",
       "preview_plugin_folder",
@@ -517,6 +520,7 @@
       "update_instance_java",
       "update_instance_jvm",
       "update_instance_template",
+      "update_loadout_profile",
       "verify_lockfile"
     ],
     "ts_wrappers": [
@@ -702,6 +706,7 @@
       "plugin_surfaces",
       "plugins_enabled",
       "preview_import_name",
+      "preview_loadout_update",
       "preview_pack_instance_name",
       "preview_pack_update",
       "preview_plugin_folder",
@@ -771,6 +776,7 @@
       "update_instance_java",
       "update_instance_jvm",
       "update_instance_template",
+      "update_loadout_profile",
       "verify_lockfile"
     ],
     "missing_ts_wrapper": [],

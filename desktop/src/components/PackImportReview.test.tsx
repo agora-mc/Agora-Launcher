@@ -7,8 +7,8 @@ const plan: PackImportPlan = {
   pack_name: 'Friend Pack',
   instance: { id: null, name: 'Friend Pack', minecraft_version: '1.21', loader: 'fabric', loader_version: '0.16' },
   entries: [
-    { name: 'on.jar', display_name: null, source: 'modrinth', checkable: true, reason: null, action: null },
-    { name: 'off.jar', display_name: null, source: 'modrinth', checkable: true, reason: null, action: null, arrives_disabled: true },
+    { name: 'on.jar', display_name: null, source: 'modrinth', checkable: true, reason: null, action: null, content_type: 'mod' },
+    { name: 'off.jar', display_name: null, source: 'modrinth', checkable: true, reason: null, action: null, arrives_disabled: true, content_type: 'mod' },
   ],
   file_sha256: 'x',
   file_size: 1,
@@ -24,9 +24,9 @@ const mrpackPlan: PackImportPlan = {
   ...plan,
   pack_name: 'Spiff',
   entries: [
-    { name: 'mods/sodium.jar', display_name: 'sodium.jar', source: 'modrinth', checkable: true, reason: null, action: null },
-    { name: 'mods/homebrew.jar', display_name: 'homebrew.jar', source: 'bundled', checkable: true, reason: null, action: null },
-    { name: 'shaderpacks/BSL.zip', display_name: 'BSL.zip', source: 'bundled', checkable: false, reason: null, action: null },
+    { name: 'mods/sodium.jar', display_name: 'sodium.jar', source: 'modrinth', checkable: true, reason: null, action: null, content_type: 'mod' },
+    { name: 'mods/homebrew.jar', display_name: 'homebrew.jar', source: 'bundled', checkable: true, reason: null, action: null, content_type: 'mod' },
+    { name: 'shaderpacks/BSL.zip', display_name: 'BSL.zip', source: 'bundled', checkable: false, reason: null, action: null, content_type: 'shader' },
   ],
   name_taken: true,
   suggested_name: 'Spiff (2)',
@@ -119,3 +119,43 @@ describe('pack import review', () => {
     expect(onImport).toHaveBeenCalledWith(false);
   });
 });
+
+describe('pack import review heading and counts', () => {
+  it('the heading follows the name the user typed, not the name in the pack', () => {
+    review({ plan: mrpackPlan, name: 'Spiff for Sam' });
+    expect(screen.getByRole('heading', { name: 'Import Spiff for Sam?' })).toBeTruthy();
+    expect(screen.queryByText('Import Spiff?')).toBeNull();
+  });
+
+  it('falls back to the pack name when the field is blank', () => {
+    review({ plan: mrpackPlan, name: '   ' });
+    expect(screen.getByRole('heading', { name: 'Import Spiff?' })).toBeTruthy();
+  });
+
+  it('counts a shader zip as a shader pack, not a mod', () => {
+    review({ plan: mrpackPlan, name: mrpackPlan.suggested_name });
+    expect(screen.getByText(/^2 mods, 1 shader pack in the pack/)).toBeTruthy();
+    expect(screen.queryByText(/^3 mods/)).toBeNull();
+  });
+
+  it('counts each kind in plain words, singular and plural, and a non-content file as other', () => {
+    const entry = (name: string, content_type: string) => ({
+      name, display_name: null, source: 'download' as const, checkable: false, reason: null, action: null, content_type,
+    });
+    review({
+      plan: {
+        ...mrpackPlan,
+        entries: [
+          entry('mods/a.jar', 'mod'),
+          entry('resourcepacks/F.zip', 'resourcepack'),
+          entry('resourcepacks/G.zip', 'resourcepack'),
+          entry('datapacks/d.zip', 'datapack'),
+          entry('config/c.json', 'other'),
+        ],
+      },
+      name: 'X',
+    });
+    expect(screen.getByText(/^1 mod, 2 resource packs, 1 data pack, 1 other file in the pack/)).toBeTruthy();
+  });
+});
+

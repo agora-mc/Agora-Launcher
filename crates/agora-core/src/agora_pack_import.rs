@@ -215,6 +215,9 @@ pub struct PlannedEntry {
     /// The pack marks this mod disabled, so it will be installed switched off.
     #[serde(default)]
     pub arrives_disabled: bool,
+    /// What kind of file this is: `mod`, `shader`, `resourcepack`, `datapack`,
+    /// `world`, or `other` for a file that is not content (a config, say).
+    pub content_type: String,
 }
 
 /// What importing a pack would do, shown to the user before anything is written.
@@ -1265,6 +1268,7 @@ pub fn plan_agora_pack(backend: &dyn PackBackend, pack: &ParsedAgoraPack) -> Pac
                 reason: Some(reason.clone()),
                 action: None,
                 arrives_disabled: false,
+                content_type: "mod".into(),
             },
             PackEntryParse::Entry(entry) => plan_entry(backend, entry, &refusal),
         })
@@ -1352,6 +1356,8 @@ fn plan_entry(
         reason,
         action,
         arrives_disabled: !entry.arrives_enabled(),
+        // An Agora pack lists only mods.
+        content_type: "mod".into(),
     }
 }
 

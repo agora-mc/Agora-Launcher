@@ -246,6 +246,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["loadout", "create"],
     &["loadout", "list"],
     &["loadout", "apply"],
+    &["loadout", "update"],
     &["loadout", "delete"],
     &["lockfile", "export"],
     &["lockfile", "verify"],
@@ -2365,6 +2366,67 @@ fn loadout_instance_with_an_unlisted_mod(data_dir: &std::path::Path, id: &str) {
     create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar"]);
     run_agora(data_dir, &["loadout", "create", id, "both"]);
     create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar", "newer.jar"]);
+}
+
+#[test]
+fn loadout_update_refuses_without_a_terminal_unless_yes_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-update-refused");
+    let profile = data_dir
+        .join("instances")
+        .join("loadout-update-refused")
+        .join(".agora_loadouts")
+        .join("both.json");
+    let before = std::fs::read_to_string(&profile).unwrap();
+
+    // Tests have no terminal, so nobody can be asked: the changes are named and
+    // the command refuses.
+    let output = run_agora(
+        &data_dir,
+        &["loadout", "update", "loadout-update-refused", "both"],
+    );
+    assert!(!output.status.success(), "update without --yes must refuse");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("add newer.jar (on)"), "stderr: {stderr}");
+    assert!(stderr.contains("--yes"), "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&profile).unwrap(),
+        before,
+        "a refused update leaves the profile as it was"
+    );
+}
+
+#[test]
+fn loadout_update_with_yes_records_the_setup_so_apply_stops_asking() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-update-yes");
+
+    let output = run_agora_json(
+        &data_dir,
+        &["loadout", "update", "loadout-update-yes", "both", "--yes"],
+    );
+    let parsed = assert_json_stdout(&output);
+    assert_eq!(parsed["status"], "updated", "{parsed}");
+    assert_eq!(parsed["changes"][0]["filename"], "newer.jar", "{parsed}");
+
+    // Apply no longer needs --others: the profile now lists newer.jar.
+    let apply = run_agora(
+        &data_dir,
+        &["loadout", "apply", "loadout-update-yes", "both"],
+    );
+    assert!(
+        apply.status.success(),
+        "apply after an update should not ask: {}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+
+    // And a second update with nothing new says so and writes nothing.
+    let again = run_agora(
+        &data_dir,
+        &["loadout", "update", "loadout-update-yes", "both", "--yes"],
+    );
+    assert!(again.status.success());
+    assert!(String::from_utf8_lossy(&again.stdout).contains("Nothing to save"));
 }
 
 #[test]

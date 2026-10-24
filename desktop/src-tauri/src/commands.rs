@@ -4989,6 +4989,43 @@ pub async fn create_loadout_profile(
     })
 }
 
+/// What saving a profile again would change. Writes nothing; the Update flow
+/// shows this and asks before it calls `update_loadout_profile`.
+#[tauri::command]
+pub async fn preview_loadout_update(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<agora_core::loadout::LoadoutUpdate> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_core::loadout_service::LoadoutService::new(ctx)
+            .update_preview(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Save a profile so it records the instance's current setup. Returns the
+/// changes it made.
+#[tauri::command]
+pub async fn update_loadout_profile(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<agora_core::loadout::LoadoutUpdate> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_core::loadout_service::LoadoutService::new(ctx).update(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 /// Mods that are on but that the profile does not list. The Apply flow asks the
 /// user what to do with them before it calls `apply_loadout_profile`.
 #[tauri::command]

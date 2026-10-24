@@ -38,7 +38,7 @@ export function LaunchFailedBanner({
           Open Console
         </button>
         <button type="button" onClick={onInvestigate} className={actionClass} title="Open Crash Doctor to look through the latest logs for what went wrong">
-          Find problems
+          Diagnose a crash
         </button>
         {onDismiss ? (
           <button type="button" onClick={onDismiss} className={actionClass}>

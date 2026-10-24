@@ -6,7 +6,7 @@ use crate::models::{
 use crate::override_sanitizer::OverridePolicy;
 use crate::paths;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Seek};
 use std::path::{Component, Path, PathBuf};
@@ -242,11 +242,20 @@ fn inventory_pack_content(
                 ),
             )
         })?;
-        let identity_key = format!("{directory}/{}", entry.file_name().to_string_lossy());
+        // The index lists the file under its on-disk name, `x.jar.disabled` included.
+        let physical_name = entry.file_name().to_string_lossy().into_owned();
+        let identity_key = format!("{directory}/{physical_name}");
         let modrinth_file = if content_type == "mod" {
             modrinth_files.get(&identity_key)
         } else {
             None
+        };
+        // A disabled file is recorded the way the rest of Agora records one: the
+        // logical name with `enabled: false`. The mod table, the enable/disable
+        // toggles and the install pipeline all read it that way.
+        let (filename, enabled) = match split_disabled_suffix(&physical_name) {
+            Some(logical) => (logical.to_string(), false),
+            None => (physical_name.clone(), true),
         };
         installed.push(InstalledMod {
             provider: None,
@@ -254,7 +263,7 @@ fn inventory_pack_content(
             // Inventoried from the .mrpack index: contributed by the pack.
             pack_managed: true,
             installed_as_dependency: false,
-            filename: entry.file_name().to_string_lossy().into_owned(),
+            filename,
             registry_id: None,
             modrinth_id: modrinth_file.map(|file| file.project_id.clone()),
             source: "modrinth-pack".into(),
@@ -265,7 +274,7 @@ fn inventory_pack_content(
             java_packages: Vec::new(),
             mod_jar_id: None,
             provided_mod_ids: Vec::new(),
-            enabled: true,
+            enabled,
             content_type: content_type.into(),
             depends_on: Vec::new(),
             optional_deps: Vec::new(),
@@ -273,7 +282,102 @@ fn inventory_pack_content(
         });
     }
     installed.sort_by(|a, b| a.filename.cmp(&b.filename));
+    refuse_duplicate_names(&installed, directory)?;
     Ok(installed)
+}
+
+/// `x.jar` and `x.jar.disabled` in one folder would both be recorded as
+/// `x.jar`, and the toggles could not tell them apart. Refuse instead. Expects
+/// the list sorted by filename.
+pub(crate) fn refuse_duplicate_names(
+    installed: &[InstalledMod],
+    directory: &str,
+) -> LauncherResult<()> {
+    if let Some(pair) = installed
+        .windows(2)
+        .find(|pair| pair[0].filename == pair[1].filename)
+    {
+        return Err(import_error(
+            "ERR_IMPORT_DUPLICATE",
+            format!(
+                "The pack contains both '{}' and a disabled copy of it in {directory}.",
+                pair[0].filename
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The folders whose files Agora tracks as content.
+const CONTENT_FOLDERS: [&str; 5] = [
+    "mods/",
+    "resourcepacks/",
+    "shaderpacks/",
+    "datapacks/",
+    "saves/",
+];
+
+/// Which disabled copies in `keys` (manifest paths such as `mods/x.jar.disabled`)
+/// have their enabled twin (`mods/x.jar`) in the same list. Such a copy is left
+/// out of the import: the enabled file is the one Agora tracks, and a second file
+/// would record one mod twice. Only content folders count, so a `config/` pair
+/// is left alone.
+pub(crate) fn superseded_disabled_keys<S: AsRef<str>>(keys: &[S]) -> BTreeSet<String> {
+    let inventoried = |key: &str| {
+        let lower = key.to_ascii_lowercase();
+        CONTENT_FOLDERS
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+    };
+    let present: BTreeSet<&str> = keys.iter().map(|key| key.as_ref()).collect();
+    keys.iter()
+        .map(|key| key.as_ref())
+        .filter(|key| inventoried(key))
+        .filter_map(|key| {
+            let logical = split_disabled_suffix(key)?;
+            // A twin needs a file name, so `mods/.disabled` has none.
+            let is_file = !logical.ends_with('/');
+            (is_file && inventoried(logical) && present.contains(logical)).then(|| key.to_string())
+        })
+        .collect()
+}
+
+/// Every manifest path an `.mrpack` supplies: the index's files, and the files
+/// under its overrides folder, named as the import names them.
+fn pack_supplied_keys<R: Read + Seek>(archive: &ZipArchive<R>, index: &MrpackIndex) -> Vec<String> {
+    let mut keys: Vec<String> = index
+        .files
+        .iter()
+        .map(|file| manifest_path_key(&relative_archive_path(&file.path)))
+        .collect();
+    // A name that cannot be read is skipped, as the plan and the import skip it.
+    for raw in archive.file_names().filter_map(Result::ok) {
+        if raw.ends_with('/') {
+            continue;
+        }
+        let normalized = manifest_path_key(&relative_archive_path(&raw));
+        if let Some(relative) = override_relative(&normalized, &index.overrides) {
+            if !relative.is_empty() && !relative.ends_with('/') {
+                keys.push(manifest_path_key(&relative_archive_path(relative)));
+            }
+        }
+    }
+    keys
+}
+
+/// The logical name of a file that is switched off (`x.jar.disabled` gives
+/// `x.jar`), or `None` for a file that is on. Case-insensitive, because Windows
+/// treats `X.JAR.DISABLED` and `x.jar.disabled` as the same file.
+pub(crate) fn split_disabled_suffix(physical_name: &str) -> Option<&str> {
+    let suffix = crate::pack_merge::DISABLED_SUFFIX;
+    let cut = physical_name.len().checked_sub(suffix.len())?;
+    let tail = physical_name.get(cut..)?;
+    if tail.eq_ignore_ascii_case(suffix) {
+        let logical = &physical_name[..cut];
+        (!logical.is_empty()).then_some(logical)
+    } else {
+        None
+    }
 }
 
 /// A freshly allocated destination for an import.  Every importer writes into
@@ -712,6 +816,7 @@ pub fn import_mrpack_inner(
     let name = apply_name_override(name, name_override);
 
     let (minecraft_version, loader, loader_version) = parse_mrpack_deps(&index.dependencies);
+    let superseded = superseded_disabled_keys(&pack_supplied_keys(&archive, &index));
     let target = prepare_import_target(instances_root, &name)?;
 
     let import_result = (|| -> LauncherResult<usize> {
@@ -731,6 +836,11 @@ pub fn import_mrpack_inner(
             })
             .collect();
         for file_entry in &index.files {
+            // Not fetched or written: the enabled twin is what Agora keeps.
+            if superseded.contains(&manifest_path_key(&relative_archive_path(&file_entry.path))) {
+                completed_files += 1;
+                continue;
+            }
             if skip_unfetchable {
                 let has_link = file_entry
                     .downloads
@@ -838,7 +948,7 @@ pub fn import_mrpack_inner(
             else {
                 continue;
             };
-            if entry.is_dir() {
+            if entry.is_dir() || superseded.contains(&manifest_path_key(&relative_path)) {
                 continue;
             }
             validate_override_extension(&relative_path, override_policy)?;
@@ -1057,8 +1167,12 @@ pub fn plan_mrpack(
     };
     let file_name_of = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
 
+    let superseded = superseded_disabled_keys(&pack_supplied_keys(&archive, &index));
     for listed in &index.files {
         let key = manifest_path_key(&relative_archive_path(&listed.path));
+        if superseded.contains(&key) {
+            continue;
+        }
         let display = file_name_of(&key);
         let safe = !key.is_empty()
             && relative_archive_path(&listed.path)
@@ -1152,6 +1266,7 @@ pub fn plan_mrpack(
             reason,
             action: None,
             arrives_disabled: key.to_ascii_lowercase().ends_with(".disabled"),
+            content_type: pack_content_type(&key).into(),
         });
     }
 
@@ -1187,7 +1302,9 @@ pub fn plan_mrpack(
         let Some(relative) = override_relative(&normalized, &index.overrides) else {
             continue;
         };
-        if relative.is_empty() {
+        if relative.is_empty()
+            || superseded.contains(&manifest_path_key(&relative_archive_path(relative)))
+        {
             continue;
         }
         let Some(path) = mrpack_override_path(&raw_name, &index.overrides, override_policy) else {
@@ -1222,6 +1339,7 @@ pub fn plan_mrpack(
         if content_folder {
             entries.push(PlannedEntry {
                 display_name: Some(file_name_of(&key)),
+                content_type: pack_content_type(&key).into(),
                 name: key,
                 source: PlannedSource::Bundled,
                 checkable: false,
@@ -1235,6 +1353,16 @@ pub fn plan_mrpack(
     }
     if left_out_extra > 0 {
         left_out.push(format!("and {left_out_extra} more"));
+    }
+    // Refused by `inventory_pack_content`: `x.jar` and `x.jar.disabled` in one
+    // folder would be recorded as the same mod.
+    // A disabled copy whose enabled twin the pack also lists is left out, and
+    // the review says so.
+    for key in &superseded {
+        let logical = split_disabled_suffix(key).unwrap_or(key);
+        left_out.push(format!(
+            "{key} is a disabled copy of {logical}, which the pack also has, so only the enabled copy is kept"
+        ));
     }
     if override_files > MAX_MRPACK_OVERRIDE_FILES || override_bytes > MAX_MRPACK_OVERRIDE_BYTES {
         problems.push(
@@ -1274,6 +1402,25 @@ pub fn plan_mrpack(
         soft_problems,
         notes,
     })
+}
+
+/// The kind of content a file in an `.mrpack` is, from the folder it sits in.
+/// Anything outside the content folders (a config, say) is `other`.
+fn pack_content_type(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("mods/") {
+        "mod"
+    } else if lower.starts_with("shaderpacks/") {
+        "shader"
+    } else if lower.starts_with("resourcepacks/") {
+        "resourcepack"
+    } else if lower.starts_with("datapacks/") {
+        "datapack"
+    } else if lower.starts_with("saves/") {
+        "world"
+    } else {
+        "other"
+    }
 }
 
 /// Lowercase hex SHA-1 of everything `reader` yields, or `None` if it fails.
@@ -2785,6 +2932,226 @@ mod tests {
             installed[0].source_url.as_deref(),
             Some("https://cdn.modrinth.com/data/AANobbMI/versions/abc123/sodium.jar")
         );
+    }
+
+    #[test]
+    fn inventory_records_a_disabled_file_under_its_logical_name_switched_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("mods")).unwrap();
+        fs::write(tmp.path().join("mods").join("off.jar.disabled"), b"off").unwrap();
+        fs::write(tmp.path().join("mods").join("on.jar"), b"on").unwrap();
+        // The index names the disabled file by its on-disk name; that is the key
+        // the Modrinth identity is looked up under.
+        let mut modrinth_files = BTreeMap::new();
+        modrinth_files.insert(
+            "mods/off.jar.disabled".to_string(),
+            ImportedModrinthFile {
+                project_id: "PROJ".to_string(),
+                download_url: "https://cdn.modrinth.com/data/PROJ/versions/v/off.jar".to_string(),
+            },
+        );
+
+        let installed = inventory_pack_content(tmp.path(), "mods", "mod", &modrinth_files).unwrap();
+        let state: Vec<(&str, bool)> = installed
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(state, vec![("off.jar", false), ("on.jar", true)]);
+        assert_eq!(installed[0].modrinth_id.as_deref(), Some("PROJ"));
+    }
+
+    #[test]
+    fn inventory_applies_the_disabled_convention_to_every_content_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("shaderpacks")).unwrap();
+        fs::write(
+            tmp.path().join("shaderpacks").join("BSL.zip.disabled"),
+            b"s",
+        )
+        .unwrap();
+        let shaders =
+            inventory_pack_content(tmp.path(), "shaderpacks", "shader", &BTreeMap::new()).unwrap();
+        assert_eq!(shaders.len(), 1);
+        assert_eq!(shaders[0].filename, "BSL.zip");
+        assert!(!shaders[0].enabled);
+    }
+
+    #[test]
+    fn inventory_reads_a_disabled_suffix_in_any_case_and_refuses_a_name_clash() {
+        // Windows treats these as one file, so the suffix is read whatever its case.
+        assert_eq!(split_disabled_suffix("X.JAR.DISABLED"), Some("X.JAR"));
+        assert_eq!(split_disabled_suffix("x.jar"), None);
+        // A bare suffix has no name in front of it: it stays a plain on file.
+        assert_eq!(split_disabled_suffix(".disabled"), None);
+        assert_eq!(split_disabled_suffix(""), None);
+        // Multi-byte names must not panic when sliced.
+        assert_eq!(split_disabled_suffix("é.disabled"), Some("é"));
+        assert_eq!(split_disabled_suffix("é"), None);
+
+        // `x.jar` and `x.jar.disabled` together would both record as `x.jar`.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("mods")).unwrap();
+        fs::write(tmp.path().join("mods").join("x.jar"), b"a").unwrap();
+        fs::write(tmp.path().join("mods").join("x.jar.disabled"), b"b").unwrap();
+        let err = inventory_pack_content(tmp.path(), "mods", "mod", &BTreeMap::new()).unwrap_err();
+        assert_eq!(err.code(), "ERR_IMPORT_DUPLICATE");
+    }
+
+    /// A pack that lists `x.jar` and its disabled copy keeps the enabled one; the
+    /// disabled copy is not fetched and the review says it is left out.
+    #[test]
+    fn plan_leaves_out_a_disabled_copy_whose_enabled_twin_the_pack_lists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_pair_mrpack(tmp.path(), "dup.mrpack", b"on", b"off");
+
+        let plan = plan_mrpack(&path, crate::override_sanitizer::OverridePolicy::Standard).unwrap();
+        assert!(plan.problems.is_empty(), "not a stop: {:?}", plan.problems);
+        let planned: Vec<&str> = plan.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(planned, vec!["mods/x.jar"]);
+        assert!(
+            plan.left_out.iter().any(
+                |line| line.starts_with("mods/x.jar.disabled is a disabled copy of mods/x.jar")
+            ),
+            "{:?}",
+            plan.left_out
+        );
+    }
+
+    /// Writes an `.mrpack` whose index lists `mods/x.jar` and `mods/x.jar.disabled`
+    /// with their bytes embedded, so the import needs no network.
+    fn write_pair_mrpack(dir: &Path, name: &str, on: &[u8], off: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        let file = |rel: &str, bytes: &[u8]| {
+            format!(
+                r#"{{"path":"{rel}","hashes":{{"sha1":"{}"}},"downloads":[],"fileSize":{}}}"#,
+                crate::download::sha1_hex(bytes),
+                bytes.len()
+            )
+        };
+        let index = format!(
+            r#"{{"formatVersion":1,"game":"minecraft","name":"Pair",
+                "files":[{},{}],
+                "dependencies":{{"minecraft":"1.20.4","fabric-loader":"0.15.0"}}}}"#,
+            file("mods/x.jar", on),
+            file("mods/x.jar.disabled", off),
+        );
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("modrinth.index.json", opts).unwrap();
+        writer.write_all(index.as_bytes()).unwrap();
+        writer.start_file("mods/x.jar", opts).unwrap();
+        writer.write_all(on).unwrap();
+        writer.start_file("mods/x.jar.disabled", opts).unwrap();
+        writer.write_all(off).unwrap();
+        writer.finish().unwrap();
+        path
+    }
+
+    /// The import keeps the enabled jar as the mod, writes no disabled copy, and
+    /// does not stop. Without the superseded check both files would be written
+    /// and the inventory would refuse the import.
+    #[test]
+    fn import_keeps_the_enabled_jar_and_leaves_its_disabled_copy_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_pair_mrpack(tmp.path(), "pair.mrpack", b"on", b"off");
+
+        let imported = import_mrpack(&path, &tmp.path().join("in"), false)
+            .expect("a pair must not stop the import");
+        let root = tmp.path().join("in").join(&imported.instance_id);
+        assert!(root.join("mods").join("x.jar").is_file());
+        assert!(
+            !root.join("mods").join("x.jar.disabled").exists(),
+            "the disabled copy is left out"
+        );
+        assert_eq!(imported.imported_mods, 1);
+        let manifest = crate::helpers::read_manifest(&root.join("instance_manifest.json")).unwrap();
+        let mods: Vec<(&str, bool)> = manifest
+            .mods
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(mods, vec![("x.jar", true)]);
+    }
+
+    #[test]
+    fn superseded_keys_are_only_disabled_copies_with_a_listed_enabled_twin() {
+        let keys = |list: &[&str]| -> Vec<String> { list.iter().map(|k| k.to_string()).collect() };
+        // A pair: the disabled copy is superseded, the enabled one is not.
+        assert_eq!(
+            superseded_disabled_keys(&keys(&["mods/x.jar", "mods/x.jar.disabled"])),
+            BTreeSet::from(["mods/x.jar.disabled".to_string()])
+        );
+        // Case is ignored for the suffix, as Windows ignores it for names.
+        assert_eq!(
+            superseded_disabled_keys(&keys(&[
+                "shaderpacks/BSL.zip",
+                "shaderpacks/BSL.zip.DISABLED"
+            ])),
+            BTreeSet::from(["shaderpacks/BSL.zip.DISABLED".to_string()])
+        );
+        // A disabled copy with no enabled twin is the mod as the pack has it.
+        assert!(superseded_disabled_keys(&keys(&["mods/y.jar.disabled"])).is_empty());
+        // Outside a content folder a pair is just two files.
+        assert!(
+            superseded_disabled_keys(&keys(&["config/a.json", "config/a.json.disabled"]))
+                .is_empty()
+        );
+        // Hostile names: a bare suffix, an empty list and a duplicate listing.
+        assert!(superseded_disabled_keys(&keys(&["mods/.disabled", "mods/"])).is_empty());
+        assert!(superseded_disabled_keys::<String>(&[]).is_empty());
+        assert_eq!(
+            superseded_disabled_keys(&keys(&[
+                "mods/x.jar",
+                "mods/x.jar.disabled",
+                "mods/x.jar.disabled"
+            ])),
+            BTreeSet::from(["mods/x.jar.disabled".to_string()])
+        );
+    }
+
+    /// The review counts by kind, so each planned file must carry the kind of
+    /// the folder it sits in: a shader zip is not a mod, and a config is neither.
+    #[test]
+    fn plan_tags_each_file_with_the_kind_of_content_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("kinds.mrpack");
+        let file = |rel: &str| {
+            format!(
+                r#"{{"path":"{rel}","hashes":{{"sha1":"da39a3ee5e6b4b0d3255bfef95601890afd80709"}},"downloads":["https://cdn.modrinth.com/data/P/versions/v/f"],"fileSize":1}}"#
+            )
+        };
+        let index = format!(
+            r#"{{"formatVersion":1,"game":"minecraft","name":"Kinds",
+                "files":[{},{},{},{},{}],
+                "dependencies":{{"minecraft":"1.20.4","fabric-loader":"0.15.0"}}}}"#,
+            file("mods/sodium.jar"),
+            file("shaderpacks/BSL.zip"),
+            file("resourcepacks/Faithful.zip"),
+            file("datapacks/vanilla.zip"),
+            file("config/sodium.json"),
+        );
+        {
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            let opts = zip::write::SimpleFileOptions::default();
+            writer.start_file("modrinth.index.json", opts).unwrap();
+            writer.write_all(index.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let plan = plan_mrpack(&path, crate::override_sanitizer::OverridePolicy::Standard).unwrap();
+        let kind_of = |name: &str| {
+            plan.entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("{name} not planned: {:?}", plan.entries))
+                .content_type
+                .as_str()
+        };
+        assert_eq!(kind_of("mods/sodium.jar"), "mod");
+        assert_eq!(kind_of("shaderpacks/BSL.zip"), "shader");
+        assert_eq!(kind_of("resourcepacks/Faithful.zip"), "resourcepack");
+        assert_eq!(kind_of("datapacks/vanilla.zip"), "datapack");
+        assert_eq!(kind_of("config/sodium.json"), "other");
     }
 
     #[test]

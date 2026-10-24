@@ -43,6 +43,8 @@ let profiles: Profile[] = [];
 // Enabled mods the profile does not list, as the core reports them.
 let unlisted: string[] = [];
 let unlistedFailure: string | null = null;
+// What saving a profile again from the setup would change, as the core previews it.
+let updateChanges: unknown[] = [];
 
 function calls(command: string) {
   return invokeMock.mock.calls.filter(([name]) => name === command);
@@ -53,6 +55,7 @@ beforeEach(() => {
   profiles = [];
   unlisted = [];
   unlistedFailure = null;
+  updateChanges = [];
   invokeMock.mockImplementation(async (command: string) => {
     switch (command) {
       case 'get_instance_detail': return detail();
@@ -69,6 +72,8 @@ beforeEach(() => {
       case 'list_loadout_unlisted_mods':
         if (unlistedFailure) throw new Error(unlistedFailure);
         return unlisted;
+      case 'preview_loadout_update': return { name: 'Fast', changes: updateChanges };
+      case 'update_loadout_profile': return { name: 'Fast', changes: updateChanges };
       case 'get_mod_groups': return {};
       default: return null;
     }
@@ -205,5 +210,47 @@ describe('applying a loadout profile', () => {
 
     expect(await screen.findByText(/Profile could not be read\./)).toBeTruthy();
     expect(calls('apply_loadout_profile')).toHaveLength(0);
+  });
+});
+
+describe('updating a loadout profile from the current setup', () => {
+  const changes = [
+    { filename: 'newer.jar', content_type: 'mod', kind: { added: { enabled: true } } },
+    { filename: 'old.jar', content_type: 'mod', kind: { removed: { enabled: true } } },
+    { filename: 'lithium.jar', content_type: 'mod', kind: 'turned_off' },
+  ];
+
+  it('shows every change first and saves nothing until the user confirms', async () => {
+    profiles = [{ name: 'Fast', enabled_mods: ['old.jar'], created_at: '2026-01-01T00:00:00Z' }];
+    updateChanges = changes;
+    await openLoadoutTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Update from setup' }));
+    expect(await screen.findByText('Update "Fast" from the current setup?')).toBeTruthy();
+    expect(screen.getByText('Add newer.jar (on)')).toBeTruthy();
+    expect(screen.getByText('Drop old.jar, which is no longer on this instance')).toBeTruthy();
+    expect(screen.getByText('Turn off lithium.jar')).toBeTruthy();
+    expect(calls('update_loadout_profile')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText('Update "Fast" from the current setup?')).toBeNull());
+    expect(calls('update_loadout_profile')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update from setup' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(calls('update_loadout_profile')).toHaveLength(1));
+    expect(calls('update_loadout_profile')[0][1]).toEqual({ instanceId: 'alpha', profileName: 'Fast' });
+    expect(await screen.findByText('Profile "Fast" now records the current setup of this instance.')).toBeTruthy();
+  });
+
+  it('says there is nothing to save, and asks nothing, when the profile already matches', async () => {
+    profiles = [{ name: 'Fast', enabled_mods: [], created_at: '2026-01-01T00:00:00Z' }];
+    updateChanges = [];
+    await openLoadoutTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Update from setup' }));
+    expect(await screen.findByText('Profile "Fast" already matches the current setup. Nothing to save.')).toBeTruthy();
+    expect(screen.queryByText(/from the current setup\?/)).toBeNull();
+    expect(calls('update_loadout_profile')).toHaveLength(0);
   });
 });

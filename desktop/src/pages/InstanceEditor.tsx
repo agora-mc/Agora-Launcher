@@ -86,6 +86,8 @@ import {
   listLoadoutUnlistedMods,
   applyLoadoutProfile,
   deleteLoadoutProfile,
+  previewLoadoutUpdate,
+  updateLoadoutProfile,
   openInstanceFolder,
   revealPath,
   clearCachedInstanceUpdates,
@@ -106,6 +108,7 @@ import {
   type Snapshot,
   type SnapshotDiff,
   type LoadoutProfile,
+  type LoadoutChange,
   type UnlistedModsChoice,
   type LockfileDriftReport,
   type MemoryRecommendation,
@@ -288,6 +291,15 @@ function describeLoadoutCoverage(prof: LoadoutProfile): string {
   return `Switches on: ${parts.join(', ')}. Mods it does not list are asked about when you apply; other items it does not list are left alone.`;
 }
 
+/** One line for the Update review: what saving the profile again does to one item. */
+function describeLoadoutChange(change: LoadoutChange): string {
+  const kind = change.kind;
+  if (kind === 'turned_on') return `Turn on ${change.filename}`;
+  if (kind === 'turned_off') return `Turn off ${change.filename}`;
+  if ('added' in kind) return `Add ${change.filename} (${kind.added.enabled ? 'on' : 'off'})`;
+  return `Drop ${change.filename}, which is no longer on this instance`;
+}
+
 function previewJavaMajor(version: string | undefined): number {
   const parts = (version ?? '').split('.');
   const first = Number(parts[0]);
@@ -352,6 +364,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<string | null>(null);
   // Set while the user is asked what to do with enabled mods a profile does not list.
   const [unlistedChoice, setUnlistedChoice] = useState<{ profile: string; mods: string[] } | null>(null);
+  // Set while the user reviews what saving a profile again from the setup would change.
+  const [updateReview, setUpdateReview] = useState<{ profile: string; changes: LoadoutChange[] } | null>(null);
 
   const runProfileApply = async (name: string, unlistedMods: UnlistedModsChoice) => {
     setProfileBusy(name);
@@ -383,6 +397,50 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       return;
     }
     setUnlistedChoice({ profile: name, mods: unlisted });
+  };
+
+  // The launch health check, run on demand. The Health Check dialog opens with its
+  // result even when there is nothing to review.
+  const requestReadinessCheck = async () => {
+    setError(null);
+    try {
+      const report = await checkInstanceHealth(instanceId);
+      onReviewHealth?.(instanceId, row?.name ?? 'Instance', report);
+    } catch (cause) {
+      setError(formatError(cause));
+    }
+  };
+
+  // Update shows every change to the profile first, and saves only when the user confirms.
+  const requestProfileUpdate = async (name: string) => {
+    setError(null);
+    setProfileBusy(name);
+    try {
+      const preview = await previewLoadoutUpdate(instanceId, name);
+      if (preview.changes.length === 0) {
+        setStatus(`Profile "${name}" already matches the current setup. Nothing to save.`);
+      } else {
+        setUpdateReview({ profile: name, changes: preview.changes });
+      }
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setProfileBusy(null);
+    }
+  };
+
+  const saveProfileUpdate = async (name: string) => {
+    setProfileBusy(name);
+    setError(null);
+    try {
+      await updateLoadoutProfile(instanceId, name);
+      setProfiles(await listLoadoutProfiles(instanceId));
+      setStatus(`Profile "${name}" now records the current setup of this instance.`);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setProfileBusy(null);
+    }
   };
 
   // Import state (Phase 6)
@@ -2147,7 +2205,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
                 title="Open Crash Doctor to look through the latest logs for what went wrong"
               >
-                Find problems
+                Diagnose a crash
+              </button>
+              <button
+                type="button"
+                onClick={() => { void requestReadinessCheck(); }}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+                title="Run the launch health check and show what it finds, even when nothing needs attention"
+              >
+                Check readiness
               </button>
               </div>
               {processRunning ? (
@@ -2770,7 +2836,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           </div>
 
           <p className="text-xs text-muted-foreground">
-            A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off. Apply sets each item it records to that state. A mod it does not list, such as one added since it was saved, is asked about when you apply: keep it on, or switch it off. Packs and worlds it does not list are left as they are. Configs, versions and the loader are not part of a profile.
+            A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off. Apply sets each item it records to that state. A mod it does not list, such as one added since it was saved, is asked about when you apply: keep it on, or switch it off. Packs and worlds it does not list are left as they are. Update from setup saves the profile again from what the instance has now, after showing you what would change. Configs, versions and the loader are not part of a profile.
           </p>
 
           {profiles.length === 0 ? (
@@ -2792,6 +2858,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       className="text-xs text-foreground hover:underline disabled:opacity-50"
                     >
                       {profileBusy === prof.name ? 'Applying…' : 'Apply'}
+                    </button>
+                    <button
+                      onClick={() => requestProfileUpdate(prof.name)}
+                      disabled={profileBusy === prof.name || recoveryBlocked}
+                      className="text-xs text-foreground hover:underline disabled:opacity-50"
+                    >
+                      Update from setup
                     </button>
                     {confirmDeleteProfile === prof.name ? (
                       <div className="flex gap-1">
@@ -3697,6 +3770,43 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
             >
               Switch them off
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={updateReview !== null}
+        onOpenChange={(open) => { if (!open) setUpdateReview(null); }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-hidden flex flex-col gap-3">
+          <DialogTitle className="shrink-0">{`Update "${updateReview?.profile ?? ''}" from the current setup?`}</DialogTitle>
+          <DialogDescription className="shrink-0">
+            {`Saving records every mod, pack and world on this instance as it is now, on or off, and drops the ones that are gone. These changes would be saved (${updateReview?.changes.length ?? 0}):`}
+          </DialogDescription>
+          <ul className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border p-2 text-xs">
+            {(updateReview?.changes ?? []).map((change) => (
+              <li key={`${change.content_type}:${change.filename}`} className="truncate py-0.5">{describeLoadoutChange(change)}</li>
+            ))}
+          </ul>
+          <div className="flex shrink-0 justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setUpdateReview(null)}
+              className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const review = updateReview;
+                setUpdateReview(null);
+                if (review) void saveProfileUpdate(review.profile);
+              }}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+            >
+              Save changes
             </button>
           </div>
         </DialogContent>

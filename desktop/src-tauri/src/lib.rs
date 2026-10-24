@@ -289,6 +289,8 @@ pub fn run() {
             commands::list_loadout_profiles,
             commands::create_loadout_profile,
             commands::list_loadout_unlisted_mods,
+            commands::preview_loadout_update,
+            commands::update_loadout_profile,
             commands::apply_loadout_profile,
             commands::delete_loadout_profile,
             commands::import_instance,

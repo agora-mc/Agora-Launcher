@@ -249,7 +249,7 @@ test.describe('My Instances: import a pack file', () => {
     await review.getByRole('button', { name: 'Import as a copy' }).click();
 
     await expect(page.getByRole('heading', { name: 'Imported Pack (2)' })).toBeVisible();
-    await expect(page.getByText(/^Imported .* from spiff-fabric-1\.20\.4\.mrpack$/)).toBeVisible();
+    await expect(page.getByText(/^Imported (.* )?from file spiff-fabric-1\.20\.4\.mrpack$/)).toBeVisible();
     const imports = await calls(page, 'import_instance_pack');
     expect((imports[0].args as Record<string, unknown>).name).toBe('Imported Pack (2)');
   });

@@ -46,6 +46,32 @@ export function importSourceLabel(source: string | null | undefined): string | n
   }
 }
 
+/**
+ * The badge on an instance card that was imported. A launcher import names the
+ * launcher; a pack file is named on the line below, so the badge does not
+ * repeat it.
+ */
+export function importOriginBadge(source: string | null | undefined): string {
+  if (isFileImportSource(source)) return 'Pack file';
+  return `Imported from ${importSourceLabel(source) ?? 'another launcher'}`;
+}
+
+/**
+ * The "Imported ... from ..." line on an instance card. A pack file is named
+ * after "from file", so a file called `from-alex.mrpack` reads
+ * "from file from-alex.mrpack" and never "from from-alex.mrpack".
+ */
+export function importOriginLine(
+  source: string | null | undefined,
+  createdLabel: string | null | undefined,
+): string | null {
+  const from = importSourceLabel(source);
+  if (from === null) return null;
+  const when = createdLabel ? ` ${createdLabel}` : '';
+  if (!isFileImportSource(source)) return `Imported${when} from ${from}`;
+  return from === 'a pack file' ? `Imported${when} from a pack file` : `Imported${when} from file ${from}`;
+}
+
 interface ProgressLike {
   progress: number | null;
   bytesDownloaded: number | null;

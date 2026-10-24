@@ -475,11 +475,51 @@ type ManifestInventories = (
     Vec<InstalledMod>,
 );
 
+/// Remove, from the freshly copied staging folder, each disabled copy whose
+/// enabled twin is also in its folder. Leaving it would give the mod two files,
+/// and the toggles could then not switch the enabled one off. Returns one note
+/// per copy removed, for the import result.
+fn drop_superseded_disabled_copies(staging: &Path) -> LauncherResult<Vec<String>> {
+    let mut notes = Vec::new();
+    for folder in ["mods", "resourcepacks", "shaderpacks", "datapacks", "saves"] {
+        let root = staging.join(folder);
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut keys = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| LauncherError::Generic {
+                code: "ERR_IMPORT_READ".into(),
+                message: format!("Cannot read {folder}: {error}"),
+            })?;
+            let file_type = entry.file_type().map_err(|error| LauncherError::Generic {
+                code: "ERR_IMPORT_READ".into(),
+                message: format!("Cannot read {folder}: {error}"),
+            })?;
+            if file_type.is_file() {
+                keys.push(format!("{folder}/{}", entry.file_name().to_string_lossy()));
+            }
+        }
+        for key in crate::import::superseded_disabled_keys(&keys) {
+            std::fs::remove_file(staging.join(&key)).map_err(|error| LauncherError::Generic {
+                code: "ERR_IMPORT_COPY".into(),
+                message: format!("Cannot leave {key} out of the import: {error}"),
+            })?;
+            let logical = crate::import::split_disabled_suffix(&key).unwrap_or(&key);
+            notes.push(format!(
+                "{key} was left out: it is a disabled copy of {logical}, which the folder also has, so only the enabled copy is kept."
+            ));
+        }
+    }
+    Ok(notes)
+}
+
 fn build_manifest_arrays(
     instance_dir: &Path,
     source_label: &str,
     loader: &str,
-) -> LauncherResult<ManifestInventories> {
+) -> LauncherResult<(ManifestInventories, Vec<String>)> {
+    let notes = drop_superseded_disabled_copies(instance_dir)?;
     let mods = inventory_directory(instance_dir, "mods", "mod", source_label, loader)?;
     let resourcepacks = inventory_directory(
         instance_dir,
@@ -492,7 +532,7 @@ fn build_manifest_arrays(
     let datapacks =
         inventory_directory(instance_dir, "datapacks", "datapack", source_label, loader)?;
     let worlds = inventory_directory(instance_dir, "saves", "world", source_label, loader)?;
-    Ok((mods, resourcepacks, shaders, datapacks, worlds))
+    Ok(((mods, resourcepacks, shaders, datapacks, worlds), notes))
 }
 
 /// Scan one content subdirectory and build `InstalledMod` entries.
@@ -544,19 +584,11 @@ fn inventory_directory(
             Err(_) => continue,
         };
 
-        // Track disabled .jar.disabled files as disabled mods.
-        let (filename, enabled) = if ft.is_file() {
-            if let Some(stripped) = fname.strip_suffix(".disabled") {
-                if stripped.ends_with(".jar") {
-                    (stripped.to_string(), false)
-                } else {
-                    (fname.clone(), true)
-                }
-            } else {
-                (fname.clone(), true)
-            }
-        } else {
-            (fname.clone(), true)
+        // A disabled file is recorded under its logical name, switched off, for
+        // every content type (`x.jar.disabled` and `pack.zip.disabled` alike).
+        let (filename, enabled) = match crate::import::split_disabled_suffix(&fname) {
+            Some(logical) if ft.is_file() => (logical.to_string(), false),
+            _ => (fname.clone(), true),
         };
 
         // Only attempt JAR metadata for .jar files.
@@ -620,6 +652,7 @@ fn inventory_directory(
     }
 
     items.sort_by(|a, b| a.filename.cmp(&b.filename));
+    crate::import::refuse_duplicate_names(&items, subdir)?;
     Ok(items)
 }
 
@@ -1600,7 +1633,7 @@ impl LauncherImportService {
             .as_ref()
             .map(|tuple| tuple.loader.as_str())
             .unwrap_or("vanilla");
-        let (mut mods, resourcepacks, shaders, datapacks, worlds) =
+        let ((mut mods, resourcepacks, shaders, datapacks, worlds), copy_notes) =
             build_manifest_arrays(&staging, source_label, manifest_loader)?;
         // Copied jars carry no download source. Where the user allows Modrinth,
         // ask it (one batched hash lookup) so a pack made from this setup can
@@ -1737,7 +1770,7 @@ impl LauncherImportService {
             )
             .with_sub_label(item.destination_name.clone()),
         );
-        let mut health_warnings: Vec<String> = Vec::new();
+        let mut health_warnings: Vec<String> = copy_notes;
         if health_report.score == HealthScore::Red {
             push_blocker_lines(&mut health_warnings, &health_report.blockers);
         }
@@ -3649,6 +3682,73 @@ name=Dup Instance
         assert_eq!(items.len(), 1);
         assert!(!items[0].enabled);
         assert_eq!(items[0].filename, "mymod.jar");
+    }
+
+    /// A disabled resource pack or shader is recorded the way a disabled mod is:
+    /// its logical name, switched off. Before, only `.jar` files got this.
+    #[test]
+    fn test_inventory_directory_disabled_pack_of_any_kind() {
+        let dir = test_tmp("inv-disabled-pack");
+        std::fs::create_dir_all(dir.join("resourcepacks")).unwrap();
+        std::fs::write(
+            dir.join("resourcepacks").join("Faithful.zip.disabled"),
+            b"pack",
+        )
+        .unwrap();
+        std::fs::write(dir.join("resourcepacks").join("On.zip"), b"pack").unwrap();
+
+        let items =
+            inventory_directory(&dir, "resourcepacks", "resourcepack", "prism", "fabric").unwrap();
+        let state: Vec<(&str, bool)> = items
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(state, vec![("Faithful.zip", false), ("On.zip", true)]);
+    }
+
+    /// `x.jar` and `x.jar.disabled` in one folder would be one mod twice, so
+    /// the launcher import refuses instead of recording both.
+    #[test]
+    fn test_inventory_directory_refuses_a_jar_and_its_disabled_copy() {
+        let dir = test_tmp("inv-dup");
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::write(dir.join("mods").join("x.jar"), b"on").unwrap();
+        std::fs::write(dir.join("mods").join("x.jar.disabled"), b"off").unwrap();
+
+        let err = inventory_directory(&dir, "mods", "mod", "prism", "fabric").unwrap_err();
+        assert_eq!(err.code(), "ERR_IMPORT_DUPLICATE");
+    }
+
+    /// A launcher folder with `x.jar` and `x.jar.disabled` is common. The import
+    /// keeps the enabled jar, drops the disabled copy from its staging copy and
+    /// says so; a disabled file with no enabled twin is kept as the mod.
+    #[test]
+    fn test_drop_superseded_keeps_the_enabled_jar_and_notes_the_copy() {
+        let dir = test_tmp("drop-superseded");
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::create_dir_all(dir.join("resourcepacks")).unwrap();
+        std::fs::write(dir.join("mods").join("x.jar"), b"on").unwrap();
+        std::fs::write(dir.join("mods").join("x.jar.disabled"), b"old").unwrap();
+        std::fs::write(dir.join("mods").join("y.jar.disabled"), b"off").unwrap();
+        std::fs::write(dir.join("resourcepacks").join("pack.zip"), b"p").unwrap();
+        std::fs::write(dir.join("resourcepacks").join("pack.zip.disabled"), b"q").unwrap();
+
+        let notes = drop_superseded_disabled_copies(&dir).unwrap();
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[0].starts_with("mods/x.jar.disabled was left out"),
+            "{notes:?}"
+        );
+        assert!(!dir.join("mods").join("x.jar.disabled").exists());
+        assert!(!dir.join("resourcepacks").join("pack.zip.disabled").exists());
+        assert!(dir.join("mods").join("y.jar.disabled").exists());
+
+        let items = inventory_directory(&dir, "mods", "mod", "prism", "fabric").unwrap();
+        let state: Vec<(&str, bool)> = items
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(state, vec![("x.jar", true), ("y.jar", false)]);
     }
 
     #[test]

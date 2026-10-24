@@ -3,6 +3,8 @@ import {
   contentCountsLabel,
   copiedMemoryNote,
   formatMemoryMb,
+  importOriginBadge,
+  importOriginLine,
   importProgressPercent,
   importSourceLabel,
   isFileImportSource,
@@ -125,5 +127,31 @@ describe('outcomeDisplayName', () => {
   it('falls back to the id when no name is known or the name is blank', () => {
     expect(outcomeDisplayName('unknown-id', items)).toBe('unknown-id');
     expect(outcomeDisplayName('blank', items)).toBe('blank');
+  });
+});
+
+describe('where an imported instance card says it came from', () => {
+  it('names a launcher once, in the badge and in the line', () => {
+    expect(importOriginBadge('curseforge')).toBe('Imported from CurseForge');
+    expect(importOriginLine('curseforge', '2026-10-23')).toBe('Imported 2026-10-23 from CurseForge');
+    expect(importOriginLine('modrinth', null)).toBe('Imported from Modrinth');
+  });
+
+  it('never doubles "from" when the pack file is itself called from-something', () => {
+    const source = 'mrpack:from-alex.mrpack';
+    const badge = importOriginBadge(source);
+    const line = importOriginLine(source, '2026-10-23');
+    expect(badge).toBe('Pack file');
+    expect(line).toBe('Imported 2026-10-23 from file from-alex.mrpack');
+    for (const text of [badge, line ?? '']) {
+      expect(text.toLowerCase()).not.toMatch(/from from/);
+    }
+  });
+
+  it('says a pack file when the file name is missing, and names nothing unknown', () => {
+    expect(importOriginLine('mrpack:   ', null)).toBe('Imported from a pack file');
+    expect(importOriginBadge('something-new')).toBe('Imported from another launcher');
+    expect(importOriginLine('something-new', '2026-10-23')).toBeNull();
+    expect(importOriginLine(null, '2026-10-23')).toBeNull();
   });
 });

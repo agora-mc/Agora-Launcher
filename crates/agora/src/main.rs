@@ -796,6 +796,14 @@ enum LoadoutCmd {
         #[arg(long = "others", value_enum)]
         others: Option<UnlistedModsArg>,
     },
+    /// Save a loadout profile again so it records the instance's current setup.
+    /// Shows what would change and asks first; `--yes` skips the question.
+    Update {
+        instance: String,
+        name: String,
+        #[arg(long, help = "Save without asking")]
+        yes: bool,
+    },
     /// Delete a loadout profile.
     Delete { instance: String, name: String },
 }
@@ -1441,6 +1449,47 @@ fn confirm_purge(name: &str) -> anyhow::Result<bool> {
         );
     }
     eprint!("Send '{name}' to the OS trash now? Agora cannot restore it afterwards. [y/N]: ");
+    std::io::stderr().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+/// One line per change, in words a person reads.
+fn describe_loadout_change(change: &agora_core::loadout::LoadoutChange) -> String {
+    use agora_core::loadout::LoadoutChangeKind;
+    let name = &change.filename;
+    match change.kind {
+        LoadoutChangeKind::Added { enabled: true } => format!("add {name} (on)"),
+        LoadoutChangeKind::Added { enabled: false } => format!("add {name} (off)"),
+        LoadoutChangeKind::TurnedOn => format!("turn on {name}"),
+        LoadoutChangeKind::TurnedOff => format!("turn off {name}"),
+        LoadoutChangeKind::Removed { .. } => format!("drop {name} (no longer on this instance)"),
+    }
+}
+
+/// Show what updating a loadout would change and ask before saving it. Without
+/// a terminal there is nobody to ask, so the change list goes into the error
+/// and the caller has to say `--yes`.
+fn confirm_loadout_update(
+    name: &str,
+    changes: &[agora_core::loadout::LoadoutChange],
+) -> anyhow::Result<bool> {
+    let lines: Vec<String> = changes.iter().map(describe_loadout_change).collect();
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "Updating loadout '{name}' would {}. Rerun with --yes once the person using this computer has agreed.",
+            lines.join(", ")
+        );
+    }
+    eprintln!("Updating loadout '{name}' will:");
+    for line in &lines {
+        eprintln!("  {line}");
+    }
+    eprint!("Save these changes? [y/N]: ");
     std::io::stderr().flush()?;
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
@@ -3771,6 +3820,56 @@ async fn run_loadout_command(
                 );
             }
         }
+        LoadoutCmd::Update {
+            instance,
+            name,
+            yes,
+        } => {
+            let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
+            if !instance_dir.exists() {
+                anyhow::bail!("Instance '{}' not found", instance);
+            }
+            let service = agora_core::loadout_service::LoadoutService::new(ctx.clone());
+            let preview = service.update_preview(&instance, &name)?;
+            if preview.changes.is_empty() {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"status": "unchanged", "instanceId": instance, "profile": name})
+                    );
+                } else {
+                    println!(
+                        "Loadout '{}' already records the current setup of '{}'. Nothing to save.",
+                        name, instance
+                    );
+                }
+            } else if !yes && !confirm_loadout_update(&name, &preview.changes)? {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"status": "kept", "instanceId": instance, "profile": name})
+                    );
+                } else {
+                    println!("Loadout '{}' was not changed.", name);
+                }
+            } else {
+                let done = service.update(&instance, &name)?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"status": "updated", "instanceId": instance, "profile": name, "changes": done.changes})
+                    );
+                } else {
+                    println!(
+                        "Updated loadout '{}' from the current setup of '{}' ({} change{}).",
+                        name,
+                        instance,
+                        done.changes.len(),
+                        if done.changes.len() == 1 { "" } else { "s" }
+                    );
+                }
+            }
+        }
         LoadoutCmd::Delete { instance, name } => {
             let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
             if !instance_dir.exists() {
@@ -5004,6 +5103,7 @@ fn open_url_in_browser(url: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::describe_loadout_change;
     use super::exit_code_from_error;
     use super::exit_code_from_launcher_error;
     use super::Cli;
@@ -6301,6 +6401,63 @@ mod tests {
             "maybe",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn loadout_update_parses_and_yes_is_opt_in() {
+        let cli = Cli::try_parse_from(["agora", "loadout", "update", "my-instance", "my-profile"])
+            .expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Loadout {
+                action: LoadoutCmd::Update { yes: false, .. }
+            }
+        ));
+
+        let cli = Cli::try_parse_from([
+            "agora",
+            "loadout",
+            "update",
+            "my-instance",
+            "my-profile",
+            "--yes",
+        ])
+        .expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Loadout {
+                action: LoadoutCmd::Update { yes: true, .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn loadout_change_lines_say_what_happens_to_each_item() {
+        use agora_core::loadout::{LoadoutChange, LoadoutChangeKind};
+        let line = |filename: &str, kind| {
+            describe_loadout_change(&LoadoutChange {
+                filename: filename.into(),
+                content_type: "mod".into(),
+                kind,
+            })
+        };
+        assert_eq!(
+            line("a.jar", LoadoutChangeKind::Added { enabled: true }),
+            "add a.jar (on)"
+        );
+        assert_eq!(
+            line("a.jar", LoadoutChangeKind::Added { enabled: false }),
+            "add a.jar (off)"
+        );
+        assert_eq!(line("a.jar", LoadoutChangeKind::TurnedOn), "turn on a.jar");
+        assert_eq!(
+            line("a.jar", LoadoutChangeKind::TurnedOff),
+            "turn off a.jar"
+        );
+        assert_eq!(
+            line("a.jar", LoadoutChangeKind::Removed { enabled: true }),
+            "drop a.jar (no longer on this instance)"
+        );
     }
 
     #[test]
