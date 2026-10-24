@@ -1002,3 +1002,62 @@ test.describe('Guided install version order', () => {
     await expect(tour.getByText('Then pick a version')).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Keyboard: the corner panel while it runs, and the result that replaces it
+// ---------------------------------------------------------------------------
+
+test.describe('install panel keyboard use', () => {
+  /** Drive an install to its review, confirm it, and leave it running. */
+  async function startInstall(page: Page) {
+    await installFlowMock(page);
+    await page.goto('/');
+    await browseToModDetail(page);
+    await triggerInlineInstallFlow(page);
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
+    await resolveInstallCall(page, await lastInstallCall(page, 'resolve_install_plan'), makePlan());
+    await expectReviewView(page);
+    await confirmInstall(page);
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
+    return page.getByRole('dialog', { name: 'Review Instance Changes' });
+  }
+
+  test('Escape closes the corner panel while focus is in it', async ({ page }) => {
+    await installFlowMock(page);
+    await page.goto('/');
+    await browseToModDetail(page);
+    await triggerInlineInstallFlow(page);
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
+    // Resolving: the panel sits in the corner and never takes focus itself.
+    const panel = page.getByRole('dialog', { name: 'Review Instance Changes' });
+    await expect(panel).toHaveAttribute('aria-modal', 'false');
+
+    await panel.getByRole('button', { name: 'Close install panel' }).focus();
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
+  });
+
+  test('when the install lands with focus in the panel, focus moves to Open Instance', async ({ page }) => {
+    const panel = await startInstall(page);
+    // Running: a corner panel. Put focus in it the way a keyboard user would.
+    await expect(panel).toHaveAttribute('aria-modal', 'false');
+    await panel.getByRole('button', { name: 'Close install panel' }).focus();
+    await expect(panel.getByRole('button', { name: 'Close install panel' })).toBeFocused();
+
+    const applyIdx = await lastInstallCall(page, 'apply_install_plan');
+    await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
+
+    await expectResultView(page);
+    await expect(panel.getByRole('button', { name: 'Open Instance' })).toBeFocused();
+  });
+
+  test('Escape dismisses the finished result', async ({ page }) => {
+    const panel = await startInstall(page);
+    const applyIdx = await lastInstallCall(page, 'apply_install_plan');
+    await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
+    await expectResultView(page);
+
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
+  });
+});

@@ -359,3 +359,79 @@ test('mod detail page does not scroll sideways at 200% text', async ({ page }) =
     expect(poking, `tab ${i}`).toEqual([]);
   }
 });
+
+test('Browse: "Skip to results" reaches the results in a couple of stops, and shows where focus landed', async ({ page }) => {
+  await boot(page, null, 1);
+  await page.getByRole('button', { name: 'Browse', exact: true }).first().click();
+  await expect(page.getByRole('heading', { name: /Mod number 0/ })).toBeVisible();
+
+  const skip = page.getByRole('button', { name: 'Skip to results' });
+  let presses = 0;
+  while (!(await skip.evaluate((el) => el === document.activeElement)) && presses < 6) {
+    await page.keyboard.press('Tab');
+    presses += 1;
+  }
+  await expect(skip).toBeFocused();
+  expect(presses).toBeLessThanOrEqual(3);
+
+  await page.keyboard.press('Enter');
+  const region = page.locator('#browse-results');
+  await expect(region).toHaveAttribute('data-skip-landing', '');
+  await expect(region).toBeFocused();
+  const outline = await region.evaluate((el) => getComputedStyle(el).outlineStyle);
+  expect(outline).not.toBe('none');
+
+  // The next Tab is the first result, not a filter.
+  await page.keyboard.press('Tab');
+  const firstStop = await page.evaluate(() => !!document.activeElement?.closest('#browse-results'));
+  expect(firstStop).toBe(true);
+});
+
+test('Instance editor: "Skip to mods" jumps past the header and sub-tabs to the mod list', async ({ page }) => {
+  await boot(page, 'instance-detail', 1);
+  await expect(page.getByRole('heading', { name: /Installed Mods/ })).toBeVisible({ timeout: 15_000 });
+
+  // The skip link is the first control on the page, ahead of Back.
+  await page.getByRole('button', { name: '← Back' }).focus();
+  await page.keyboard.press('Shift+Tab');
+  const skip = page.getByRole('button', { name: 'Skip to mods' });
+  await expect(skip).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  const landed = await page.evaluate(() => document.activeElement?.hasAttribute('data-skip-landing') ?? false);
+  expect(landed).toBe(true);
+
+  // From the list, "Import Mod" is a handful of stops, not the thirty or so it
+  // was behind the header and sub-tabs.
+  let presses = 0;
+  const importMod = page.getByRole('button', { name: 'Import Mod', exact: true });
+  while (!(await importMod.evaluate((el) => el === document.activeElement)) && presses < 12) {
+    await page.keyboard.press('Tab');
+    presses += 1;
+  }
+  await expect(importMod).toBeFocused();
+  expect(presses).toBeLessThanOrEqual(10);
+});
+
+test('Ctrl+K finds Text size and opens its Settings page', async ({ page }) => {
+  await boot(page, null, 1);
+  await page.keyboard.press('Control+k');
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.type('text size');
+  await page.keyboard.press('Enter');
+
+  await expect(page.getByRole('slider', { name: 'Text scale' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Interface' })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('Ctrl+K from an open Settings page moves it to Appearance', async ({ page }) => {
+  await boot(page, null, 1);
+  await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
+  await page.getByRole('tab', { name: /General/ }).first().click();
+  await page.keyboard.press('Control+k');
+  await page.keyboard.type('appearance');
+  await page.keyboard.press('Enter');
+
+  await expect(page.getByRole('tab', { name: /Appearance/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Theme' })).toHaveAttribute('aria-selected', 'true');
+});

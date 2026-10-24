@@ -1403,7 +1403,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
         </section>
       )}
 
-      <section className="rounded-xl border border-border bg-card p-6">
+      {/* Flex column: `order` puts the community votes above the install controls
+          on screen, while the DOM (so Tab order) reaches the install controls first. */}
+      <section className="flex flex-col rounded-xl border border-border bg-card p-6">
         <div className="flex items-start gap-4">
           {(modrinthProject?.icon_url || showIcon) && (
             <img
@@ -1504,101 +1506,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           </div>
         </div>
 
-        {(isRegistryBacked || technicDetail || modrinthProject) && (
-          // Its own area, apart from the install controls: a vote is a public
-          // GitHub reaction, so the arrows should not sit beside Install.
-          <div className="mt-5 border-t border-border pt-4" data-testid="mod-detail-community">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Community</p>
-            {isRegistryBacked && !item.is_immune && governanceSummary?.vote_issue_number ? (
-              <div className="mt-5 space-y-1.5">
-                <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
-                  <div className="inline-flex items-center gap-3">
-                  <button
-                    type="button"
-                    aria-label={`Upvote ${item.name}. ${item.upvotes} upvotes.`}
-                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'}
-                    disabled={authed !== true || !itemVoteState || votePending}
-                    onClick={() => handleVote('upvote')}
-                    data-tour="mod-detail-upvote"
-                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                      !itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'
-                        ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                        : 'border-border text-muted-foreground hover:border-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300'
-                    }`}
-                  >
-                    <ArrowUp aria-hidden size={15} />
-                    <span>{item.upvotes}</span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Downvote ${item.name}. ${item.downvotes} downvotes.`}
-                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'}
-                    disabled={authed !== true || !itemVoteState || votePending}
-                    onClick={() => handleVote('downvote')}
-                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                      !itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'
-                        ? 'border-rose-500 bg-rose-500/15 text-rose-700 dark:text-rose-300'
-                        : 'border-border text-muted-foreground hover:border-rose-500 hover:text-rose-700 dark:hover:text-rose-300'
-                    }`}
-                  >
-                    <ArrowDown aria-hidden size={15} />
-                    <span>{item.downvotes}</span>
-                  </button>
-                  </div>
-                  <span className="text-muted-foreground">
-                    Net score {item.net_score} · {trendPhrase}
-                  </span>
-                </div>
-                <p className="text-[11px] text-muted-foreground" role="status">
-                  {votePending
-                    ? 'Updating your public GitHub vote…'
-                    : authed === false
-                      ? 'Sign in with GitHub in Settings to vote.'
-                      : voteLoadError
-                        ? `Your vote could not be loaded: ${voteLoadError}`
-                        : itemVoteState?.conflicted
-                          ? 'Conflicting reactions detected. Choose one direction to resolve them.'
-                          : itemVoteState?.vote
-                            ? `Your ${itemVoteState.vote} is recorded. Published scores update after the next registry build.`
-                            : 'Votes are public GitHub reactions. Published scores update after the next catalog build.'}
-                </p>
-              </div>
-            ) : isRegistryBacked ? (
-              // Curated but no vote thread yet (governance_summary has no row
-              // for it). Show the counts and say why voting is unavailable
-              // rather than silently rendering a dead score line.
-              <div className="mt-3 space-y-1">
-                <p className="text-xs text-muted-foreground">
-                  {item.upvotes} up · {item.downvotes} down · net score {item.net_score} · {trendPhrase}
-                </p>
-                {!item.is_immune && (
-                  <p className="text-xs text-muted-foreground">
-                    Voting opens once this entry has a catalog vote thread.
-                  </p>
-                )}
-              </div>
-            ) : (
-              // Non-curated items have no Agora score, so the same slot shows
-              // the source's own popularity signals instead of nothing.
-              (() => {
-                const stats: string[] = [];
-                if (technicDetail) {
-                  stats.push(`${technicDetail.installs.toLocaleString()} installs`);
-                  // Technic's counter is likes (`ratings`), not followers.
-                  stats.push(`${technicDetail.likes.toLocaleString()} likes`);
-                } else if (modrinthProject) {
-                  stats.push(`${modrinthProject.downloads.toLocaleString()} downloads`);
-                  stats.push(`${modrinthProject.followers.toLocaleString()} followers`);
-                }
-                return stats.length > 0 ? (
-                  <p className="text-xs text-muted-foreground mt-3">{stats.join(' · ')}</p>
-                ) : null;
-              })()
-            )}
-          </div>
-        )}
-
-        <div className="mt-5 flex flex-wrap gap-2">
+        <div className="order-2 mt-5 flex flex-wrap gap-2">
           {item.content_type === 'pack' && item.download_strategy === 'provider_pack' ? (
             <button
               onClick={handleProviderPackInstall}
@@ -1627,7 +1535,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           )}
         </div>
         {showInstallFlow && (
-          <section className="mt-4 rounded-xl border border-border bg-card p-4 space-y-4" data-tour="install-panel">
+          <section className="order-2 mt-4 rounded-xl border border-border bg-card p-4 space-y-4" data-tour="install-panel">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold text-sm">Install to Instance</h3>
               <button
@@ -2022,6 +1930,101 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
             )}
           </section>
         )}
+
+        {(isRegistryBacked || technicDetail || modrinthProject) && (
+          // Its own area, apart from the install controls: a vote is a public
+          // GitHub reaction, so the arrows should not sit beside Install.
+          <div className="order-1 mt-5 border-t border-border pt-4" data-testid="mod-detail-community">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Community</p>
+            {isRegistryBacked && !item.is_immune && governanceSummary?.vote_issue_number ? (
+              <div className="mt-5 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+                  <div className="inline-flex items-center gap-3">
+                  <button
+                    type="button"
+                    aria-label={`Upvote ${item.name}. ${item.upvotes} upvotes.`}
+                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'}
+                    disabled={authed !== true || !itemVoteState || votePending}
+                    onClick={() => handleVote('upvote')}
+                    data-tour="mod-detail-upvote"
+                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      !itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'
+                        ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                        : 'border-border text-muted-foreground hover:border-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300'
+                    }`}
+                  >
+                    <ArrowUp aria-hidden size={15} />
+                    <span>{item.upvotes}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Downvote ${item.name}. ${item.downvotes} downvotes.`}
+                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'}
+                    disabled={authed !== true || !itemVoteState || votePending}
+                    onClick={() => handleVote('downvote')}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      !itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'
+                        ? 'border-rose-500 bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                        : 'border-border text-muted-foreground hover:border-rose-500 hover:text-rose-700 dark:hover:text-rose-300'
+                    }`}
+                  >
+                    <ArrowDown aria-hidden size={15} />
+                    <span>{item.downvotes}</span>
+                  </button>
+                  </div>
+                  <span className="text-muted-foreground">
+                    Net score {item.net_score} · {trendPhrase}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground" role="status">
+                  {votePending
+                    ? 'Updating your public GitHub vote…'
+                    : authed === false
+                      ? 'Sign in with GitHub in Settings to vote.'
+                      : voteLoadError
+                        ? `Your vote could not be loaded: ${voteLoadError}`
+                        : itemVoteState?.conflicted
+                          ? 'Conflicting reactions detected. Choose one direction to resolve them.'
+                          : itemVoteState?.vote
+                            ? `Your ${itemVoteState.vote} is recorded. Published scores update after the next registry build.`
+                            : 'Votes are public GitHub reactions. Published scores update after the next catalog build.'}
+                </p>
+              </div>
+            ) : isRegistryBacked ? (
+              // Curated but no vote thread yet (governance_summary has no row
+              // for it). Show the counts and say why voting is unavailable
+              // rather than silently rendering a dead score line.
+              <div className="mt-3 space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  {item.upvotes} up · {item.downvotes} down · net score {item.net_score} · {trendPhrase}
+                </p>
+                {!item.is_immune && (
+                  <p className="text-xs text-muted-foreground">
+                    Voting opens once this entry has a catalog vote thread.
+                  </p>
+                )}
+              </div>
+            ) : (
+              // Non-curated items have no Agora score, so the same slot shows
+              // the source's own popularity signals instead of nothing.
+              (() => {
+                const stats: string[] = [];
+                if (technicDetail) {
+                  stats.push(`${technicDetail.installs.toLocaleString()} installs`);
+                  // Technic's counter is likes (`ratings`), not followers.
+                  stats.push(`${technicDetail.likes.toLocaleString()} likes`);
+                } else if (modrinthProject) {
+                  stats.push(`${modrinthProject.downloads.toLocaleString()} downloads`);
+                  stats.push(`${modrinthProject.followers.toLocaleString()} followers`);
+                }
+                return stats.length > 0 ? (
+                  <p className="text-xs text-muted-foreground mt-3">{stats.join(' · ')}</p>
+                ) : null;
+              })()
+            )}
+          </div>
+        )}
+
 
         {canonicalInstall && (
           <InstallFlow

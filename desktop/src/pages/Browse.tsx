@@ -29,6 +29,7 @@ import {
 } from '../lib/tauri';
 import { takeOfferedBrowseContext } from '../lib/browseContextHandoff';
 import { contentTypeUnavailableReason, hiddenResultsSentence, loaderFilterApplies } from '../lib/browseFilters';
+import { focusSkipTarget } from '../lib/skipLink';
 import type { BrowsePage } from '../lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
 import { loadPreference } from '../features/interactive/live/presentationPreference';
@@ -516,6 +517,7 @@ function BrowseContent({
   // Scroll offset to reapply after a restored list paints. `null` means this
   // mount did not restore anything, so scrolling must be left alone.
   const restoredScrollRef = useRef<number | null>(null);
+  const resultsRegionRef = useRef<HTMLDivElement>(null);
   // Bazaar shelf order, mirrored here so it can be snapshotted with the list.
   const bazaarSettledOrderRef = useRef<string[]>([]);
   /**
@@ -1468,6 +1470,19 @@ function BrowseContent({
         )}
       </section>
 
+      {/* Keyboard users skip the instance context, community pitch, search and
+          filters, which is a dozen or more Tab stops before the first result. */}
+      <button
+        type="button"
+        className="skip-link"
+        onClick={() => {
+          const region = resultsRegionRef.current;
+          if (region) focusSkipTarget(region);
+        }}
+      >
+        Skip to results
+      </button>
+
       {/* Catalog offline banner */}
       <RegistryStatusView
         variant="banner"
@@ -1731,6 +1746,7 @@ function BrowseContent({
         </div>
       )}
 
+      <div ref={resultsRegionRef} id="browse-results" tabIndex={-1} className="space-y-6">
       {/* Loading or results */}
       {listLoading ? (
         <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center text-muted-foreground">
@@ -1846,6 +1862,7 @@ function BrowseContent({
       {!hasMore && !listLoading && items.length > 0 && (
         <p className="py-4 text-center text-xs text-muted-foreground">All results loaded</p>
       )}
+      </div>
 
       {/* Bulk-selection install bar */}
       {selectedItems.size > 0 && (

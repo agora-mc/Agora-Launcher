@@ -9,7 +9,8 @@
  * background progress interrupts whatever the user was actually doing.
  */
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { InstallFlow } from './InstallFlow';
 import type { InstallIntent, ResolvedInstallPlan, ProgressEvent } from '../lib/installFlow';
 
@@ -41,6 +42,7 @@ vi.mock('../lib/tauri', async () => {
     formatError: (e: unknown) => String(e),
     parseLauncherError: (e: unknown) => ({ message: String(e), code: 'ERR_TEST' }),
     restoreSnapshot: vi.fn(async () => {}),
+    listSnapshots: vi.fn(async () => []),
     getCachedInstanceUpdates: vi.fn(async () => []),
     clearCachedInstanceUpdates: vi.fn(async () => {}),
   };
@@ -80,6 +82,17 @@ function fakePlan(): ResolvedInstallPlan {
   };
 }
 
+function successOutcome() {
+  return {
+    type: 'success' as const,
+    installedItems: [],
+    existingItemsReused: [],
+    warnings: [],
+    health: { type: 'completed' as const, report: {} },
+    snapshotId: 'snap-presentation',
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   installFlowMocks.resolveInstallPlan.mockResolvedValue(fakePlan());
@@ -92,8 +105,12 @@ beforeEach(() => {
 const panel = () => screen.getByRole('dialog', { name: /Review Instance Changes/i });
 
 function renderFlow() {
+  return renderFlowWith(vi.fn());
+}
+
+function renderFlowWith(onClose: () => void) {
   return render(
-    <InstallFlow intent={intent} instanceName="Test Instance" open onClose={vi.fn()} />,
+    <InstallFlow intent={intent} instanceName="Test Instance" open onClose={onClose} />,
   );
 }
 
@@ -122,6 +139,85 @@ describe('install flow presentation', () => {
     expect(panel()).toHaveAttribute('aria-modal', 'false');
     expect(panel().className).toContain('bottom-4');
     expect(panel()).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('Escape closes the corner panel while focus is inside it', async () => {
+    installFlowMocks.resolveInstallPlan.mockImplementation(() => new Promise(() => {}));
+    const onClose = vi.fn();
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={onClose} />);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'false'));
+
+    const close = within(panel()).getByRole('button', { name: 'Close install panel' });
+    close.focus();
+    await userEvent.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape does not cancel an install that is running', async () => {
+    installFlowMocks.applyInstallPlan.mockImplementation(() => new Promise(() => {}));
+    const onClose = vi.fn();
+    renderFlowWith(onClose);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+    await userEvent.click(within(panel()).getByRole('button', { name: 'Apply Updates' }));
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'false'));
+
+    within(panel()).getByRole('button', { name: 'Close install panel' }).focus();
+    await userEvent.keyboard('{Escape}');
+    expect(installFlowMocks.cancelInstall).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('Escape does nothing while focus is outside the corner panel', async () => {
+    installFlowMocks.resolveInstallPlan.mockImplementation(() => new Promise(() => {}));
+    const onClose = vi.fn();
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={onClose} />);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'false'));
+
+    document.body.focus();
+    await userEvent.keyboard('{Escape}');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('the header Close dismisses a finished install result', async () => {
+    installFlowMocks.applyInstallPlan.mockResolvedValue(successOutcome());
+    const onClose = vi.fn();
+    render(<InstallFlow intent={intent} instanceName="Test Instance" open onClose={onClose} />);
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+    await userEvent.click(within(panel()).getByRole('button', { name: 'Apply Updates' }));
+
+    await waitFor(() => expect(within(panel()).getByRole('button', { name: 'Open Instance' })).toBeInTheDocument());
+    await userEvent.click(within(panel()).getByRole('button', { name: 'Close install panel' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('when the install lands with focus in the panel, focus moves to Open Instance', async () => {
+    let finish: (outcome: unknown) => void = () => {};
+    installFlowMocks.applyInstallPlan.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    renderFlow();
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+    await userEvent.click(within(panel()).getByRole('button', { name: 'Apply Updates' }));
+
+    // Running: the corner panel, with focus inside it.
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'false'));
+    within(panel()).getByRole('button', { name: 'Close install panel' }).focus();
+    finish(successOutcome());
+
+    await waitFor(() => expect(within(panel()).getByRole('button', { name: 'Open Instance' })).toHaveFocus());
+    expect(panel()).toHaveAttribute('aria-modal', 'true');
+  });
+
+  it('when the install lands with focus outside the panel, focus is not pulled to Open Instance', async () => {
+    let finish: (outcome: unknown) => void = () => {};
+    installFlowMocks.applyInstallPlan.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    renderFlow();
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'true'));
+    await userEvent.click(within(panel()).getByRole('button', { name: 'Apply Updates' }));
+    await waitFor(() => expect(panel()).toHaveAttribute('aria-modal', 'false'));
+    document.body.focus();
+    finish(successOutcome());
+
+    await waitFor(() => expect(within(panel()).getByRole('button', { name: 'Open Instance' })).toBeInTheDocument());
+    expect(within(panel()).getByRole('button', { name: 'Open Instance' })).not.toHaveFocus();
   });
 
   it('keeps the same tour anchor in both presentations', async () => {

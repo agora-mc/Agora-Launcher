@@ -6,6 +6,7 @@ import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
 import { PluginSurface } from '../features/plugins/PluginSurface';
 import { ConsoleView } from '../components/ConsoleView';
 import { takeRequestedEditorTab } from '../lib/editorDeepLink';
+import { focusSkipTarget } from '../lib/skipLink';
 import { InstallFlow } from '../components/InstallFlow';
 import { LaunchFailedBanner } from '../components/LaunchFailedBanner';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
@@ -312,6 +313,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const errorBannerRef = useRef<HTMLDivElement>(null);
+  const modsRegionRef = useRef<HTMLDivElement>(null);
   const statusBannerRef = useRef<HTMLDivElement>(null);
   const [exportBusy, setExportBusy] = useState(false);
   // The file the last pack or lockfile was saved to, for "Show in folder".
@@ -1921,6 +1923,19 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   return (
     <div className="space-y-6" data-tour="page-instance-editor">
+      {/* The mod list is past the header, the sub-tabs and their buttons. */}
+      {activeTab === 'mods' && (
+        <button
+          type="button"
+          className="skip-link"
+          onClick={() => {
+            const region = modsRegionRef.current;
+            if (region) focusSkipTarget(region);
+          }}
+        >
+          Skip to mods
+        </button>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <BackButton onBack={onBack} />
         <button
@@ -2258,6 +2273,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       </div>
 
       {activeTab === 'mods' && (
+        <div ref={modsRegionRef} tabIndex={-1}>
         <InstalledContentPanel
           contentType="mod"
           rows={displayedContentRows.filter((content) => content.content_type === 'mod')}
@@ -2290,6 +2306,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             return mod ? modCustomIcons[installedModKey(mod)] ?? null : null;
           }}
         />
+        </div>
       )}
 
       {activeTab === 'resourcepacks' && (
