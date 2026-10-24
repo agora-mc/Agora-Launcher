@@ -1197,3 +1197,121 @@ mod pack_content_tests {
         assert_eq!(file.size, 42);
     }
 }
+
+#[cfg(test)]
+mod round_trip_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use tempfile::TempDir;
+
+    fn mod_entry(
+        filename: &str,
+        modrinth_id: Option<&str>,
+        enabled: bool,
+    ) -> crate::models::InstalledMod {
+        serde_json::from_value(serde_json::json!({
+            "filename": filename, "registry_id": null, "modrinth_id": modrinth_id,
+            "source": "test", "version": null, "sha256": "00", "installed_at": "t",
+            "enabled": enabled,
+        }))
+        .unwrap()
+    }
+
+    /// Our own export, planned and imported by our own importer: nothing it
+    /// writes may be a hard problem, and everything comes back.
+    #[tokio::test]
+    async fn an_export_with_bundled_disabled_and_shader_content_plans_clean_and_imports_whole() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("instance");
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::create_dir_all(dir.join("shaderpacks")).unwrap();
+        // (b) a mod Modrinth cannot identify, bundled; (c) a disabled one.
+        std::fs::write(dir.join("mods").join("curseforge-only.jar"), b"cf jar").unwrap();
+        std::fs::write(dir.join("mods").join("off.jar.disabled"), b"off jar").unwrap();
+        // (d) a shader pack.
+        std::fs::write(dir.join("shaderpacks").join("BSL.zip"), b"shader").unwrap();
+        let mut manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "rt", "name": "RT", "minecraft_version": "1.20.4",
+            "loader": "fabric", "loader_version": "0.15.0", "mods": [],
+        }))
+        .unwrap();
+        manifest
+            .mods
+            .push(mod_entry("curseforge-only.jar", None, true));
+        manifest.mods.push(mod_entry("off.jar", None, false));
+        let out = tmp.path().join("rt.mrpack");
+        export_instance_pack_to(&dir, &manifest, &out, "mrpack")
+            .await
+            .unwrap();
+
+        // (a) a Modrinth-identified mod: the export links it through a network
+        // lookup, so add the entry that lookup would have written.
+        let with_modrinth = tmp.path().join("rt-modrinth.mrpack");
+        {
+            let mut src = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&with_modrinth).unwrap());
+            let opts = zip::write::SimpleFileOptions::default();
+            for i in 0..src.len() {
+                let mut entry = src.by_index(i).unwrap();
+                let name = entry.name().unwrap().to_string();
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                if name == "modrinth.index.json" {
+                    let mut index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    index["files"].as_array_mut().unwrap().push(serde_json::json!({
+                        "path": "mods/sodium.jar",
+                        "hashes": { "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha512": "x" },
+                        "downloads": ["https://cdn.modrinth.com/data/AANobbMI/versions/v/sodium.jar"],
+                        "fileSize": 1,
+                    }));
+                    bytes = serde_json::to_vec(&index).unwrap();
+                }
+                writer.start_file(name, opts).unwrap();
+                writer.write_all(&bytes).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let ctx = crate::ctx::CoreContext::for_testing(tmp.path().join("data"));
+        let _ = crate::db::init_local_state_db(&ctx.paths.local_state_db());
+        let plan = crate::import_service::ImportService::new(ctx)
+            .plan_mrpack_import(&with_modrinth)
+            .unwrap();
+        assert!(plan.problems.is_empty(), "hard: {:?}", plan.problems);
+        assert!(
+            plan.soft_problems.is_empty(),
+            "soft: {:?}",
+            plan.soft_problems
+        );
+        let source_of = |n: &str| {
+            plan.entries
+                .iter()
+                .find(|e| e.name == n)
+                .unwrap_or_else(|| panic!("{n} not in {:?}", plan.entries))
+                .source
+        };
+        use crate::agora_pack_import::PlannedSource;
+        assert_eq!(source_of("mods/sodium.jar"), PlannedSource::Modrinth);
+        assert_eq!(
+            source_of("mods/curseforge-only.jar"),
+            PlannedSource::Bundled
+        );
+        assert_eq!(source_of("mods/off.jar.disabled"), PlannedSource::Bundled);
+        assert!(plan
+            .entries
+            .iter()
+            .any(|e| e.name == "mods/off.jar.disabled" && e.arrives_disabled));
+        assert_eq!(source_of("shaderpacks/BSL.zip"), PlannedSource::Bundled);
+
+        // The import of the file we exported reproduces all of it.
+        let imported = crate::import::import_mrpack(&out, &tmp.path().join("in"), false).unwrap();
+        let root = tmp.path().join("in").join(&imported.instance_id);
+        assert!(root.join("mods").join("curseforge-only.jar").is_file());
+        assert!(root.join("mods").join("off.jar.disabled").is_file());
+        assert!(
+            !root.join("mods").join("off.jar").exists(),
+            "disabled stays disabled"
+        );
+        assert!(root.join("shaderpacks").join("BSL.zip").is_file());
+    }
+}

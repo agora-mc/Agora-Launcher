@@ -1192,9 +1192,12 @@ pub fn plan_mrpack(
         }
         let Some(path) = mrpack_override_path(&raw_name, &index.overrides, override_policy) else {
             if left_out.len() < PLAN_LISTED_NAMES {
-                left_out.push(format!(
-                    "{relative} (outside the folders Agora copies from a pack; Reduced security mode in Settings allows more)"
-                ));
+                let reason = if relative.to_ascii_lowercase().ends_with(".jar") {
+                    "a loose mod file in the pack's extra files; Agora leaves these out unless Reduced security mode is on in Settings"
+                } else {
+                    "outside the folders Agora copies from a pack; Reduced security mode in Settings allows more"
+                };
+                left_out.push(format!("{relative} ({reason})"));
             } else {
                 left_out_extra += 1;
             }
