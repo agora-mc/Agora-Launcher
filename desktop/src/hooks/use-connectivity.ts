@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getConnectivityStatus, type ConnectivityState } from '@/lib/tauri';
 
 /** How often the backend's request outcome is re-read while the app is open. */
@@ -24,14 +24,21 @@ export function useConnectivity(): Connectivity {
     lastOutcomeAt: null,
   });
 
+  // The timer and window events can overlap reads; only the newest may land,
+  // so a slow older reply never overwrites a newer one.
+  const latestRead = useRef(0);
+
   const read = useCallback(async () => {
+    const id = ++latestRead.current;
     try {
       const snapshot = await getConnectivityStatus();
+      if (id !== latestRead.current) return;
       setConnectivity({
         state: snapshot?.state ?? 'unknown',
         lastOutcomeAt: snapshot?.last_outcome_at ?? null,
       });
     } catch {
+      if (id !== latestRead.current) return;
       setConnectivity({ state: 'unknown', lastOutcomeAt: null });
     }
   }, []);

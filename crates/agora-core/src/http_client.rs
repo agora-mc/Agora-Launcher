@@ -690,6 +690,35 @@ pub(crate) fn transport_failure() -> LauncherError {
     LauncherError::NetworkOffline
 }
 
+/// [`transport_failure`] for a request that failed in reqwest: the user still
+/// sees "offline", but the log keeps why (DNS, TLS, refused, timeout). The URL
+/// is stripped first, since a query string can carry a token.
+pub(crate) fn transport_failure_from(error: reqwest::Error) -> LauncherError {
+    eprintln!("[http] request failed: {}", describe_transport_error(error));
+    transport_failure()
+}
+
+fn describe_transport_error(error: reqwest::Error) -> String {
+    let kind = if error.is_timeout() {
+        "timed out"
+    } else if error.is_connect() {
+        "could not connect"
+    } else if error.is_body() || error.is_decode() {
+        "response body failed"
+    } else {
+        "transport error"
+    };
+    let error = error.without_url();
+    let mut detail = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        detail.push_str(": ");
+        detail.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    format!("{kind} ({detail})")
+}
+
 // ---------------------------------------------------------------------------
 // Checked request helpers (with per-hop redirect re-validation)
 // ---------------------------------------------------------------------------
@@ -736,7 +765,7 @@ pub async fn checked_request_with_policy(
             .get(&current_url)
             .send()
             .await
-            .map_err(|_| transport_failure())?;
+            .map_err(transport_failure_from)?;
         crate::connectivity::record_reachable();
 
         // Check if the response is a redirect.
@@ -824,7 +853,7 @@ pub async fn checked_send(
             request = request.body(body);
         }
 
-        let response = request.send().await.map_err(|_| transport_failure())?;
+        let response = request.send().await.map_err(transport_failure_from)?;
         crate::connectivity::record_reachable();
         if !response.status().is_redirection() {
             return Ok(response);
@@ -1031,7 +1060,7 @@ where
     let content_length = response.content_length();
     on_progress(0, content_length);
     loop {
-        let chunk = response.chunk().await.map_err(|_| transport_failure())?;
+        let chunk = response.chunk().await.map_err(transport_failure_from)?;
         let Some(chunk) = chunk else { break };
         total = total.saturating_add(chunk.len());
         if total > max {
@@ -1064,7 +1093,7 @@ pub async fn checked_response_bytes(
     let mut data = Vec::new();
     let mut total = 0usize;
     loop {
-        let chunk = response.chunk().await.map_err(|_| transport_failure())?;
+        let chunk = response.chunk().await.map_err(transport_failure_from)?;
         let Some(chunk) = chunk else { break };
         total = total.saturating_add(chunk.len());
         if total > max {
@@ -1118,7 +1147,7 @@ pub async fn checked_request_with_headers(
             }
         }
 
-        let response = req.send().await.map_err(|_| transport_failure())?;
+        let response = req.send().await.map_err(transport_failure_from)?;
         crate::connectivity::record_reachable();
 
         if response.status().is_redirection() {
@@ -1209,7 +1238,7 @@ pub fn blocking_checked_request_with_policy(
         let response = client
             .get(&current_url)
             .send()
-            .map_err(|_| transport_failure())?;
+            .map_err(transport_failure_from)?;
         crate::connectivity::record_reachable();
 
         if response.status().is_redirection() {
@@ -1977,5 +2006,27 @@ mod transport_failure_tests {
             crate::connectivity::snapshot().state,
             crate::connectivity::ConnectivityState::Unreachable
         );
+    }
+
+    #[tokio::test]
+    async fn transport_error_description_says_why_without_the_url() {
+        let url = format!(
+            "http://127.0.0.1:{}/pack?token=SECRET-TOKEN",
+            closed_local_port()
+        );
+        let error = reqwest::Client::new()
+            .get(&url)
+            .send()
+            .await
+            .expect_err("nothing listens on that port");
+        assert!(
+            error.to_string().contains("SECRET-TOKEN"),
+            "premise: {error}"
+        );
+
+        let described = describe_transport_error(error);
+        assert!(!described.contains("SECRET-TOKEN"), "{described}");
+        assert!(!described.contains("127.0.0.1"), "{described}");
+        assert!(described.starts_with("could not connect"), "{described}");
     }
 }
