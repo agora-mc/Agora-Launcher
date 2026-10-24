@@ -399,6 +399,18 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setUnlistedChoice({ profile: name, mods: unlisted });
   };
 
+  // The launch health check, run on demand. The Health Check dialog opens with its
+  // result even when there is nothing to review.
+  const requestReadinessCheck = async () => {
+    setError(null);
+    try {
+      const report = await checkInstanceHealth(instanceId);
+      onReviewHealth?.(instanceId, row?.name ?? 'Instance', report);
+    } catch (cause) {
+      setError(formatError(cause));
+    }
+  };
+
   // Update shows every change to the profile first, and saves only when the user confirms.
   const requestProfileUpdate = async (name: string) => {
     setError(null);
@@ -2194,6 +2206,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 title="Open Crash Doctor to look through the latest logs for what went wrong"
               >
                 Diagnose a crash
+              </button>
+              <button
+                type="button"
+                onClick={() => { void requestReadinessCheck(); }}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+                title="Run the launch health check and show what it finds, even when nothing needs attention"
+              >
+                Check readiness
               </button>
               </div>
               {processRunning ? (
