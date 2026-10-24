@@ -198,6 +198,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "lockfile",
     "plugin",
     "provider",
+    "bisect",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
@@ -248,6 +249,14 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["loadout", "apply"],
     &["loadout", "update"],
     &["loadout", "delete"],
+    &["bisect", "start"],
+    &["bisect", "status"],
+    &["bisect", "apply"],
+    &["bisect", "good"],
+    &["bisect", "bad"],
+    &["bisect", "back"],
+    &["bisect", "cancel"],
+    &["bisect", "run"],
     &["lockfile", "export"],
     &["lockfile", "verify"],
     &["lockfile", "repair"],
@@ -3474,4 +3483,330 @@ fn removal_reports_whether_stored_data_was_kept() {
         stdout.to_lowercase().contains("kept"),
         "removal should state that data was kept: {stdout}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Guided mod bisect (`agora bisect`)
+// ---------------------------------------------------------------------------
+
+const BISECT_MODS: &[&str] = &["alpha.jar", "bravo.jar", "charlie.jar", "delta.jar"];
+
+/// `(enabled, disabled)` mod file names in an instance's `mods` folder, with
+/// the `.disabled` suffix removed from the second list. Both sorted.
+fn bisect_mod_state(data_dir: &std::path::Path, id: &str) -> (Vec<String>, Vec<String>) {
+    let mods = data_dir.join("instances").join(id).join("mods");
+    let mut on = Vec::new();
+    let mut off = Vec::new();
+    for entry in std::fs::read_dir(&mods).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        match name.strip_suffix(".disabled") {
+            Some(base) => off.push(base.to_string()),
+            None => on.push(name),
+        }
+    }
+    on.sort();
+    off.sort();
+    (on, off)
+}
+
+fn bisect_session_file(data_dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    data_dir
+        .join("instances")
+        .join(id)
+        .join(".agora_bisect.json")
+}
+
+fn sorted_strings(value: &serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = value
+        .as_array()
+        .expect("expected a JSON array")
+        .iter()
+        .map(|v| v.as_str().expect("expected a string").to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+fn bisect_instance(data_dir: &std::path::Path, id: &str) {
+    create_loader_instance(data_dir, id, BISECT_MODS);
+}
+
+#[test]
+fn bisect_start_plans_a_session_over_every_enabled_mod_and_moves_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-start");
+
+    let output = run_agora_json(
+        &data_dir,
+        &[
+            "bisect",
+            "start",
+            "bisect-start",
+            "--suspect",
+            "charlie.jar",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "bisect start should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    let suspects = value["session"]["suspects"].as_array().unwrap();
+    assert_eq!(suspects.len(), 4);
+    assert_eq!(
+        suspects[0], "charlie.jar",
+        "a crash-named mod is tested first"
+    );
+    assert_eq!(value["trial"]["status"]["type"], "awaiting_trial");
+    assert!(bisect_session_file(&data_dir, "bisect-start").is_file());
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-start");
+    assert_eq!(on.len(), 4);
+    assert!(off.is_empty(), "starting must not turn any mod off");
+}
+
+#[test]
+fn bisect_start_refuses_a_second_bisect_and_keeps_the_first() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-twice");
+    let first = run_agora(&data_dir, &["bisect", "start", "bisect-twice"]);
+    assert!(first.status.success());
+    let session = std::fs::read_to_string(bisect_session_file(&data_dir, "bisect-twice")).unwrap();
+
+    let second = run_agora(&data_dir, &["bisect", "start", "bisect-twice"]);
+    assert!(!second.status.success(), "a second start must refuse");
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("already in progress"),
+        "stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(bisect_session_file(&data_dir, "bisect-twice")).unwrap(),
+        session,
+        "a refused start must leave the session as it was"
+    );
+}
+
+#[test]
+fn bisect_start_needs_at_least_two_enabled_mods() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "bisect-solo", &["solo.jar"]);
+    let output = run_agora(&data_dir, &["bisect", "start", "bisect-solo"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("at least two"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!bisect_session_file(&data_dir, "bisect-solo").exists());
+}
+
+#[test]
+fn bisect_status_with_no_bisect_says_so_and_reports_null_in_json() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-idle");
+
+    let human = run_agora(&data_dir, &["bisect", "status", "bisect-idle"]);
+    assert!(human.status.success());
+    assert!(String::from_utf8_lossy(&human.stdout).contains("No bisect is running"));
+
+    let json = run_agora_json(&data_dir, &["bisect", "status", "bisect-idle"]);
+    assert!(json.status.success());
+    let value = assert_json_stdout(&json);
+    assert!(value["session"].is_null());
+    assert!(value["trial"].is_null());
+}
+
+#[test]
+fn bisect_status_refuses_an_instance_that_does_not_exist() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["bisect", "status", "no-such-instance"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not found"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn bisect_apply_turns_off_exactly_the_mods_the_trial_holds_out() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-apply");
+    run_agora(&data_dir, &["bisect", "start", "bisect-apply"]);
+
+    let output = run_agora_json(&data_dir, &["bisect", "apply", "bisect-apply"]);
+    assert!(
+        output.status.success(),
+        "bisect apply should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    let held_out = sorted_strings(&value["trial"]["disable"]);
+    assert_eq!(held_out.len(), 2);
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-apply");
+    assert_eq!(off, held_out, "exactly the held-out mods are off");
+    assert_eq!(on.len(), 2);
+}
+
+#[test]
+fn bisect_apply_without_a_session_is_refused_and_moves_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-apply-idle");
+    let output = run_agora(&data_dir, &["bisect", "apply", "bisect-apply-idle"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No bisect is in progress"));
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-apply-idle");
+    assert_eq!(on.len(), 4);
+    assert!(off.is_empty());
+}
+
+#[test]
+fn bisect_good_keeps_the_held_out_half_as_the_suspects() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-good");
+    run_agora(&data_dir, &["bisect", "start", "bisect-good"]);
+    let applied = assert_json_stdout(&run_agora_json(
+        &data_dir,
+        &["bisect", "apply", "bisect-good"],
+    ));
+    let held_out = sorted_strings(&applied["trial"]["disable"]);
+
+    let output = run_agora_json(&data_dir, &["bisect", "good", "bisect-good"]);
+    assert!(
+        output.status.success(),
+        "bisect good should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    assert_eq!(sorted_strings(&value["session"]["suspects"]), held_out);
+    assert_eq!(value["session"]["history"][0]["outcome"], "clean");
+}
+
+#[test]
+fn bisect_good_without_a_session_is_refused() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-good-idle");
+    let output = run_agora(&data_dir, &["bisect", "good", "bisect-good-idle"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No bisect is in progress"));
+}
+
+#[test]
+fn bisect_bad_keeps_the_mods_that_were_left_on_as_the_suspects() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-bad");
+    run_agora(&data_dir, &["bisect", "start", "bisect-bad"]);
+    run_agora(&data_dir, &["bisect", "apply", "bisect-bad"]);
+    let (left_on, _) = bisect_mod_state(&data_dir, "bisect-bad");
+
+    let output = run_agora_json(&data_dir, &["bisect", "bad", "bisect-bad"]);
+    assert!(
+        output.status.success(),
+        "bisect bad should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    assert_eq!(sorted_strings(&value["session"]["suspects"]), left_on);
+    assert_eq!(value["session"]["history"][0]["outcome"], "reproduced");
+}
+
+#[test]
+fn bisect_bad_without_a_session_is_refused() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-bad-idle");
+    let output = run_agora(&data_dir, &["bisect", "bad", "bisect-bad-idle"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No bisect is in progress"));
+}
+
+#[test]
+fn bisect_back_takes_the_other_half_on_the_next_trial() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-back");
+    let started = assert_json_stdout(&run_agora_json(
+        &data_dir,
+        &["bisect", "start", "bisect-back"],
+    ));
+    let first_held_out = sorted_strings(&started["trial"]["disable"]);
+    run_agora(&data_dir, &["bisect", "bad", "bisect-back"]);
+
+    let output = run_agora_json(&data_dir, &["bisect", "back", "bisect-back"]);
+    assert!(
+        output.status.success(),
+        "bisect back should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    assert_eq!(value["session"]["suspects"].as_array().unwrap().len(), 4);
+    assert_ne!(sorted_strings(&value["trial"]["disable"]), first_held_out);
+}
+
+#[test]
+fn bisect_back_with_nothing_to_undo_is_refused() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-back-fresh");
+    run_agora(&data_dir, &["bisect", "start", "bisect-back-fresh"]);
+    let output = run_agora(&data_dir, &["bisect", "back", "bisect-back-fresh"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("nothing to step back"));
+}
+
+#[test]
+fn bisect_cancel_puts_every_mod_back_and_ends_the_session() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-cancel");
+    run_agora(&data_dir, &["bisect", "start", "bisect-cancel"]);
+    run_agora(&data_dir, &["bisect", "apply", "bisect-cancel"]);
+    let (_, off_before) = bisect_mod_state(&data_dir, "bisect-cancel");
+    assert_eq!(off_before.len(), 2, "the trial turned two mods off");
+
+    let output = run_agora_json(&data_dir, &["bisect", "cancel", "bisect-cancel"]);
+    assert!(
+        output.status.success(),
+        "bisect cancel should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    assert_eq!(value["status"], "cancelled");
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-cancel");
+    assert_eq!(on, BISECT_MODS.to_vec(), "every mod is back on");
+    assert!(off.is_empty());
+    assert!(!bisect_session_file(&data_dir, "bisect-cancel").exists());
+}
+
+#[test]
+fn bisect_cancel_with_nothing_running_is_a_quiet_no_op() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-cancel-idle");
+    let output = run_agora_json(&data_dir, &["bisect", "cancel", "bisect-cancel-idle"]);
+    assert!(output.status.success());
+    assert_eq!(assert_json_stdout(&output)["status"], "not_running");
+    let (on, _) = bisect_mod_state(&data_dir, "bisect-cancel-idle");
+    assert_eq!(on.len(), 4);
+}
+
+#[test]
+fn bisect_run_needs_a_terminal_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-run");
+    // Tests run with no terminal on stdin, so the interactive loop must refuse
+    // before it starts a session or turns any mod off.
+    let output = run_agora(&data_dir, &["bisect", "run", "bisect-run"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    assert!(!bisect_session_file(&data_dir, "bisect-run").exists());
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-run");
+    assert_eq!(on.len(), 4);
+    assert!(off.is_empty());
+}
+
+#[test]
+fn bisect_run_refuses_json_because_it_prompts() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-run-json");
+    let output = run_agora_json(&data_dir, &["bisect", "run", "bisect-run-json"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not print JSON"));
+    assert!(!bisect_session_file(&data_dir, "bisect-run-json").exists());
 }

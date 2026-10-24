@@ -13,6 +13,7 @@ pub mod artifact_receipt;
 pub mod auth;
 pub mod backup;
 pub mod bisect;
+pub mod bisect_service;
 pub mod browse_cache;
 pub mod change_feed;
 pub mod clone;

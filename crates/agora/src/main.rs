@@ -1,4 +1,6 @@
 #![warn(clippy::large_futures)]
+mod cli_bisect;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
@@ -279,6 +281,11 @@ enum Commands {
     Lockfile {
         #[command(subcommand)]
         action: LockfileCmd,
+    },
+    /// Find the mod that breaks a launch by turning halves of your mods off and on.
+    Bisect {
+        #[command(subcommand)]
+        action: cli_bisect::BisectCmd,
     },
 }
 
@@ -4435,6 +4442,9 @@ async fn run_command(
         }
         Commands::Loadout { action } => {
             Box::pin(run_loadout_command(action, data_dir, ctx, output_fmt)).await?
+        }
+        Commands::Bisect { action } => {
+            Box::pin(cli_bisect::run_bisect_command(action, ctx, output_fmt)).await?
         }
         Commands::Lockfile { action } => match action {
             LockfileCmd::Export {
