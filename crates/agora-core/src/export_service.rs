@@ -3,9 +3,11 @@
 //! Owns: instance manifest loading, JSON and mrpack export format generation,
 //! file bundling with hash verification, and Modrinth file metadata resolution.
 
+use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
 use crate::helpers::{safe_zip_entry_name, stream_jar_into_zip};
 use crate::models::InstanceManifest;
+use crate::source_identify;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -133,6 +135,100 @@ pub async fn export_instance_pack_with_hosted(
     };
     commit_tmp_file(&tmp_path, out_path, written)?;
     Ok(out_path.to_string_lossy().to_string())
+}
+
+/// The manifest an export of `instance_id` is built from, and its instance
+/// folder.
+///
+/// Carries the name the user sees (older renames only reached the database),
+/// and, where the user allows Modrinth, a download source for mods that were
+/// copied in from another launcher without one. The ids found are written back
+/// to the manifest, so the next export does not ask again for them.
+pub async fn manifest_for_export(
+    ctx: &Ctx,
+    instance_id: &str,
+) -> LauncherResult<(InstanceManifest, PathBuf)> {
+    let manifest_path = ctx.paths.instance_manifest(instance_id)?;
+    if !manifest_path.exists() {
+        return Err(LauncherError::Generic {
+            code: "ERR_MANIFEST_MISSING".into(),
+            message: "Instance manifest not found.".into(),
+        });
+    }
+    let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
+    // Instances renamed before the manifest followed renames still carry the
+    // old name there; the exported pack must carry the one the user sees.
+    if let Ok(conn) = crate::db::local_state_connection(&ctx.paths.local_state_db()) {
+        if let Ok(Some(row)) = crate::db::get_instance(&conn, instance_id) {
+            manifest.name = row.name;
+        }
+    }
+    let instance_dir = ctx.paths.instance_dir(instance_id)?;
+    if crate::modrinth::ModrinthService::new(ctx.clone())
+        .check_enabled()
+        .is_ok()
+    {
+        let sourceless_before: Vec<bool> = manifest
+            .mods
+            .iter()
+            .map(|item| !source_identify::has_source(item))
+            .collect();
+        source_identify::identify_mods_on_modrinth(&instance_dir, &mut manifest.mods).await;
+        let found: Vec<crate::models::InstalledMod> = manifest
+            .mods
+            .iter()
+            .zip(sourceless_before)
+            .filter(|(item, was_sourceless)| *was_sourceless && item.modrinth_id.is_some())
+            .map(|(item, _)| item.clone())
+            .collect();
+        if !found.is_empty() {
+            // The write is a cache. If it fails, the next export asks again and
+            // this export is unaffected, since it uses the ids found just now.
+            let (write_ctx, write_id) = (ctx.clone(), instance_id.to_string());
+            let _ = tokio::task::spawn_blocking(move || {
+                source_identify::record_identified_mods(&write_ctx, &write_id, &found)
+            })
+            .await;
+        }
+    }
+    Ok((manifest, instance_dir))
+}
+
+/// Names of the mods an export of `instance_id` in `format` would leave a
+/// friend unable to install. The Agora pack only lists mods, so a mod with no
+/// catalog or Modrinth id has nowhere to come from. A `.mrpack` bundles those
+/// files, so it has none.
+pub async fn sourceless_mods_of_instance(
+    ctx: &Ctx,
+    instance_id: &str,
+    format: &str,
+) -> LauncherResult<Vec<String>> {
+    if format != "json" {
+        return Ok(Vec::new());
+    }
+    let (manifest, _) = manifest_for_export(ctx, instance_id).await?;
+    Ok(source_identify::sourceless_mod_names(&manifest))
+}
+
+/// Export `instance_id` in `format` to `out_path`. A `.mrpack` links the
+/// resource, shader and datapacks Modrinth hosts, when the user allows Modrinth
+/// lookups, and bundles the rest.
+pub async fn export_pack_of_instance(
+    ctx: &Ctx,
+    instance_id: &str,
+    format: &str,
+    out_path: &Path,
+) -> LauncherResult<String> {
+    let (manifest, instance_dir) = manifest_for_export(ctx, instance_id).await?;
+    let lookups_allowed = crate::modrinth::ModrinthService::new(ctx.clone())
+        .check_enabled()
+        .is_ok();
+    let hosted = if format == "mrpack" && lookups_allowed {
+        source_identify::find_hosted_pack_content(&instance_dir).await
+    } else {
+        std::collections::HashMap::new()
+    };
+    export_instance_pack_with_hosted(&instance_dir, &manifest, out_path, format, &hosted).await
 }
 
 /// A temp file name beside `out_path` (`<name>.tmp`). Staying in the same
@@ -1108,6 +1204,42 @@ mod pack_content_tests {
         assert!(root.join("shaderpacks").join("BSL.zip").is_file());
         assert!(root.join("resourcepacks").join("Faithful.zip").is_file());
         assert!(root.join("datapacks").join("Tweaks.zip").is_file());
+    }
+
+    #[tokio::test]
+    async fn a_hosted_match_on_sha1_alone_is_bundled_when_the_sha512_differs() {
+        let tmp = TempDir::new().unwrap();
+        let dir = instance_with_packs(&tmp);
+        let out = tmp.path().join("pack.mrpack");
+        let (sha1, _local_sha512) =
+            sha1_and_sha512(&dir.join("shaderpacks").join("BSL.zip")).unwrap();
+        // Same SHA-1, different SHA-512: these are not the bytes on disk.
+        let mut hosted = HashMap::new();
+        hosted.insert(
+            sha1.clone(),
+            crate::source_identify::HostedFile {
+                url: "https://cdn.modrinth.com/data/abc/versions/def/BSL.zip".into(),
+                sha1: sha1.clone(),
+                sha512: "0".repeat(128),
+                size: 10,
+            },
+        );
+
+        export_instance_pack_with_hosted(&dir, &manifest(), &out, "mrpack", &hosted)
+            .await
+            .unwrap();
+
+        let index = read_index(&out);
+        let files = index["files"].as_array().unwrap();
+        assert!(
+            files.iter().all(|f| f["path"] != "shaderpacks/BSL.zip"),
+            "a file whose SHA-512 differs must not be linked: {index}"
+        );
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        assert!(
+            archive.by_name("overrides/shaderpacks/BSL.zip").is_ok(),
+            "the local bytes are bundled instead"
+        );
     }
 
     #[tokio::test]

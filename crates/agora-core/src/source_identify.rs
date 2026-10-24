@@ -13,7 +13,10 @@
 //! and install code look for a provider that does not exist. A CurseForge id
 //! alone does not make a file downloadable anyway (its CDN needs an API key).
 
+use crate::ctx::Ctx;
+use crate::error::LauncherResult;
 use crate::http_client::{self, ClientCategory, HttpClients};
+use crate::lock_manager::LockResource;
 use crate::models::{InstalledMod, InstanceManifest};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -92,7 +95,13 @@ pub fn parse_version_files(body: &serde_json::Value) -> HashMap<String, Modrinth
     hits
 }
 
-async fn lookup_batch(clients: &HttpClients, hashes: &[String]) -> HashMap<String, ModrinthHit> {
+/// One `POST /v2/version_files` for `hashes`, as the parsed reply. `None` when
+/// Modrinth cannot be asked or its reply is not JSON. Both callers then treat
+/// every file as unknown: a mod stays sourceless, a file is bundled.
+async fn query_version_files(
+    clients: &HttpClients,
+    hashes: &[String],
+) -> Option<serde_json::Value> {
     let body = serde_json::json!({ "hashes": hashes, "algorithm": "sha1" });
     let response = match http_client::checked_post_json(
         clients,
@@ -104,15 +113,18 @@ async fn lookup_batch(clients: &HttpClients, hashes: &[String]) -> HashMap<Strin
     .await
     {
         Ok(response) if response.status().is_success() => response,
-        _ => return HashMap::new(),
+        _ => return None,
     };
-    let Ok(bytes) = http_client::checked_response_bytes(response, ClientCategory::Modrinth).await
-    else {
-        return HashMap::new();
-    };
-    serde_json::from_slice::<serde_json::Value>(&bytes)
-        .map(|value| parse_version_files(&value))
-        .unwrap_or_default()
+    let bytes = http_client::checked_response_bytes(response, ClientCategory::Modrinth)
+        .await
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+async fn lookup_batch(clients: &HttpClients, hashes: &[String]) -> HashMap<String, ModrinthHit> {
+    query_version_files(clients, hashes)
+        .await
+        .map_or_else(HashMap::new, |value| parse_version_files(&value))
 }
 
 /// A file Modrinth hosts, identified by the hash of the copy on disk, so the
@@ -178,26 +190,9 @@ async fn lookup_hosted_batch(
     clients: &HttpClients,
     hashes: &[String],
 ) -> HashMap<String, HostedFile> {
-    let body = serde_json::json!({ "hashes": hashes, "algorithm": "sha1" });
-    let response = match http_client::checked_post_json(
-        clients,
-        ClientCategory::Modrinth,
-        "https://api.modrinth.com/v2/version_files",
-        &body,
-        &[("Accept".to_string(), "application/json".to_string())],
-    )
-    .await
-    {
-        Ok(response) if response.status().is_success() => response,
-        _ => return HashMap::new(),
-    };
-    let Ok(bytes) = http_client::checked_response_bytes(response, ClientCategory::Modrinth).await
-    else {
-        return HashMap::new();
-    };
-    serde_json::from_slice::<serde_json::Value>(&bytes)
-        .map(|value| parse_hosted_files(&value))
-        .unwrap_or_default()
+    query_version_files(clients, hashes)
+        .await
+        .map_or_else(HashMap::new, |value| parse_hosted_files(&value))
 }
 
 /// Which resource packs, shader packs and datapacks in `instance_dir` Modrinth hosts,
@@ -205,21 +200,13 @@ async fn lookup_hosted_batch(
 /// Modrinth does not know, simply leaves it out of the map (the export then
 /// carries the file itself).
 pub async fn find_hosted_pack_content(instance_dir: &Path) -> HashMap<String, HostedFile> {
-    let mut hashes: Vec<String> = Vec::new();
-    for dir in PACK_CONTENT_DIRS {
-        let Ok(read) = std::fs::read_dir(instance_dir.join(dir)) else {
-            continue;
-        };
-        for entry in read.flatten() {
-            let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
-            if !is_file {
-                continue;
-            }
-            if let Some(hash) = sha1_of_file(&entry.path()) {
-                hashes.push(hash);
-            }
-        }
-    }
+    // Reading and hashing the files is blocking I/O, so it runs off the runtime.
+    // A failed task means no hashes, so every file is bundled.
+    let dir = instance_dir.to_path_buf();
+    let Ok(mut hashes) = tokio::task::spawn_blocking(move || pack_content_hashes(&dir)).await
+    else {
+        return HashMap::new();
+    };
     hashes.sort();
     hashes.dedup();
     if hashes.is_empty() {
@@ -235,6 +222,27 @@ pub async fn find_hosted_pack_content(instance_dir: &Path) -> HashMap<String, Ho
     hosted
 }
 
+/// SHA-1 of every file in the pack-content folders of `instance_dir`. Blocking
+/// reads: call it from `spawn_blocking`.
+fn pack_content_hashes(instance_dir: &Path) -> Vec<String> {
+    let mut hashes: Vec<String> = Vec::new();
+    for dir in PACK_CONTENT_DIRS {
+        let Ok(read) = std::fs::read_dir(instance_dir.join(dir)) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+            if !is_file {
+                continue;
+            }
+            if let Some(hash) = sha1_of_file(&entry.path()) {
+                hashes.push(hash);
+            }
+        }
+    }
+    hashes
+}
+
 /// Whether a mod has a route a pack could install it from.
 pub fn has_source(item: &InstalledMod) -> bool {
     let non_empty = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.trim().is_empty());
@@ -245,19 +253,13 @@ pub fn has_source(item: &InstalledMod) -> bool {
 /// recognises by hash. Returns how many were identified. Never fails: any
 /// network or read problem leaves the mods as they were.
 pub async fn identify_mods_on_modrinth(instance_dir: &Path, mods: &mut [InstalledMod]) -> usize {
-    let mods_dir = instance_dir.join("mods");
-    let mut pending: Vec<(usize, String)> = Vec::new();
-    for (index, item) in mods.iter().enumerate() {
-        if has_source(item) || item.content_type != "mod" {
-            continue;
-        }
-        let Some((path, _)) = mod_file_on_disk(&mods_dir, item) else {
-            continue;
-        };
-        if let Some(hash) = sha1_of_file(&path) {
-            pending.push((index, hash));
-        }
-    }
+    // Hashing reads every sourceless jar, so it runs off the runtime.
+    let dir = instance_dir.to_path_buf();
+    let snapshot = mods.to_vec();
+    let Ok(pending) = tokio::task::spawn_blocking(move || pending_hashes(&dir, &snapshot)).await
+    else {
+        return 0;
+    };
     if pending.is_empty() {
         return 0;
     }
@@ -272,6 +274,65 @@ pub async fn identify_mods_on_modrinth(instance_dir: &Path, mods: &mut [Installe
         hits.extend(lookup_batch(&clients, chunk).await);
     }
     apply_hits(mods, &pending, &hits)
+}
+
+/// `(index, sha1)` for every mod that has no source and whose file is on disk.
+/// Blocking reads: call it from `spawn_blocking`.
+fn pending_hashes(instance_dir: &Path, mods: &[InstalledMod]) -> Vec<(usize, String)> {
+    let mods_dir = instance_dir.join("mods");
+    mods.iter()
+        .enumerate()
+        .filter(|(_, item)| !has_source(item) && item.content_type == "mod")
+        .filter_map(|(index, item)| {
+            let (path, _) = mod_file_on_disk(&mods_dir, item)?;
+            Some((index, sha1_of_file(&path)?))
+        })
+        .collect()
+}
+
+/// Writes the Modrinth ids in `found` back into the instance manifest, so the
+/// next export and sourceless check do not hash and ask again for those mods.
+/// Takes the instance lock and re-reads the manifest, so only mods that still
+/// have no source are filled in and nothing else changes.
+pub fn record_identified_mods(
+    ctx: &Ctx,
+    instance_id: &str,
+    found: &[InstalledMod],
+) -> LauncherResult<()> {
+    if found.is_empty() {
+        return Ok(());
+    }
+    let sanitized = crate::paths::sanitize_id(instance_id);
+    let _guard = ctx.lock_manager.acquire(
+        LockResource::Instance(sanitized.clone()),
+        "record_modrinth_ids",
+    )?;
+    let manifest_path = ctx.paths.instance_manifest(&sanitized)?;
+    if !manifest_path.exists() {
+        return Ok(());
+    }
+    let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
+    let mut changed = false;
+    for item in manifest.mods.iter_mut() {
+        if has_source(item) || item.content_type != "mod" {
+            continue;
+        }
+        let Some(hit) = found.iter().find(|hit| hit.filename == item.filename) else {
+            continue;
+        };
+        let Some(project_id) = hit.modrinth_id.as_deref() else {
+            continue;
+        };
+        item.modrinth_id = Some(project_id.to_string());
+        if item.version.is_none() {
+            item.version = hit.version.clone();
+        }
+        changed = true;
+    }
+    if changed {
+        crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+    }
+    Ok(())
 }
 
 /// Writes the identified project ids onto the mods. Split from the network
@@ -369,5 +430,141 @@ mod tests {
         known.modrinth_id = Some("AANobbMI".into());
         manifest.mods = vec![known, item("homebrew.jar", true)];
         assert_eq!(sourceless_mod_names(&manifest), vec!["homebrew.jar"]);
+    }
+
+    /// An instance on disk with one known mod, one copied-in mod Modrinth
+    /// will know, and one it will not. Returns the context and instance dir.
+    fn instance_on_disk(root: &Path) -> (crate::ctx::CoreContext, PathBuf) {
+        let ctx = crate::ctx::CoreContext::for_testing(root.to_path_buf());
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::write(dir.join("mods").join("iris.jar"), b"iris bytes").unwrap();
+        std::fs::write(dir.join("mods").join("homebrew.jar"), b"own bytes").unwrap();
+        let mut known = item("sodium.jar", true);
+        known.modrinth_id = Some("AANobbMI".into());
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "inst", "name": "I", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.16", "is_locked": false, "mods": []
+        }))
+        .unwrap();
+        let manifest = InstanceManifest {
+            mods: vec![known, item("iris.jar", true), item("homebrew.jar", true)],
+            ..manifest
+        };
+        let path = ctx.paths.instance_manifest("inst").unwrap();
+        crate::helpers::atomic_write_manifest(&path, &manifest).unwrap();
+        (ctx, dir)
+    }
+
+    fn reload(ctx: &crate::ctx::CoreContext) -> InstanceManifest {
+        let path = ctx.paths.instance_manifest("inst").unwrap();
+        crate::helpers::read_manifest(&path).unwrap()
+    }
+
+    /// What `identify_mods_on_modrinth` does after its network reply, with the
+    /// reply supplied: hash, match `iris.jar` only, then record.
+    fn identify_iris_offline(ctx: &crate::ctx::CoreContext, dir: &Path) -> Vec<InstalledMod> {
+        let mut mods = reload(ctx).mods;
+        let sourceless_before: Vec<bool> = mods.iter().map(|m| !has_source(m)).collect();
+        let pending = pending_hashes(dir, &mods);
+        let iris_hash = pending
+            .iter()
+            .find(|(index, _)| mods[*index].filename == "iris.jar")
+            .map(|(_, hash)| hash.clone())
+            .unwrap();
+        let mut hits = HashMap::new();
+        hits.insert(
+            iris_hash,
+            ModrinthHit {
+                project_id: "YL57xq9U".into(),
+                version_number: Some("1.8.0".into()),
+            },
+        );
+        apply_hits(&mut mods, &pending, &hits);
+        let found: Vec<InstalledMod> = mods
+            .iter()
+            .zip(sourceless_before)
+            .filter(|(m, was)| *was && m.modrinth_id.is_some())
+            .map(|(m, _)| m.clone())
+            .collect();
+        record_identified_mods(ctx, "inst", &found).unwrap();
+        found
+    }
+
+    #[test]
+    fn an_identified_mod_is_written_back_and_not_hashed_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, dir) = instance_on_disk(tmp.path());
+
+        identify_iris_offline(&ctx, &dir);
+
+        let after = reload(&ctx);
+        let iris = after
+            .mods
+            .iter()
+            .find(|m| m.filename == "iris.jar")
+            .unwrap();
+        assert_eq!(iris.modrinth_id.as_deref(), Some("YL57xq9U"));
+        assert_eq!(iris.version.as_deref(), Some("1.8.0"));
+        // Only the mod Modrinth did not know still needs a hash and a question.
+        let still_pending: Vec<&str> = pending_hashes(&dir, &after.mods)
+            .iter()
+            .map(|(index, _)| after.mods[*index].filename.as_str())
+            .collect();
+        assert_eq!(still_pending, vec!["homebrew.jar"]);
+        // Nothing else in the manifest moved: the name, the known mod's id.
+        assert_eq!(after.name, "I");
+        let sodium = after
+            .mods
+            .iter()
+            .find(|m| m.filename == "sodium.jar")
+            .unwrap();
+        assert_eq!(sodium.modrinth_id.as_deref(), Some("AANobbMI"));
+    }
+
+    #[test]
+    fn recording_never_overwrites_a_source_that_landed_meanwhile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, _dir) = instance_on_disk(tmp.path());
+        // Another writer gave iris a source after the lookup began.
+        let path = ctx.paths.instance_manifest("inst").unwrap();
+        let mut manifest = reload(&ctx);
+        for item in manifest.mods.iter_mut() {
+            if item.filename == "iris.jar" {
+                item.modrinth_id = Some("OTHERid".into());
+            }
+        }
+        crate::helpers::atomic_write_manifest(&path, &manifest).unwrap();
+        let mut found = item("iris.jar", true);
+        found.modrinth_id = Some("YL57xq9U".into());
+
+        record_identified_mods(&ctx, "inst", &[found]).unwrap();
+
+        let iris = reload(&ctx)
+            .mods
+            .into_iter()
+            .find(|m| m.filename == "iris.jar")
+            .unwrap();
+        assert_eq!(iris.modrinth_id.as_deref(), Some("OTHERid"));
+    }
+
+    #[test]
+    fn recording_nothing_or_into_a_missing_manifest_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, _dir) = instance_on_disk(tmp.path());
+        let before = std::fs::read(ctx.paths.instance_manifest("inst").unwrap()).unwrap();
+
+        record_identified_mods(&ctx, "inst", &[]).unwrap();
+        assert_eq!(
+            std::fs::read(ctx.paths.instance_manifest("inst").unwrap()).unwrap(),
+            before
+        );
+
+        let missing = tempfile::tempdir().unwrap();
+        let ctx2 = crate::ctx::CoreContext::for_testing(missing.path().to_path_buf());
+        let mut found = item("iris.jar", true);
+        found.modrinth_id = Some("YL57xq9U".into());
+        record_identified_mods(&ctx2, "nobody", &[found]).unwrap();
+        assert!(!ctx2.paths.instance_manifest("nobody").unwrap().exists());
     }
 }

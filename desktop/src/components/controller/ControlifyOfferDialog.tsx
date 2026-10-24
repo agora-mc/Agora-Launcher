@@ -74,6 +74,7 @@ export function ControlifyOfferDialog({ offer, onAccept, onDecline }: Controlify
             ref={closeRef}
             type="button"
             onClick={onDecline}
+            data-modal-close=""
             aria-label="Close Controlify offer"
             className="rounded-xl p-2 text-slate-400 hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
           >
