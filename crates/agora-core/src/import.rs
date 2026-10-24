@@ -6,7 +6,7 @@ use crate::models::{
 use crate::override_sanitizer::OverridePolicy;
 use crate::paths;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Seek};
 use std::path::{Component, Path, PathBuf};
@@ -306,6 +306,63 @@ pub(crate) fn refuse_duplicate_names(
         ));
     }
     Ok(())
+}
+
+/// The folders whose files Agora tracks as content.
+const CONTENT_FOLDERS: [&str; 5] = [
+    "mods/",
+    "resourcepacks/",
+    "shaderpacks/",
+    "datapacks/",
+    "saves/",
+];
+
+/// Which disabled copies in `keys` (manifest paths such as `mods/x.jar.disabled`)
+/// have their enabled twin (`mods/x.jar`) in the same list. Such a copy is left
+/// out of the import: the enabled file is the one Agora tracks, and a second file
+/// would record one mod twice. Only content folders count, so a `config/` pair
+/// is left alone.
+pub(crate) fn superseded_disabled_keys<S: AsRef<str>>(keys: &[S]) -> BTreeSet<String> {
+    let inventoried = |key: &str| {
+        let lower = key.to_ascii_lowercase();
+        CONTENT_FOLDERS
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+    };
+    let present: BTreeSet<&str> = keys.iter().map(|key| key.as_ref()).collect();
+    keys.iter()
+        .map(|key| key.as_ref())
+        .filter(|key| inventoried(key))
+        .filter_map(|key| {
+            let logical = split_disabled_suffix(key)?;
+            // A twin needs a file name, so `mods/.disabled` has none.
+            let is_file = !logical.ends_with('/');
+            (is_file && inventoried(logical) && present.contains(logical)).then(|| key.to_string())
+        })
+        .collect()
+}
+
+/// Every manifest path an `.mrpack` supplies: the index's files, and the files
+/// under its overrides folder, named as the import names them.
+fn pack_supplied_keys<R: Read + Seek>(archive: &ZipArchive<R>, index: &MrpackIndex) -> Vec<String> {
+    let mut keys: Vec<String> = index
+        .files
+        .iter()
+        .map(|file| manifest_path_key(&relative_archive_path(&file.path)))
+        .collect();
+    // A name that cannot be read is skipped, as the plan and the import skip it.
+    for raw in archive.file_names().filter_map(Result::ok) {
+        if raw.ends_with('/') {
+            continue;
+        }
+        let normalized = manifest_path_key(&relative_archive_path(&raw));
+        if let Some(relative) = override_relative(&normalized, &index.overrides) {
+            if !relative.is_empty() && !relative.ends_with('/') {
+                keys.push(manifest_path_key(&relative_archive_path(relative)));
+            }
+        }
+    }
+    keys
 }
 
 /// The logical name of a file that is switched off (`x.jar.disabled` gives
@@ -759,6 +816,7 @@ pub fn import_mrpack_inner(
     let name = apply_name_override(name, name_override);
 
     let (minecraft_version, loader, loader_version) = parse_mrpack_deps(&index.dependencies);
+    let superseded = superseded_disabled_keys(&pack_supplied_keys(&archive, &index));
     let target = prepare_import_target(instances_root, &name)?;
 
     let import_result = (|| -> LauncherResult<usize> {
@@ -778,6 +836,11 @@ pub fn import_mrpack_inner(
             })
             .collect();
         for file_entry in &index.files {
+            // Not fetched or written: the enabled twin is what Agora keeps.
+            if superseded.contains(&manifest_path_key(&relative_archive_path(&file_entry.path))) {
+                completed_files += 1;
+                continue;
+            }
             if skip_unfetchable {
                 let has_link = file_entry
                     .downloads
@@ -885,7 +948,7 @@ pub fn import_mrpack_inner(
             else {
                 continue;
             };
-            if entry.is_dir() {
+            if entry.is_dir() || superseded.contains(&manifest_path_key(&relative_path)) {
                 continue;
             }
             validate_override_extension(&relative_path, override_policy)?;
@@ -1104,8 +1167,12 @@ pub fn plan_mrpack(
     };
     let file_name_of = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
 
+    let superseded = superseded_disabled_keys(&pack_supplied_keys(&archive, &index));
     for listed in &index.files {
         let key = manifest_path_key(&relative_archive_path(&listed.path));
+        if superseded.contains(&key) {
+            continue;
+        }
         let display = file_name_of(&key);
         let safe = !key.is_empty()
             && relative_archive_path(&listed.path)
@@ -1235,7 +1302,9 @@ pub fn plan_mrpack(
         let Some(relative) = override_relative(&normalized, &index.overrides) else {
             continue;
         };
-        if relative.is_empty() {
+        if relative.is_empty()
+            || superseded.contains(&manifest_path_key(&relative_archive_path(relative)))
+        {
             continue;
         }
         let Some(path) = mrpack_override_path(&raw_name, &index.overrides, override_policy) else {
@@ -1287,33 +1356,13 @@ pub fn plan_mrpack(
     }
     // Refused by `inventory_pack_content`: `x.jar` and `x.jar.disabled` in one
     // folder would be recorded as the same mod.
-    let mut physical_by_logical: std::collections::HashMap<&str, &str> = Default::default();
-    for entry in &entries {
-        let lower = entry.name.to_ascii_lowercase();
-        let inventoried = [
-            "mods/",
-            "resourcepacks/",
-            "shaderpacks/",
-            "datapacks/",
-            "saves/",
-        ]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix));
-        if !inventoried {
-            continue;
-        }
-        let logical = split_disabled_suffix(&entry.name).unwrap_or(&entry.name);
-        match physical_by_logical.get(logical) {
-            // The same file listed twice is one file.
-            Some(&seen) if seen != entry.name => problems.push(format!(
-                "The pack contains both {seen} and {} (a disabled copy of it). The import would stop.",
-                entry.name
-            )),
-            Some(_) => {}
-            None => {
-                physical_by_logical.insert(logical, &entry.name);
-            }
-        }
+    // A disabled copy whose enabled twin the pack also lists is left out, and
+    // the review says so.
+    for key in &superseded {
+        let logical = split_disabled_suffix(key).unwrap_or(key);
+        left_out.push(format!(
+            "{key} is a disabled copy of {logical}, which the pack also has, so only the enabled copy is kept"
+        ));
     }
     if override_files > MAX_MRPACK_OVERRIDE_FILES || override_bytes > MAX_MRPACK_OVERRIDE_BYTES {
         problems.push(
@@ -2948,39 +2997,115 @@ mod tests {
         assert_eq!(err.code(), "ERR_IMPORT_DUPLICATE");
     }
 
-    /// The review must say what the import would refuse: a pack whose index
-    /// lists `x.jar` and `x.jar.disabled` would record one mod twice.
+    /// A pack that lists `x.jar` and its disabled copy keeps the enabled one; the
+    /// disabled copy is not fetched and the review says it is left out.
     #[test]
-    fn plan_refuses_a_pack_that_lists_a_jar_and_its_disabled_copy() {
+    fn plan_leaves_out_a_disabled_copy_whose_enabled_twin_the_pack_lists() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("dup.mrpack");
-        let file = |name: &str| {
+        let path = write_pair_mrpack(tmp.path(), "dup.mrpack", b"on", b"off");
+
+        let plan = plan_mrpack(&path, crate::override_sanitizer::OverridePolicy::Standard).unwrap();
+        assert!(plan.problems.is_empty(), "not a stop: {:?}", plan.problems);
+        let planned: Vec<&str> = plan.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(planned, vec!["mods/x.jar"]);
+        assert!(
+            plan.left_out.iter().any(
+                |line| line.starts_with("mods/x.jar.disabled is a disabled copy of mods/x.jar")
+            ),
+            "{:?}",
+            plan.left_out
+        );
+    }
+
+    /// Writes an `.mrpack` whose index lists `mods/x.jar` and `mods/x.jar.disabled`
+    /// with their bytes embedded, so the import needs no network.
+    fn write_pair_mrpack(dir: &Path, name: &str, on: &[u8], off: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        let file = |rel: &str, bytes: &[u8]| {
             format!(
-                r#"{{"path":"mods/{name}","hashes":{{"sha1":"da39a3ee5e6b4b0d3255bfef95601890afd80709"}},"downloads":["https://cdn.modrinth.com/data/P/versions/v/{name}"],"fileSize":1}}"#
+                r#"{{"path":"{rel}","hashes":{{"sha1":"{}"}},"downloads":[],"fileSize":{}}}"#,
+                crate::download::sha1_hex(bytes),
+                bytes.len()
             )
         };
         let index = format!(
-            r#"{{"formatVersion":1,"game":"minecraft","name":"Dup",
+            r#"{{"formatVersion":1,"game":"minecraft","name":"Pair",
                 "files":[{},{}],
                 "dependencies":{{"minecraft":"1.20.4","fabric-loader":"0.15.0"}}}}"#,
-            file("x.jar"),
-            file("x.jar.disabled")
+            file("mods/x.jar", on),
+            file("mods/x.jar.disabled", off),
         );
-        {
-            let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
-            let opts = zip::write::SimpleFileOptions::default();
-            writer.start_file("modrinth.index.json", opts).unwrap();
-            writer.write_all(index.as_bytes()).unwrap();
-            writer.finish().unwrap();
-        }
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("modrinth.index.json", opts).unwrap();
+        writer.write_all(index.as_bytes()).unwrap();
+        writer.start_file("mods/x.jar", opts).unwrap();
+        writer.write_all(on).unwrap();
+        writer.start_file("mods/x.jar.disabled", opts).unwrap();
+        writer.write_all(off).unwrap();
+        writer.finish().unwrap();
+        path
+    }
 
-        let plan = plan_mrpack(&path, crate::override_sanitizer::OverridePolicy::Standard).unwrap();
+    /// The import keeps the enabled jar as the mod, writes no disabled copy, and
+    /// does not stop. Without the superseded check both files would be written
+    /// and the inventory would refuse the import.
+    #[test]
+    fn import_keeps_the_enabled_jar_and_leaves_its_disabled_copy_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_pair_mrpack(tmp.path(), "pair.mrpack", b"on", b"off");
+
+        let imported = import_mrpack(&path, &tmp.path().join("in"), false)
+            .expect("a pair must not stop the import");
+        let root = tmp.path().join("in").join(&imported.instance_id);
+        assert!(root.join("mods").join("x.jar").is_file());
         assert!(
-            plan.problems
-                .iter()
-                .any(|p| p.contains("mods/x.jar") && p.contains("disabled copy")),
-            "{:?}",
-            plan.problems
+            !root.join("mods").join("x.jar.disabled").exists(),
+            "the disabled copy is left out"
+        );
+        assert_eq!(imported.imported_mods, 1);
+        let manifest = crate::helpers::read_manifest(&root.join("instance_manifest.json")).unwrap();
+        let mods: Vec<(&str, bool)> = manifest
+            .mods
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(mods, vec![("x.jar", true)]);
+    }
+
+    #[test]
+    fn superseded_keys_are_only_disabled_copies_with_a_listed_enabled_twin() {
+        let keys = |list: &[&str]| -> Vec<String> { list.iter().map(|k| k.to_string()).collect() };
+        // A pair: the disabled copy is superseded, the enabled one is not.
+        assert_eq!(
+            superseded_disabled_keys(&keys(&["mods/x.jar", "mods/x.jar.disabled"])),
+            BTreeSet::from(["mods/x.jar.disabled".to_string()])
+        );
+        // Case is ignored for the suffix, as Windows ignores it for names.
+        assert_eq!(
+            superseded_disabled_keys(&keys(&[
+                "shaderpacks/BSL.zip",
+                "shaderpacks/BSL.zip.DISABLED"
+            ])),
+            BTreeSet::from(["shaderpacks/BSL.zip.DISABLED".to_string()])
+        );
+        // A disabled copy with no enabled twin is the mod as the pack has it.
+        assert!(superseded_disabled_keys(&keys(&["mods/y.jar.disabled"])).is_empty());
+        // Outside a content folder a pair is just two files.
+        assert!(
+            superseded_disabled_keys(&keys(&["config/a.json", "config/a.json.disabled"]))
+                .is_empty()
+        );
+        // Hostile names: a bare suffix, an empty list and a duplicate listing.
+        assert!(superseded_disabled_keys(&keys(&["mods/.disabled", "mods/"])).is_empty());
+        assert!(superseded_disabled_keys::<String>(&[]).is_empty());
+        assert_eq!(
+            superseded_disabled_keys(&keys(&[
+                "mods/x.jar",
+                "mods/x.jar.disabled",
+                "mods/x.jar.disabled"
+            ])),
+            BTreeSet::from(["mods/x.jar.disabled".to_string()])
         );
     }
 
