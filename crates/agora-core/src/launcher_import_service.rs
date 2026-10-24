@@ -544,19 +544,11 @@ fn inventory_directory(
             Err(_) => continue,
         };
 
-        // Track disabled .jar.disabled files as disabled mods.
-        let (filename, enabled) = if ft.is_file() {
-            if let Some(stripped) = fname.strip_suffix(".disabled") {
-                if stripped.ends_with(".jar") {
-                    (stripped.to_string(), false)
-                } else {
-                    (fname.clone(), true)
-                }
-            } else {
-                (fname.clone(), true)
-            }
-        } else {
-            (fname.clone(), true)
+        // A disabled file is recorded under its logical name, switched off, for
+        // every content type (`x.jar.disabled` and `pack.zip.disabled` alike).
+        let (filename, enabled) = match crate::import::split_disabled_suffix(&fname) {
+            Some(logical) if ft.is_file() => (logical.to_string(), false),
+            _ => (fname.clone(), true),
         };
 
         // Only attempt JAR metadata for .jar files.
@@ -620,6 +612,7 @@ fn inventory_directory(
     }
 
     items.sort_by(|a, b| a.filename.cmp(&b.filename));
+    crate::import::refuse_duplicate_names(&items, subdir)?;
     Ok(items)
 }
 
@@ -3649,6 +3642,41 @@ name=Dup Instance
         assert_eq!(items.len(), 1);
         assert!(!items[0].enabled);
         assert_eq!(items[0].filename, "mymod.jar");
+    }
+
+    /// A disabled resource pack or shader is recorded the way a disabled mod is:
+    /// its logical name, switched off. Before, only `.jar` files got this.
+    #[test]
+    fn test_inventory_directory_disabled_pack_of_any_kind() {
+        let dir = test_tmp("inv-disabled-pack");
+        std::fs::create_dir_all(dir.join("resourcepacks")).unwrap();
+        std::fs::write(
+            dir.join("resourcepacks").join("Faithful.zip.disabled"),
+            b"pack",
+        )
+        .unwrap();
+        std::fs::write(dir.join("resourcepacks").join("On.zip"), b"pack").unwrap();
+
+        let items =
+            inventory_directory(&dir, "resourcepacks", "resourcepack", "prism", "fabric").unwrap();
+        let state: Vec<(&str, bool)> = items
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(state, vec![("Faithful.zip", false), ("On.zip", true)]);
+    }
+
+    /// `x.jar` and `x.jar.disabled` in one folder would be one mod twice, so
+    /// the launcher import refuses instead of recording both.
+    #[test]
+    fn test_inventory_directory_refuses_a_jar_and_its_disabled_copy() {
+        let dir = test_tmp("inv-dup");
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::write(dir.join("mods").join("x.jar"), b"on").unwrap();
+        std::fs::write(dir.join("mods").join("x.jar.disabled"), b"off").unwrap();
+
+        let err = inventory_directory(&dir, "mods", "mod", "prism", "fabric").unwrap_err();
+        assert_eq!(err.code(), "ERR_IMPORT_DUPLICATE");
     }
 
     #[test]

@@ -242,11 +242,20 @@ fn inventory_pack_content(
                 ),
             )
         })?;
-        let identity_key = format!("{directory}/{}", entry.file_name().to_string_lossy());
+        // The index lists the file under its on-disk name, `x.jar.disabled` included.
+        let physical_name = entry.file_name().to_string_lossy().into_owned();
+        let identity_key = format!("{directory}/{physical_name}");
         let modrinth_file = if content_type == "mod" {
             modrinth_files.get(&identity_key)
         } else {
             None
+        };
+        // A disabled file is recorded the way the rest of Agora records one: the
+        // logical name with `enabled: false`. The mod table, the enable/disable
+        // toggles and the install pipeline all read it that way.
+        let (filename, enabled) = match split_disabled_suffix(&physical_name) {
+            Some(logical) => (logical.to_string(), false),
+            None => (physical_name.clone(), true),
         };
         installed.push(InstalledMod {
             provider: None,
@@ -254,7 +263,7 @@ fn inventory_pack_content(
             // Inventoried from the .mrpack index: contributed by the pack.
             pack_managed: true,
             installed_as_dependency: false,
-            filename: entry.file_name().to_string_lossy().into_owned(),
+            filename,
             registry_id: None,
             modrinth_id: modrinth_file.map(|file| file.project_id.clone()),
             source: "modrinth-pack".into(),
@@ -265,7 +274,7 @@ fn inventory_pack_content(
             java_packages: Vec::new(),
             mod_jar_id: None,
             provided_mod_ids: Vec::new(),
-            enabled: true,
+            enabled,
             content_type: content_type.into(),
             depends_on: Vec::new(),
             optional_deps: Vec::new(),
@@ -273,7 +282,45 @@ fn inventory_pack_content(
         });
     }
     installed.sort_by(|a, b| a.filename.cmp(&b.filename));
+    refuse_duplicate_names(&installed, directory)?;
     Ok(installed)
+}
+
+/// `x.jar` and `x.jar.disabled` in one folder would both be recorded as
+/// `x.jar`, and the toggles could not tell them apart. Refuse instead. Expects
+/// the list sorted by filename.
+pub(crate) fn refuse_duplicate_names(
+    installed: &[InstalledMod],
+    directory: &str,
+) -> LauncherResult<()> {
+    if let Some(pair) = installed
+        .windows(2)
+        .find(|pair| pair[0].filename == pair[1].filename)
+    {
+        return Err(import_error(
+            "ERR_IMPORT_DUPLICATE",
+            format!(
+                "The pack contains both '{}' and a disabled copy of it in {directory}.",
+                pair[0].filename
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The logical name of a file that is switched off (`x.jar.disabled` gives
+/// `x.jar`), or `None` for a file that is on. Case-insensitive, because Windows
+/// treats `X.JAR.DISABLED` and `x.jar.disabled` as the same file.
+pub(crate) fn split_disabled_suffix(physical_name: &str) -> Option<&str> {
+    let suffix = crate::pack_merge::DISABLED_SUFFIX;
+    let cut = physical_name.len().checked_sub(suffix.len())?;
+    let tail = physical_name.get(cut..)?;
+    if tail.eq_ignore_ascii_case(suffix) {
+        let logical = &physical_name[..cut];
+        (!logical.is_empty()).then_some(logical)
+    } else {
+        None
+    }
 }
 
 /// A freshly allocated destination for an import.  Every importer writes into
@@ -1235,6 +1282,36 @@ pub fn plan_mrpack(
     }
     if left_out_extra > 0 {
         left_out.push(format!("and {left_out_extra} more"));
+    }
+    // Refused by `inventory_pack_content`: `x.jar` and `x.jar.disabled` in one
+    // folder would be recorded as the same mod.
+    let mut physical_by_logical: std::collections::HashMap<&str, &str> = Default::default();
+    for entry in &entries {
+        let lower = entry.name.to_ascii_lowercase();
+        let inventoried = [
+            "mods/",
+            "resourcepacks/",
+            "shaderpacks/",
+            "datapacks/",
+            "saves/",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix));
+        if !inventoried {
+            continue;
+        }
+        let logical = split_disabled_suffix(&entry.name).unwrap_or(&entry.name);
+        match physical_by_logical.get(logical) {
+            // The same file listed twice is one file.
+            Some(&seen) if seen != entry.name => problems.push(format!(
+                "The pack contains both {seen} and {} (a disabled copy of it). The import would stop.",
+                entry.name
+            )),
+            Some(_) => {}
+            None => {
+                physical_by_logical.insert(logical, &entry.name);
+            }
+        }
     }
     if override_files > MAX_MRPACK_OVERRIDE_FILES || override_bytes > MAX_MRPACK_OVERRIDE_BYTES {
         problems.push(
@@ -2784,6 +2861,105 @@ mod tests {
         assert_eq!(
             installed[0].source_url.as_deref(),
             Some("https://cdn.modrinth.com/data/AANobbMI/versions/abc123/sodium.jar")
+        );
+    }
+
+    #[test]
+    fn inventory_records_a_disabled_file_under_its_logical_name_switched_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("mods")).unwrap();
+        fs::write(tmp.path().join("mods").join("off.jar.disabled"), b"off").unwrap();
+        fs::write(tmp.path().join("mods").join("on.jar"), b"on").unwrap();
+        // The index names the disabled file by its on-disk name; that is the key
+        // the Modrinth identity is looked up under.
+        let mut modrinth_files = BTreeMap::new();
+        modrinth_files.insert(
+            "mods/off.jar.disabled".to_string(),
+            ImportedModrinthFile {
+                project_id: "PROJ".to_string(),
+                download_url: "https://cdn.modrinth.com/data/PROJ/versions/v/off.jar".to_string(),
+            },
+        );
+
+        let installed = inventory_pack_content(tmp.path(), "mods", "mod", &modrinth_files).unwrap();
+        let state: Vec<(&str, bool)> = installed
+            .iter()
+            .map(|m| (m.filename.as_str(), m.enabled))
+            .collect();
+        assert_eq!(state, vec![("off.jar", false), ("on.jar", true)]);
+        assert_eq!(installed[0].modrinth_id.as_deref(), Some("PROJ"));
+    }
+
+    #[test]
+    fn inventory_applies_the_disabled_convention_to_every_content_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("shaderpacks")).unwrap();
+        fs::write(
+            tmp.path().join("shaderpacks").join("BSL.zip.disabled"),
+            b"s",
+        )
+        .unwrap();
+        let shaders =
+            inventory_pack_content(tmp.path(), "shaderpacks", "shader", &BTreeMap::new()).unwrap();
+        assert_eq!(shaders.len(), 1);
+        assert_eq!(shaders[0].filename, "BSL.zip");
+        assert!(!shaders[0].enabled);
+    }
+
+    #[test]
+    fn inventory_reads_a_disabled_suffix_in_any_case_and_refuses_a_name_clash() {
+        // Windows treats these as one file, so the suffix is read whatever its case.
+        assert_eq!(split_disabled_suffix("X.JAR.DISABLED"), Some("X.JAR"));
+        assert_eq!(split_disabled_suffix("x.jar"), None);
+        // A bare suffix has no name in front of it: it stays a plain on file.
+        assert_eq!(split_disabled_suffix(".disabled"), None);
+        assert_eq!(split_disabled_suffix(""), None);
+        // Multi-byte names must not panic when sliced.
+        assert_eq!(split_disabled_suffix("é.disabled"), Some("é"));
+        assert_eq!(split_disabled_suffix("é"), None);
+
+        // `x.jar` and `x.jar.disabled` together would both record as `x.jar`.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("mods")).unwrap();
+        fs::write(tmp.path().join("mods").join("x.jar"), b"a").unwrap();
+        fs::write(tmp.path().join("mods").join("x.jar.disabled"), b"b").unwrap();
+        let err = inventory_pack_content(tmp.path(), "mods", "mod", &BTreeMap::new()).unwrap_err();
+        assert_eq!(err.code(), "ERR_IMPORT_DUPLICATE");
+    }
+
+    /// The review must say what the import would refuse: a pack whose index
+    /// lists `x.jar` and `x.jar.disabled` would record one mod twice.
+    #[test]
+    fn plan_refuses_a_pack_that_lists_a_jar_and_its_disabled_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("dup.mrpack");
+        let file = |name: &str| {
+            format!(
+                r#"{{"path":"mods/{name}","hashes":{{"sha1":"da39a3ee5e6b4b0d3255bfef95601890afd80709"}},"downloads":["https://cdn.modrinth.com/data/P/versions/v/{name}"],"fileSize":1}}"#
+            )
+        };
+        let index = format!(
+            r#"{{"formatVersion":1,"game":"minecraft","name":"Dup",
+                "files":[{},{}],
+                "dependencies":{{"minecraft":"1.20.4","fabric-loader":"0.15.0"}}}}"#,
+            file("x.jar"),
+            file("x.jar.disabled")
+        );
+        {
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            let opts = zip::write::SimpleFileOptions::default();
+            writer.start_file("modrinth.index.json", opts).unwrap();
+            writer.write_all(index.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let plan = plan_mrpack(&path, crate::override_sanitizer::OverridePolicy::Standard).unwrap();
+        assert!(
+            plan.problems
+                .iter()
+                .any(|p| p.contains("mods/x.jar") && p.contains("disabled copy")),
+            "{:?}",
+            plan.problems
         );
     }
 
