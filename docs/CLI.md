@@ -213,6 +213,9 @@ agora mod install <PROJECT> <INSTANCE>
 agora mod remove <PROJECT> <INSTANCE>
 agora mod update <INSTANCE> <ITEM>
 agora mod update-all <INSTANCE>
+agora mod pin <INSTANCE> <FILE>
+agora mod unpin <INSTANCE> <FILE>
+agora mod changelog <INSTANCE> <FILE>
 agora mod enable <INSTANCE> <FILE>
 agora mod disable <INSTANCE> <FILE>
 agora mod worlds <INSTANCE> <FILE> --worlds <A,B> | --all
@@ -253,6 +256,8 @@ Minecraft only loads data packs from inside a world, so Agora copies enabled dat
 | `agora pack curated <PACK> <INSTANCE> --release <VERSION>` | Install a locked release (the instance must be on its Minecraft version and loader) |
 | `agora pack curated <PACK> <INSTANCE>` | Install the pack's flexible recipe against the instance's own Minecraft version |
 | `agora export <INSTANCE> <DEST>` | Export a standalone server environment |
+| `agora pack update-preview <INSTANCE> <MRPACK>` | Show what a newer .mrpack would change. Changes nothing |
+| `agora pack update <INSTANCE> <MRPACK>` | Apply a newer .mrpack; asks for `--yes` and an answer to every conflict |
 | `agora migrate-data --from <PATH>` | Plan migration from an older CLI data root |
 | `agora migrate-data --from <PATH> --yes` | Execute the migration |
 
@@ -382,6 +387,23 @@ agora provider plan-digest <PROVIDER_ID>:<PROJECT_ID>@<VERSION_ID>
 `provider list` shows the official providers (Modrinth, Technic) and every plugin provider, with why one is unusable right now. Enabling or disabling a plugin's provider enables or disables that plugin. `plan-digest` resolves one pack version and prints the digest a curator pins as `sha256` for a `provider_pack` catalog entry (see `REGISTRY_CURATION_REFERENCE.md`).
 
 ### Updates
+
+```text
+agora instance updates <INSTANCE>
+agora instance updates <INSTANCE> --apply
+agora instance updates <INSTANCE> --apply --yes
+agora mod pin <INSTANCE> <FILE>
+agora mod unpin <INSTANCE> <FILE>
+agora mod changelog <INSTANCE> <FILE>
+agora pack update-preview <INSTANCE> <MRPACK>
+agora pack update <INSTANCE> <MRPACK> --yes
+```
+
+`instance updates` checks every installed item against its source and lists what is newer, the same check the desktop's update panel runs, and it stores the result for the instance badge. Rows that are only notes (a newer build for another Minecraft version) or whose release date is unknown are listed but never applied. `--apply` plans the applicable updates as one batch with one snapshot and full rollback, and prints that plan. Nothing changes until you add `--yes`.
+
+`mod pin` keeps one installed file out of update checks, and `mod unpin` lets it be offered again. Pins are stored in the instance manifest. `mod changelog` prints what changed between the installed file and its pending update, from the signed registry. It reports when there is no newer version or when the source published no changelog.
+
+`pack update-preview` compares an .mrpack against the instance and lists the changes, the downloads, and every conflict, without changing anything. `pack update` applies the same merge. It refuses unless every conflict has an answer: `--keep-ours <KEY>` keeps the instance's file and `--take-theirs <KEY>` adopts the pack's file, and each key must be one the preview listed. It also refuses without `--yes`.
 
 `plugin check-update` fetches a plugin's signed update document and reports what it means. It downloads only the metadata, never a package. With no plugin id it checks everything installed, and reports plugins with no update source rather than skipping them silently. The result distinguishes cases that a single "up to date" would blur together: a newer release that needs a newer Agora is reported as exactly that, and an installed version ahead of what the publisher lists is reported rather than downgraded.
 

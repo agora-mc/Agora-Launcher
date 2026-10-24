@@ -74,6 +74,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "trash",
+ "zip 9.0.5",
 ]
 
 [[package]]

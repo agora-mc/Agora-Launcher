@@ -4125,33 +4125,18 @@ pub async fn apply_pack_update(
             message: e.to_string(),
         })?;
     let ctx = crate::core_context(&app)?;
-    let staged_dir = ctx.paths.staging_dir(&format!("pack-update-{sanitized}"))?;
-    let lock_manager = ctx.lock_manager.clone();
-    let paths_for_db = ctx.paths.clone();
+    let task_ctx = ctx.clone();
     ctx.task_scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::UserInitiated,
             move || {
-                let _lock = lock_manager
-                    .acquire(
-                        agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-                        "pack-update",
-                    )
-                    .map_err(|e| e.to_string())?;
-                let conn = agora_core::db::local_state_connection(&paths_for_db.local_state_db())
-                    .map_err(|e| e.to_string())?;
-                let outcome = agora_core::pack_update::update_pack(
-                    &conn,
+                agora_core::pack_update::apply_pack_update(
+                    &task_ctx,
                     &sanitized,
                     &instance_dir,
                     std::path::Path::new(&mrpack_path),
-                    &staged_dir,
                     &resolutions,
-                    &agora_core::pack_update::NetworkFetcher,
-                    false,
-                );
-                let _ = std::fs::remove_dir_all(&staged_dir);
-                Ok::<_, String>(outcome)
+                )
             },
         )
         .await
@@ -6796,27 +6781,19 @@ pub async fn check_instance_updates(
     instance_id: String,
 ) -> LauncherResult<Vec<UpdateInfo>> {
     let ctx = crate::core_context(&app)?;
-    let sanitized = crate::paths::sanitize_id(&instance_id);
     let shared_state = state.inner().clone();
 
     let providers = crate::providers::registry(&app)?;
-    let updates = agora_core::update_cache::check_single_instance_updates_with(
+    agora_core::update_cache::check_and_cache_instance_updates(
         &ctx,
-        &sanitized,
+        &instance_id,
         agora_core::update_cache::UpdateCheckOptions {
             memory_cache: Some(&shared_state),
             on_item_error: agora_core::update_cache::ItemErrorPolicy::Fail,
             providers: Some(&providers),
         },
     )
-    .await?;
-
-    // Persist so the result survives restart and can be read back without network.
-    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
-        let _ = agora_core::update_cache::set_cached_instance_updates(&conn, &sanitized, &updates);
-    }
-
-    Ok(updates)
+    .await
 }
 
 /// Read cached update results for a single instance without network.

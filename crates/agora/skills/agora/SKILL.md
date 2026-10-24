@@ -61,7 +61,8 @@ Vocabulary:
 - **Snapshot first.** Before a change, run `agora snapshots create <ID> --label "Before <what>"`
   so it can be undone.
 - **Dry-run first.** `mod install`, `mod remove`, `mod update` and `pack curated` accept
-  `--dry-run`. Show the plan before running it for real.
+  `--dry-run`. Show the plan before running it for real. `instance updates --apply` and
+  `pack update` print their plan and change nothing until `--yes` is given.
 - **One reversible change at a time,** then have the person launch the game to check it, so
   cause and effect stay clear.
 - **Use Agora's commands, not the filesystem.** Do not move, rename or delete files in an
