@@ -2930,6 +2930,31 @@ export const applyLoadoutProfile = (instanceId: string, profileName: string, unl
 export const deleteLoadoutProfile = (instanceId: string, profileName: string) =>
   invoke<void>('delete_loadout_profile', { instanceId, profileName });
 
+/** How one item would change when a profile is saved again from the instance's setup. */
+export type LoadoutChangeKind =
+  | { added: { enabled: boolean } }
+  | 'turned_on'
+  | 'turned_off'
+  | { removed: { enabled: boolean } };
+
+export interface LoadoutChange {
+  filename: string;
+  /** Empty for a profile saved before it recorded kinds. */
+  content_type: string;
+  kind: LoadoutChangeKind;
+}
+
+export interface LoadoutUpdate {
+  name: string;
+  changes: LoadoutChange[];
+}
+
+export const previewLoadoutUpdate = (instanceId: string, profileName: string) =>
+  invoke<LoadoutUpdate>('preview_loadout_update', { instanceId, profileName });
+
+export const updateLoadoutProfile = (instanceId: string, profileName: string) =>
+  invoke<LoadoutUpdate>('update_loadout_profile', { instanceId, profileName });
+
 export const importInstance = (sourcePath: string, symlinkSaves: boolean, name?: string) =>
   invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves, name: name ?? null });
 

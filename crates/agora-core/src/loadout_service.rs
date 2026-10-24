@@ -8,7 +8,7 @@
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
 use crate::install_service::InstallService;
-use crate::loadout::{self, LoadoutApplyError, UnlistedMods};
+use crate::loadout::{self, LoadoutApplyError, LoadoutUpdate, UnlistedMods};
 use crate::lock_manager::LockResource;
 
 pub struct LoadoutService {
@@ -66,6 +66,45 @@ impl LoadoutService {
                 message,
             }
         })
+    }
+}
+
+impl LoadoutService {
+    /// What [`Self::update`] would change in `profile_name`, without writing.
+    /// Reads under the instance lock, like [`Self::unlisted_mods`].
+    pub fn update_preview(
+        &self,
+        instance_id: &str,
+        profile_name: &str,
+    ) -> LauncherResult<LoadoutUpdate> {
+        let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
+        let _guard = self.ctx.lock_manager.acquire(
+            LockResource::Instance(instance_id.to_string()),
+            "preview_loadout_update",
+        )?;
+        loadout::plan_profile_update(&instance_dir, profile_name).map_err(loadout_error)
+    }
+
+    /// Save `profile_name` again so it records the instance's current setup.
+    /// Returns the changes it made, which may differ from an earlier
+    /// [`Self::update_preview`] if the setup changed in between.
+    ///
+    /// Only the profile file is written, so a locked instance or a running
+    /// game does not block it.
+    pub fn update(&self, instance_id: &str, profile_name: &str) -> LauncherResult<LoadoutUpdate> {
+        let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
+        let _guard = self.ctx.lock_manager.acquire(
+            LockResource::Instance(instance_id.to_string()),
+            "update_loadout",
+        )?;
+        loadout::update_profile(&instance_dir, profile_name).map_err(loadout_error)
+    }
+}
+
+fn loadout_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_LOADOUT".into(),
+        message,
     }
 }
 
@@ -255,6 +294,37 @@ mod tests {
             dir.join("mods").join("newer.jar.disabled").exists(),
             "off switches the unlisted mod off"
         );
+        assert!(service.unlisted_mods("demo", "both").unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_saves_the_current_setup_through_the_instance_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, dir) = setup(&tmp, &[("sodium.jar", true), ("lithium.jar", true)], false);
+        loadout::create_profile(&dir, "both").unwrap();
+        // Installed after the profile was saved.
+        fs::write(dir.join("mods").join("newer.jar"), b"newer.jar").unwrap();
+        write_manifest(
+            &dir,
+            &[
+                ("sodium.jar", true),
+                ("lithium.jar", true),
+                ("newer.jar", true),
+            ],
+            false,
+        );
+
+        let service = LoadoutService::new(ctx.clone());
+        let preview = service.update_preview("demo", "both").unwrap();
+        assert_eq!(preview.changes.len(), 1);
+        assert_eq!(
+            service.unlisted_mods("demo", "both").unwrap(),
+            vec!["newer.jar".to_string()],
+            "a preview writes nothing, so Apply still asks"
+        );
+
+        let done = service.update("demo", "both").unwrap();
+        assert_eq!(done.changes, preview.changes);
         assert!(service.unlisted_mods("demo", "both").unwrap().is_empty());
     }
 }

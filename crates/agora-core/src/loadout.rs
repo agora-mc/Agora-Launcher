@@ -114,18 +114,16 @@ fn all_content_entries_mut(
         .chain(manifest.worlds.iter_mut())
 }
 
-/// Create a new loadout profile from the current enabled state in the manifest.
-pub fn create_profile(instance_dir: &Path, name: &str) -> Result<LoadoutProfile, String> {
-    // A blank name would save as ".json", which list and apply cannot name.
-    if name.trim().is_empty() {
-        return Err("A loadout profile needs a name".into());
-    }
-    let manifest = read_manifest(instance_dir)?;
-
+/// The profile that records the instance's state in `manifest` as it is now.
+fn profile_from_manifest(
+    manifest: &InstanceManifest,
+    name: &str,
+    created_at: String,
+) -> LoadoutProfile {
     let mut covers = LoadoutCoverage::default();
     let mut enabled_mods: Vec<String> = Vec::new();
     let mut items: Vec<LoadoutItem> = Vec::new();
-    for entry in all_content_entries(&manifest) {
+    for entry in all_content_entries(manifest) {
         items.push(LoadoutItem {
             filename: entry.filename.clone(),
             content_type: entry.content_type.clone(),
@@ -144,24 +142,148 @@ pub fn create_profile(instance_dir: &Path, name: &str) -> Result<LoadoutProfile,
         }
     }
 
-    let profile = LoadoutProfile {
+    LoadoutProfile {
         name: name.to_string(),
         enabled_mods,
-        created_at: Utc::now().to_rfc3339(),
+        created_at,
         covers: Some(covers),
         items: Some(items),
-    };
+    }
+}
 
+fn write_profile(instance_dir: &Path, profile: &LoadoutProfile) -> Result<(), String> {
     let profiles_dir = loadouts_dir(instance_dir);
     fs::create_dir_all(&profiles_dir).map_err(|e| format!("Cannot create loadouts dir: {e}"))?;
 
-    let safe_name = sanitize_profile_name(name);
+    let safe_name = sanitize_profile_name(&profile.name);
     let profile_path = profiles_dir.join(format!("{safe_name}.json"));
-    let json = serde_json::to_string_pretty(&profile)
+    let json = serde_json::to_string_pretty(profile)
         .map_err(|e| format!("Cannot serialize profile: {e}"))?;
-    fs::write(&profile_path, json).map_err(|e| format!("Cannot write profile: {e}"))?;
+    fs::write(&profile_path, json).map_err(|e| format!("Cannot write profile: {e}"))
+}
 
+/// Create a new loadout profile from the current enabled state in the manifest.
+pub fn create_profile(instance_dir: &Path, name: &str) -> Result<LoadoutProfile, String> {
+    // A blank name would save as ".json", which list and apply cannot name.
+    if name.trim().is_empty() {
+        return Err("A loadout profile needs a name".into());
+    }
+    let manifest = read_manifest(instance_dir)?;
+    let profile = profile_from_manifest(&manifest, name, Utc::now().to_rfc3339());
+    write_profile(instance_dir, &profile)?;
     Ok(profile)
+}
+
+/// One thing that updating a profile to the instance's current setup changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadoutChange {
+    pub filename: String,
+    /// Empty for a profile saved before it recorded kinds, which cannot say.
+    pub content_type: String,
+    pub kind: LoadoutChangeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadoutChangeKind {
+    /// On the instance, and the profile did not record it. It will record it
+    /// as on or off, whichever it is now.
+    Added { enabled: bool },
+    /// The profile recorded it as off; it is on now.
+    TurnedOn,
+    /// The profile recorded it as on; it is off now.
+    TurnedOff,
+    /// The profile recorded it, and it is gone from the instance.
+    Removed { enabled: bool },
+}
+
+/// The changes that [`update_profile`] would make, in the order the instance lists them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadoutUpdate {
+    pub name: String,
+    pub changes: Vec<LoadoutChange>,
+}
+
+/// Work out what updating `profile_name` to the instance's current setup would
+/// change. Writes nothing.
+fn diff_against_current(old: &LoadoutProfile, manifest: &InstanceManifest) -> Vec<LoadoutChange> {
+    let mut changes = Vec::new();
+    for entry in all_content_entries(manifest) {
+        let kind = match recorded_state(old, entry) {
+            None => LoadoutChangeKind::Added {
+                enabled: entry.enabled,
+            },
+            Some(was) if was == entry.enabled => continue,
+            Some(true) => LoadoutChangeKind::TurnedOff,
+            Some(false) => LoadoutChangeKind::TurnedOn,
+        };
+        changes.push(LoadoutChange {
+            filename: entry.filename.clone(),
+            content_type: entry.content_type.clone(),
+            kind,
+        });
+    }
+
+    let on_instance = |filename: &str, content_type: Option<&str>| {
+        all_content_entries(manifest)
+            .any(|e| e.filename == filename && content_type.is_none_or(|t| e.content_type == t))
+    };
+    match &old.items {
+        Some(items) => {
+            for item in items {
+                if !on_instance(&item.filename, Some(&item.content_type)) {
+                    changes.push(LoadoutChange {
+                        filename: item.filename.clone(),
+                        content_type: item.content_type.clone(),
+                        kind: LoadoutChangeKind::Removed {
+                            enabled: item.enabled,
+                        },
+                    });
+                }
+            }
+        }
+        None => {
+            for name in &old.enabled_mods {
+                if !on_instance(name, None) {
+                    changes.push(LoadoutChange {
+                        filename: name.clone(),
+                        content_type: String::new(),
+                        kind: LoadoutChangeKind::Removed { enabled: true },
+                    });
+                }
+            }
+        }
+    }
+    changes
+}
+
+/// What [`update_profile`] would change, without writing anything. The
+/// desktop shows this before it asks the user to confirm.
+pub fn plan_profile_update(
+    instance_dir: &Path,
+    profile_name: &str,
+) -> Result<LoadoutUpdate, String> {
+    let old = read_profile(instance_dir, profile_name)?;
+    let manifest = read_manifest(instance_dir)?;
+    Ok(LoadoutUpdate {
+        name: old.name.clone(),
+        changes: diff_against_current(&old, &manifest),
+    })
+}
+
+/// Save `profile_name` again so it records the instance's current setup: every
+/// mod and pack on it, on or off, and nothing that is gone. The profile's
+/// `created_at` stays as it was. Returns the changes it made.
+pub fn update_profile(instance_dir: &Path, profile_name: &str) -> Result<LoadoutUpdate, String> {
+    let old = read_profile(instance_dir, profile_name)?;
+    let manifest = read_manifest(instance_dir)?;
+    let changes = diff_against_current(&old, &manifest);
+    let profile = profile_from_manifest(&manifest, &old.name, old.created_at.clone());
+    write_profile(instance_dir, &profile)?;
+    Ok(LoadoutUpdate {
+        name: old.name,
+        changes,
+    })
 }
 
 /// List all loadout profiles for an instance.
@@ -1155,5 +1277,171 @@ mod tests {
         create_profile(&dir, "all").unwrap();
 
         assert!(unlisted_enabled_mods(&dir, "all").unwrap().is_empty());
+    }
+
+    /// A profile saved, then the instance changed: one mod turned off, one
+    /// installed since, one removed. Updating records the setup as it is now.
+    #[test]
+    fn update_records_the_current_setup_and_reports_each_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["sodium.jar", "lithium.jar"]);
+        let saved = create_profile(&dir, "both").unwrap();
+
+        // The user turns lithium off, installs newer.jar, and removes sodium.
+        fs::rename(
+            dir.join("mods").join("lithium.jar"),
+            dir.join("mods").join("lithium.jar.disabled"),
+        )
+        .unwrap();
+        fs::remove_file(dir.join("mods").join("sodium.jar")).unwrap();
+        fs::write(dir.join("mods").join("newer.jar"), b"newer").unwrap();
+        let mut manifest = read_manifest(&dir).unwrap();
+        manifest.mods[1].enabled = false;
+        manifest.mods.remove(0);
+        let mut newer = manifest.mods[0].clone();
+        newer.filename = "newer.jar".to_string();
+        newer.enabled = true;
+        manifest.mods.push(newer);
+        write_manifest(&dir, &manifest).unwrap();
+
+        // Before the update, Apply would ask about newer.jar every time.
+        assert_eq!(
+            unlisted_enabled_mods(&dir, "both").unwrap(),
+            vec!["newer.jar".to_string()]
+        );
+
+        let planned = plan_profile_update(&dir, "both").unwrap();
+        let expected = vec![
+            LoadoutChange {
+                filename: "lithium.jar".into(),
+                content_type: "mod".into(),
+                kind: LoadoutChangeKind::TurnedOff,
+            },
+            LoadoutChange {
+                filename: "newer.jar".into(),
+                content_type: "mod".into(),
+                kind: LoadoutChangeKind::Added { enabled: true },
+            },
+            LoadoutChange {
+                filename: "sodium.jar".into(),
+                content_type: "mod".into(),
+                kind: LoadoutChangeKind::Removed { enabled: true },
+            },
+        ];
+        assert_eq!(planned.changes, expected);
+        assert_eq!(planned.name, "both");
+
+        // Planning writes nothing.
+        let still = list_profiles(&dir).unwrap();
+        assert_eq!(still[0].enabled_mods, saved.enabled_mods);
+
+        let done = update_profile(&dir, "both").unwrap();
+        assert_eq!(done.changes, expected);
+
+        let after = list_profiles(&dir).unwrap();
+        assert_eq!(
+            after.len(),
+            1,
+            "updating replaces the profile, it does not add one"
+        );
+        let after = &after[0];
+        assert_eq!(after.created_at, saved.created_at, "created_at is kept");
+        assert_eq!(after.enabled_mods, vec!["newer.jar".to_string()]);
+        let items = after.items.as_ref().unwrap();
+        assert_eq!(
+            items,
+            &vec![
+                LoadoutItem {
+                    filename: "lithium.jar".into(),
+                    content_type: "mod".into(),
+                    enabled: false,
+                },
+                LoadoutItem {
+                    filename: "newer.jar".into(),
+                    content_type: "mod".into(),
+                    enabled: true,
+                },
+            ]
+        );
+        assert!(
+            unlisted_enabled_mods(&dir, "both").unwrap().is_empty(),
+            "after an update Apply has nothing new to ask about"
+        );
+        // And a second update with nothing changed reports nothing.
+        assert!(update_profile(&dir, "both").unwrap().changes.is_empty());
+    }
+
+    #[test]
+    fn update_of_an_unknown_profile_is_an_error_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["sodium.jar"]);
+
+        assert!(plan_profile_update(&dir, "missing").is_err());
+        assert!(update_profile(&dir, "missing").is_err());
+        assert!(!loadouts_dir(&dir).exists(), "no profile file created");
+    }
+
+    /// A profile saved before it recorded items knows only the names that were
+    /// on. Updating upgrades it, and says what it now records and what is gone.
+    #[test]
+    fn update_upgrades_a_legacy_profile_and_names_what_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["sodium.jar", "lithium.jar"]);
+        manifest_with_lithium_off(&dir);
+        save_legacy_profile(&dir, "old", &["sodium.jar", "gone.jar"]);
+
+        let done = update_profile(&dir, "old").unwrap();
+        assert_eq!(
+            done.changes,
+            vec![
+                LoadoutChange {
+                    filename: "lithium.jar".into(),
+                    content_type: "mod".into(),
+                    kind: LoadoutChangeKind::Added { enabled: false },
+                },
+                LoadoutChange {
+                    filename: "gone.jar".into(),
+                    content_type: String::new(),
+                    kind: LoadoutChangeKind::Removed { enabled: true },
+                },
+            ]
+        );
+        let upgraded = &list_profiles(&dir).unwrap()[0];
+        assert!(upgraded.items.is_some(), "the profile now records items");
+        assert!(upgraded.covers.is_some());
+    }
+
+    /// Turns lithium off in the manifest and on disk, the way a user would.
+    fn manifest_with_lithium_off(dir: &Path) {
+        fs::rename(
+            dir.join("mods").join("lithium.jar"),
+            dir.join("mods").join("lithium.jar.disabled"),
+        )
+        .unwrap();
+        let mut manifest = read_manifest(dir).unwrap();
+        manifest.mods[1].enabled = false;
+        write_manifest(dir, &manifest).unwrap();
+    }
+
+    /// A name with a character the file name cannot hold is stored sanitized,
+    /// and must be found and kept under the same name by update.
+    #[test]
+    fn update_finds_a_profile_whose_name_needed_sanitizing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["sodium.jar"]);
+        create_profile(&dir, "Pvp: fast").unwrap();
+        fs::write(dir.join("mods").join("extra.jar"), b"extra").unwrap();
+        let mut manifest = read_manifest(&dir).unwrap();
+        let mut extra = manifest.mods[0].clone();
+        extra.filename = "extra.jar".into();
+        manifest.mods.push(extra);
+        write_manifest(&dir, &manifest).unwrap();
+
+        let done = update_profile(&dir, "Pvp: fast").unwrap();
+        assert_eq!(done.name, "Pvp: fast");
+        assert_eq!(done.changes.len(), 1);
+        let profiles = list_profiles(&dir).unwrap();
+        assert_eq!(profiles.len(), 1, "same file, not a second profile");
+        assert_eq!(profiles[0].name, "Pvp: fast");
     }
 }
