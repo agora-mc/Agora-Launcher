@@ -252,9 +252,20 @@ Minecraft only loads data packs from inside a world, so Agora copies enabled dat
 | `agora pack versions <PACK>` | List a curated registry pack's locked releases, newest first |
 | `agora pack curated <PACK> <INSTANCE> --release <VERSION>` | Install a locked release (the instance must be on its Minecraft version and loader) |
 | `agora pack curated <PACK> <INSTANCE>` | Install the pack's flexible recipe against the instance's own Minecraft version |
+| `agora pack export <INSTANCE> --format mrpack\|agora\|lockfile --out <FILE>` | Export an instance as a Modrinth pack, an Agora pack, or a lockfile |
+| `agora pack review <FILE>` | Show what importing a `.mrpack` or `.agora-pack.json` would do and stage the reviewed copy; prints a review id |
+| `agora pack import <REVIEW_ID> [--name <NAME>] [--import-anyway]` | Import exactly the copy `pack review` staged |
+| `agora import launchers [--root <DIR>]` | List Prism, CurseForge and Modrinth instances that can be imported |
+| `agora import plan <KEY>... [--name <NAME>] [--no-settings]` | Show what importing launcher instances would copy; prints a plan fingerprint |
+| `agora import run <KEY>... [--fingerprint <HASH>]` | Import launcher instances (items commit independently) |
+| `agora backup export <INSTANCE> --out <DIR> [--snapshot <ID>]` | Write a snapshot (a new one unless `--snapshot` is given) to a folder as one zip |
+| `agora backup import <FILE> [--instance <INSTANCE>]` | Read a backup zip into an instance as a restorable snapshot |
+| `agora backup prune <INSTANCE> [--keep <N>] [--yes]` | Delete snapshots beyond the newest N (default 10) |
 | `agora export <INSTANCE> <DEST>` | Export a standalone server environment |
 | `agora migrate-data --from <PATH>` | Plan migration from an older CLI data root |
 | `agora migrate-data --from <PATH> --yes` | Execute the migration |
+
+`pack export` warns when an Agora pack would leave out mods that have no catalog or Modrinth source (a `.mrpack` bundles them). It asks first, or pass `--yes` to export anyway. `pack import` refuses a pack with hard problems whatever the flags; files that cannot be fetched stop it unless `--import-anyway`, which leaves exactly those out. A launcher key that two launchers share is written `prism:KEY`, `curseforge:KEY` or `modrinth:KEY`. A backup import never changes the live instance; restore it with `snapshots restore`. `backup prune` deletes snapshots and, without a terminal, needs `--yes`.
 
 `migrate-data` is a dry-run unless `--yes` is supplied. Read every reported conflict before executing it.
 

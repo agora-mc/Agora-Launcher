@@ -1,4 +1,6 @@
 #![warn(clippy::large_futures)]
+mod cli_packs;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
@@ -182,8 +184,11 @@ enum Commands {
         #[command(subcommand)]
         action: SnapshotsCmd,
     },
-    /// Import a local supported pack or a remote .mrpack URL.
+    /// Import a local supported pack or a remote .mrpack URL, or import instances from other launchers.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Import {
+        #[command(subcommand)]
+        action: Option<cli_packs::ImportCmd>,
         #[arg(required_unless_present = "url")]
         path: Option<PathBuf>,
         #[arg(
@@ -279,6 +284,11 @@ enum Commands {
     Lockfile {
         #[command(subcommand)]
         action: LockfileCmd,
+    },
+    /// Export, import, and prune instance backups.
+    Backup {
+        #[command(subcommand)]
+        action: cli_packs::BackupCmd,
     },
 }
 
@@ -750,6 +760,12 @@ enum RuntimeCmd {
 
 #[derive(Subcommand)]
 enum PackCmd {
+    /// Export an instance as a .mrpack, an Agora pack, or a lockfile.
+    Export(cli_packs::PackExportArgs),
+    /// Show what importing a pack file would do and stage the reviewed copy.
+    Review(cli_packs::PackReviewArgs),
+    /// Import a pack file that `pack review` staged.
+    Import(cli_packs::PackImportArgs),
     /// Install a pack manifest JSON file into an existing instance.
     Install {
         /// Path to the pack manifest JSON file.
@@ -1369,6 +1385,7 @@ fn touches_instances(command: &Commands) -> bool {
             | Commands::Export { .. }
             | Commands::Loadout { .. }
             | Commands::Lockfile { .. }
+            | Commands::Backup { .. }
     )
 }
 
@@ -2946,11 +2963,15 @@ async fn run_instance_command(
 
 async fn run_pack_command(
     action: PackCmd,
+    data_dir: &Path,
     ctx: &agora_core::ctx::Ctx,
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
     match action {
+        PackCmd::Export(args) => cli_packs::pack_export(args, data_dir, ctx, output_fmt).await?,
+        PackCmd::Review(args) => cli_packs::pack_review(args, ctx, output_fmt).await?,
+        PackCmd::Import(args) => cli_packs::pack_import(args, ctx, output_fmt).await?,
         PackCmd::Install { path, instance } => {
             let json_text = std::fs::read_to_string(&path).map_err(|e| {
                 anyhow::anyhow!("Cannot read pack manifest '{}': {}", path.display(), e)
@@ -4185,6 +4206,7 @@ async fn run_command(
             Box::pin(run_snapshots_command(action, data_dir, ctx, output_fmt)).await?
         }
         Commands::Import {
+            action: None,
             path,
             url,
             symlink_saves,
@@ -4403,7 +4425,16 @@ async fn run_command(
                 }
             }
         }
-        Commands::Pack { action } => Box::pin(run_pack_command(action, ctx, output_fmt)).await?,
+        Commands::Pack { action } => {
+            Box::pin(run_pack_command(action, data_dir, ctx, output_fmt)).await?
+        }
+        Commands::Backup { action } => {
+            cli_packs::run_backup(action, data_dir, ctx, output_fmt).await?
+        }
+        Commands::Import {
+            action: Some(action),
+            ..
+        } => cli_packs::run_import(action, ctx, output_fmt).await?,
         Commands::Export { instance, dest } => {
             let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
             if !instance_dir.exists() {

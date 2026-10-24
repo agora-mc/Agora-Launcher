@@ -93,6 +93,7 @@ pub mod network_gate;
 pub mod official_launcher;
 pub mod operation_manager;
 pub mod override_sanitizer;
+pub mod pack_file_import;
 pub mod pack_install;
 pub mod pack_inventory;
 pub mod pack_merge;

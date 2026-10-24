@@ -3475,3 +3475,230 @@ fn removal_reports_whether_stored_data_was_kept() {
         "removal should state that data was kept: {stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// pack export / review / import, backups, launcher import
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pack_export_mrpack_writes_a_pack_file() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "px-mr", &["sodium.jar"]);
+    let out = data_dir.join("px-mr.mrpack");
+    let out_arg = out.to_string_lossy().to_string();
+
+    let output = run_agora_json(
+        &data_dir,
+        &[
+            "pack", "export", "px-mr", "--format", "mrpack", "--out", &out_arg,
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed = assert_json_stdout(&output);
+    assert_eq!(parsed["status"], "exported");
+    assert!(out.is_file(), "the .mrpack should exist");
+}
+
+#[test]
+fn pack_export_agora_refuses_sourceless_mods_without_yes() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "px-agora", &["sodium.jar"]);
+    let out = data_dir.join("px.agora-pack.json");
+    let out_arg = out.to_string_lossy().to_string();
+    let args = [
+        "pack", "export", "px-agora", "--format", "agora", "--out", &out_arg,
+    ];
+
+    let refused = run_agora(&data_dir, &args);
+    assert!(!refused.status.success(), "must refuse without --yes");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("sodium.jar"), "names the mod: {stderr}");
+    assert!(!out.exists(), "nothing is written on refusal");
+
+    let mut with_yes = args.to_vec();
+    with_yes.push("--yes");
+    let done = run_agora_json(&data_dir, &with_yes);
+    assert!(
+        done.status.success(),
+        "{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    let parsed = assert_json_stdout(&done);
+    assert_eq!(parsed["modsWithoutSource"][0], "sodium.jar");
+    assert!(out.is_file());
+}
+
+#[test]
+fn pack_export_lockfile_and_missing_instance() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "px-lock", &["sodium.jar"]);
+    let out = data_dir.join("px.lock.json");
+    let out_arg = out.to_string_lossy().to_string();
+    let ok = run_agora(
+        &data_dir,
+        &[
+            "pack", "export", "px-lock", "--format", "lockfile", "--out", &out_arg,
+        ],
+    );
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(out.is_file());
+
+    let missing = run_agora(
+        &data_dir,
+        &[
+            "pack", "export", "nope", "--format", "lockfile", "--out", &out_arg,
+        ],
+    );
+    assert!(!missing.status.success());
+}
+
+#[test]
+fn pack_review_stages_a_copy_and_import_refuses_unknown_or_unfetchable() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pr-src", &["sodium.jar"]);
+    let pack = data_dir.join("pr-src.agora-pack.json");
+    let pack_arg = pack.to_string_lossy().to_string();
+    let exported = run_agora(
+        &data_dir,
+        &[
+            "pack", "export", "pr-src", "--format", "agora", "--out", &pack_arg, "--yes",
+        ],
+    );
+    assert!(exported.status.success());
+
+    let review = run_agora_json(&data_dir, &["pack", "review", &pack_arg]);
+    assert!(
+        review.status.success(),
+        "{}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+    let parsed = assert_json_stdout(&review);
+    let id = parsed["reviewId"].as_str().expect("review id").to_string();
+    assert_eq!(id.len(), 64);
+    assert!(parsed["entries"].as_array().is_some());
+
+    // A review id nobody reviewed is refused.
+    let unknown = run_agora(&data_dir, &["pack", "import", &"0".repeat(64)]);
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("Review"));
+
+    // The sourceless mod cannot be fetched: the import is refused.
+    let refused = run_agora(&data_dir, &["pack", "import", &id]);
+    assert!(!refused.status.success());
+    assert!(
+        !data_dir.join("instances").join("pr-src-2").exists(),
+        "a refused import creates nothing"
+    );
+}
+
+#[test]
+fn pack_review_rejects_unknown_file_types() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let file = data_dir.join("notes.txt");
+    std::fs::write(&file, "hi").unwrap();
+    let output = run_agora(&data_dir, &["pack", "review", &file.to_string_lossy()]);
+    assert!(!output.status.success());
+}
+
+#[test]
+fn backup_export_import_and_prune_round_trip() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "bk-src", &["sodium.jar"]);
+    create_loader_instance(&data_dir, "bk-dst", &["lithium.jar"]);
+    let out_dir = data_dir.join("backups");
+    let out_arg = out_dir.to_string_lossy().to_string();
+
+    let exported = run_agora_json(
+        &data_dir,
+        &["backup", "export", "bk-src", "--out", &out_arg],
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let parsed = assert_json_stdout(&exported);
+    let artifact = parsed["path"].as_str().expect("artifact path").to_string();
+    assert!(Path::new(&artifact).is_file());
+
+    let imported = run_agora_json(
+        &data_dir,
+        &["backup", "import", &artifact, "--instance", "bk-dst"],
+    );
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let snapshots =
+        assert_json_stdout(&run_agora_json(&data_dir, &["snapshots", "list", "bk-dst"]));
+    assert!(!snapshots.as_array().unwrap().is_empty());
+
+    // Prune keeps the newest and needs --yes without a terminal.
+    run_agora(
+        &data_dir,
+        &["snapshots", "create", "bk-src", "--label", "second"],
+    );
+    let refused = run_agora(&data_dir, &["backup", "prune", "bk-src", "--keep", "1"]);
+    assert!(!refused.status.success(), "prune must not delete unasked");
+    let pruned = run_agora_json(
+        &data_dir,
+        &["backup", "prune", "bk-src", "--keep", "1", "--yes"],
+    );
+    assert!(
+        pruned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pruned.stderr)
+    );
+    assert_eq!(assert_json_stdout(&pruned)["status"], "pruned");
+}
+
+#[test]
+fn backup_import_rejects_a_file_that_is_not_a_backup() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "bk-bad", &["sodium.jar"]);
+    let junk = data_dir.join("junk.zip");
+    std::fs::write(&junk, b"not a zip").unwrap();
+    let output = run_agora(
+        &data_dir,
+        &[
+            "backup",
+            "import",
+            &junk.to_string_lossy(),
+            "--instance",
+            "bk-bad",
+        ],
+    );
+    assert!(!output.status.success());
+}
+
+#[test]
+fn import_launchers_lists_and_plan_refuses_unknown_instance() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let empty_root = data_dir.join("no-launcher-here");
+    std::fs::create_dir_all(&empty_root).unwrap();
+    let root = empty_root.to_string_lossy().to_string();
+
+    let listed = run_agora_json(&data_dir, &["import", "launchers", "--root", &root]);
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert!(assert_json_stdout(&listed).get("prism").is_some());
+
+    let plan = run_agora(
+        &data_dir,
+        &["import", "plan", "zz-no-such-instance", "--root", &root],
+    );
+    assert!(!plan.status.success());
+    assert!(String::from_utf8_lossy(&plan.stderr).contains("No launcher instance"));
+}
