@@ -4032,53 +4032,26 @@ pub async fn run_version_migration(
 
 // ---------------------------------------------------------------------------
 // Guided mod bisect
+//
+// The bisect itself (start, trials, answers, step back, cancel, and the locks
+// around the JAR renames) lives in `agora_core::bisect_service`. These commands
+// only resolve the core context and run the call off the async runtime.
 // ---------------------------------------------------------------------------
 
-fn bisect_error(message: String) -> LauncherError {
-    LauncherError::Generic {
-        code: "ERR_BISECT".into(),
-        message,
-    }
-}
-
-/// A session plus the trial it currently wants, in one read.
-#[derive(serde::Serialize)]
-pub struct BisectView {
-    pub session: Option<agora_core::bisect::BisectSession>,
-    pub trial: Option<agora_core::bisect::BisectTrial>,
-}
-
-fn load_bisect_view(app: &tauri::AppHandle, instance_id: &str) -> LauncherResult<BisectView> {
-    let instance_dir =
-        paths::instance_dir(app, instance_id).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
-    let Some(session) = agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
-    else {
-        return Ok(BisectView {
-            session: None,
-            trial: None,
-        });
-    };
-    let manifest = load_manifest(app, instance_id)?;
-    let trial = agora_core::bisect::next_trial(&session, &manifest.mods);
-    Ok(BisectView {
-        session: Some(session),
-        trial: Some(trial),
-    })
-}
-
+/// Read the session and its next trial. Nothing is changed.
 #[tauri::command]
 pub async fn get_bisect_session(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_core::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
-    tokio::task::spawn_blocking(move || load_bisect_view(&app, &sanitized))
-        .await
-        .map_err(|_| LauncherError::LocalStateFailed)?
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::bisect_service::BisectService::new(ctx).view(&sanitized)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 /// Begin a bisect over the currently enabled mods.
@@ -4092,31 +4065,11 @@ pub async fn start_bisect(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     prime_suspects: Vec<String>,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_core::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        if agora_core::bisect::read_session(&instance_dir)
-            .map_err(bisect_error)?
-            .is_some()
-        {
-            return Err(bisect_error(
-                "A bisect is already in progress for this instance.".into(),
-            ));
-        }
-        let manifest = load_manifest(&app, &sanitized)?;
-        let session = agora_core::bisect::start_session(
-            &manifest.mods,
-            &prime_suspects,
-            &chrono::Utc::now().to_rfc3339(),
-        )
-        .map_err(bisect_error)?;
-        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
-        load_bisect_view(&app, &sanitized)
+        agora_core::bisect_service::BisectService::new(ctx).start(&sanitized, &prime_suspects)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4131,30 +4084,11 @@ pub async fn apply_bisect_trial(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_core::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
     let ctx = crate::core_context(&app)?;
-    let lock_manager = ctx.lock_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let _lock = lock_manager.acquire(
-            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-            "bisect-trial",
-        )?;
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        let view = load_bisect_view(&app, &sanitized)?;
-        let Some(trial) = view.trial.as_ref() else {
-            return Err(bisect_error("No bisect is in progress.".into()));
-        };
-        if trial.status != agora_core::bisect::BisectStatus::AwaitingTrial {
-            return Err(bisect_error("This bisect has already finished.".into()));
-        }
-        agora_core::bisect::apply_enabled_set(&instance_dir, &trial.enable)
-            .map_err(bisect_error)?;
-        load_bisect_view(&app, &sanitized)
+        agora_core::bisect_service::BisectService::new(ctx).apply_trial(&sanitized)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4167,29 +4101,11 @@ pub async fn record_bisect_outcome(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     reproduced: bool,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_core::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        let Some(mut session) =
-            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
-        else {
-            return Err(bisect_error("No bisect is in progress.".into()));
-        };
-        let manifest = load_manifest(&app, &sanitized)?;
-        let outcome = if reproduced {
-            agora_core::bisect::TrialOutcome::Reproduced
-        } else {
-            agora_core::bisect::TrialOutcome::Clean
-        };
-        agora_core::bisect::record_outcome(&mut session, &manifest.mods, outcome)
-            .map_err(bisect_error)?;
-        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
-        load_bisect_view(&app, &sanitized)
+        agora_core::bisect_service::BisectService::new(ctx).record_outcome(&sanitized, reproduced)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4201,22 +4117,11 @@ pub async fn step_back_bisect(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_core::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        let Some(mut session) =
-            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
-        else {
-            return Err(bisect_error("No bisect is in progress.".into()));
-        };
-        agora_core::bisect::step_back(&mut session).map_err(bisect_error)?;
-        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
-        load_bisect_view(&app, &sanitized)
+        agora_core::bisect_service::BisectService::new(ctx).step_back(&sanitized)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4226,7 +4131,7 @@ pub async fn step_back_bisect(
 ///
 /// Restoring the baseline before clearing the session is the whole safety
 /// story: a bisect must be fully revertible at any point, and the baseline is
-/// the only record of what was on when it started.
+/// the only record of what was on when it started. The core service does that.
 #[tauri::command]
 pub async fn cancel_bisect(
     app: tauri::AppHandle,
@@ -4235,25 +4140,8 @@ pub async fn cancel_bisect(
 ) -> LauncherResult<()> {
     let sanitized = paths::sanitize_id(&instance_id);
     let ctx = crate::core_context(&app)?;
-    let lock_manager = ctx.lock_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let _lock = lock_manager.acquire(
-            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-            "bisect-cancel",
-        )?;
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        if let Some(session) =
-            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
-        {
-            agora_core::bisect::apply_enabled_set(&instance_dir, &session.baseline_enabled)
-                .map_err(bisect_error)?;
-        }
-        agora_core::bisect::clear_session(&instance_dir).map_err(bisect_error)?;
-        Ok(())
+        agora_core::bisect_service::BisectService::new(ctx).cancel(&sanitized)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?

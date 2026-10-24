@@ -345,6 +345,22 @@ agora template apply <TEMPLATE_ID> <INSTANCE_ID>
 
 A template keeps chosen configuration files and JVM settings so you can copy them to another instance. Only the files named with `--include` are captured, by path relative to the source instance; `--include` needs `--from`. A template with no files and no JVM setting is refused. Applying a template copies its files over the same paths in the target instance, and takes an undo point first when it copies any. A JVM setting the template does not name is left alone. Deleting a template asks first; without a terminal, pass `--yes`.
 
+### Mod bisect
+
+```text
+agora bisect start <INSTANCE> [--suspect <FILENAME>]
+agora bisect status <INSTANCE>
+agora bisect apply <INSTANCE>
+agora bisect good <INSTANCE>
+agora bisect bad <INSTANCE>
+agora bisect back <INSTANCE>
+agora bisect cancel <INSTANCE>
+agora bisect run <INSTANCE> [--suspect <FILENAME>]
+```
+
+Bisect finds the mod that breaks a launch by turning half of the enabled mods off for each round. `apply` switches the round's mods off and leaves the others on. Mods that depend on a switched-off mod go off with it, so a missing library is not mistaken for the culprit. You launch the game yourself, then `good` (the problem did not happen) or `bad` (it did) narrows the suspects. `back` undoes the last answer and tries the other half. `cancel` ends the bisect and puts every mod back the way it was, at any point. `--suspect` names a mod the crash report implicated and tests it first; it only applies when starting. `run` walks through the same rounds with prompts and needs an interactive terminal. A bisect does not start the game itself; you launch it. The session is kept in the instance folder, so it survives closing the terminal. `start`, `status`, `good`, `bad` and `back` do not move any mod files; `apply` and `cancel` do. `start` and `apply` refuse a locked instance, and `start`, `apply` and `cancel` refuse a game that is running or starting, changing nothing. `cancel` still restores a locked instance, because putting the baseline back is the way out. If `run` is stopped with Ctrl+C, the mods stay as the current round left them until `agora bisect cancel` is run.
+
+
 ### Reproduction lockfiles
 
 ```text
