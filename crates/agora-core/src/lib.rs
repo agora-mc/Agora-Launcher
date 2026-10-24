@@ -29,6 +29,7 @@ pub mod data_migration;
 pub mod datapack_sync;
 pub mod db;
 pub mod dependency_ops;
+pub mod dependency_service;
 pub mod download;
 pub mod download_cache;
 pub mod error;

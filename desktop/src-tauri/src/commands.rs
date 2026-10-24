@@ -23,6 +23,7 @@ use crate::state::LauncherState;
 use crate::version_cache::{self, ModVersionPage, SharedVersionCache};
 use agora_core::browse_cache::{self, BrowsePage};
 use agora_core::installed_content::{InstalledContentMetadata, InstalledContentRow};
+pub use agora_core::instance_service::InstanceHealthScanResult;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1317,19 +1318,9 @@ pub async fn check_instance_health(
         .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
-/// Health status for one entry in a background all-instance scan. Individual
-/// failures are returned in-band so an unreadable instance never prevents the
-/// rest of the library from reporting its health state.
-#[derive(Debug, serde::Serialize)]
-pub struct InstanceHealthScanResult {
-    pub instance_id: String,
-    pub report: Option<agora_core::health::HealthReport>,
-    pub error: Option<String>,
-}
-
 /// Scan every local instance at background priority. The desktop shell calls
 /// this periodically to keep instance-card alerts current; pre-launch checks
-/// remain user-initiated and authoritative.
+/// remain user-initiated and authoritative. The scan itself lives in core.
 #[tauri::command]
 pub async fn check_all_instance_health(
     app: tauri::AppHandle,
@@ -1337,53 +1328,11 @@ pub async fn check_all_instance_health(
 ) -> LauncherResult<Vec<InstanceHealthScanResult>> {
     let ctx = crate::core_context(&app)?;
     let worker_ctx = ctx.clone();
-    let app_for_scan = app.clone();
-    let registry_db_path = paths::registry_db_path(&app).ok();
     ctx.task_scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::Background,
             move || {
-                let rows = agora_core::instance_service::InstanceService::new(worker_ctx.clone())
-                    .list()?;
-                let mut results = Vec::with_capacity(rows.len());
-                for row in rows {
-                    let instance_id = row.instance_id;
-                    let result =
-                        (|| -> LauncherResult<agora_core::health::HealthReport> {
-                            let sanitized = paths::sanitize_id(&instance_id);
-                            if sanitized.is_empty() || sanitized != instance_id {
-                                return Err(LauncherError::Generic {
-                                    code: "ERR_INVALID_INSTANCE".into(),
-                                    message: "Stored instance ID is invalid.".into(),
-                                });
-                            }
-                            let instance_dir = paths::instance_dir(&app_for_scan, &sanitized)
-                                .map_err(|error| LauncherError::Generic {
-                                    code: "ERR_INSTANCE_PATH".into(),
-                                    message: error.to_string(),
-                                })?;
-                            let manifest = load_manifest(&app_for_scan, &sanitized)?;
-                            Ok(agora_core::health::cached_health(
-                                &instance_dir,
-                                &manifest,
-                                registry_db_path.as_deref(),
-                                None,
-                            ))
-                        })();
-                    match result {
-                        Ok(report) => results.push(InstanceHealthScanResult {
-                            instance_id,
-                            report: Some(report),
-                            error: None,
-                        }),
-                        Err(error) => results.push(InstanceHealthScanResult {
-                            instance_id,
-                            report: None,
-                            error: Some(error.to_string()),
-                        }),
-                    }
-                }
-                Ok(results)
+                agora_core::instance_service::InstanceService::new(worker_ctx).health_scan_all()
             },
         )
         .await
@@ -2927,21 +2876,9 @@ pub async fn get_dependency_graph(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
 ) -> LauncherResult<Vec<dependency_ops::DependencyEdge>> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        // Only entries that can satisfy a dependency are nodes: a disabled or
-        // missing mod neither needs nor supplies anything right now.
-        let instance_dir = paths::instance_dir(&app, &instance_id)
-            .map_err(|_| LauncherError::InstanceCreateFailed)?;
-        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
-        let usable: Vec<_> = manifest
-            .mods
-            .iter()
-            .filter(|m| agora_core::dependency_ops::satisfies_dependency(m, &on_disk))
-            .cloned()
-            .collect();
-        Ok(dependency_ops::build_dependency_graph(&usable))
+        agora_core::dependency_service::DependencyService::new(ctx).graph(&instance_id)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2957,12 +2894,9 @@ pub async fn get_orphaned_dependencies(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
 ) -> LauncherResult<Vec<agora_core::dependency_ops::OrphanedDependency>> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        Ok(agora_core::dependency_ops::find_orphaned_dependencies(
-            &manifest.mods,
-        ))
+        agora_core::dependency_service::DependencyService::new(ctx).orphans(&instance_id)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2977,17 +2911,10 @@ pub async fn explain_mod_presence(
     instance_id: String,
     filename: String,
 ) -> LauncherResult<Option<agora_core::dependency_ops::PresenceExplanation>> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        let instance_dir = paths::instance_dir(&app, &instance_id)
-            .map_err(|_| LauncherError::InstanceCreateFailed)?;
-        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
-        Ok(agora_core::dependency_ops::explain_presence(
-            &manifest.mods,
-            &filename,
-            &on_disk,
-        ))
+        agora_core::dependency_service::DependencyService::new(ctx)
+            .presence(&instance_id, &filename)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -3002,19 +2929,10 @@ pub async fn get_disable_plan(
     instance_id: String,
     filename: String,
 ) -> LauncherResult<dependency_ops::DisablePlan> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        let target = manifest
-            .mods
-            .iter()
-            .find(|m| m.filename == filename)
-            .ok_or_else(|| LauncherError::Generic {
-                code: "ERR_MOD_NOT_FOUND".to_string(),
-                message: format!("Mod '{}' not found in instance manifest.", filename),
-            })?
-            .clone();
-        Ok(dependency_ops::build_disable_plan(&manifest.mods, &target))
+        agora_core::dependency_service::DependencyService::new(ctx)
+            .disable_plan(&instance_id, &filename)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -3109,83 +3027,23 @@ pub async fn enable_mod_with_auto_deps(
     instance_id: String,
     filename: String,
 ) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-
-        let target = manifest
-            .mods
-            .iter()
-            .find(|m| m.filename == filename)
-            .ok_or_else(|| LauncherError::Generic {
-                code: "ERR_MOD_NOT_FOUND".to_string(),
-                message: format!("Mod '{}' not found in instance manifest.", filename),
-            })?;
-
-        let mut auto_enabled: Vec<String> = Vec::new();
-
-        // Resolve the target mod's required deps from jar metadata.
-        let depends_on = match &target.mod_jar_id {
-            Some(_) => &target.depends_on,
-            None => &Vec::new(),
-        };
-
-        // For each required dep, find the corresponding installed mod and check
-        // if it's disabled (`.disabled` file exists). If so, enable it.
-        for dep_jar_id in depends_on {
-            let dep_lower = dep_jar_id.to_lowercase();
-
-            // Find the physical JAR whose primary or dynamically provided ID
-            // matches this dependency.
-            let dep_mod = manifest.mods.iter().find(|m| {
-                m.mod_jar_id
-                    .iter()
-                    .chain(m.provided_mod_ids.iter())
-                    .any(|jid| jid.to_lowercase() == dep_lower)
-            });
-
-            let dep_mod = match dep_mod {
-                Some(m) => m,
-                None => continue, // Missing entirely â€” skip silently (can't auto-install).
-            };
-
-            // Check if the dep's jar file is disabled.
-            let mods_dir = paths::instance_dir(&app, &instance_id)
-                .map_err(|_| LauncherError::InstanceCreateFailed)?
-                .join("mods");
-            let disabled_path = mods_dir.join(format!("{}.disabled", dep_mod.filename));
-
-            if !disabled_path.exists() {
-                continue; // Already enabled.
-            }
-
-            // Best-effort enable: continue past individual failures.
-            if let Err(e) = crash_investigator::enable_mod(&app, &instance_id, &dep_mod.filename) {
+        let outcome = agora_core::dependency_service::DependencyService::new(ctx)
+            .enable_with_auto_deps(&instance_id, &filename)
+            .inspect_err(|error| {
                 crate::auth::log_line(&format!(
-                    "enable_mod_with_auto_deps: failed to enable dep '{}': {}",
-                    dep_mod.filename, e
+                    "enable_mod_with_auto_deps: failed to enable target '{}': {}",
+                    filename, error
                 ));
-                continue;
-            }
-
-            auto_enabled.push(dep_mod.filename.clone());
-        }
-
-        // Now enable the target mod itself.
-        if let Err(e) = crash_investigator::enable_mod(&app, &instance_id, &filename) {
+            })?;
+        for failure in &outcome.failed_dependencies {
             crate::auth::log_line(&format!(
-                "enable_mod_with_auto_deps: failed to enable target '{}': {}",
-                filename, e
+                "enable_mod_with_auto_deps: failed to enable dep '{}': {}",
+                failure.filename, failure.message
             ));
-            // Still return the auto-enabled deps we managed; the target failure
-            // is surfaced via the Err path below.
-            return Err(LauncherError::Generic {
-                code: "ERR_ENABLE_FAILED".to_string(),
-                message: format!("Failed to enable '{}': {}", filename, e),
-            });
         }
-
-        Ok(auto_enabled)
+        Ok(outcome.enabled_dependencies)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -3750,35 +3608,10 @@ pub async fn set_instance_wrapper_command(
     instance_id: String,
     wrapper: String,
 ) -> LauncherResult<()> {
-    let sanitized = paths::sanitize_id(&instance_id);
-    let trimmed = wrapper.trim().to_string();
-    if !trimmed.is_empty() {
-        agora_core::launch_planner::parse_argument_string(&trimmed)?;
-    }
     let ctx = crate::core_context(&app)?;
-    let manifest_path = ctx.paths.instance_manifest(&sanitized)?;
-    let lock_manager = ctx.lock_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let _lock = lock_manager.acquire(
-            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-            "wrapper-command",
-        )?;
-        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
-        if !manifest.user_preferences.is_object() {
-            manifest.user_preferences = serde_json::json!({});
-        }
-        if let Some(preferences) = manifest.user_preferences.as_object_mut() {
-            if trimmed.is_empty() {
-                preferences.remove("agora_wrapper_command");
-            } else {
-                preferences.insert(
-                    "agora_wrapper_command".into(),
-                    serde_json::Value::String(trimmed),
-                );
-            }
-        }
-        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
-        Ok::<_, LauncherError>(())
+        agora_core::instance_service::InstanceService::new(ctx)
+            .set_wrapper_command(&instance_id, &wrapper)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4784,51 +4617,19 @@ pub async fn create_instance_template(
     source_instance_id: Option<String>,
     selected_paths: Vec<String>,
 ) -> LauncherResult<agora_core::template_service::InstanceTemplate> {
-    let root = templates_root(&app)?;
-    // The id is generated rather than derived from the name: two templates may
-    // legitimately share a display name, and a name is renameable while the id
-    // is what the default-template setting and instance rows point at. The name
-    // slug is appended only so the directory is recognizable on disk.
-    let slug: String = paths::sanitize_id(&name).chars().take(24).collect();
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let id = if slug.is_empty() {
-        format!("tpl-{stamp}")
-    } else {
-        format!("tpl-{stamp}-{slug}")
+    let ctx = crate::core_context(&app)?;
+    let request = agora_core::instance_service::CaptureTemplateRequest {
+        name,
+        description,
+        jvm: jvm.unwrap_or_default(),
+        source_instance_id,
+        selected_paths,
     };
-    let source_dir = match source_instance_id {
-        Some(instance_id) => {
-            let sanitized = paths::sanitize_id(&instance_id);
-            Some(
-                paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                    code: "ERR_PATH".into(),
-                    message: e.to_string(),
-                })?,
-            )
-        }
-        None => None,
-    };
-    let now = chrono::Utc::now().to_rfc3339();
     tokio::task::spawn_blocking(move || {
-        agora_core::template_service::create_template(
-            &root,
-            agora_core::template_service::CreateTemplateRequest {
-                id: &id,
-                name: &name,
-                description,
-                jvm: jvm.unwrap_or_default(),
-                source_instance_dir: source_dir.as_deref(),
-                selected_paths: &selected_paths,
-                now: &now,
-            },
-        )
+        agora_core::instance_service::InstanceService::new(ctx).capture_template(request)
     })
     .await
     .map_err(|e| template_error(format!("Template capture task failed: {e}")))?
-    .map_err(template_error)
 }
 
 #[tauri::command]
@@ -4863,39 +4664,12 @@ pub async fn delete_instance_template(
     _state: tauri::State<'_, LauncherState>,
     template_id: String,
 ) -> LauncherResult<()> {
-    let root = templates_root(&app)?;
-    // Clearing the default alongside the delete keeps the setting from pointing
-    // at a template that no longer exists.
     let ctx = crate::core_context(&app)?;
-    let conn =
-        agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
-            LauncherError::Generic {
-                code: "ERR_LOCAL_STATE_FAILED".into(),
-                message: e.to_string(),
-            }
-        })?;
-    let is_default = agora_core::db::get_setting(
-        &conn,
-        agora_core::instance_service::DEFAULT_TEMPLATE_SETTING_KEY,
-    )
-    .ok()
-    .flatten()
-    .and_then(|value| value.as_str().map(str::to_string))
-    .is_some_and(|current| current == template_id);
-    if is_default {
-        let _ = agora_core::db::set_setting(
-            &conn,
-            agora_core::instance_service::DEFAULT_TEMPLATE_SETTING_KEY,
-            &serde_json::Value::String(String::new()),
-        );
-    }
-    drop(conn);
     tokio::task::spawn_blocking(move || {
-        agora_core::template_service::delete_template(&root, &template_id)
+        agora_core::instance_service::InstanceService::new(ctx).delete_template(&template_id)
     })
     .await
     .map_err(|e| template_error(format!("Template delete task failed: {e}")))?
-    .map_err(template_error)
 }
 
 /// Apply a template's captured files onto an existing instance.

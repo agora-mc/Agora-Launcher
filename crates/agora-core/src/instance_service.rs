@@ -82,6 +82,36 @@ pub struct TemplateApplyOutcome {
     pub undo_snapshot_id: Option<String>,
 }
 
+/// What to capture into a new template. The id is minted by core.
+#[derive(Debug, Clone)]
+pub struct CaptureTemplateRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub jvm: crate::template_service::TemplateJvm,
+    /// Instance to copy the selected files from. `None` for a JVM-only profile.
+    pub source_instance_id: Option<String>,
+    /// Relative paths within the source instance, as offered by
+    /// `template_service::list_capturable_files`.
+    pub selected_paths: Vec<String>,
+}
+
+/// Health status for one entry in a background all-instance scan. Individual
+/// failures are returned in-band so an unreadable instance never prevents the
+/// rest of the library from reporting its health state.
+#[derive(Debug, serde::Serialize)]
+pub struct InstanceHealthScanResult {
+    pub instance_id: String,
+    pub report: Option<crate::health::HealthReport>,
+    pub error: Option<String>,
+}
+
+fn template_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_TEMPLATE".into(),
+        message,
+    }
+}
+
 /// Core-owned preparation result for an official-launcher handoff.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DelegatedLaunchPreparation {
@@ -481,6 +511,157 @@ impl InstanceService {
         })?;
         self.record_change(&instance_id, "update_jvm");
         Ok(())
+    }
+
+    /// Set (or clear, with a blank string) the command the game is launched
+    /// under.
+    ///
+    /// Stored in the manifest's `user_preferences` so it travels with an
+    /// exported instance and needs no migration. Validated by parsing it the
+    /// same way the launcher will, so a malformed quote is rejected while the
+    /// user is looking at the field rather than at a failed launch.
+    pub fn set_wrapper_command(&self, instance_id: &str, wrapper: &str) -> LauncherResult<()> {
+        let instance_id = self.validate_id(instance_id)?;
+        let trimmed = wrapper.trim().to_string();
+        if !trimmed.is_empty() {
+            crate::launch_planner::parse_argument_string(&trimmed)?;
+        }
+        let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+        let _lock = self.ctx.lock_manager.acquire(
+            crate::lock_manager::LockResource::Instance(instance_id.clone()),
+            "wrapper-command",
+        )?;
+        let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
+        if !manifest.user_preferences.is_object() {
+            manifest.user_preferences = serde_json::json!({});
+        }
+        if let Some(preferences) = manifest.user_preferences.as_object_mut() {
+            if trimmed.is_empty() {
+                preferences.remove("agora_wrapper_command");
+            } else {
+                preferences.insert(
+                    "agora_wrapper_command".into(),
+                    serde_json::Value::String(trimmed),
+                );
+            }
+        }
+        crate::helpers::atomic_write_manifest(&manifest_path, &manifest)
+    }
+
+    /// Scan every local instance with the cached health check.
+    ///
+    /// An unreadable instance is reported in-band, so one broken instance
+    /// never hides the health of the rest of the library. Read-only apart from
+    /// the health cache.
+    pub fn health_scan_all(&self) -> LauncherResult<Vec<InstanceHealthScanResult>> {
+        let rows = self.list()?;
+        let mut results = Vec::with_capacity(rows.len());
+        for row in rows {
+            let instance_id = row.instance_id;
+            // A stored ID that would not survive sanitizing is damaged data;
+            // it is reported, not repaired.
+            let result = if !instance_id.is_empty()
+                && crate::paths::sanitize_id(&instance_id) == instance_id
+            {
+                self.health_report(&instance_id)
+            } else {
+                Err(LauncherError::Generic {
+                    code: "ERR_INVALID_INSTANCE".into(),
+                    message: "Stored instance ID is invalid.".into(),
+                })
+            };
+            match result {
+                Ok(report) => results.push(InstanceHealthScanResult {
+                    instance_id,
+                    report: Some(report),
+                    error: None,
+                }),
+                Err(error) => results.push(InstanceHealthScanResult {
+                    instance_id,
+                    report: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        }
+        Ok(results)
+    }
+
+    /// The cached pre-launch health check for one instance.
+    ///
+    /// Same check the desktop's all-instance scan runs. The registry database
+    /// is consulted for curated known conflicts when it is present.
+    pub fn health_report(&self, instance_id: &str) -> LauncherResult<crate::health::HealthReport> {
+        let instance_id = self.validate_id(instance_id)?;
+        let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+        let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+        let manifest = crate::helpers::read_manifest(&manifest_path)?;
+        let registry_db = self.ctx.paths.registry_db();
+        Ok(crate::health::cached_health(
+            &instance_dir,
+            &manifest,
+            Some(&registry_db),
+            None,
+        ))
+    }
+
+    /// Capture a new template from an instance's selected files and/or JVM
+    /// settings. The id is minted here, so callers never choose one.
+    pub fn capture_template(
+        &self,
+        request: CaptureTemplateRequest,
+    ) -> LauncherResult<crate::template_service::InstanceTemplate> {
+        let root = self.ctx.paths.templates_root();
+        let id = crate::template_service::new_template_id(&request.name).map_err(template_error)?;
+        let source_dir = match &request.source_instance_id {
+            Some(instance_id) => {
+                let instance_id = self.validate_id(instance_id)?;
+                Some(self.ctx.paths.instance_dir(&instance_id)?)
+            }
+            None => None,
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        crate::template_service::create_template(
+            &root,
+            crate::template_service::CreateTemplateRequest {
+                id: &id,
+                name: &request.name,
+                description: request.description,
+                jvm: request.jvm,
+                source_instance_dir: source_dir.as_deref(),
+                selected_paths: &request.selected_paths,
+                now: &now,
+            },
+        )
+        .map_err(template_error)
+    }
+
+    /// Delete a template and everything it captured.
+    ///
+    /// When the template is the default for new instances, the default is
+    /// cleared first, so the setting never points at a template that no
+    /// longer exists. If the setting cannot be read or cleared, nothing is
+    /// deleted.
+    pub fn delete_template(&self, template_id: &str) -> LauncherResult<()> {
+        let root = self.ctx.paths.templates_root();
+        let conn = self.connection()?;
+        let local_state_error = |error: anyhow::Error| LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: error.to_string(),
+        };
+        let is_default = crate::db::get_setting(&conn, DEFAULT_TEMPLATE_SETTING_KEY)
+            .map_err(local_state_error)?
+            .and_then(|value| value.as_str().map(str::to_string))
+            .is_some_and(|current| current == template_id);
+        if is_default {
+            crate::db::set_setting(
+                &conn,
+                DEFAULT_TEMPLATE_SETTING_KEY,
+                &serde_json::Value::String(String::new()),
+            )
+            .map_err(local_state_error)?;
+        }
+        drop(conn);
+        crate::template_service::delete_template(&root, template_id).map_err(template_error)
     }
 
     pub fn memory_recommendation(

@@ -16,6 +16,8 @@ use agora_core::registry::RegistryService;
 use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
 
+mod cli_tools;
+
 /// The guide `agora skill` prints for an AI agent driving this CLI.
 const AGENT_SKILL: &str = include_str!("../skills/agora/SKILL.md");
 
@@ -280,6 +282,11 @@ enum Commands {
         #[command(subcommand)]
         action: LockfileCmd,
     },
+    /// Save, list, apply, or delete instance templates (captured configs and JVM settings).
+    Template {
+        #[command(subcommand)]
+        action: cli_tools::TemplateCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -336,6 +343,9 @@ enum InstanceCmd {
     Lock { id: String },
     /// Unlock a locked instance.
     Unlock { id: String },
+    /// Health, revert, loader version, Java, and wrapper maintenance.
+    #[command(flatten)]
+    Tools(cli_tools::InstanceToolsCmd),
     /// Delete an instance. It stays in Recently deleted for 30 days.
     Delete { id: String },
     /// List instances in Recently deleted (ID, name, deleted when, size).
@@ -650,6 +660,11 @@ enum ModsCmd {
     Enable {
         instance: String,
         file: String,
+        #[arg(
+            long,
+            help = "Also re-enable the required dependencies that are switched off"
+        )]
+        with_deps: bool,
     },
     /// Disable a mod by renaming <file> to <file>.disabled.
     Disable {
@@ -676,6 +691,9 @@ enum ModsCmd {
     SyncDatapacks {
         instance: String,
     },
+    /// Dependency graph, orphans, why a mod is here, and disable impact (read-only).
+    #[command(flatten)]
+    Tools(cli_tools::ModsToolsCmd),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -2497,7 +2515,18 @@ async fn run_mods_command(
                 }
             }
         }
-        ModsCmd::Enable { instance, file } => {
+        ModsCmd::Enable {
+            instance,
+            file,
+            with_deps: true,
+        } => {
+            cli_tools::enable_with_deps(ctx, &instance, &file, output_fmt)?;
+        }
+        ModsCmd::Enable {
+            instance,
+            file,
+            with_deps: false,
+        } => {
             CrashService::new(ctx.clone()).enable_mod(&instance, &file)?;
             if json {
                 println!(
@@ -2533,6 +2562,7 @@ async fn run_mods_command(
             let report = agora_core::datapack_sync::sync_instance(ctx, &instance)?;
             print_datapack_sync(&instance, &report, json)?;
         }
+        ModsCmd::Tools(action) => cli_tools::run_mods_tools(action, ctx, output_fmt)?,
         ModsCmd::UpdateAll {
             instance,
             include_optional,
@@ -2810,6 +2840,9 @@ async fn run_instance_command(
             } else {
                 println!("Unlocked instance '{}'", id);
             }
+        }
+        InstanceCmd::Tools(action) => {
+            Box::pin(cli_tools::run_instance_tools(action, ctx, output_fmt)).await?
         }
         InstanceCmd::Delete { id } => {
             InstanceService::new(ctx.clone()).delete(&id)?;
@@ -4605,6 +4638,7 @@ async fn run_command(
                 }
             }
         },
+        Commands::Template { action } => cli_tools::run_template_command(action, ctx, output_fmt)?,
     }
 
     Ok(())

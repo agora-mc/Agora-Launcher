@@ -198,6 +198,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "lockfile",
     "plugin",
     "provider",
+    "template",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
@@ -212,6 +213,19 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["instance", "deleted"],
     &["instance", "restore"],
     &["instance", "purge"],
+    &["instance", "health"],
+    &["instance", "revert"],
+    &["instance", "loader-version"],
+    &["instance", "java"],
+    &["instance", "wrapper"],
+    &["mod", "graph"],
+    &["mod", "orphans"],
+    &["mod", "why"],
+    &["mod", "disable-plan"],
+    &["template", "list"],
+    &["template", "create"],
+    &["template", "delete"],
+    &["template", "apply"],
     &["mod", "list"],
     &["mod", "search"],
     &["mod", "install"],
@@ -373,6 +387,7 @@ fn critical_command_flags_remain_in_help() {
             &["mod", "remove"][..],
             &["--remove-anyway", "--abort-conflicts"][..],
         ),
+        (&["mod", "enable"][..], &["--with-deps"][..]),
         (&["mcp", "serve"][..], &["--stdio"][..]),
     ] {
         let mut args = command.to_vec();
