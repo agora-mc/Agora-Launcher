@@ -19,9 +19,9 @@ use agora_core::registry::RegistryService;
 use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
 
-mod cli_updates;
-mod cli_tools;
 mod cli_govniche;
+mod cli_tools;
+mod cli_updates;
 
 /// The guide `agora skill` prints for an AI agent driving this CLI.
 const AGENT_SKILL: &str = include_str!("../skills/agora/SKILL.md");
