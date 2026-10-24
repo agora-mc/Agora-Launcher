@@ -33,9 +33,9 @@ const plan: PackImportPlan = {
   pack_name: 'Friend Pack',
   instance: { id: 'friend-pack', name: 'Friend Pack', minecraft_version: '1.21', loader: 'fabric', loader_version: '0.16.0' },
   entries: [
-    { name: 'sodium.jar', display_name: 'Sodium', source: 'curated', checkable: true, reason: null, action: null },
-    { name: 'xaero.jar', display_name: null, source: 'modrinth', checkable: true, reason: 'Needs Modrinth, which is off.', action: 'enable_modrinth' },
-    { name: 'ghost.jar', display_name: null, source: 'cannot_get', checkable: false, reason: "'ghost' is not in the catalog this install has.", action: null },
+    { name: 'sodium.jar', display_name: 'Sodium', source: 'curated', checkable: true, reason: null, action: null, content_type: 'mod' },
+    { name: 'xaero.jar', display_name: null, source: 'modrinth', checkable: true, reason: 'Needs Modrinth, which is off.', action: 'enable_modrinth', content_type: 'mod' },
+    { name: 'ghost.jar', display_name: null, source: 'cannot_get', checkable: false, reason: "'ghost' is not in the catalog this install has.", action: null, content_type: 'mod' },
   ],
   file_sha256: 'b'.repeat(64),
   file_size: 1234,

@@ -478,9 +478,12 @@ export function HealthDialog({
         <DialogContent className="max-w-lg max-h-[85vh] flex flex-col gap-3">
         <DialogTitle>Health Check</DialogTitle>
         <DialogDescription>
-          {reviewOnly
-            ? `${instanceName} has health findings that need review or repair.`
-            : `${instanceName} has warnings or blockers that should be reviewed before launch.`}
+          {/* The sentence must match the result shown below it. */}
+          {effectiveScore === 'green'
+            ? `${instanceName} has no health findings.`
+            : reviewOnly
+              ? `${instanceName} has health findings that need review or repair.`
+              : `${instanceName} has warnings or blockers that should be reviewed before launch.`}
         </DialogDescription>
 
         {/* Score badge */}

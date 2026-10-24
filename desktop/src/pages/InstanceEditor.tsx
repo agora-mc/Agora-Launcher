@@ -2193,7 +2193,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
                 title="Open Crash Doctor to look through the latest logs for what went wrong"
               >
-                Find problems
+                Diagnose a crash
               </button>
               </div>
               {processRunning ? (

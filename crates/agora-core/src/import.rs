@@ -1199,6 +1199,7 @@ pub fn plan_mrpack(
             reason,
             action: None,
             arrives_disabled: key.to_ascii_lowercase().ends_with(".disabled"),
+            content_type: pack_content_type(&key).into(),
         });
     }
 
@@ -1269,6 +1270,7 @@ pub fn plan_mrpack(
         if content_folder {
             entries.push(PlannedEntry {
                 display_name: Some(file_name_of(&key)),
+                content_type: pack_content_type(&key).into(),
                 name: key,
                 source: PlannedSource::Bundled,
                 checkable: false,
@@ -1351,6 +1353,25 @@ pub fn plan_mrpack(
         soft_problems,
         notes,
     })
+}
+
+/// The kind of content a file in an `.mrpack` is, from the folder it sits in.
+/// Anything outside the content folders (a config, say) is `other`.
+fn pack_content_type(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("mods/") {
+        "mod"
+    } else if lower.starts_with("shaderpacks/") {
+        "shader"
+    } else if lower.starts_with("resourcepacks/") {
+        "resourcepack"
+    } else if lower.starts_with("datapacks/") {
+        "datapack"
+    } else if lower.starts_with("saves/") {
+        "world"
+    } else {
+        "other"
+    }
 }
 
 /// Lowercase hex SHA-1 of everything `reader` yields, or `None` if it fails.
@@ -2961,6 +2982,51 @@ mod tests {
             "{:?}",
             plan.problems
         );
+    }
+
+    /// The review counts by kind, so each planned file must carry the kind of
+    /// the folder it sits in: a shader zip is not a mod, and a config is neither.
+    #[test]
+    fn plan_tags_each_file_with_the_kind_of_content_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("kinds.mrpack");
+        let file = |rel: &str| {
+            format!(
+                r#"{{"path":"{rel}","hashes":{{"sha1":"da39a3ee5e6b4b0d3255bfef95601890afd80709"}},"downloads":["https://cdn.modrinth.com/data/P/versions/v/f"],"fileSize":1}}"#
+            )
+        };
+        let index = format!(
+            r#"{{"formatVersion":1,"game":"minecraft","name":"Kinds",
+                "files":[{},{},{},{},{}],
+                "dependencies":{{"minecraft":"1.20.4","fabric-loader":"0.15.0"}}}}"#,
+            file("mods/sodium.jar"),
+            file("shaderpacks/BSL.zip"),
+            file("resourcepacks/Faithful.zip"),
+            file("datapacks/vanilla.zip"),
+            file("config/sodium.json"),
+        );
+        {
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            let opts = zip::write::SimpleFileOptions::default();
+            writer.start_file("modrinth.index.json", opts).unwrap();
+            writer.write_all(index.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let plan = plan_mrpack(&path, crate::override_sanitizer::OverridePolicy::Standard).unwrap();
+        let kind_of = |name: &str| {
+            plan.entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("{name} not planned: {:?}", plan.entries))
+                .content_type
+                .as_str()
+        };
+        assert_eq!(kind_of("mods/sodium.jar"), "mod");
+        assert_eq!(kind_of("shaderpacks/BSL.zip"), "shader");
+        assert_eq!(kind_of("resourcepacks/Faithful.zip"), "resourcepack");
+        assert_eq!(kind_of("datapacks/vanilla.zip"), "datapack");
+        assert_eq!(kind_of("config/sodium.json"), "other");
     }
 
     #[test]

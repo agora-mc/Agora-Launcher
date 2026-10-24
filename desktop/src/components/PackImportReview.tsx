@@ -27,6 +27,27 @@ function sourceSummary(entries: PlannedPackEntry[]): string {
   return parts.join(', ');
 }
 
+const KIND_WORDS: Record<string, [string, string]> = {
+  mod: ['mod', 'mods'],
+  shader: ['shader pack', 'shader packs'],
+  resourcepack: ['resource pack', 'resource packs'],
+  datapack: ['data pack', 'data packs'],
+  world: ['world', 'worlds'],
+  other: ['other file', 'other files'],
+};
+
+/** "7 mods, 2 shader packs": how many of each kind of file the pack holds. A shader zip is not a mod. */
+function kindSummary(entries: PlannedPackEntry[]): string {
+  const kindOf = (entry: PlannedPackEntry) => (KIND_WORDS[entry.content_type] ? entry.content_type : 'other');
+  const parts = Object.keys(KIND_WORDS).flatMap((kind) => {
+    const n = entries.filter((entry) => kindOf(entry) === kind).length;
+    if (n === 0) return [];
+    const [one, many] = KIND_WORDS[kind];
+    return [`${n} ${n === 1 ? one : many}`];
+  });
+  return parts.length > 0 ? parts.join(', ') : '0 mods';
+}
+
 /** Counts for the summary line, from the plan itself. */
 function tally(entries: PlannedPackEntry[]) {
   const total = entries.length;
@@ -77,7 +98,8 @@ export function PackImportReview({
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
       <DialogContent className="max-w-lg" data-testid="pack-import-review">
-        <DialogTitle>{plan ? `Import ${plan.pack_name}?` : 'Review pack'}</DialogTitle>
+        {/* The heading follows the name in the field, which the user may have edited. */}
+        <DialogTitle>{plan ? `Import ${name.trim() || plan.pack_name}?` : 'Review pack'}</DialogTitle>
         <DialogDescription>
           {plan
             ? 'Nothing is installed until you choose Import. Mods are fetched only when you do.'
@@ -123,7 +145,7 @@ export function PackImportReview({
               <dd>{plan.instance.loader} {plan.instance.loader_version}</dd>
               <dt className="text-muted-foreground">Mods</dt>
               <dd>
-                {counts.total} in the pack
+                {kindSummary(plan.entries)} in the pack
                 {counts.waiting > 0 && `, ${counts.waiting} need an action first`}
                 {counts.blocked > 0 && `, ${counts.blocked} will not install`}
                 {`, ${counts.checkable} checked against the pack's hash`}

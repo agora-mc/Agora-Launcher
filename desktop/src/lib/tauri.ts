@@ -1601,6 +1601,8 @@ export interface PlannedPackEntry {
   action: PackNeedsAction | null;
   /** The pack marks this mod disabled, so it will be installed switched off. */
   arrives_disabled?: boolean;
+  /** What kind of file this is: mod, shader, resourcepack, datapack, world, or other. */
+  content_type: string;
 }
 
 export interface PackImportPlan {
