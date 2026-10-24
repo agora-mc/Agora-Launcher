@@ -2359,6 +2359,124 @@ fn loadout_apply_refuses_a_locked_instance_and_changes_nothing() {
     assert!(snapshots.is_empty(), "a refused apply takes no undo point");
 }
 
+/// An instance whose profile was saved with sodium and lithium, then gained
+/// `newer.jar` (on) after the save, so the profile does not list it.
+fn loadout_instance_with_an_unlisted_mod(data_dir: &std::path::Path, id: &str) {
+    create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar"]);
+    run_agora(data_dir, &["loadout", "create", id, "both"]);
+    create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar", "newer.jar"]);
+}
+
+#[test]
+fn loadout_apply_refuses_unlisted_mods_without_a_choice_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-unlisted");
+    let mods = data_dir
+        .join("instances")
+        .join("loadout-unlisted")
+        .join("mods");
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-unlisted", "both"]);
+    assert!(
+        !output.status.success(),
+        "apply must not choose for the user when mods are unlisted"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("newer.jar"),
+        "stderr should name the mod:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--others"),
+        "stderr should name the flag:\n{stderr}"
+    );
+    assert!(
+        mods.join("newer.jar").exists(),
+        "a refused apply changes nothing"
+    );
+
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-unlisted"]);
+    let snapshots: Vec<serde_json::Value> =
+        serde_json::from_value(assert_json_stdout(&list)).unwrap();
+    assert!(snapshots.is_empty(), "a refused apply takes no undo point");
+}
+
+#[test]
+fn loadout_apply_others_off_switches_the_unlisted_mod_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-off");
+    let mods = data_dir.join("instances").join("loadout-off").join("mods");
+
+    let output = run_agora(
+        &data_dir,
+        &["loadout", "apply", "loadout-off", "both", "--others", "off"],
+    );
+    assert!(
+        output.status.success(),
+        "apply --others off should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        mods.join("newer.jar.disabled").exists(),
+        "off switches it off"
+    );
+    assert!(mods.join("sodium.jar").exists());
+    assert!(mods.join("lithium.jar").exists());
+}
+
+#[test]
+fn loadout_apply_others_keep_leaves_the_unlisted_mod_on() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-keep");
+    let mods = data_dir.join("instances").join("loadout-keep").join("mods");
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "loadout",
+            "apply",
+            "loadout-keep",
+            "both",
+            "--others",
+            "keep",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "apply --others keep should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(mods.join("newer.jar").exists(), "keep leaves it on");
+    assert!(!mods.join("newer.jar.disabled").exists());
+}
+
+#[test]
+fn loadout_apply_rejects_an_unknown_others_value() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-bad-choice");
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "loadout",
+            "apply",
+            "loadout-bad-choice",
+            "both",
+            "--others",
+            "maybe",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "a value that is not keep or off is refused"
+    );
+    let mods = data_dir
+        .join("instances")
+        .join("loadout-bad-choice")
+        .join("mods");
+    assert!(mods.join("newer.jar").exists());
+}
+
 #[test]
 fn loadout_delete_succeeds() {
     let (_tmp, data_dir) = temp_data_dir();

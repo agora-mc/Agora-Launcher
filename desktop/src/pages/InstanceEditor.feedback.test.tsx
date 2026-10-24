@@ -67,6 +67,8 @@ beforeEach(() => {
         return edges;
       case 'list_loadout_profiles':
         return [{ name: 'Fast', enabled_mods: [], created_at: '2026-01-01T00:00:00Z' }];
+      case 'list_loadout_unlisted_mods':
+        return [];
       case 'list_instance_templates':
       case 'list_snapshots':
       case 'list_capturable_template_files':

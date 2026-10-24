@@ -8,7 +8,7 @@
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
 use crate::install_service::InstallService;
-use crate::loadout::{self, LoadoutApplyError};
+use crate::loadout::{self, LoadoutApplyError, UnlistedMods};
 use crate::lock_manager::LockResource;
 
 pub struct LoadoutService {
@@ -22,11 +22,20 @@ impl LoadoutService {
 
     /// Apply a saved profile to an instance.
     ///
+    /// `unlisted` says what happens to enabled mods the profile does not list.
+    /// It has no default: the caller has to decide, and the desktop and the CLI
+    /// both ask the user first when there are any (see [`Self::unlisted_mods`]).
+    ///
     /// Refuses a locked instance, the same check an install makes, and an
     /// instance whose game is running or starting. The undo point
     /// (`before-loadout`) is taken under the instance lock, and applying rolls
     /// back to it if it fails.
-    pub fn apply(&self, instance_id: &str, profile_name: &str) -> LauncherResult<()> {
+    pub fn apply(
+        &self,
+        instance_id: &str,
+        profile_name: &str,
+        unlisted: UnlistedMods,
+    ) -> LauncherResult<()> {
         let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
         let _guard = self.ctx.lock_manager.acquire(
             LockResource::Instance(instance_id.to_string()),
@@ -34,7 +43,29 @@ impl LoadoutService {
         )?;
         InstallService::new(self.ctx.clone()).check_not_locked(instance_id)?;
         crate::instance_runtime::check_idle(&self.ctx.paths, instance_id)?;
-        loadout::apply_profile_with_undo(&instance_dir, profile_name).map_err(apply_error)
+        loadout::apply_profile_with_undo(&instance_dir, profile_name, unlisted).map_err(apply_error)
+    }
+
+    /// The enabled mods that `profile_name` does not list, sorted. Applying the
+    /// profile with [`UnlistedMods::Off`] would switch these off. Reads under
+    /// the instance lock, so an install in progress cannot change the answer
+    /// midway.
+    pub fn unlisted_mods(
+        &self,
+        instance_id: &str,
+        profile_name: &str,
+    ) -> LauncherResult<Vec<String>> {
+        let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
+        let _guard = self.ctx.lock_manager.acquire(
+            LockResource::Instance(instance_id.to_string()),
+            "list_loadout_unlisted_mods",
+        )?;
+        loadout::unlisted_enabled_mods(&instance_dir, profile_name).map_err(|message| {
+            LauncherError::Generic {
+                code: "ERR_LOADOUT".into(),
+                message,
+            }
+        })
     }
 }
 
@@ -134,7 +165,7 @@ mod tests {
         disable_lithium(&dir, true);
 
         let err = LoadoutService::new(ctx)
-            .apply("demo", "both")
+            .apply("demo", "both", UnlistedMods::Off)
             .expect_err("a locked instance must not be changed");
 
         assert!(matches!(err, LauncherError::InstanceLocked), "got {err:?}");
@@ -152,7 +183,7 @@ mod tests {
         crate::instance_runtime::publish_starting(&ctx.paths, "demo").unwrap();
 
         let err = LoadoutService::new(ctx)
-            .apply("demo", "both")
+            .apply("demo", "both", UnlistedMods::Off)
             .expect_err("a starting game must block apply");
 
         match err {
@@ -173,7 +204,7 @@ mod tests {
         disable_lithium(&dir, false);
 
         let service = LoadoutService::new(ctx);
-        service.apply("demo", "both").unwrap();
+        service.apply("demo", "both", UnlistedMods::Off).unwrap();
         assert!(dir.join("mods").join("lithium.jar").exists());
 
         let undo: Vec<_> = crate::snapshot::list_snapshots(&dir)
@@ -186,7 +217,44 @@ mod tests {
 
         // The lock is released, so a second apply goes through the same path.
         disable_lithium(&dir, false);
-        service.apply("demo", "both").unwrap();
+        service.apply("demo", "both", UnlistedMods::Off).unwrap();
         assert!(dir.join("mods").join("lithium.jar").exists());
+    }
+
+    #[test]
+    fn the_caller_choice_decides_an_unlisted_mod_and_unlisted_mods_names_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, dir) = setup(&tmp, &[("sodium.jar", true), ("lithium.jar", true)], false);
+        loadout::create_profile(&dir, "both").unwrap();
+        // Installed after the profile was saved, so the profile does not list it.
+        fs::write(dir.join("mods").join("newer.jar"), b"newer.jar").unwrap();
+        write_manifest(
+            &dir,
+            &[
+                ("sodium.jar", true),
+                ("lithium.jar", true),
+                ("newer.jar", true),
+            ],
+            false,
+        );
+
+        let service = LoadoutService::new(ctx);
+        assert_eq!(
+            service.unlisted_mods("demo", "both").unwrap(),
+            vec!["newer.jar".to_string()]
+        );
+
+        service.apply("demo", "both", UnlistedMods::Keep).unwrap();
+        assert!(
+            dir.join("mods").join("newer.jar").exists(),
+            "keep leaves the unlisted mod on"
+        );
+
+        service.apply("demo", "both", UnlistedMods::Off).unwrap();
+        assert!(
+            dir.join("mods").join("newer.jar.disabled").exists(),
+            "off switches the unlisted mod off"
+        );
+        assert!(service.unlisted_mods("demo", "both").unwrap().is_empty());
     }
 }

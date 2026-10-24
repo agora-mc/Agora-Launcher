@@ -411,6 +411,19 @@ pub struct FilePromote {
     pub content_type: Option<String>,
 }
 
+/// A disabled file the instance already has, with an intact copy, turned back
+/// on in place. Used instead of downloading the same file again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEnable {
+    /// The entry's plain name, without `.disabled`.
+    pub filename: String,
+    pub content_type: String,
+    /// The mods that need this one, when it is turned on to satisfy them.
+    #[serde(default)]
+    pub needed_by: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // 11. Warnings & errors
 // ---------------------------------------------------------------------------
@@ -711,6 +724,8 @@ pub struct ResolvedInstallPlan {
     pub files_to_disable: Vec<FileDisable>,
     #[serde(default)]
     pub files_to_promote: Vec<FilePromote>,
+    #[serde(default)]
+    pub files_to_enable: Vec<FileEnable>,
     pub snapshot: SnapshotPlan,
     pub disk_estimate: DiskSpaceEstimate,
     pub warnings: Vec<PlanWarning>,
@@ -1071,6 +1086,7 @@ impl InstallPipeline {
         let mut files_to_remove = Vec::new();
         let mut files_to_disable = Vec::new();
         let mut files_to_promote = Vec::new();
+        let mut files_to_enable = Vec::new();
         match &operation {
             ResolvedOperation::Install { artifact } => plan_artifact_change(
                 artifact,
@@ -1086,6 +1102,7 @@ impl InstallPipeline {
                 &mut warnings,
                 false,
                 &mut files_to_promote,
+                &mut files_to_enable,
             ),
             ResolvedOperation::Update { new_artifact, .. } => plan_artifact_change(
                 new_artifact,
@@ -1101,6 +1118,7 @@ impl InstallPipeline {
                 &mut warnings,
                 false,
                 &mut files_to_promote,
+                &mut files_to_enable,
             ),
             ResolvedOperation::Remove {
                 target_filename,
@@ -1147,6 +1165,7 @@ impl InstallPipeline {
                             &mut warnings,
                             false,
                             &mut files_to_promote,
+                            &mut files_to_enable,
                         ),
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_BATCH_OPERATION".into(),
@@ -1214,6 +1233,7 @@ impl InstallPipeline {
                             &mut warnings,
                             false,
                             &mut files_to_promote,
+                            &mut files_to_enable,
                         ),
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_BATCH_OPERATION".into(),
@@ -1247,6 +1267,7 @@ impl InstallPipeline {
                             &mut warnings,
                             false,
                             &mut files_to_promote,
+                            &mut files_to_enable,
                         ),
                         ResolvedOperation::Update { new_artifact, .. } => plan_artifact_change(
                             new_artifact,
@@ -1262,6 +1283,7 @@ impl InstallPipeline {
                             &mut warnings,
                             false,
                             &mut files_to_promote,
+                            &mut files_to_enable,
                         ),
                         ResolvedOperation::Remove {
                             target_filename,
@@ -1303,6 +1325,7 @@ impl InstallPipeline {
                 continue;
             }
             if let DepDisposition::InstallCandidate { artifact } = &dependency.disposition {
+                let enables_before = files_to_enable.len();
                 plan_artifact_change(
                     artifact,
                     false,
@@ -1317,7 +1340,11 @@ impl InstallPipeline {
                     &mut warnings,
                     true,
                     &mut files_to_promote,
+                    &mut files_to_enable,
                 );
+                for enable in &mut files_to_enable[enables_before..] {
+                    enable.needed_by = dependency.requested_by.clone();
+                }
             }
         }
         for conflict in &conflicts {
@@ -1363,6 +1390,13 @@ impl InstallPipeline {
         });
         files_to_promote
             .dedup_by(|a, b| a.filename == b.filename && a.content_type == b.content_type);
+        files_to_enable.sort_by(|a, b| {
+            a.filename
+                .cmp(&b.filename)
+                .then(a.content_type.cmp(&b.content_type))
+        });
+        files_to_enable
+            .dedup_by(|a, b| a.filename == b.filename && a.content_type == b.content_type);
         conflicts.sort_by(|a, b| a.conflict_id.cmp(&b.conflict_id));
         conflicts.dedup_by(|a, b| a.conflict_id == b.conflict_id);
         pending_choices.sort_by(|a, b| pending_choice_id(a).cmp(pending_choice_id(b)));
@@ -1401,6 +1435,7 @@ impl InstallPipeline {
             files_to_remove,
             files_to_disable,
             files_to_promote,
+            files_to_enable,
             snapshot: SnapshotPlan {
                 label: String::new(),
                 estimated_bytes: snapshot_bytes,
@@ -2307,6 +2342,7 @@ fn plan_artifact_change(
     warnings: &mut Vec<PlanWarning>,
     installed_as_dependency: bool,
     promotions: &mut Vec<FilePromote>,
+    enables: &mut Vec<FileEnable>,
 ) {
     let filename = artifact_filename(artifact);
     if let Err(error) = validate_filename(filename) {
@@ -2388,6 +2424,47 @@ fn plan_artifact_change(
                 ),
             });
             return;
+        }
+        // A disabled entry whose copy is intact keeps the user's choice. An
+        // explicit install leaves it off and says so. A dependency needs it on,
+        // so it is turned on in place rather than downloaded again. A copy that
+        // is not clearly intact falls through to the replace path below.
+        if same_content && same_version && !file_missing && !existing.enabled {
+            match can_enable_in_place(instance_dir, existing) {
+                Ok(true) => {
+                    if !installed_as_dependency && existing.installed_as_dependency {
+                        promotions.push(FilePromote {
+                            filename: existing.filename.clone(),
+                            content_type: Some(existing.content_type.clone()),
+                        });
+                    }
+                    if installed_as_dependency {
+                        enables.push(FileEnable {
+                            filename: existing.filename.clone(),
+                            content_type: existing.content_type.clone(),
+                            needed_by: Vec::new(),
+                        });
+                    } else {
+                        warnings.push(PlanWarning {
+                            code: "ALREADY_INSTALLED".into(),
+                            message: format!(
+                                "{} {} is already installed, turned off. Its file is intact, so nothing is downloaded or changed. Turn it on in the mod list if you want it on.",
+                                artifact_item_id(artifact),
+                                artifact_version_id(artifact)
+                            ),
+                        });
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(message) => {
+                    blocking_errors.push(PlanError {
+                        code: "ERR_FILE_CONFLICT".into(),
+                        message,
+                    });
+                    return;
+                }
+            }
         }
         replaces_missing_file = file_missing;
         if file_missing {
@@ -2507,6 +2584,28 @@ fn plan_artifact_change(
         installed_as_dependency,
         replaces_missing_file,
     });
+}
+
+/// Whether a disabled entry can be turned back on where it is: its `.disabled`
+/// copy is on disk and its bytes match the hash the manifest recorded, and no
+/// enabled file of that name is in the way. A copy that cannot be read is an
+/// error, not a "no": the planner reports it rather than guessing.
+fn can_enable_in_place(
+    instance_dir: &Path,
+    existing: &crate::models::InstalledMod,
+) -> Result<bool, String> {
+    let dir = instance_dir.join(content_subdir(&existing.content_type));
+    let enabled_path = dir.join(&existing.filename);
+    let enabled_present = enabled_path
+        .try_exists()
+        .map_err(|e| format!("Could not check {} on disk: {e}", existing.filename))?;
+    if enabled_present {
+        return Ok(false);
+    }
+    let disabled_name = format!("{}.disabled", existing.filename);
+    let hash = crate::helpers::hash_file_sha256(&dir.join(&disabled_name))
+        .map_err(|e| format!("Could not read {disabled_name} to check it: {e}"))?;
+    Ok(hash.eq_ignore_ascii_case(&existing.sha256))
 }
 
 /// Filenames (normalized) that one removal operation, or a batch of them,
@@ -3132,6 +3231,7 @@ struct PlanFingerprintMaterial<'a> {
     files_to_remove: &'a [FileRemove],
     files_to_disable: &'a [FileDisable],
     files_to_promote: &'a [FilePromote],
+    files_to_enable: &'a [FileEnable],
     loader_change: &'a Option<LoaderChangePlan>,
     instance_state_hash: &'a str,
     registry_revision: &'a str,
@@ -3148,6 +3248,7 @@ fn compute_plan_fingerprint(plan: &ResolvedInstallPlan) -> Result<String, String
         files_to_remove: &plan.files_to_remove,
         files_to_disable: &plan.files_to_disable,
         files_to_promote: &plan.files_to_promote,
+        files_to_enable: &plan.files_to_enable,
         loader_change: &plan.loader_change,
         instance_state_hash: &plan.instance_state_hash,
         registry_revision: &plan.registry_revision,
@@ -3413,6 +3514,9 @@ fn prepare_manifest(
     for disable in &plan.files_to_disable {
         set_manifest_enabled(&mut manifest, &disable.filename, false);
     }
+    for enable in &plan.files_to_enable {
+        set_manifest_enabled(&mut manifest, &enable.filename, true);
+    }
     for promote in &plan.files_to_promote {
         promote_manifest_entry(
             &mut manifest,
@@ -3525,6 +3629,7 @@ fn prepare_manifest(
 struct ApplyJournal {
     removed: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     disabled: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    enabled: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     added: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
@@ -3593,6 +3698,26 @@ fn apply_transaction(
             journal.disabled.push((disabled, live));
         }
 
+        for enable in &plan.files_to_enable {
+            let live = instance_dir
+                .join(content_subdir(&enable.content_type))
+                .join(&enable.filename);
+            let disabled = live.with_file_name(format!("{}.disabled", enable.filename));
+            let enabled_present = live
+                .try_exists()
+                .map_err(|e| format!("could not check {} before enabling: {e}", enable.filename))?;
+            if enabled_present {
+                return Err(format!(
+                    "enabled destination already exists: {}",
+                    live.display()
+                ));
+            }
+            check_test_failpoint("enable-rename")?;
+            std::fs::rename(&disabled, &live)
+                .map_err(|e| format!("failed to enable {}: {e}", enable.filename))?;
+            journal.enabled.push((live, disabled));
+        }
+
         for add in &plan.files_to_add {
             let staged = staging_dir.join("artifacts").join(&add.staging_filename);
             if !staged.is_file() {
@@ -3658,6 +3783,13 @@ fn rollback_apply(
             }
             if let Err(error) = std::fs::rename(live, staged) {
                 errors.push(format!("added {}: {error}", live.display()));
+            }
+        }
+    }
+    for (live, disabled) in journal.enabled.iter().rev() {
+        if live.exists() && !disabled.exists() {
+            if let Err(error) = std::fs::rename(live, disabled) {
+                errors.push(format!("enabled {}: {error}", live.display()));
             }
         }
     }
@@ -4355,7 +4487,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_entry_is_replaced_by_an_enabled_copy_not_reported_installed() {
+    fn a_disabled_entry_is_reported_intact_and_left_off_by_a_reinstall() {
         // Control: the same entry, enabled with its file present, is installed.
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
@@ -4372,25 +4504,247 @@ mod tests {
             .iter()
             .any(|w| w.code == "ALREADY_INSTALLED"));
 
-        // Disabled: it cannot satisfy anyone, so the planner brings back an
-        // enabled copy and removes the disabled one.
+        // Disabled with an intact copy: the user chose "off", so a plain
+        // reinstall reports the file as intact and changes nothing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
+        let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
+        assert!(plan.files_to_add.is_empty(), "nothing is downloaded");
+        assert!(
+            plan.files_to_enable.is_empty(),
+            "a reinstall does not turn it on"
+        );
+        assert!(plan.files_to_remove.is_empty());
+        assert!(plan.is_fully_resolved());
+        assert!(plan.warnings.iter().any(|w| {
+            w.code == "ALREADY_INSTALLED"
+                && w.message.contains("turned off")
+                && w.message.contains("intact")
+        }));
+        apply_planned_enable(&instance_dir, &plan);
+        assert!(
+            mods.join("fabric-api.jar.disabled").is_file(),
+            "the copy stays off"
+        );
+        assert!(!mods.join("fabric-api.jar").exists());
+        let next: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(next["mods"][0]["enabled"], false);
+    }
+
+    /// The plan for "sodium", which needs fabric-api, with fabric-api pulled in
+    /// as a dependency of it.
+    fn dependency_plan_for_fabric_api(instance_dir: &Path) -> ResolvedInstallPlan {
+        let mut intent = reinstall_intent();
+        intent.action = InstallAction::Install {
+            source_type: SourceType::Curated,
+            item_id: "sodium".into(),
+            candidate_version: Some("1.0".into()),
+        };
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "sodium",
+                    "sodium.jar",
+                    crate::download::sha256_hex(b"sodium bytes"),
+                    ArtifactSource::Download {
+                        url: "https://cdn.modrinth.com/data/sodium.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![ResolvedDep {
+                requested_by: vec!["sodium".into()],
+                pinned_version: None,
+                mod_jar_id: "fabric-api".into(),
+                requirement: Requirement::Required,
+                source: DepSource::Manifest,
+                display_name: None,
+                page_url: None,
+                disposition: DepDisposition::InstallCandidate {
+                    artifact: Box::new(test_artifact(
+                        "fabric-api",
+                        "fabric-api.jar",
+                        crate::download::sha256_hex(REINSTALL_BYTES),
+                        ArtifactSource::Download {
+                            url: "https://cdn.modrinth.com/data/file.jar".into(),
+                        },
+                        SourceType::Curated,
+                    )),
+                },
+            }],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            InstallPipeline
+                .resolve_plan(intent, instance_dir, prepared, &NoopReporter)
+                .await
+                .unwrap()
+        })
+    }
+
+    /// Applies a dependency plan the way the pipeline does, staging the one
+    /// file it adds (sodium) from the bytes its hash was made from.
+    fn apply_dependency_plan(instance_dir: &Path, plan: &ResolvedInstallPlan) {
+        let staging = instance_dir.parent().unwrap().join("staging");
+        std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        for add in &plan.files_to_add {
+            std::fs::write(
+                staging.join("artifacts").join(&add.staging_filename),
+                b"sodium bytes",
+            )
+            .unwrap();
+        }
+        prepare_manifest(plan, instance_dir, &staging).unwrap();
+        apply_transaction(plan, instance_dir, &staging).unwrap();
+    }
+
+    /// Applies a plan that only turns files on, the way the pipeline does:
+    /// the manifest is prepared first, then the files move.
+    fn apply_planned_enable(instance_dir: &Path, plan: &ResolvedInstallPlan) {
+        let staging = instance_dir.parent().unwrap().join("staging");
+        std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        prepare_manifest(plan, instance_dir, &staging).unwrap();
+        apply_transaction(plan, instance_dir, &staging).unwrap();
+    }
+
+    #[test]
+    fn a_disabled_dependency_with_an_intact_copy_is_turned_on_and_names_who_needs_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
+
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert!(
+            plan.files_to_add
+                .iter()
+                .all(|add| add.target_filename != "fabric-api.jar"),
+            "an intact copy is not downloaded again"
+        );
+        assert_eq!(plan.files_to_enable.len(), 1);
+        assert_eq!(plan.files_to_enable[0].filename, "fabric-api.jar");
+        assert_eq!(
+            plan.files_to_enable[0].needed_by,
+            vec!["sodium".to_string()]
+        );
+
+        apply_dependency_plan(&instance_dir, &plan);
+        assert!(
+            mods.join("fabric-api.jar").is_file(),
+            "the copy is on again"
+        );
+        assert!(!mods.join("fabric-api.jar.disabled").exists());
+        let next: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let fabric = next["mods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["filename"] == "fabric-api.jar")
+            .unwrap();
+        assert_eq!(fabric["enabled"], true);
+    }
+
+    #[test]
+    fn a_disabled_copy_that_no_longer_matches_its_hash_is_downloaded_again() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         write_matching_fabric_api_entry(&instance_dir, false);
         std::fs::write(
             instance_dir.join("mods").join("fabric-api.jar.disabled"),
-            REINSTALL_BYTES,
+            b"tampered",
         )
         .unwrap();
+
         let plan = reinstall_prepared_plan(&instance_dir, reinstall_intent());
-        assert!(!plan.warnings.iter().any(|w| w.code == "ALREADY_INSTALLED"));
+        assert!(
+            plan.files_to_enable.is_empty(),
+            "a copy that fails its recorded hash is not turned on"
+        );
         assert_eq!(plan.files_to_add.len(), 1);
         assert_eq!(plan.files_to_add[0].target_filename, "fabric-api.jar");
-        assert!(!plan.files_to_add[0].replaces_missing_file);
         assert!(plan
             .files_to_remove
             .iter()
             .any(|remove| remove.filename == "fabric-api.jar.disabled"));
+    }
+
+    #[test]
+    fn a_disabled_dependency_with_a_tampered_copy_is_downloaded_again() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        std::fs::write(
+            instance_dir.join("mods").join("fabric-api.jar.disabled"),
+            b"tampered",
+        )
+        .unwrap();
+
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert!(plan.files_to_enable.is_empty());
+        assert!(plan
+            .files_to_add
+            .iter()
+            .any(|add| add.target_filename == "fabric-api.jar"));
+    }
+
+    #[test]
+    fn a_disabled_dependency_is_not_turned_on_over_an_enabled_file_of_the_same_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
+        std::fs::write(mods.join("fabric-api.jar"), b"enabled copy").unwrap();
+
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert!(
+            plan.files_to_enable.is_empty(),
+            "the planner must not rename over an enabled file"
+        );
+    }
+
+    #[test]
+    fn a_failed_apply_turns_the_disabled_dependency_back_off() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_matching_fabric_api_entry(&instance_dir, false);
+        let mods = instance_dir.join("mods");
+        std::fs::write(mods.join("fabric-api.jar.disabled"), REINSTALL_BYTES).unwrap();
+        let plan = dependency_plan_for_fabric_api(&instance_dir);
+        assert_eq!(plan.files_to_enable.len(), 1);
+
+        // Fails after the copy has been turned on, so the rollback must undo it.
+        let staging = instance_dir.parent().unwrap().join("staging");
+        std::fs::create_dir_all(staging.join("artifacts")).unwrap();
+        for add in &plan.files_to_add {
+            std::fs::write(
+                staging.join("artifacts").join(&add.staging_filename),
+                b"sodium bytes",
+            )
+            .unwrap();
+        }
+        prepare_manifest(&plan, &instance_dir, &staging).unwrap();
+        set_install_failpoint(Some("manifest-rename"));
+        let result = apply_transaction(&plan, &instance_dir, &staging);
+        set_install_failpoint(None);
+
+        assert!(result.is_err(), "the injected failure must surface");
+        assert!(
+            mods.join("fabric-api.jar.disabled").is_file(),
+            "rollback puts the copy back as it was"
+        );
+        assert!(!mods.join("fabric-api.jar").exists());
     }
 
     #[test]
@@ -7594,6 +7948,7 @@ mod tests {
             files_to_remove: vec![],
             files_to_disable: vec![],
             files_to_promote: vec![],
+            files_to_enable: vec![],
             snapshot: SnapshotPlan {
                 label: "test-snapshot".into(),
                 estimated_bytes: 0,

@@ -73,6 +73,8 @@ interface ModDetailMockOptions {
   itemVoteState?: { vote: 'upvote' | 'downvote' | null; conflicted: boolean };
   voteError?: string | null;
   curatorWarning?: string | null;
+  /** Holds set_item_vote open this long, so a vote stays in flight while the test presses keys. */
+  voteDelayMs?: number;
 }
 
 async function installModDetailMock(
@@ -88,6 +90,7 @@ async function installModDetailMock(
     itemVoteState = { vote: null, conflicted: false },
     voteError = null,
     curatorWarning = null,
+    voteDelayMs = 0,
   } = opts;
 
   const summary = showQuarantine
@@ -100,7 +103,7 @@ async function installModDetailMock(
   await page.addInitScript(
     (params: Record<string, unknown>) => {
       const {
-        config, summary, registryItem, initDest, authenticated, itemVoteState, voteError, curatorWarning,
+        config, summary, registryItem, initDest, authenticated, itemVoteState, voteError, curatorWarning, voteDelayMs,
       } = params as unknown as {
         config: Record<string, unknown> | null;
         summary: Record<string, unknown>;
@@ -110,6 +113,7 @@ async function installModDetailMock(
         itemVoteState: { vote: 'upvote' | 'downvote' | null; conflicted: boolean };
         voteError: string | null;
         curatorWarning: string | null;
+        voteDelayMs: number;
       };
 
       // Seed the history state so useDestination restores mod-detail on boot
@@ -188,7 +192,8 @@ async function installModDetailMock(
               vote: (args.vote as 'upvote' | 'downvote' | null) ?? null,
               conflicted: false,
             };
-            return Promise.resolve(currentVote);
+            const landed = currentVote;
+            return new Promise((resolve) => setTimeout(() => resolve(landed), voteDelayMs));
           }
           if (command === 'list_mod_reviews') return Promise.resolve([
             {
@@ -218,7 +223,7 @@ async function installModDetailMock(
         __voteCalls: voteCalls,
       });
     },
-    { config, summary, registryItem, initDest, authenticated, itemVoteState, voteError, curatorWarning },
+    { config, summary, registryItem, initDest, authenticated, itemVoteState, voteError, curatorWarning, voteDelayMs },
   );
 }
 
@@ -401,6 +406,103 @@ test.describe('ModDetail canonical voting controls', () => {
     await expect(upvote).toHaveAttribute('aria-pressed', 'true');
     await expect(upvote).toContainText('10');
     await expect(page.getByText(/Upvote recorded\. Scores update after the next catalog build/)).toBeVisible();
+    const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
+  });
+
+  test('keeps keyboard focus on the arrow after a vote lands', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE, voteDelayMs: 300 });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.focus();
+    await page.keyboard.press('Enter');
+
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    await expect(upvote).toBeFocused();
+  });
+
+  test('a held Enter, or a press during the vote, casts only one vote', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE, voteDelayMs: 1000 });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.focus();
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await page.keyboard.press('Enter');
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+
+    let calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
+
+    // Once the vote has landed the control works again: a fresh press retracts it.
+    await page.keyboard.press('Enter');
+    await expect(upvote).toHaveAttribute('aria-pressed', 'false');
+    calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }, { itemId: 'test-mod', vote: null }]);
+  });
+
+  test('a key still held after the vote lands does not vote again', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE, voteDelayMs: 300 });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.focus();
+    await page.keyboard.down('Enter');
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    // Still held: each repeat would press the arrow again, and retract the vote.
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
+  });
+
+  test('a tap of Space casts one vote and keeps focus on the arrow', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE, voteDelayMs: 300 });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.focus();
+    await page.keyboard.press('Space');
+
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    await expect(upvote).toBeFocused();
+    const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
+  });
+
+  test('a held Space casts only one vote', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE, voteDelayMs: 1000 });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.focus();
+    await page.keyboard.down('Space');
+    await page.keyboard.down('Space');
+    await page.keyboard.down('Space');
+    await page.keyboard.up('Space');
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    await expect(upvote).toBeFocused();
+
+    const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
+  });
+
+  test('a Space press while a vote is in flight casts no second vote', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE, voteDelayMs: 1000 });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.focus();
+    await page.keyboard.press('Space');
+    await page.keyboard.press('Space');
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+
     const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
     expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
   });

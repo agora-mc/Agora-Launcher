@@ -6,6 +6,7 @@ import {
   Info,
   PackageMinus,
   PackagePlus,
+  Power,
   PowerOff,
   ShieldCheck,
   TriangleAlert,
@@ -846,6 +847,7 @@ function ReviewView({
       .filter((file) => file.replacesMissingFile)
       .map((file) => file.targetFilename.replace(/\.disabled$/, '')),
   );
+  const enabledFiles = plan.filesToEnable ?? [];
   const changeItems: ChangeItem[] = [
     ...operationArtifacts(plan.operation)
       .filter((artifact) => artifact.metadata.version)
@@ -870,6 +872,12 @@ function ReviewView({
       tag: 'turned off',
       isNew: false,
     })),
+    ...enabledFiles.map((file) => ({
+      kind: 'enable' as const,
+      filename: file.filename,
+      tag: 'turned on',
+      isNew: false,
+    })),
   ];
 
   // Dependencies split by what the user can actually act on. Optional extras
@@ -885,7 +893,8 @@ function ReviewView({
   const addCount = plan.filesToAdd.length - restoreCount;
   const removeCount = plan.filesToRemove.length;
   const disableCount = plan.filesToDisable.length;
-  const touchesFiles = addCount + restoreCount + removeCount + disableCount > 0;
+  const enableCount = enabledFiles.length;
+  const touchesFiles = addCount + restoreCount + removeCount + disableCount + enableCount > 0;
 
   // The curator's own cautions come first and get their own heading; the rest
   // of the plan warnings keep their existing list.
@@ -978,6 +987,13 @@ function ReviewView({
             {disableCount > 0 && (
               <ChangeChip icon={PowerOff} tone="neutral" label={`${disableCount} ${pluralFiles(disableCount)} turned off`} />
             )}
+            {enableCount > 0 && (
+              <ChangeChip
+                icon={Power}
+                tone="add"
+                label={enableChipLabel(enabledFiles)}
+              />
+            )}
           </div>
         ) : (
           <p className="mt-1 text-xs text-muted-foreground">
@@ -992,7 +1008,7 @@ function ReviewView({
                 <span
                   className={cn(
                     'min-w-0 truncate font-medium text-foreground',
-                    item.kind !== 'add' && 'line-through decoration-muted-foreground/60',
+                    (item.kind === 'remove' || item.kind === 'disable') && 'line-through decoration-muted-foreground/60',
                   )}
                   title={item.filename}
                 >
@@ -1132,6 +1148,7 @@ function ReviewView({
           <FileList title="Files added" files={plan.filesToAdd.map((file) => file.targetFilename)} />
           <FileList title="Files to be removed" files={plan.filesToRemove.map((file) => file.filename)} />
           <FileList title="Files turned off" files={plan.filesToDisable.map((file) => file.filename)} />
+          <FileList title="Files turned on" files={(plan.filesToEnable ?? []).map((file) => file.filename)} />
           {satisfiedRequired.length > 0 && (
             <FileList
               title="Required dependencies already installed"
@@ -1196,7 +1213,7 @@ function ReviewView({
 
 /** One named file the plan touches, with the tag shown on its right. */
 interface ChangeItem {
-  kind: 'add' | 'remove' | 'disable';
+  kind: 'add' | 'remove' | 'disable' | 'enable';
   filename: string;
   tag: string;
   isNew: boolean;
@@ -1215,6 +1232,15 @@ function ReviewSection({ title, hint, children }: {
       <div className="mt-2 space-y-1.5">{children}</div>
     </section>
   );
+}
+
+/** "Turns on x" for one file, with who needs it when a dependency turns it on. */
+function enableChipLabel(files: { filename: string; neededBy?: string[] }[]): string {
+  if (files.length !== 1) return `Turns on ${files.length} ${pluralFiles(files.length)}`;
+  const [file] = files;
+  const needers = file.neededBy ?? [];
+  if (needers.length === 0) return `Turns on ${file.filename}`;
+  return `Turns on ${file.filename} because ${needers.join(', ')} ${needers.length === 1 ? 'needs' : 'need'} it`;
 }
 
 function ChangeChip({ icon: Icon, label, tone }: {

@@ -83,6 +83,7 @@ import {
   checkInstanceHealth,
   listLoadoutProfiles,
   createLoadoutProfile,
+  listLoadoutUnlistedMods,
   applyLoadoutProfile,
   deleteLoadoutProfile,
   openInstanceFolder,
@@ -105,6 +106,7 @@ import {
   type Snapshot,
   type SnapshotDiff,
   type LoadoutProfile,
+  type UnlistedModsChoice,
   type LockfileDriftReport,
   type MemoryRecommendation,
   type HealthReport,
@@ -274,7 +276,7 @@ function countOf(count: number, one: string, many: string): string {
 function describeLoadoutCoverage(prof: LoadoutProfile): string {
   const covers = prof.covers;
   if (!covers) {
-    return `Saved before counts were recorded: ${countOf(prof.enabled_mods.length, 'item', 'items')} switched on. Mods it does not list are switched off; other items it does not list are left alone.`;
+    return `Saved before counts were recorded: ${countOf(prof.enabled_mods.length, 'item', 'items')} switched on. Mods it does not list are asked about when you apply; other items it does not list are left alone.`;
   }
   const parts = [
     countOf(covers.mods, 'mod', 'mods'),
@@ -283,7 +285,7 @@ function describeLoadoutCoverage(prof: LoadoutProfile): string {
     countOf(covers.datapacks, 'data pack', 'data packs'),
     countOf(covers.worlds, 'world', 'worlds'),
   ];
-  return `Switches on: ${parts.join(', ')}. Mods it does not list are switched off; other items it does not list are left alone.`;
+  return `Switches on: ${parts.join(', ')}. Mods it does not list are asked about when you apply; other items it does not list are left alone.`;
 }
 
 function previewJavaMajor(version: string | undefined): number {
@@ -348,6 +350,40 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [profileNameInput, setProfileNameInput] = useState('');
   const [profileBusy, setProfileBusy] = useState<string | null>(null);
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<string | null>(null);
+  // Set while the user is asked what to do with enabled mods a profile does not list.
+  const [unlistedChoice, setUnlistedChoice] = useState<{ profile: string; mods: string[] } | null>(null);
+
+  const runProfileApply = async (name: string, unlistedMods: UnlistedModsChoice) => {
+    setProfileBusy(name);
+    setError(null);
+    try {
+      await applyLoadoutProfile(instanceId, name, unlistedMods);
+      await reloadInstance();
+      setStatus(`Profile "${name}" applied. Before switching, Agora saved an undo point under Snapshots, labelled before-loadout (only the newest is kept).`);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setProfileBusy(null);
+    }
+  };
+
+  // Apply asks first when the instance has enabled mods the profile does not
+  // list. Keep is only the value passed when there is nothing to switch off.
+  const requestProfileApply = async (name: string) => {
+    setError(null);
+    setProfileBusy(name);
+    const unlisted = await listLoadoutUnlistedMods(instanceId, name).catch((e: unknown) => {
+      setError(formatError(e));
+      return null;
+    });
+    setProfileBusy(null);
+    if (unlisted === null) return;
+    if (unlisted.length === 0) {
+      await runProfileApply(name, 'keep');
+      return;
+    }
+    setUnlistedChoice({ profile: name, mods: unlisted });
+  };
 
   // Import state (Phase 6)
   const [importBusy, setImportBusy] = useState(false);
@@ -2748,7 +2784,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           </div>
 
           <p className="text-xs text-muted-foreground">
-            A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off. Apply sets each item it records to that state. A mod it does not list is switched off. Packs and worlds it does not list, such as ones added since it was saved, are left as they are. Configs, versions and the loader are not part of a profile.
+            A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off. Apply sets each item it records to that state. A mod it does not list, such as one added since it was saved, is asked about when you apply: keep it on, or switch it off. Packs and worlds it does not list are left as they are. Configs, versions and the loader are not part of a profile.
           </p>
 
           {profiles.length === 0 ? (
@@ -2765,19 +2801,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   </div>
                   <div className="flex gap-2 ml-3">
                     <button
-                      onClick={async () => {
-                        setProfileBusy(prof.name);
-                        setError(null);
-                        try {
-                          await applyLoadoutProfile(instanceId, prof.name);
-                          await reloadInstance();
-                          setStatus(`Profile "${prof.name}" applied. Before switching, Agora saved an undo point under Snapshots, labelled before-loadout (only the newest is kept).`);
-                        } catch (e) {
-                          setError(formatError(e));
-                        } finally {
-                          setProfileBusy(null);
-                        }
-                      }}
+                      onClick={() => requestProfileApply(prof.name)}
                        disabled={profileBusy === prof.name || recoveryBlocked}
                       className="text-xs text-foreground hover:underline disabled:opacity-50"
                     >
@@ -3635,6 +3659,54 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             }}
         />
       )}
+
+      <Dialog
+        open={unlistedChoice !== null}
+        onOpenChange={(open) => { if (!open) setUnlistedChoice(null); }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-hidden flex flex-col gap-3">
+          <DialogTitle className="shrink-0">Mods this profile does not list</DialogTitle>
+          <DialogDescription className="shrink-0">
+            {`Profile "${unlistedChoice?.profile ?? ''}" does not list ${unlistedChoice?.mods.length ?? 0} enabled ${unlistedChoice?.mods.length === 1 ? 'mod' : 'mods'}, such as ones added since it was saved. Keep them on, or switch them off?`}
+          </DialogDescription>
+          <ul className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border p-2 font-mono text-xs">
+            {(unlistedChoice?.mods ?? []).map((mod) => (
+              <li key={mod} className="truncate py-0.5">{mod}</li>
+            ))}
+          </ul>
+          <div className="flex shrink-0 justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setUnlistedChoice(null)}
+              className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const choice = unlistedChoice;
+                setUnlistedChoice(null);
+                if (choice) void runProfileApply(choice.profile, 'keep');
+              }}
+              className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              Keep them on
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const choice = unlistedChoice;
+                setUnlistedChoice(null);
+                if (choice) void runProfileApply(choice.profile, 'off');
+              }}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+            >
+              Switch them off
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Optional dependencies overlay — the standard-editor mirror of the
           high-interaction instance editor's optional panel. Every listed target is

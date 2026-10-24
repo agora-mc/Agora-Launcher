@@ -200,12 +200,63 @@ fn read_profile(instance_dir: &Path, profile_name: &str) -> Result<LoadoutProfil
     serde_json::from_str(&content).map_err(|e| format!("Invalid profile JSON: {e}"))
 }
 
+/// What applying a profile does with an enabled mod the profile does not list
+/// (one installed after the profile was saved, say). Every caller passes one
+/// explicitly: a silent default here would decide for the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UnlistedMods {
+    /// Leave the unlisted mod on.
+    Keep,
+    /// Switch the unlisted mod off, as a profile is the whole mod set.
+    Off,
+}
+
+/// The state a profile records for `entry`, or `None` when it does not list it.
+fn recorded_state(profile: &LoadoutProfile, entry: &InstalledMod) -> Option<bool> {
+    match &profile.items {
+        Some(items) => items
+            .iter()
+            .find(|item| item.filename == entry.filename && item.content_type == entry.content_type)
+            .map(|item| item.enabled),
+        None => profile
+            .enabled_mods
+            .contains(&entry.filename)
+            .then_some(true),
+    }
+}
+
+/// Mod filenames that are on now but that the profile does not list. Applying
+/// with [`UnlistedMods::Off`] would switch these off. Sorted, without duplicates.
+pub fn unlisted_enabled_mods(
+    instance_dir: &Path,
+    profile_name: &str,
+) -> Result<Vec<String>, String> {
+    let profile = read_profile(instance_dir, profile_name)?;
+    let manifest = read_manifest(instance_dir)?;
+    let mut names: Vec<String> = all_content_entries(&manifest)
+        .filter(|entry| {
+            entry.enabled
+                && is_mod_kind(&entry.content_type)
+                && recorded_state(&profile, entry).is_none()
+        })
+        .map(|entry| entry.filename.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
 /// Apply a loadout profile: set each item it records to the state it records,
 /// updating the manifest's `enabled` field and renaming files on disk
 /// (`.ext` ↔ `.ext.disabled`) so the game does not load disabled content.
-pub fn apply_profile(instance_dir: &Path, profile_name: &str) -> Result<(), String> {
+pub fn apply_profile(
+    instance_dir: &Path,
+    profile_name: &str,
+    unlisted: UnlistedMods,
+) -> Result<(), String> {
     let profile = read_profile(instance_dir, profile_name)?;
-    apply_profile_items(instance_dir, &profile)
+    apply_profile_items(instance_dir, &profile, unlisted)
 }
 
 /// Why applying a profile with its undo point failed. Each variant says what
@@ -258,11 +309,12 @@ impl std::fmt::Display for LoadoutApplyError {
 pub fn apply_profile_with_undo(
     instance_dir: &Path,
     profile_name: &str,
+    unlisted: UnlistedMods,
 ) -> Result<(), LoadoutApplyError> {
     let profile = read_profile(instance_dir, profile_name).map_err(LoadoutApplyError::Profile)?;
     let undo = crate::snapshot::create_snapshot(instance_dir, Some(UNDO_SNAPSHOT_LABEL))
         .map_err(LoadoutApplyError::UndoPoint)?;
-    if let Err(error) = apply_profile_items(instance_dir, &profile) {
+    if let Err(error) = apply_profile_items(instance_dir, &profile, unlisted) {
         let rollback = crate::snapshot::restore_snapshot(instance_dir, &undo.id).map(|_| ());
         return Err(LoadoutApplyError::Apply { error, rollback });
     }
@@ -271,30 +323,26 @@ pub fn apply_profile_with_undo(
 
 /// Set each item the profile records to the state it records.
 ///
-/// Anything the profile does not record is left as it is, with one deliberate
-/// exception: a mod the profile does not list is switched off. That is the
-/// long-standing loadout rule, so a profile is the whole mod set. Packs and
-/// worlds added after the profile was saved keep their current state. A profile
-/// saved before items were recorded only knows which names were on, so those
-/// names are matched on their own and nothing else is changed.
-fn apply_profile_items(instance_dir: &Path, profile: &LoadoutProfile) -> Result<(), String> {
+/// Anything the profile does not record is left as it is, with one choice the
+/// caller makes: a mod the profile does not list is either kept as it is or
+/// switched off ([`UnlistedMods`]). Packs and worlds the profile does not list
+/// always keep their current state. A profile saved before items were recorded
+/// only knows which names were on, so those names are matched on their own.
+fn apply_profile_items(
+    instance_dir: &Path,
+    profile: &LoadoutProfile,
+    unlisted: UnlistedMods,
+) -> Result<(), String> {
     let mut manifest = read_manifest(instance_dir)?;
     for entry in all_content_entries_mut(&mut manifest) {
-        let recorded = match &profile.items {
-            Some(items) => items
-                .iter()
-                .find(|item| {
-                    item.filename == entry.filename && item.content_type == entry.content_type
-                })
-                .map(|item| item.enabled),
-            None => profile
-                .enabled_mods
-                .contains(&entry.filename)
-                .then_some(true),
+        let should_enable = match recorded_state(profile, entry) {
+            Some(enabled) => Some(enabled),
+            None if is_mod_kind(&entry.content_type) && unlisted == UnlistedMods::Off => {
+                Some(false)
+            }
+            None => None,
         };
-        if let Some(should_enable) =
-            recorded.or_else(|| is_mod_kind(&entry.content_type).then_some(false))
-        {
+        if let Some(should_enable) = should_enable {
             set_entry_enabled(instance_dir, entry, should_enable)?;
         }
     }
@@ -517,7 +565,7 @@ mod tests {
         )
         .unwrap();
 
-        apply_profile(&dir, "minimal").unwrap();
+        apply_profile(&dir, "minimal", UnlistedMods::Off).unwrap();
 
         // Files on disk
         let mods = dir.join("mods");
@@ -584,7 +632,7 @@ mod tests {
         )
         .unwrap();
 
-        apply_profile(&dir, "all-on").unwrap();
+        apply_profile(&dir, "all-on", UnlistedMods::Off).unwrap();
 
         let mods = dir.join("mods");
         let entries: Vec<String> = fs::read_dir(&mods)
@@ -698,7 +746,7 @@ mod tests {
         )
         .unwrap();
 
-        apply_profile(&dir, "no-shaders").unwrap();
+        apply_profile(&dir, "no-shaders", UnlistedMods::Off).unwrap();
 
         // A pack the profile does not name is not the profile's business: the
         // shader stays on disk and enabled.
@@ -743,7 +791,7 @@ mod tests {
         manifest.mods.push(item("added.jar", "mod"));
         write_manifest(&dir, &manifest).unwrap();
 
-        apply_profile(&dir, "base").unwrap();
+        apply_profile(&dir, "base", UnlistedMods::Off).unwrap();
 
         let after = read_manifest(&dir).unwrap();
         assert!(
@@ -795,7 +843,7 @@ mod tests {
         manifest.shaders[0].enabled = true;
         write_manifest(&dir, &manifest).unwrap();
 
-        apply_profile(&dir, "no-shader").unwrap();
+        apply_profile(&dir, "no-shader", UnlistedMods::Off).unwrap();
 
         assert!(dir.join("shaderpacks").join("bsl.zip.disabled").exists());
         assert!(!read_manifest(&dir).unwrap().shaders[0].enabled);
@@ -828,7 +876,7 @@ mod tests {
         manifest.shaders[0].enabled = true;
         write_manifest(&dir, &manifest).unwrap();
 
-        apply_profile(&dir, "kinds").unwrap();
+        apply_profile(&dir, "kinds", UnlistedMods::Off).unwrap();
 
         let after = read_manifest(&dir).unwrap();
         assert!(after.mods[0].enabled, "the mod recorded on stays on");
@@ -855,7 +903,7 @@ mod tests {
         manifest.mods[1].enabled = false;
         write_manifest(&dir, &manifest).unwrap();
 
-        apply_profile_with_undo(&dir, "all-on").unwrap();
+        apply_profile_with_undo(&dir, "all-on", UnlistedMods::Off).unwrap();
         assert!(dir.join("mods").join("lithium.jar").exists());
 
         let snapshots = crate::snapshot::list_snapshots(&dir).unwrap();
@@ -877,7 +925,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = setup_instance(&tmp, &["sodium.jar"]);
 
-        let err = apply_profile_with_undo(&dir, "missing").expect_err("unknown profile");
+        let err = apply_profile_with_undo(&dir, "missing", UnlistedMods::Off)
+            .expect_err("unknown profile");
         assert!(matches!(err, LoadoutApplyError::Profile(_)), "got {err:?}");
         assert!(crate::snapshot::list_snapshots(&dir).unwrap().is_empty());
     }
@@ -998,5 +1047,113 @@ mod tests {
         let dir = tmp.path().join("no-profiles");
         let result = delete_profile(&dir, "nonexistent");
         assert!(result.is_err());
+    }
+
+    /// A mod installed after the profile was saved: its jar is in `mods/`
+    /// (or parked as `.disabled`), and the manifest records it.
+    fn install_after_profile(dir: &Path, filename: &str, enabled: bool) {
+        let mut manifest = read_manifest(dir).unwrap();
+        let mut item = manifest.mods[0].clone();
+        item.filename = filename.to_string();
+        item.enabled = enabled;
+        manifest.mods.push(item);
+        write_manifest(dir, &manifest).unwrap();
+        let on_disk = if enabled {
+            filename.to_string()
+        } else {
+            format!("{filename}.disabled")
+        };
+        fs::write(dir.join("mods").join(on_disk), filename).unwrap();
+    }
+
+    fn save_legacy_profile(dir: &Path, name: &str, enabled_mods: &[&str]) {
+        let profile = LoadoutProfile {
+            name: name.to_string(),
+            enabled_mods: enabled_mods.iter().map(|m| m.to_string()).collect(),
+            created_at: Utc::now().to_rfc3339(),
+            covers: None,
+            items: None,
+        };
+        let profiles_dir = loadouts_dir(dir);
+        fs::create_dir_all(&profiles_dir).unwrap();
+        fs::write(
+            profiles_dir.join(format!("{name}.json")),
+            serde_json::to_string_pretty(&profile).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn is_on(dir: &Path, filename: &str) -> bool {
+        dir.join("mods").join(filename).exists()
+    }
+
+    #[test]
+    fn a_mod_the_profile_does_not_list_follows_the_caller_choice() {
+        for (choice, expect_on) in [(UnlistedMods::Keep, true), (UnlistedMods::Off, false)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = setup_instance(&tmp, &["sodium.jar", "lithium.jar"]);
+            create_profile(&dir, "both").unwrap();
+            install_after_profile(&dir, "newer.jar", true);
+
+            apply_profile(&dir, "both", choice).unwrap();
+
+            assert_eq!(is_on(&dir, "newer.jar"), expect_on, "{choice:?}");
+            let entry = read_manifest(&dir)
+                .unwrap()
+                .mods
+                .into_iter()
+                .find(|m| m.filename == "newer.jar")
+                .unwrap();
+            assert_eq!(
+                entry.enabled, expect_on,
+                "manifest must match disk for {choice:?}"
+            );
+            assert!(
+                is_on(&dir, "lithium.jar"),
+                "a listed mod follows the profile"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_profile_follows_the_caller_choice_for_unlisted_mods() {
+        for (choice, expect_on) in [(UnlistedMods::Keep, true), (UnlistedMods::Off, false)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = setup_instance(&tmp, &["sodium.jar", "lithium.jar"]);
+            save_legacy_profile(&dir, "sodium-only", &["sodium.jar"]);
+
+            apply_profile(&dir, "sodium-only", choice).unwrap();
+
+            assert!(is_on(&dir, "sodium.jar"));
+            assert_eq!(is_on(&dir, "lithium.jar"), expect_on, "{choice:?}");
+        }
+    }
+
+    #[test]
+    fn unlisted_enabled_mods_names_only_what_off_would_switch_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["sodium.jar", "lithium.jar"]);
+        create_profile(&dir, "both").unwrap();
+        install_after_profile(&dir, "newer.jar", true);
+        install_after_profile(&dir, "parked.jar", false);
+
+        assert_eq!(
+            unlisted_enabled_mods(&dir, "both").unwrap(),
+            vec!["newer.jar".to_string()],
+            "a parked mod is off already, and a listed mod is not unlisted"
+        );
+        assert!(
+            unlisted_enabled_mods(&dir, "no-such-profile").is_err(),
+            "an unknown profile is an error, not an empty list"
+        );
+    }
+
+    #[test]
+    fn unlisted_enabled_mods_is_empty_when_the_profile_lists_everything_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_instance(&tmp, &["sodium.jar"]);
+        create_profile(&dir, "all").unwrap();
+
+        assert!(unlisted_enabled_mods(&dir, "all").unwrap().is_empty());
     }
 }

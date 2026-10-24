@@ -204,6 +204,14 @@ type CuratorNotesRegistryItem = RegistryItem & { curator_notes?: string | null }
 
 const VOTE_EXPLAINER_KEY = 'agora-vote-explainer-acknowledged';
 
+/**
+ * A held key sends repeated keydown events, and each one presses the focused
+ * vote button again. Only the first press of a hold counts.
+ */
+function ignoreKeyRepeat(event: { repeat: boolean; preventDefault(): void }) {
+  if (event.repeat) event.preventDefault();
+}
+
 function voteExplainerAcknowledged(): boolean {
   try {
     return window.localStorage.getItem(VOTE_EXPLAINER_KEY) === '1';
@@ -290,6 +298,9 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   const [governanceConfig, setGovernanceConfig] = useState<GovernanceConfig | null>(null);
   const [itemVoteState, setItemVoteState] = useState<ItemVoteState | null>(null);
   const [votePending, setVotePending] = useState(false);
+  // State lags a render behind, so a second press can arrive before votePending
+  // is true. This ref is set at once and covers the confirm step too.
+  const voteInFlight = useRef(false);
   const [voteLoadError, setVoteLoadError] = useState<string | null>(null);
   const governanceLoadedForRef = useRef<string | null>(null);
 
@@ -1237,7 +1248,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     }
   };
 
-  const handleVote = async (direction: ItemVote) => {
+  const castVote = async (direction: ItemVote) => {
     if (!item || item.id !== itemId || !itemVoteState || votePending) return;
     const previous = itemVoteState;
     const desired = !previous.conflicted && previous.vote === direction ? null : direction;
@@ -1288,6 +1299,18 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
       showToast(formatError(voteError), 'error');
     } finally {
       setVotePending(false);
+    }
+  };
+
+  // The arrows use aria-disabled while a vote is in flight, not disabled: a
+  // disabled button drops keyboard focus to the body.
+  const handleVote = async (direction: ItemVote) => {
+    if (voteInFlight.current) return;
+    voteInFlight.current = true;
+    try {
+      await castVote(direction);
+    } finally {
+      voteInFlight.current = false;
     }
   };
 
@@ -1944,10 +1967,12 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                     type="button"
                     aria-label={`Upvote ${item.name}. ${item.upvotes} upvotes.`}
                     aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'}
-                    disabled={authed !== true || !itemVoteState || votePending}
+                    aria-disabled={votePending}
+                    disabled={authed !== true || !itemVoteState}
                     onClick={() => handleVote('upvote')}
+                    onKeyDown={ignoreKeyRepeat}
                     data-tour="mod-detail-upvote"
-                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-wait aria-disabled:opacity-60 ${
                       !itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'
                         ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                         : 'border-border text-muted-foreground hover:border-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300'
@@ -1960,9 +1985,11 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                     type="button"
                     aria-label={`Downvote ${item.name}. ${item.downvotes} downvotes.`}
                     aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'}
-                    disabled={authed !== true || !itemVoteState || votePending}
+                    aria-disabled={votePending}
+                    disabled={authed !== true || !itemVoteState}
                     onClick={() => handleVote('downvote')}
-                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    onKeyDown={ignoreKeyRepeat}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-wait aria-disabled:opacity-60 ${
                       !itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'
                         ? 'border-rose-500 bg-rose-500/15 text-rose-700 dark:text-rose-300'
                         : 'border-border text-muted-foreground hover:border-rose-500 hover:text-rose-700 dark:hover:text-rose-300'

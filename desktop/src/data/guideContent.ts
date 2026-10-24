@@ -876,7 +876,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Create a loadout profile',
-          body: 'Open Loadout Profiles, name the profile, and save it. A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off, and its entry says how many of each it covers. Apply sets every item the profile records to that state. A mod it does not list is switched off; packs and worlds it does not list, such as ones added since it was saved, keep their state. Applying first saves an undo point under Snapshots, labelled before-loadout (only the newest is kept). Configs, versions and the loader are not part of a profile. Relaunch Minecraft after applying a profile.',
+          body: 'Open Loadout Profiles, name the profile, and save it. A profile records which mods, resource packs, shader packs, data packs and worlds are switched on or off, and its entry says how many of each it covers. Apply sets every item the profile records to that state. A mod it does not list, such as one added since it was saved, is asked about when you apply: keep it on, or switch it off. Packs and worlds it does not list keep their state. Applying first saves an undo point under Snapshots, labelled before-loadout (only the newest is kept). Configs, versions and the loader are not part of a profile. Relaunch Minecraft after applying a profile.',
         },
         {
           title: 'Export and import a backup',
