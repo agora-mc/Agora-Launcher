@@ -6,8 +6,7 @@ Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery 
 
 ## AI disclaimer
 
-I have a degree in game development and computer science. That said, I used AI extensively to build Agora, this text block is part of the very little that was actually written by flesh and blood. I made decisions, over-viewed progress, and came up with ideas, but the work was done by a machine. Agora was still months of work. So while I tried my best to use my programming knowledge to steer it, this project was beyond my experience and skill level so there may be major architectural flaws and security risks. I would appreciate any suggestions from experienced professionals that would like to help. 
-For now Agora's small amount of art is also made by AI, but there's very little beyond I suppose the living background and I would be extremely grateful if someone wants to contribute their actual, human made work to Agora.
+I have a degree in game development and computer science. Using my experience, I worked with AI heavily to build Agora, nonetheless, everything has been reviewed, designed, and ideated by me. 
 
 ## Platforms and Signing
 
