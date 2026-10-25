@@ -156,9 +156,9 @@ export default async function DocsPage() {
       </section> */}
 
       <section>
-        <h2 className="text-2xl font-bold">Common questions</h2>
+        <h2 className="text-2xl font-bold">Common Questions</h2>
         <p className="mt-2 text-gray-600 dark:text-gray-300">
-          Straight to the guide that answers it.
+          Links to the Task Guide sections that asnwers it.
         </p>
         <ul className="mt-4 grid gap-2 sm:grid-cols-2">
           {COMMON_QUESTIONS.map((question) => (
