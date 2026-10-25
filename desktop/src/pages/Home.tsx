@@ -20,10 +20,10 @@ import {
 import type { Tab } from '../lib/useDestination';
 import type { ProcessState } from '../lib/useProcessController';
 import { TourStartButton } from '../features/tour';
-import { ArrowRight, BookOpen, GraduationCap, HeartHandshake, MessagesSquare } from 'lucide-react';
+import { ArrowRight, BookOpen, GraduationCap, HeartHandshake, Info, MessagesSquare } from 'lucide-react';
 import { agoraDiscordUrl, agoraSponsorsUrl } from '../lib/brandConfig';
 import { useConfirm } from '@/components/ui/confirm';
-import { GUIDE_TOPICS } from '../data/guideContent';
+import { GUIDE_OVERVIEW, GUIDE_TOPICS } from '../data/guideContent';
 import { healthCounts } from '@/lib/healthSummary';
 import { HealthNotice, ReviewBeforeLaunchButtons } from '../components/HealthLaunchControls';
 
@@ -289,6 +289,8 @@ export function Home({
         </p>
       </section>
 
+      <OverviewCard />
+
       {/* Zone A: Alerts — compact warnings */}
       {lastCrash && (
         <CrashAlert
@@ -527,6 +529,31 @@ function ContinuePlayingCard({ instance, loading, processState, healthReport, on
         )}
       </div>
     </div>
+  );
+}
+
+function OverviewCard() {
+  const { title, body, terms, callout } = GUIDE_OVERVIEW;
+  return (
+    <section aria-labelledby="home-overview-heading" className="rounded-xl border border-border bg-card p-5">
+      <h3 id="home-overview-heading" className="text-lg font-semibold">{title}</h3>
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{body}</p>
+      <dl className="mt-4 grid gap-2 lg:grid-cols-3">
+        {terms.map(({ term, definition }) => (
+          <div key={term} className="rounded-lg bg-muted/50 p-3">
+            <dt className="text-sm font-semibold">{term}</dt>
+            <dd className="mt-1 text-xs leading-5 text-muted-foreground">{definition}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-4 flex gap-3 rounded-lg border border-blue-500/25 bg-blue-500/5 p-3">
+        <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+        <div>
+          <p className="text-sm font-semibold">{callout.title}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{callout.text}</p>
+        </div>
+      </div>
+    </section>
   );
 }
 

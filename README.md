@@ -24,7 +24,7 @@ Windows is tested and signed, I don't have macOS or Linux right now so they are 
 - [CLI reference](https://agoramc.com/docs/cli)
 - [How the documentation is organized](./docs/README.md)
 
-Agora also includes a searchable **Help & Guide** tied to the current desktop interface. The website also publishes the same guides as well as .
+Agora also includes a searchable **Help & Guide** tied to the current desktop interface. The website also publishes the same guides as well as other useful documentation.
 
 ## First run
 

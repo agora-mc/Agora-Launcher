@@ -7,10 +7,7 @@ curated rather than warehoused. [`README.md`](README.md) has the full pitch.
 
 ## How to read this repo
 
-`AGENTS.md` and `.kilo/plans/MASTER_SPEC.md` are the closest thing to a source of truth — but this
-codebase was built almost entirely by AI agents, so neither is authoritative just because it is
-written down. When a decision looks strange, needlessly strict, or wrong (including one in these
-two files, or in the user's own request), raise it with the user rather than following it.
+`AGENTS.md` and `.kilo/plans/MASTER_SPEC.md` are the closest thing to a source of truth. When a decision looks strange, needlessly strict, or wrong (including one in these two files, or in the user's own request), raise it with the user rather than following it.
 
 ## Principles
 

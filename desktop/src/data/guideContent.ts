@@ -31,6 +31,38 @@ export interface GuideTopic {
   advanced: GuidePage;
 }
 
+export interface GuideOverview {
+  title: string;
+  body: string;
+  terms: { term: string; definition: string }[];
+  callout: GuideCallout;
+}
+
+/** Orientation shown at the top of the app's Home page and the website's docs home. */
+export const GUIDE_OVERVIEW: GuideOverview = {
+  title: 'What Agora manages',
+  body: 'Agora looks after the files and settings around modded Minecraft: instances, mods, packs, Java runtimes, snapshots, compatibility checks, and recovery. By default, the official Minecraft launcher still runs the game and handles your Microsoft account.',
+  terms: [
+    {
+      term: 'Instance',
+      definition: 'An isolated Minecraft setup with its own version, loader, mods, and settings.',
+    },
+    {
+      term: 'Mod loader',
+      definition: 'Software such as Fabric or Quilt that lets Minecraft load mods. Each instance has its own.',
+    },
+    {
+      term: 'Catalog',
+      definition: 'Agora\'s community-curated collection of mods, packs, and more. Downloading it turns on discovery and governance features.',
+    },
+  ],
+  callout: {
+    tone: 'note',
+    title: 'Your existing game is separate',
+    text: 'Creating an Agora instance does not replace your normal Minecraft installation. Changes stay inside the selected instance.',
+  },
+};
+
 export const GUIDE_TOPICS: GuideTopic[] = [
   {
     id: 'getting-started',
@@ -48,21 +80,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
       sections: [
         {
-          title: 'What Agora manages',
-          body: 'Agora manages the files and settings around modded Minecraft: instances, mods, packs, Java runtimes, snapshots, compatibility checks, and recovery. By default, the official Minecraft launcher still handles game execution and your Microsoft account.',
-          bullets: [
-            'An instance is an isolated Minecraft setup with its own version, loader, mods, and settings.',
-            'The catalog is Agora\'s community-curated collection of mods, packs, and more. Downloading it enables discovery and governance features.',
-            'A mod loader, such as Fabric or Quilt, lets Minecraft load mods. The loader belongs to an instance.',
-          ],
-          callout: {
-            tone: 'note',
-            title: 'Your existing game is separate',
-            text: 'Creating an Agora instance does not replace your normal Minecraft installation. Changes stay inside the selected instance.',
-          },
-        },
-        {
-          title: 'Onboarding, you did this already!',
+          title: 'Onboarding',
           body: 'The onboarding wizard checks the optional services and local tools Agora can use. You can skip optional connections and change them later in Settings.',
           steps: [
             'Review the service switches. Leave Modrinth on for a larger live catalog, or off to use only Agora-curated data.',
@@ -165,11 +183,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Read compatibility before popularity',
-          body: 'A popular project can still be wrong for your instance. Start from an instance-aware Browse search, look for Compatible, inspect the Versions page, and review the install plan before applying it.',
+          body: 'A popular project can still be wrong for your instance. When searching in the browse tab, select your instance in the top dropdown so Agora can filter the results to meet your instance.',
           callout: {
             tone: 'warning',
-            title: 'Major match is not a guarantee',
-            text: 'A major-version match is weaker than an exact compatible result. Back up the instance and expect to test it.',
+            title: 'Back up your instance',
+            text: 'We always recommend making a backup of your instance before making significant changes.',
           },
         },
       ],

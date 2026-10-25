@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { GITHUB_RELEASES_URL } from '@/lib/site';
 import { getDocNav } from '@/lib/docs';
-import { getGuideTopics } from '@/lib/guide';
+import { GUIDE_OVERVIEW, getGuideTopics } from '@/lib/guide';
+import { Callout } from '@/components/GuideBody';
 
 export const metadata = {
   title: 'Documentation - Agora',
@@ -100,10 +101,25 @@ export default async function DocsPage() {
 
   return (
     <div className="min-w-0 space-y-14">
+      <section className="rounded-xl border bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <h2 className="text-2xl font-bold">{GUIDE_OVERVIEW.title}</h2>
+        <p className="mt-3 max-w-3xl leading-7 text-gray-600 dark:text-gray-300">{GUIDE_OVERVIEW.body}</p>
+        <dl className="mt-5 grid gap-3 md:grid-cols-3">
+          {GUIDE_OVERVIEW.terms.map(({ term, definition }) => (
+            <div key={term} className="panel-inset p-4">
+              <dt className="font-semibold text-indigo-700 dark:text-indigo-400">{term}</dt>
+              <dd className="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">{definition}</dd>
+            </div>
+          ))}
+        </dl>
+        <Callout callout={GUIDE_OVERVIEW.callout} />
+      </section>
+
       <header>
         <p className="text-sm font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">
           Agora documentation
         </p>
+        
         <h1 className="mt-2 text-4xl font-bold tracking-tight">What are you trying to do?</h1>
         <p className="mt-4 max-w-3xl text-lg leading-8 text-gray-600 dark:text-gray-300">
           This page is a hub for all the documentation Agora provides. It is organized by what you are trying to do, so you can find the right information quickly. 
