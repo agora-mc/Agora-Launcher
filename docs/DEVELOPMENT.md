@@ -146,7 +146,9 @@ Desktop frontend (from `desktop/`): `npm run build && npm run typecheck:e2e && n
 `npm run build` runs the boundary checks, `tsc` and `vite build`. `typecheck:e2e` checks the
 Playwright specs against `e2e/tsconfig.json`: the main `tsc` covers `src/` only, and Playwright
 strips types without checking them. End-to-end tests (`npx playwright test`) are slower; run them
-when touching UI flows.
+when touching UI flows. They use the Vite dev server, which is fine for a few specs but can be
+overloaded by a full parallel run; for the full suite use `npm run test:e2e:built`, which builds and
+tests the bundle the app ships. `E2E_PORT=<port>` runs either on another port than 5173.
 
 Compiler (from `compiler/`, in a venv with `requirements.txt`):
 `python compile.py --skip-sign --no-governance-write --governance-mode off --out ../registry.db && python ../scripts/verify_db.py`.
