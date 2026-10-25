@@ -2,7 +2,9 @@
 
 > This is not a warehouse. This is a boutique.
 
-Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery platform. Community-curated manifests are compiled into a signed catalog, and each Minecraft setup lives in an isolated instance.
+Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery platform. Agora uses community-curated manifests compiled into a signed catalog to provide a community managed, curated list of mods from any source. 
+
+If you aren't a contributor or developer, I recommend visiting Agora's website, https://agoramc.com/.
 
 ## AI disclaimer
 
@@ -14,15 +16,15 @@ Windows is tested and signed, I don't have macOS or Linux right now so they are 
 
 ## Download and documentation
 
-- [Desktop and CLI releases](https://github.com/agora-mc/Agora-Launcher/releases) - choose the newest published `v*` release, not a `registry-*` data release.
-- [Website](https://agoramc.com/)
+- [Website](https://agoramc.com/) - if you aren't a contributor or developer, this is the place to go!
 - [Documentation home](https://agoramc.com/docs) - start here; it routes you by what you are trying to do.
 - [Task guides](https://agoramc.com/docs/guides) - every workflow, written both as steps and as an explanation.
-- [Troubleshooting and support](./docs/TROUBLESHOOTING.md)
-- [CLI reference](./docs/CLI.md)
+- [Desktop and CLI releases](https://github.com/agora-mc/Agora-Launcher/releases) - choose the newest published `v*` release, not a `registry-*` data release.
+- [Troubleshooting and support](https://agoramc.com/docs/troubleshooting)
+- [CLI reference](https://agoramc.com/docs/cli)
 - [How the documentation is organized](./docs/README.md)
 
-Agora also includes a searchable **Help & Guide** tied to the current desktop interface. The website publishes the same guides, so nothing there can contradict the app.
+Agora also includes a searchable **Help & Guide** tied to the current desktop interface. The website also publishes the same guides as well as .
 
 ## First run
 
@@ -60,7 +62,7 @@ Agora makes no automated analytics calls. Functional features can still contact 
 
 ## Project principles
 
-- **$0/month server footprint** - GitHub, GitHub Release Assets, and static hosting carry the public distribution load.
+- **low cost no-server, highly scalable footprint** - GitHub, GitHub Release Assets, and static hosting carry the public distribution load.
 - **No forced sign-in** - Agora works without a Microsoft account, so delegated launch is the default. Direct launch is an equally supported mode, not a fallback.
 - **Curated, not warehoused** - boutique quality and community review take priority over inventory size.
 - **Decentralized governance** - votes, reviews, and triage remain inspectable GitHub interactions.
