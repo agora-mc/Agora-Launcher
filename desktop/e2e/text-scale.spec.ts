@@ -541,7 +541,12 @@ for (const [width, order] of [[1024, 'default'], [1280, 'default'], [1024, 'reve
             await expect(target).not.toHaveAttribute('aria-checked', before ?? '');
           } else if (control.real) {
             await target.click({ timeout: 3_000 });
+            // Wait for the menu before Escape: against the fast built bundle,
+            // an Escape sent while it is still opening is lost, the open menu
+            // then blocks every later click, and the test times out.
+            await expect(page.getByRole('menu')).toBeVisible({ timeout: 3_000 });
             await page.keyboard.press('Escape');
+            await expect(page.getByRole('menu')).toHaveCount(0, { timeout: 3_000 });
           } else {
             await target.click({ trial: true, timeout: 3_000 });
           }
