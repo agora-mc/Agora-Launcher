@@ -1,4 +1,7 @@
 #![warn(clippy::large_futures)]
+mod cli_bisect;
+mod cli_packs;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
@@ -15,6 +18,10 @@ use agora_core::plugins::{CapabilityDescription, InstallPreview, PluginService, 
 use agora_core::registry::RegistryService;
 use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
+
+mod cli_govniche;
+mod cli_tools;
+mod cli_updates;
 
 /// The guide `agora skill` prints for an AI agent driving this CLI.
 const AGENT_SKILL: &str = include_str!("../skills/agora/SKILL.md");
@@ -182,8 +189,11 @@ enum Commands {
         #[command(subcommand)]
         action: SnapshotsCmd,
     },
-    /// Import a local supported pack or a remote .mrpack URL.
+    /// Import a local supported pack or a remote .mrpack URL, or import instances from other launchers.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Import {
+        #[command(subcommand)]
+        action: Option<cli_packs::ImportCmd>,
         #[arg(required_unless_present = "url")]
         path: Option<PathBuf>,
         #[arg(
@@ -280,6 +290,31 @@ enum Commands {
         #[command(subcommand)]
         action: LockfileCmd,
     },
+    /// Save, list, apply, or delete instance templates (captured configs and JVM settings).
+    Template {
+        #[command(subcommand)]
+        action: cli_tools::TemplateCmd,
+    },
+    /// Find the mod that breaks a launch by turning halves of your mods off and on.
+    Bisect {
+        #[command(subcommand)]
+        action: cli_bisect::BisectCmd,
+    },
+    /// Read governance state: summaries, events, config, and diagnostics. Read-only.
+    Governance {
+        #[command(subcommand)]
+        action: cli_govniche::GovernanceCmd,
+    },
+    /// Search Technic packs and install them as new instances.
+    Technic {
+        #[command(subcommand)]
+        action: cli_govniche::TechnicCmd,
+    },
+    /// Export, import, and prune instance backups.
+    Backup {
+        #[command(subcommand)]
+        action: cli_packs::BackupCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -336,6 +371,9 @@ enum InstanceCmd {
     Lock { id: String },
     /// Unlock a locked instance.
     Unlock { id: String },
+    /// Health, revert, loader version, Java, and wrapper maintenance.
+    #[command(flatten)]
+    Tools(cli_tools::InstanceToolsCmd),
     /// Delete an instance. It stays in Recently deleted for 30 days.
     Delete { id: String },
     /// List instances in Recently deleted (ID, name, deleted when, size).
@@ -358,6 +396,20 @@ enum InstanceCmd {
     RepairLoader { id: String },
     /// Explain the current automatic memory estimate without changing settings.
     RecommendMemory { id: String },
+    /// Check installed content for newer versions. With --apply, plan the updates
+    /// as one batch (one snapshot, full rollback); add --yes to run that plan.
+    Updates {
+        /// Instance ID.
+        instance: String,
+        #[arg(long, help = "Plan the available updates as one batch")]
+        apply: bool,
+        #[arg(
+            long,
+            requires = "apply",
+            help = "Run the planned batch without asking"
+        )]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -449,6 +501,21 @@ enum PluginCmd {
     /// Disable every installed plugin as a recovery action.
     #[command(name = "disable-all")]
     DisableAll,
+    /// Show a plugin's declared settings and their current values.
+    Settings {
+        /// Plugin id.
+        id: String,
+    },
+    /// Set one of a plugin's settings. VALUE is read as JSON (`true`, `42`,
+    /// `"text"`); text that is not valid JSON is taken as a plain string.
+    Set {
+        /// Plugin id.
+        id: String,
+        /// Setting key, as declared by the plugin.
+        key: String,
+        /// New value.
+        value: String,
+    },
     /// Ask a plugin's publisher whether there is a newer release.
     ///
     /// Fetches only the signed metadata, never a package. With no id, checks
@@ -650,6 +717,11 @@ enum ModsCmd {
     Enable {
         instance: String,
         file: String,
+        #[arg(
+            long,
+            help = "Also re-enable the required dependencies that are switched off"
+        )]
+        with_deps: bool,
     },
     /// Disable a mod by renaming <file> to <file>.disabled.
     Disable {
@@ -676,6 +748,27 @@ enum ModsCmd {
     SyncDatapacks {
         instance: String,
     },
+    /// Keep an installed file out of update checks until it is unpinned.
+    Pin {
+        instance: String,
+        /// Installed file name, as shown by `mod list`.
+        file: String,
+    },
+    /// Let an installed file be offered for updates again.
+    Unpin {
+        instance: String,
+        /// Installed file name, as shown by `mod list`.
+        file: String,
+    },
+    /// Show the changelog between an installed file and its pending update.
+    Changelog {
+        instance: String,
+        /// Installed file name, as shown by `mod list`.
+        file: String,
+    },
+    /// Dependency graph, orphans, why a mod is here, and disable impact (read-only).
+    #[command(flatten)]
+    Tools(cli_tools::ModsToolsCmd),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -703,6 +796,35 @@ enum ModSourceArg {
 enum RegistryCmd {
     Status,
     Sync,
+    /// List registry items currently under review, lowest score first.
+    #[command(name = "under-review")]
+    UnderReview,
+    /// Show the curator reviews recorded for one registry item.
+    Reviews {
+        /// Registry item ID.
+        item: String,
+    },
+    /// Show recent audit log entries, newest first.
+    #[command(name = "audit-log")]
+    AuditLog {
+        #[arg(
+            long,
+            default_value_t = 200,
+            value_parser = clap::value_parser!(i64).range(1..=1000),
+            help = "Maximum entries (1-1000)"
+        )]
+        limit: i64,
+    },
+    /// Show recent triage resolutions from the audit log.
+    Resolutions {
+        #[arg(
+            long,
+            default_value_t = 50,
+            value_parser = clap::value_parser!(u32).range(1..=1000),
+            help = "Maximum resolutions (1-1000)"
+        )]
+        limit: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -750,12 +872,33 @@ enum RuntimeCmd {
 
 #[derive(Subcommand)]
 enum PackCmd {
-    /// Install a pack manifest JSON file into an existing instance.
+    /// Export an instance as a .mrpack, an Agora pack, or a lockfile.
+    Export(cli_packs::PackExportArgs),
+    /// Show what importing a pack file would do and stage the reviewed copy.
+    Review(cli_packs::PackReviewArgs),
+    /// Import a pack file that `pack review` staged.
+    Import(cli_packs::PackImportArgs),
+    /// Install a pack manifest JSON file into an existing instance, or a
+    /// content provider's modpack as a new instance (with --provider).
     Install {
-        /// Path to the pack manifest JSON file.
-        path: PathBuf,
-        /// Target instance ID.
-        instance: String,
+        /// Path to the pack manifest JSON file (omit with --provider).
+        #[arg(required_unless_present = "provider", conflicts_with = "provider")]
+        path: Option<PathBuf>,
+        /// Target instance ID (omit with --provider).
+        #[arg(required_unless_present = "provider", conflicts_with = "provider")]
+        instance: Option<String>,
+        /// Content provider to install from, e.g. `modrinth`.
+        #[arg(long, requires = "project")]
+        provider: Option<String>,
+        /// Project ID on that provider (with --provider).
+        #[arg(long, requires = "provider")]
+        project: Option<String>,
+        /// Version ID on that provider (with --provider; omit to let the provider choose).
+        #[arg(long, requires = "provider")]
+        version: Option<String>,
+        /// Name for the new instance (with --provider).
+        #[arg(long, requires = "provider")]
+        name: Option<String>,
     },
     /// List a curated registry pack's locked releases, newest first.
     Versions {
@@ -778,6 +921,35 @@ enum PackCmd {
         release: Option<String>,
         #[arg(long, help = "Print the plan without installing")]
         dry_run: bool,
+    },
+    /// Preview what a newer .mrpack would change in an instance. Changes nothing.
+    UpdatePreview {
+        /// Target instance ID.
+        instance: String,
+        /// The newer .mrpack file.
+        mrpack: PathBuf,
+    },
+    /// Apply a newer .mrpack to an instance. Every conflict needs --keep-ours or
+    /// --take-theirs; without --yes nothing is changed.
+    Update {
+        /// Target instance ID.
+        instance: String,
+        /// The newer .mrpack file.
+        mrpack: PathBuf,
+        #[arg(
+            long = "keep-ours",
+            value_name = "KEY",
+            help = "Keep the instance's file for this conflict (repeatable)"
+        )]
+        keep_ours: Vec<String>,
+        #[arg(
+            long = "take-theirs",
+            value_name = "KEY",
+            help = "Take the new pack's file for this conflict (repeatable)"
+        )]
+        take_theirs: Vec<String>,
+        #[arg(long, help = "Apply the update without asking")]
+        yes: bool,
     },
 }
 
@@ -1366,9 +1538,12 @@ fn touches_instances(command: &Commands) -> bool {
             | Commands::Launch { .. }
             | Commands::Mcp { .. }
             | Commands::Pack { .. }
+            | Commands::Technic { .. }
             | Commands::Export { .. }
             | Commands::Loadout { .. }
             | Commands::Lockfile { .. }
+            | Commands::Bisect { .. }
+            | Commands::Backup { .. }
     )
 }
 
@@ -1984,6 +2159,10 @@ async fn run_plugin_command(
         // Handled by the guard directly above, and by `main` before core even
         // starts. Unreachable in both senses, and harmless if it ever is not.
         PluginCmd::Keygen { .. } | PluginCmd::Sign { .. } => {}
+        PluginCmd::Settings { id } => cli_govniche::plugin_settings(service, &id, json)?,
+        PluginCmd::Set { id, key, value } => {
+            cli_govniche::plugin_set(service, &id, &key, &value, json)?
+        }
         PluginCmd::DisableAll => {
             let disabled = service.disable_all()?;
             if json {
@@ -2497,7 +2676,18 @@ async fn run_mods_command(
                 }
             }
         }
-        ModsCmd::Enable { instance, file } => {
+        ModsCmd::Enable {
+            instance,
+            file,
+            with_deps: true,
+        } => {
+            cli_tools::enable_with_deps(ctx, &instance, &file, output_fmt)?;
+        }
+        ModsCmd::Enable {
+            instance,
+            file,
+            with_deps: false,
+        } => {
             CrashService::new(ctx.clone()).enable_mod(&instance, &file)?;
             if json {
                 println!(
@@ -2533,6 +2723,16 @@ async fn run_mods_command(
             let report = agora_core::datapack_sync::sync_instance(ctx, &instance)?;
             print_datapack_sync(&instance, &report, json)?;
         }
+        ModsCmd::Pin { instance, file } => {
+            cli_updates::set_mod_pin(ctx, &instance, &file, true, json)?
+        }
+        ModsCmd::Unpin { instance, file } => {
+            cli_updates::set_mod_pin(ctx, &instance, &file, false, json)?
+        }
+        ModsCmd::Changelog { instance, file } => {
+            cli_updates::mod_changelog(ctx, &instance, &file, json).await?
+        }
+        ModsCmd::Tools(action) => cli_tools::run_mods_tools(action, ctx, output_fmt)?,
         ModsCmd::UpdateAll {
             instance,
             include_optional,
@@ -2811,6 +3011,9 @@ async fn run_instance_command(
                 println!("Unlocked instance '{}'", id);
             }
         }
+        InstanceCmd::Tools(action) => {
+            Box::pin(cli_tools::run_instance_tools(action, ctx, output_fmt)).await?
+        }
         InstanceCmd::Delete { id } => {
             InstanceService::new(ctx.clone()).delete(&id)?;
             if json {
@@ -2940,18 +3143,48 @@ async fn run_instance_command(
                 }
             }
         }
+        InstanceCmd::Updates {
+            instance,
+            apply,
+            yes,
+        } => cli_updates::instance_updates(ctx, &instance, apply, yes, json).await?,
     }
     Ok(())
 }
 
 async fn run_pack_command(
     action: PackCmd,
+    data_dir: &Path,
     ctx: &agora_core::ctx::Ctx,
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
     match action {
-        PackCmd::Install { path, instance } => {
+        PackCmd::Export(args) => cli_packs::pack_export(args, data_dir, ctx, output_fmt).await?,
+        PackCmd::Review(args) => cli_packs::pack_review(args, ctx, output_fmt).await?,
+        PackCmd::Import(args) => cli_packs::pack_import(args, ctx, output_fmt).await?,
+        PackCmd::Install {
+            provider: Some(provider),
+            project: Some(project),
+            version,
+            name,
+            ..
+        } => {
+            cli_govniche::install_provider_pack(
+                ctx,
+                &provider,
+                &project,
+                version.as_deref(),
+                name.as_deref(),
+                json,
+            )
+            .await?;
+        }
+        PackCmd::Install {
+            path: Some(path),
+            instance: Some(instance),
+            ..
+        } => {
             let json_text = std::fs::read_to_string(&path).map_err(|e| {
                 anyhow::anyhow!("Cannot read pack manifest '{}': {}", path.display(), e)
             })?;
@@ -2972,6 +3205,11 @@ async fn run_pack_command(
                     result.name, result.mods_installed
                 );
             }
+        }
+        PackCmd::Install { .. } => {
+            anyhow::bail!(
+                "Give a pack manifest path and an instance, or --provider with --project."
+            );
         }
         PackCmd::Versions { pack } => {
             let releases =
@@ -3100,6 +3338,19 @@ async fn run_pack_command(
                     anyhow::bail!("Install failed and rolled back: {}", error);
                 }
             }
+        }
+        PackCmd::UpdatePreview { instance, mrpack } => {
+            cli_updates::pack_update_preview(ctx, &instance, &mrpack, json)?
+        }
+        PackCmd::Update {
+            instance,
+            mrpack,
+            keep_ours,
+            take_theirs,
+            yes,
+        } => {
+            cli_updates::pack_update(ctx, &instance, &mrpack, &keep_ours, &take_theirs, yes, json)
+                .await?
         }
     }
     Ok(())
@@ -3271,24 +3522,24 @@ async fn run_auth_command(
                 }
             });
 
-            let credentials =
+            let account =
                 agora_core::msa::poll_login(&ctx.http_clients, &flow, &db_path, &cancel).await?;
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
-                        "username": credentials.username,
-                        "uuid": credentials.uuid,
-                        "expires": credentials.expires,
+                        "username": account.username,
+                        "uuid": account.uuid,
+                        "expires": account.expires,
                     })
                 );
             } else {
-                println!("Signed in as {}", credentials.username);
+                println!("Signed in as {}", account.username);
             }
         }
         AuthCmd::Status => match agora_core::msa::load_credentials()? {
-            Some(creds) => {
-                if creds.needs_reauth() {
+            Some(account) => {
+                if account.needs_reauth() {
                     // Stored by the pre-migration flow: no refresh token
                     // Agora now holds can renew it.
                     if json {
@@ -3296,24 +3547,24 @@ async fn run_auth_command(
                             "{}",
                             serde_json::json!({
                                 "status": "sign_in_required",
-                                "username": creds.username,
+                                "username": account.username,
                                 "reason": agora_core::msa::LEGACY_CREDENTIALS_MESSAGE,
                             })
                         );
                     } else {
-                        println!("Signed in as {} — sign-in required", creds.username);
+                        println!("Signed in as {} — sign-in required", account.username);
                         println!("{}", agora_core::msa::LEGACY_CREDENTIALS_MESSAGE);
                     }
-                } else if creds.is_expired() {
+                } else if account.is_expired() {
                     if json {
                         println!(
                             "{}",
-                            serde_json::json!({"status": "expired", "username": creds.username})
+                            serde_json::json!({"status": "expired", "username": account.username})
                         );
                     } else {
                         println!(
                             "Signed in as {} (expired — run 'agora auth login')",
-                            creds.username
+                            account.username
                         );
                     }
                 } else {
@@ -3322,14 +3573,14 @@ async fn run_auth_command(
                             "{}",
                             serde_json::json!({
                                 "status": "valid",
-                                "username": creds.username,
-                                "expires": creds.expires,
+                                "username": account.username,
+                                "expires": account.expires,
                             })
                         );
                     } else {
                         println!(
                             "Signed in as {} (expires {})",
-                            creds.username, creds.expires
+                            account.username, account.expires
                         );
                     }
                 }
@@ -3673,6 +3924,10 @@ async fn run_registry_command(
                 }
             }
         }
+        RegistryCmd::UnderReview => cli_govniche::registry_under_review(ctx, json)?,
+        RegistryCmd::Reviews { item } => cli_govniche::registry_reviews(ctx, &item, json)?,
+        RegistryCmd::AuditLog { limit } => cli_govniche::registry_audit_log(ctx, limit, json)?,
+        RegistryCmd::Resolutions { limit } => cli_govniche::registry_resolutions(ctx, limit, json)?,
     }
     Ok(())
 }
@@ -4185,6 +4440,7 @@ async fn run_command(
             Box::pin(run_snapshots_command(action, data_dir, ctx, output_fmt)).await?
         }
         Commands::Import {
+            action: None,
             path,
             url,
             symlink_saves,
@@ -4403,7 +4659,22 @@ async fn run_command(
                 }
             }
         }
-        Commands::Pack { action } => Box::pin(run_pack_command(action, ctx, output_fmt)).await?,
+        Commands::Pack { action } => {
+            Box::pin(run_pack_command(action, data_dir, ctx, output_fmt)).await?
+        }
+        Commands::Backup { action } => {
+            cli_packs::run_backup(action, data_dir, ctx, output_fmt).await?
+        }
+        Commands::Import {
+            action: Some(action),
+            ..
+        } => cli_packs::run_import(action, ctx, output_fmt).await?,
+        Commands::Governance { action } => {
+            cli_govniche::run_governance_command(action, ctx, output_fmt).await?
+        }
+        Commands::Technic { action } => {
+            cli_govniche::run_technic_command(action, ctx, output_fmt).await?
+        }
         Commands::Export { instance, dest } => {
             let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
             if !instance_dir.exists() {
@@ -4435,6 +4706,9 @@ async fn run_command(
         }
         Commands::Loadout { action } => {
             Box::pin(run_loadout_command(action, data_dir, ctx, output_fmt)).await?
+        }
+        Commands::Bisect { action } => {
+            Box::pin(cli_bisect::run_bisect_command(action, ctx, output_fmt)).await?
         }
         Commands::Lockfile { action } => match action {
             LockfileCmd::Export {
@@ -4605,6 +4879,7 @@ async fn run_command(
                 }
             }
         },
+        Commands::Template { action } => cli_tools::run_template_command(action, ctx, output_fmt)?,
     }
 
     Ok(())

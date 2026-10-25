@@ -51,6 +51,15 @@ pub struct UpdateInfo {
     pub latest_released: Option<String>,
 }
 
+impl UpdateInfo {
+    /// True for a row that is an update: the one Update All may apply and the
+    /// instance badge may count. Notes (`needs_minecraft`) and `uncertain` rows
+    /// stay in the update panel for the user to read and never go in a batch.
+    pub fn is_applicable(&self) -> bool {
+        self.needs_minecraft.is_none() && !self.uncertain
+    }
+}
+
 /// How long a cached candidate list is considered fresh for read-through.
 ///
 /// Applies to both layers: the persistent `update_candidate_cache` row and the
@@ -75,7 +84,7 @@ pub fn set_cached_instance_updates(
     // cached rows, so they must never be stored.
     let real: Vec<&UpdateInfo> = updates
         .iter()
-        .filter(|update| update.needs_minecraft.is_none() && !update.uncertain)
+        .filter(|update| update.is_applicable())
         .collect();
     let json = serde_json::to_string(&real)?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -1012,6 +1021,26 @@ async fn curated_candidates_cached(
         let _ = set_cached_candidates(&conn, &cache_key, &candidates);
     }
     Ok(candidates)
+}
+
+/// Check one instance and store the applicable rows for the instance badge.
+///
+/// The desktop's `check_instance_updates` command and `agora instance updates`
+/// both come through here, so the update panel and the badge are written from
+/// the same result.
+pub async fn check_and_cache_instance_updates(
+    ctx: &Ctx,
+    instance_id: &str,
+    opts: UpdateCheckOptions<'_>,
+) -> LauncherResult<Vec<UpdateInfo>> {
+    let sanitized = crate::paths::sanitize_id(instance_id);
+    let updates = check_single_instance_updates_with(ctx, &sanitized, opts).await?;
+
+    // Persist so the result survives restart and can be read back without network.
+    if let Ok(conn) = db::local_state_connection(&ctx.paths.local_state_db()) {
+        let _ = set_cached_instance_updates(&conn, &sanitized, &updates);
+    }
+    Ok(updates)
 }
 
 /// Check a single instance for updates with the background sweep's policy.

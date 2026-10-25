@@ -2,7 +2,8 @@ use crate::ctx::Ctx;
 use crate::dependency_ops::VersionGrammar;
 use crate::error::{LauncherError, LauncherResult};
 use crate::governance::{
-    get_governance_summary, list_governance_events, GovernanceEvent, GovernanceSummary,
+    get_governance_summary, list_governance_events, table_exists, GovernanceEvent,
+    GovernanceSummary,
 };
 use crate::registry_sync::APP_REGISTRY_SCHEMA_VERSION;
 use crate::version_match::{evaluate_version_match, VersionMatch};
@@ -1192,17 +1193,10 @@ pub struct AuditLogEntry {
 
 /// List audit log entries from the registry DB (newest first by id).
 ///
-/// Defensively returns an empty vec if the `audit_log` table does not exist
-/// (older registry.db builds predate this table) so the UI degrades gracefully.
+/// Returns an empty vec only if the `audit_log` table does not exist (older
+/// registry.db builds predate this table). Any failed query is an error.
 pub fn list_audit_log(conn: &Connection, limit: i64) -> LauncherResult<Vec<AuditLogEntry>> {
-    let has_table: bool = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_log'",
-            [],
-            |_| Ok(true),
-        )
-        .unwrap_or(false);
-    if !has_table {
+    if !table_exists(conn, "audit_log")? {
         return Ok(Vec::new());
     }
 
@@ -1318,19 +1312,13 @@ pub fn list_under_review_items(conn: &Connection) -> LauncherResult<Vec<UnderRev
 
 /// List recent triage resolutions from the audit log.
 ///
-/// Defensively returns an empty vec if the `audit_log` table does not exist.
+/// Returns an empty vec only if the `audit_log` table does not exist. Any
+/// failed query is an error.
 pub fn list_recent_resolutions(
     conn: &Connection,
     limit: u32,
 ) -> LauncherResult<Vec<AuditLogEntry>> {
-    let has_table: bool = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_log'",
-            [],
-            |_| Ok(true),
-        )
-        .unwrap_or(false);
-    if !has_table {
+    if !table_exists(conn, "audit_log")? {
         return Ok(Vec::new());
     }
 
@@ -1379,9 +1367,10 @@ pub struct ModReview {
 
 /// Load parsed curator reviews for a single item.
 ///
-/// Reads the JSON array from `curator_reviews.top_reviews_json`, parses it,
-/// and returns the resulting `ModReview` list. On NULL/empty/missing row or
-/// parse error, returns `Ok(vec![])`.
+/// Reads the JSON array from `curator_reviews.top_reviews_json` and parses it.
+/// An item with no row, or a NULL/empty cell, has no reviews: `Ok(vec![])`.
+/// A failed query, or a cell that does not parse, is an error: it must not look
+/// like "no reviews".
 pub fn list_mod_reviews(conn: &Connection, item_id: String) -> LauncherResult<Vec<ModReview>> {
     let mut stmt = conn
         .prepare("SELECT top_reviews_json FROM curator_reviews WHERE item_id = ?1")
@@ -1390,17 +1379,28 @@ pub fn list_mod_reviews(conn: &Connection, item_id: String) -> LauncherResult<Ve
             message: e.to_string(),
         })?;
 
-    let raw: Option<String> = stmt.query_row([item_id], |row| row.get(0)).ok();
+    let raw: Option<String> =
+        match stmt.query_row([item_id.as_str()], |row| row.get::<_, Option<String>>(0)) {
+            Ok(raw) => raw,
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                return Err(LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: format!("Cannot read curator reviews for '{item_id}': {e}"),
+                })
+            }
+        };
 
     let json_str = match raw {
         Some(s) if !s.is_empty() => s,
         _ => return Ok(Vec::new()),
     };
 
-    let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
-        Ok(v) => v,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let parsed: Vec<serde_json::Value> =
+        serde_json::from_str(&json_str).map_err(|e| LauncherError::Generic {
+            code: "ERR_CURATOR_REVIEWS_PARSE".to_string(),
+            message: format!("Curator reviews for '{item_id}' are not readable JSON: {e}"),
+        })?;
 
     let mut out = Vec::new();
     for val in parsed {
@@ -2637,6 +2637,57 @@ mod tests {
         let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
         let reviews = list_mod_reviews(&conn, "nonexistent".to_string()).unwrap();
         assert!(reviews.is_empty());
+    }
+
+    /// A connection to a file that is not a SQLite database, so every query on
+    /// it fails. The read paths must report that, not show an empty list.
+    fn broken_registry() -> (TempDir, Connection) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("registry.db");
+        std::fs::write(&path, b"this file is plain text, not a SQLite database").unwrap();
+        let conn = Connection::open(&path).unwrap();
+        (dir, conn)
+    }
+
+    #[test]
+    fn a_broken_registry_is_an_error_not_an_empty_list() {
+        let (_dir, conn) = broken_registry();
+        assert!(list_audit_log(&conn, 10).is_err());
+        assert!(list_recent_resolutions(&conn, 10).is_err());
+        assert!(list_mod_reviews(&conn, "any-item".into()).is_err());
+        assert!(list_under_review_items(&conn).is_err());
+    }
+
+    #[test]
+    fn a_registry_without_an_audit_log_table_has_no_entries_yet() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(list_audit_log(&conn, 10).unwrap().is_empty());
+        assert!(list_recent_resolutions(&conn, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_review_cell_that_is_null_or_absent_means_no_reviews() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE curator_reviews (item_id TEXT PRIMARY KEY, top_reviews_json TEXT);
+             INSERT INTO curator_reviews VALUES ('null-cell', NULL);",
+        )
+        .unwrap();
+        assert!(list_mod_reviews(&conn, "null-cell".into())
+            .unwrap()
+            .is_empty());
+        assert!(list_mod_reviews(&conn, "no-row".into()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_review_cell_that_does_not_parse_is_an_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE curator_reviews (item_id TEXT PRIMARY KEY, top_reviews_json TEXT);
+             INSERT INTO curator_reviews VALUES ('bad-cell', 'not json at all');",
+        )
+        .unwrap();
+        assert!(list_mod_reviews(&conn, "bad-cell".into()).is_err());
     }
 
     #[test]

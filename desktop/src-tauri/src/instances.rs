@@ -32,6 +32,17 @@ pub async fn create_instance<R: tauri::Runtime>(
         .await
 }
 
+/// The sink that feeds the Create dialog for `instance_id`.
+pub fn create_progress_sink<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    instance_id: &str,
+) -> std::sync::Arc<dyn agora_core::event_sink::ProgressSink> {
+    std::sync::Arc::new(CreateProgressEmitter {
+        app: app.clone(),
+        instance_id: instance_id.to_string(),
+    })
+}
+
 /// Forwards the core's create-time progress to the Create dialog, which listens
 /// for `instance:create-progress`. Without this sink the dialog sat on
 /// "Starting..." for the whole download, because nothing was ever emitted.

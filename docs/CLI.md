@@ -168,6 +168,23 @@ agora plugin install package ./example-plugin.zip
 
 Use `--registry-repo` only for an intentional development or sandbox catalog. A different repository changes the trust and governance boundary.
 
+### Registry review and governance
+
+These commands only read. They never vote, and they never post to GitHub.
+
+| Command | Purpose |
+| --- | --- |
+| `agora registry under-review` | List registry items under review, lowest score first |
+| `agora registry reviews <ITEM>` | Show the curator reviews recorded for one item |
+| `agora registry audit-log [--limit N]` | Show recent audit log entries, newest first (1-1000, default 200) |
+| `agora registry resolutions [--limit N]` | Show recent triage resolutions (1-1000, default 50) |
+| `agora governance summary <ITEM>` | Show the vote counts and status for one item |
+| `agora governance events [--item <ITEM>] [--limit N]` | List governance events, newest first (1-1000, default 100) |
+| `agora governance config` | Show the governance repository and environment this build uses |
+| `agora governance diagnostics` | Run the governance setup checks, local and GitHub |
+
+These queries read the installed registry, so they fail with an error when none is installed; run `agora registry sync` first. A registry database that cannot be read is an error too, never an empty list. An empty list means there is genuinely nothing to show. `governance diagnostics` prints one line per check and exits with status 1 when any check fails. Its GitHub checks are read-only requests. When GitHub is unreachable or you are not signed in, those checks report their own failure rather than passing.
+
 ### Instances
 
 ```text
@@ -182,6 +199,11 @@ agora instance delete
 agora instance deleted
 agora instance restore
 agora instance purge
+agora instance health <INSTANCE_ID> | --all
+agora instance revert <INSTANCE_ID>
+agora instance loader-version <INSTANCE_ID> <VERSION> [--yes]
+agora instance java <INSTANCE_ID> [--path <FILE> | --clear-path] [--memory <MB>] [--jvm-args <ARGS>]
+agora instance wrapper <INSTANCE_ID> [<COMMAND> | --clear]
 ```
 
 Examples:
@@ -190,6 +212,9 @@ Examples:
 agora instance recommend-memory <INSTANCE_ID>
 agora instance lock <INSTANCE_ID>
 agora instance clone <SOURCE_ID> "Debug Copy" --no-saves
+agora instance health --all
+agora instance java <INSTANCE_ID> --memory 6144 --jvm-args "-Dexample.flag=true"
+agora instance wrapper <INSTANCE_ID> "mangohud --dlsym"
 ```
 
 Clone flags can omit saves, mods, resource packs, shader packs, screenshots, configuration, `servers.dat`, or options. Hard-link and symlink modes change filesystem behavior and should be used only when the destination and source relationship is understood.
@@ -204,6 +229,14 @@ agora instance restore <ENTRY_ID>
 agora instance purge <ENTRY_ID> --yes
 ```
 
+`instance health` runs the same cached health check the desktop app uses. With `--all` it checks every instance, prints the whole table, and then exits nonzero if any instance is red or cannot be read. `instance revert` returns an unlocked instance to the snapshot taken when it was last locked, and takes an undo point first. It refuses an instance that was never locked.
+
+`instance loader-version` shows the current loader, the compatible versions for the enabled mods, and the recommendation, then asks before switching. A version outside the compatible list is refused before anything changes. `--yes` skips the question.
+
+`instance java` with no options shows the current settings. `--path` must name an existing file, and `--clear-path` goes back to the global Java setting. `--memory` is in MB; Agora keeps heap sizes between 2048 and 32768 and says so when it adjusts one. Setting memory makes the choice manual, as creation does. `--jvm-args` replaces the instance's arguments.
+
+`instance wrapper` sets the command the game is launched under, for example a frame-timing overlay. It is checked the way the launcher reads it, so an unmatched quote is refused. An empty command or `--clear` removes it.
+
 ### Mods and content
 
 ```text
@@ -213,10 +246,25 @@ agora mod install <PROJECT> <INSTANCE>
 agora mod remove <PROJECT> <INSTANCE>
 agora mod update <INSTANCE> <ITEM>
 agora mod update-all <INSTANCE>
-agora mod enable <INSTANCE> <FILE>
+agora mod pin <INSTANCE> <FILE>
+agora mod unpin <INSTANCE> <FILE>
+agora mod changelog <INSTANCE> <FILE>
+agora mod enable <INSTANCE> <FILE> [--with-deps]
 agora mod disable <INSTANCE> <FILE>
 agora mod worlds <INSTANCE> <FILE> --worlds <A,B> | --all
 agora mod sync-datapacks <INSTANCE>
+agora mod graph <INSTANCE>
+agora mod orphans <INSTANCE>
+agora mod why <INSTANCE> <FILE>
+agora mod disable-plan <INSTANCE> <FILE>
+```
+
+Examples:
+
+```bash
+agora mod graph <INSTANCE_ID>
+agora mod why <INSTANCE_ID> <FILE>
+agora mod enable <INSTANCE_ID> <FILE> --with-deps
 ```
 
 Common planning options:
@@ -240,6 +288,10 @@ The default source is Agora's curated strategy. Use `--source modrinth` only whe
 
 `mod enable` and `mod disable` fail with a clear error and a nonzero exit when the named file does not exist. Confirm the filename with `mod list` if the error is unexpected.
 
+`mod graph` lists every dependency between installed mods that are switched on. `mod orphans` lists dependency-installed mods that no user-installed mod still needs. `mod why` traces one file back to the mod that asked for it. `mod disable-plan` shows which installed mods declare a dependency on a file, so you can see what switching it off would affect; it changes nothing. These four only read the instance.
+
+`mod enable --with-deps` also re-enables the required dependencies of the file that are switched off. It is best-effort, as in the desktop app: a dependency that cannot be re-enabled is reported as a warning, and the file itself is still enabled.
+
 Minecraft only loads data packs from inside a world, so Agora copies enabled data packs into the instance's worlds before each launch and after installs and removals. `mod worlds` limits one data pack to the named world folders (or `--all` to go back to every world), and `mod sync-datapacks` runs the copy now, for example for a world created since the last launch. Agora only removes or replaces data pack files it placed itself.
 
 ### Packs, import, and export
@@ -252,9 +304,22 @@ Minecraft only loads data packs from inside a world, so Agora copies enabled dat
 | `agora pack versions <PACK>` | List a curated registry pack's locked releases, newest first |
 | `agora pack curated <PACK> <INSTANCE> --release <VERSION>` | Install a locked release (the instance must be on its Minecraft version and loader) |
 | `agora pack curated <PACK> <INSTANCE>` | Install the pack's flexible recipe against the instance's own Minecraft version |
+| `agora pack export <INSTANCE> --format mrpack\|agora\|lockfile --out <FILE>` | Export an instance as a Modrinth pack, an Agora pack, or a lockfile |
+| `agora pack review <FILE>` | Show what importing a `.mrpack` or `.agora-pack.json` would do and stage the reviewed copy; prints a review id |
+| `agora pack import <REVIEW_ID> [--name <NAME>] [--import-anyway]` | Import exactly the copy `pack review` staged |
+| `agora import launchers [--root <DIR>]` | List Prism, CurseForge and Modrinth instances that can be imported |
+| `agora import plan <KEY>... [--name <NAME>] [--no-settings]` | Show what importing launcher instances would copy; prints a plan fingerprint |
+| `agora import run <KEY>... [--fingerprint <HASH>]` | Import launcher instances (items commit independently) |
+| `agora backup export <INSTANCE> --out <DIR> [--snapshot <ID>]` | Write a snapshot (a new one unless `--snapshot` is given) to a folder as one zip |
+| `agora backup import <FILE> [--instance <INSTANCE>]` | Read a backup zip into an instance as a restorable snapshot |
+| `agora backup prune <INSTANCE> [--keep <N>] [--yes]` | Delete snapshots beyond the newest N (default 10) |
 | `agora export <INSTANCE> <DEST>` | Export a standalone server environment |
+| `agora pack update-preview <INSTANCE> <MRPACK>` | Show what a newer .mrpack would change. Changes nothing |
+| `agora pack update <INSTANCE> <MRPACK>` | Apply a newer .mrpack; asks for `--yes` and an answer to every conflict |
 | `agora migrate-data --from <PATH>` | Plan migration from an older CLI data root |
 | `agora migrate-data --from <PATH> --yes` | Execute the migration |
+
+`pack export` warns when an Agora pack would leave out mods that have no catalog or Modrinth source (a `.mrpack` bundles them). It asks first, or pass `--yes` to export anyway. `pack import` refuses a pack with hard problems whatever the flags; files that cannot be fetched stop it unless `--import-anyway`, which leaves exactly those out. A launcher key that two launchers share is written `prism:KEY`, `curseforge:KEY` or `modrinth:KEY`. A backup import never changes the live instance; restore it with `snapshots restore`. `backup prune` deletes snapshots and, without a terminal, needs `--yes`.
 
 `migrate-data` is a dry-run unless `--yes` is supplied. Read every reported conflict before executing it.
 
@@ -288,6 +353,41 @@ agora loadout delete <INSTANCE> <NAME>
 A loadout records the on/off state of mods, resource packs, shader packs, data packs and worlds. Applying one sets each item it records to that state. An enabled mod it does not list (one added since it was saved, say) is a choice: `--others keep` leaves it on and `--others off` switches it off. When there are such mods and no `--others` is given, apply refuses and names them, so nothing changes. Packs and worlds it does not list are left as they are. Apply refuses a locked instance, and an instance whose game is running or starting, and changes nothing in either case. Before switching, apply saves an undo point labelled `before-loadout` (only the newest is kept). `loadout update` saves a profile again from the instance's current setup, so a mod added since it was saved stops being unlisted. It lists what would change (added, turned on or off, or dropped because it is gone) and asks first on an interactive terminal. Without a terminal it changes nothing and names the changes; pass `--yes` once the person using this computer has agreed. It does not touch the instance, so a locked instance or a running game does not block it.
 
 A loadout does not revert mod versions or configuration files.
+
+### Templates
+
+```text
+agora template list
+agora template create <NAME> [--from <INSTANCE> --include <FILE>...] [--memory <MB>] [--gc <GC>] [--java-path <FILE>] [--jvm-args <ARGS>] [--description <TEXT>]
+agora template apply <TEMPLATE_ID> <INSTANCE>
+agora template delete <TEMPLATE_ID> [--yes]
+```
+
+Examples:
+
+```bash
+agora template create "Sodium options" --from <INSTANCE_ID> --include config/sodium-options.json
+agora template create "Big heap" --memory 8192 --gc low_latency
+agora template apply <TEMPLATE_ID> <INSTANCE_ID>
+```
+
+A template keeps chosen configuration files and JVM settings so you can copy them to another instance. Only the files named with `--include` are captured, by path relative to the source instance; `--include` needs `--from`. A template with no files and no JVM setting is refused. Applying a template copies its files over the same paths in the target instance, and takes an undo point first when it copies any. A JVM setting the template does not name is left alone. Deleting a template asks first; without a terminal, pass `--yes`.
+
+### Mod bisect
+
+```text
+agora bisect start <INSTANCE> [--suspect <FILENAME>]
+agora bisect status <INSTANCE>
+agora bisect apply <INSTANCE>
+agora bisect good <INSTANCE>
+agora bisect bad <INSTANCE>
+agora bisect back <INSTANCE>
+agora bisect cancel <INSTANCE>
+agora bisect run <INSTANCE> [--suspect <FILENAME>]
+```
+
+Bisect finds the mod that breaks a launch by turning half of the enabled mods off for each round. `apply` switches the round's mods off and leaves the others on. Mods that depend on a switched-off mod go off with it, so a missing library is not mistaken for the culprit. You launch the game yourself, then `good` (the problem did not happen) or `bad` (it did) narrows the suspects. `back` undoes the last answer and tries the other half. `cancel` ends the bisect and puts every mod back the way it was, at any point. `--suspect` names a mod the crash report implicated and tests it first; it only applies when starting. `run` walks through the same rounds with prompts and needs an interactive terminal. A bisect does not start the game itself; you launch it. The session is kept in the instance folder, so it survives closing the terminal. `start`, `status`, `good`, `bad` and `back` do not move any mod files; `apply` and `cancel` do. `start` and `apply` refuse a locked instance, and `start`, `apply` and `cancel` refuse a game that is running or starting, changing nothing. `cancel` still restores a locked instance, because putting the baseline back is the way out. If `run` is stopped with Ctrl+C, the mods stay as the current round left them until `agora bisect cancel` is run.
+
 
 ### Reproduction lockfiles
 
@@ -349,12 +449,16 @@ agora plugin remove <PLUGIN_ID>
 agora plugin remove <PLUGIN_ID> --purge-data
 agora plugin log <PLUGIN_ID> --lines 200
 agora plugin disable-all
+agora plugin settings <PLUGIN_ID>
+agora plugin set <PLUGIN_ID> <KEY> <VALUE>
 agora plugin check-update [PLUGIN_ID]
 agora plugin update <PLUGIN_ID>
 agora plugin update <PLUGIN_ID> --yes
 agora plugin keygen --out <PATH> --key-id <ID>
 agora plugin sign <DOCUMENT> --key <PATH> --key-id <ID>
 ```
+
+`plugin settings` prints the settings a plugin declares, with their types and current values. `plugin set` writes one of them. The value is read as JSON (`true`, `42`, `"text"`); text that is not valid JSON is taken as a plain string. Core checks the value against the type the plugin declared and refuses a wrong type or an undeclared key, so nothing is stored in that case.
 
 `plugin list` reads the core-resolved install state without starting plugins. Its status column explains why an installed plugin is not runnable, including disabled plugins, incompatible host APIs, dependency problems, cycles, and recorded activation failures. `plugin status` is a convenience alias.
 
@@ -381,7 +485,37 @@ agora provider plan-digest <PROVIDER_ID>:<PROJECT_ID>@<VERSION_ID>
 
 `provider list` shows the official providers (Modrinth, Technic) and every plugin provider, with why one is unusable right now. Enabling or disabling a plugin's provider enables or disables that plugin. `plan-digest` resolves one pack version and prints the digest a curator pins as `sha256` for a `provider_pack` catalog entry (see `REGISTRY_CURATION_REFERENCE.md`).
 
+```text
+agora pack install --provider <PROVIDER_ID> --project <PROJECT_ID>
+agora pack install --provider <PROVIDER_ID> --project <PROJECT_ID> --version <VERSION_ID> --name <NAME>
+agora technic search <QUERY> --limit 20
+agora technic install <SLUG>
+agora technic install <SLUG> --build <BUILD> --name <NAME>
+agora technic install <SLUG> --minecraft <VERSION> --loader <LOADER> --loader-version <VERSION> --sha256 <HEX>
+```
+
+`pack install --provider` installs a provider's modpack as a **new** instance, through the same registry the desktop uses. It cannot be combined with a manifest path and instance. `--version` is optional; without it the provider chooses.
+
+Technic consent is off by default. It is stored as the `technic_enabled` setting, and zip packs also need `allow_unverified_packs`; `agora settings set technic_enabled true` changes it. `technic search` and `technic install` are refused while the setting is off. Solder packs install at their recommended build unless `--build` names one. Zip packs carry no metadata, so you must give their Minecraft version, loader, and loader version. Pass `--sha256 <HEX>` (64 hex digits) to check the zip download against a published SHA-256; the download fails if it does not match. Without `--sha256` the CLI warns that the zip is installed unverified, and it does so before the install starts. `--sha256` is refused for Solder packs. Core checks both settings on every call, whatever flags you pass.
+
 ### Updates
+
+```text
+agora instance updates <INSTANCE>
+agora instance updates <INSTANCE> --apply
+agora instance updates <INSTANCE> --apply --yes
+agora mod pin <INSTANCE> <FILE>
+agora mod unpin <INSTANCE> <FILE>
+agora mod changelog <INSTANCE> <FILE>
+agora pack update-preview <INSTANCE> <MRPACK>
+agora pack update <INSTANCE> <MRPACK> --yes
+```
+
+`instance updates` checks every installed item against its source and lists what is newer, the same check the desktop's update panel runs, and it stores the result for the instance badge. Rows that are only notes (a newer build for another Minecraft version) or whose release date is unknown are listed but never applied. `--apply` plans the applicable updates as one batch with one snapshot and full rollback, and prints that plan. Nothing changes until you add `--yes`.
+
+`mod pin` keeps one installed file out of update checks, and `mod unpin` lets it be offered again. Pins are stored in the instance manifest. `mod changelog` prints what changed between the installed file and its pending update, from the signed registry. It reports when there is no newer version or when the source published no changelog.
+
+`pack update-preview` compares an .mrpack against the instance and lists the changes, the downloads, and every conflict, without changing anything. `pack update` applies the same merge. It refuses unless every conflict has an answer: `--keep-ours <KEY>` keeps the instance's file and `--take-theirs <KEY>` adopts the pack's file, and each key must be one the preview listed. It also refuses without `--yes`.
 
 `plugin check-update` fetches a plugin's signed update document and reports what it means. It downloads only the metadata, never a package. With no plugin id it checks everything installed, and reports plugins with no update source rather than skipping them silently. The result distinguishes cases that a single "up to date" would blur together: a newer release that needs a newer Agora is reported as exactly that, and an installed version ahead of what the publisher lists is reported rather than downgraded.
 

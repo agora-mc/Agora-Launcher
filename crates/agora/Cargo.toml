@@ -34,3 +34,6 @@ trash = "3"
 [dev-dependencies]
 agora-core = { path = "../agora-core", features = ["test-support"] }
 rusqlite = { workspace = true }
+# Builds the .mrpack fixtures for the `pack update` tests. Already in the lock
+# file through agora-core.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }

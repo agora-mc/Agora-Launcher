@@ -333,7 +333,10 @@ impl ImportService {
     /// Copies `source` once into a staging folder named for its SHA-256,
     /// hashing as it copies. Review and import both use this copy, so a file
     /// swapped after review is never imported. Returns (staged path, sha256, size).
-    fn stage_for_review(&self, source: &std::path::Path) -> LauncherResult<(PathBuf, String, u64)> {
+    pub fn stage_for_review(
+        &self,
+        source: &std::path::Path,
+    ) -> LauncherResult<(PathBuf, String, u64)> {
         use sha2::{Digest, Sha256};
         use std::io::{Read, Write};
         let io_err = |e: std::io::Error| LauncherError::Generic {
