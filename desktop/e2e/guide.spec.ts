@@ -76,14 +76,14 @@ test('switches experience levels and searches all guide content', async ({ page 
   await expect(page.getByText(/Agora helps you discover, organize, and recover/)).toBeVisible();
 
   await page.getByRole('button', { name: /^Advanced guide Deeper/ }).click();
-  await expect(page.getByText(/Treat onboarding as a policy decision/)).toBeVisible();
+  await expect(page.getByText(/Every choice you made during setup can be changed later/)).toBeVisible();
 
   await page.getByLabel('Search the guide').fill('port 39741');
   await expect(page.getByText('1 topic found')).toBeVisible();
   await page.getByRole('button', { name: 'MCP & automation' }).click();
 
   await expect(page.getByRole('heading', { name: 'MCP and external AI tools' })).toBeVisible();
-  await expect(page.getByText(/Operate MCP as a privileged local automation surface/)).toBeVisible();
+  await expect(page.getByText(/Connection details for setting up an app by hand/)).toBeVisible();
 
   await page.getByRole('button', { name: /^Basic guide Clear/ }).click();
   await expect(page.getByText(/MCP is an advanced optional bridge/)).toBeVisible();
@@ -100,7 +100,7 @@ test('tracks completed pages and restores the selected guide page', async ({ pag
   await page.reload();
 
   await expect(page.getByTestId('guide-page')).toBeVisible();
-  await expect(page.getByText(/Treat onboarding as a policy decision/)).toBeVisible();
+  await expect(page.getByText(/Every choice you made during setup can be changed later/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Completed', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Reset', exact: true }).click();
@@ -115,9 +115,9 @@ test('supports sequential, quick-start, and command-palette navigation', async (
 
   await expect(page.getByTestId('guide-page')).toBeVisible();
   await page.getByRole('button', { name: /Next page Getting started: Advanced guide/ }).click();
-  await expect(page.getByText(/Treat onboarding as a policy decision/)).toBeVisible();
+  await expect(page.getByText(/Every choice you made during setup can be changed later/)).toBeVisible();
 
   await page.getByRole('button', { name: /Experienced modder Go straight to advanced/ }).click();
   await expect(page.getByRole('heading', { name: 'Java, memory, and performance' })).toBeVisible();
-  await expect(page.getByText(/Override Java and JVM behavior per instance/)).toBeVisible();
+  await expect(page.getByText(/For when you want to choose Java or its settings yourself/)).toBeVisible();
 });

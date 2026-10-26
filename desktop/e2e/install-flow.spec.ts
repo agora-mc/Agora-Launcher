@@ -856,7 +856,11 @@ test.describe('Release C3 — Install flow behaviors', () => {
     await expect(reviewBtn).toBeEnabled();
 
     // Toggle the optional dependency OFF (uncheck the checkbox)
-    const checkbox = page.locator('input[type="checkbox"]').first();
+    // Scope to the review dialog: Browse stays mounted behind ModDetail and
+    // has checkboxes of its own (Hide installed).
+    const checkbox = page
+      .getByRole('dialog')
+      .getByRole('checkbox', { name: 'Include optional dependency optional-dep-b' });
     await expect(checkbox).toBeChecked();
     await checkbox.click();
     await expect(checkbox).not.toBeChecked();
