@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { healthCounts } from '@/lib/healthSummary';
-import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } from 'lucide-react';
+import { Boxes, Copy, Download, FolderInput, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { requestEditorTab } from '../lib/editorDeepLink';
 import { useExternalInstanceChanges } from '../lib/externalChanges';
@@ -16,10 +16,13 @@ import {
   getInstanceDetail,
   getSetting,
   listInstances,
+  listInstanceGroups,
+  setInstanceGroup,
   pickOpenFile,
   listLoaderVersions,
   listManifestLoaders,
   listManifestMcVersions,
+  listSnapshotVersions,
   listInstanceTemplates,
   formatError,
   type ClonePrefs,
@@ -48,6 +51,7 @@ import { LaunchFailedBanner } from '../components/LaunchFailedBanner';
 import { HealthNotice, ReviewBeforeLaunchButtons } from '../components/HealthLaunchControls';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
 import { useConfirm } from '@/components/ui/confirm';
+import { formatPlayTime } from '@/lib/utils';
 import {
   Dialog,
   DialogContent,
@@ -98,6 +102,16 @@ export function Instances({
   onRefreshHealth: () => Promise<void>;
 }) {
   const [instances, setInstances] = useState<InstanceRow[]>([]);
+  const { prompt } = useConfirm();
+  const [groups, setGroups] = useState<Record<string, string>>({});
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('agora.instances.collapsedGroups') ?? '[]');
+      return Array.isArray(stored) ? stored.filter((name): name is string => typeof name === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [instanceIcons, setInstanceIcons] = useState<Record<string, string>>({});
@@ -128,6 +142,48 @@ export function Instances({
   // Load direct launch mode once
   const [directLaunch, setDirectLaunch] = useState(false);
 
+  // Named groups in alphabetical order, ungrouped instances last.
+  const groupedInstances: [string, InstanceRow[]][] = (() => {
+    const byGroup = new Map<string, InstanceRow[]>();
+    for (const instance of instances) {
+      const name = groups[instance.instance_id] ?? '';
+      byGroup.set(name, [...(byGroup.get(name) ?? []), instance]);
+    }
+    return [...byGroup.entries()].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
+  })();
+
+  const toggleGroupCollapsed = (name: string) => {
+    setCollapsedGroups((current) => {
+      const next = current.includes(name) ? current.filter((entry) => entry !== name) : [...current, name];
+      try {
+        localStorage.setItem('agora.instances.collapsedGroups', JSON.stringify(next));
+      } catch {
+        // Remembering the layout is a convenience; it is fine to lose it.
+      }
+      return next;
+    });
+  };
+
+  const handleSetGroup = async (instance: InstanceRow) => {
+    const existing = [...new Set(Object.values(groups))].sort();
+    const name = await prompt({
+      title: `Group for ${instance.name}`,
+      body: existing.length > 0
+        ? `Existing groups: ${existing.join(', ')}. Leave empty to ungroup.`
+        : 'Instances with the same group name are shown together. Leave empty to ungroup.',
+      initialValue: groups[instance.instance_id] ?? '',
+      placeholder: 'Modded survival',
+      confirmLabel: 'Save',
+    });
+    if (name === null) return;
+    try {
+      await setInstanceGroup(instance.instance_id, name.trim() || null);
+      setGroups(await listInstanceGroups());
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
+
   // `silent` keeps the list on screen while it reloads, for refreshes the
   // user did not ask for.
   const refresh = async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -136,6 +192,12 @@ export function Instances({
     try {
       const rows = await listInstances();
       setInstances(rows);
+      try {
+        const stored = await listInstanceGroups();
+        setGroups(stored && typeof stored === 'object' ? stored : {});
+      } catch {
+        setGroups({});
+      }
       const details = await Promise.all(rows.map(async (row) => {
         try {
           const detail = await getInstanceDetail(row.instance_id);
@@ -357,70 +419,91 @@ export function Instances({
           </div>
         </div>
       ) : (
-        <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,calc(16rem*var(--font-scale))),1fr))] gap-4">
-          {instances.map((instance) => {
-            const sessionCount = liveSessions.filter((session) => session.instance_id === instance.instance_id).length;
-            const isRunning = sessionCount > 0
-              || (processState.instanceId === instance.instance_id && processState.phase === 'running');
-            const isCurrentFailed = processState.instanceId === instance.instance_id && processState.phase === 'failed';
-            const isLaunchBusy = processState.phase === 'launching';
-            const isCurrentLaunchBusy = isLaunchBusy && processState.instanceId === instance.instance_id;
+        <div className="space-y-6">
+          {groupedInstances.map(([groupName, members]) => (
+            <section key={groupName || '__ungrouped'} aria-label={groupName || 'Ungrouped instances'}>
+              {groupedInstances.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => toggleGroupCollapsed(groupName)}
+                  aria-expanded={!collapsedGroups.includes(groupName)}
+                  className="mb-3 flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground"
+                >
+                  <span aria-hidden="true">{collapsedGroups.includes(groupName) ? '▸' : '▾'}</span>
+                  {groupName || 'Ungrouped'} <span className="font-normal">({members.length})</span>
+                </button>
+              )}
+              {!collapsedGroups.includes(groupName) && (
+            <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,calc(16rem*var(--font-scale))),1fr))] gap-4">
+              {members.map((instance) => {
+                const sessionCount = liveSessions.filter((session) => session.instance_id === instance.instance_id).length;
+                const isRunning = sessionCount > 0
+                  || (processState.instanceId === instance.instance_id && processState.phase === 'running');
+                const isCurrentFailed = processState.instanceId === instance.instance_id && processState.phase === 'failed';
+                const isLaunchBusy = processState.phase === 'launching';
+                const isCurrentLaunchBusy = isLaunchBusy && processState.instanceId === instance.instance_id;
 
-            const isCurrentThisInstance = processState.instanceId === instance.instance_id;
-            const packInstall = getTaskForInstance(instance.instance_id);
-            const recoveryPending = snapshotReadiness[instance.instance_id] === 'pending';
-            const recoveryFailed = snapshotReadiness[instance.instance_id] === 'failed';
+                const isCurrentThisInstance = processState.instanceId === instance.instance_id;
+                const packInstall = getTaskForInstance(instance.instance_id);
+                const recoveryPending = snapshotReadiness[instance.instance_id] === 'pending';
+                const recoveryFailed = snapshotReadiness[instance.instance_id] === 'failed';
 
-            return (
-              <InstanceCard
-                key={instance.instance_id}
-                instance={instance}
-                iconSrc={instanceIcons[instance.instance_id] ?? null}
-                onChanged={refresh}
-                onEdit={() => onEditInstance(instance.instance_id)}
-                onClone={() => setCloneTarget(instance)}
-                onOpenCrashInvestigator={openCrashInvestigator}
-                isRunning={isRunning}
-                runningPid={isRunning ? processState.pid : null}
-                launchBusy={isLaunchBusy}
-                startingThis={isCurrentLaunchBusy}
-                launchFailedExit={launchFailures?.[instance.instance_id] ?? null}
-                onDismissLaunchFailure={() => onDismissLaunchFailure?.(instance.instance_id)}
-                onOpenConsole={() => { requestEditorTab('console'); onEditInstance(instance.instance_id); }}
-                onLaunch={() => onStartLaunch(
-                  instance.instance_id,
-                  instance.launch_mode_override === 'direct'
-                    || (instance.launch_mode_override !== 'delegated' && directLaunch),
-                )}
-                onKill={onKillProcess}
-                controllerError={isCurrentFailed ? processState.error : null}
-                controllerRecoverableIssue={isCurrentFailed ? processState.recoverableIssue : null}
-                controllerRecoverableJavaIssue={isCurrentThisInstance ? processState.recoverableJavaIssue : null}
-                controllerAvailableActions={isCurrentFailed ? processState.availableActions : []}
-                runtimeProgress={isCurrentThisInstance ? processState.runtimeProgress : null}
-                launchProgress={isCurrentThisInstance && (processState.phase === 'launching' || processState.phase === 'running') ? processState.launchProgress ?? null : null}
-                onDismissError={onClearError}
-                onRepairAndRetry={onRepairAndRetry}
-                onUseDelegatedLaunch={onUseDelegatedLaunch}
-                onRestartMojangLauncher={onRestartMojangLauncher}
-                repairBusy={isCurrentLaunchBusy}
-                packInstall={packInstall}
-                recoveryPending={recoveryPending}
-                recoveryError={snapshotErrors[instance.instance_id] ?? null}
-                recoveryFailed={recoveryFailed}
-                healthReport={healthReports[instance.instance_id] ?? null}
-                healthError={healthErrors[instance.instance_id] ?? null}
-                onReviewHealth={onReviewHealth}
-                onRefreshHealth={onRefreshHealth}
-                onRetryRecovery={async () => {
-                  await createSnapshot(instance.instance_id, 'Initial import retry');
-                  await refresh();
-                }}
-                updateCount={updateCounts[instance.instance_id] ?? 0}
-              />
-            );
-          })}
-        </ul>
+                return (
+                  <InstanceCard
+                    key={instance.instance_id}
+                    instance={instance}
+                    iconSrc={instanceIcons[instance.instance_id] ?? null}
+                    onChanged={refresh}
+                    onEdit={() => onEditInstance(instance.instance_id)}
+                    onClone={() => setCloneTarget(instance)}
+                    group={groups[instance.instance_id] ?? null}
+                    onSetGroup={() => void handleSetGroup(instance)}
+                    onOpenCrashInvestigator={openCrashInvestigator}
+                    isRunning={isRunning}
+                    runningPid={isRunning ? processState.pid : null}
+                    launchBusy={isLaunchBusy}
+                    startingThis={isCurrentLaunchBusy}
+                    launchFailedExit={launchFailures?.[instance.instance_id] ?? null}
+                    onDismissLaunchFailure={() => onDismissLaunchFailure?.(instance.instance_id)}
+                    onOpenConsole={() => { requestEditorTab('console'); onEditInstance(instance.instance_id); }}
+                    onLaunch={() => onStartLaunch(
+                      instance.instance_id,
+                      instance.launch_mode_override === 'direct'
+                        || (instance.launch_mode_override !== 'delegated' && directLaunch),
+                    )}
+                    onKill={onKillProcess}
+                    controllerError={isCurrentFailed ? processState.error : null}
+                    controllerRecoverableIssue={isCurrentFailed ? processState.recoverableIssue : null}
+                    controllerRecoverableJavaIssue={isCurrentThisInstance ? processState.recoverableJavaIssue : null}
+                    controllerAvailableActions={isCurrentFailed ? processState.availableActions : []}
+                    runtimeProgress={isCurrentThisInstance ? processState.runtimeProgress : null}
+                    launchProgress={isCurrentThisInstance && (processState.phase === 'launching' || processState.phase === 'running') ? processState.launchProgress ?? null : null}
+                    onDismissError={onClearError}
+                    onRepairAndRetry={onRepairAndRetry}
+                    onUseDelegatedLaunch={onUseDelegatedLaunch}
+                    onRestartMojangLauncher={onRestartMojangLauncher}
+                    repairBusy={isCurrentLaunchBusy}
+                    packInstall={packInstall}
+                    recoveryPending={recoveryPending}
+                    recoveryError={snapshotErrors[instance.instance_id] ?? null}
+                    recoveryFailed={recoveryFailed}
+                    healthReport={healthReports[instance.instance_id] ?? null}
+                    healthError={healthErrors[instance.instance_id] ?? null}
+                    onReviewHealth={onReviewHealth}
+                    onRefreshHealth={onRefreshHealth}
+                    onRetryRecovery={async () => {
+                      await createSnapshot(instance.instance_id, 'Initial import retry');
+                      await refresh();
+                    }}
+                    updateCount={updateCounts[instance.instance_id] ?? 0}
+                  />
+                );
+              })}
+            </ul>
+              )}
+            </section>
+          ))}
+        </div>
       )}
 
       {showCreate && (
@@ -489,6 +572,8 @@ function InstanceCard({
   onChanged,
   onEdit,
   onClone,
+  group,
+  onSetGroup,
   onOpenCrashInvestigator,
   isRunning,
   runningPid,
@@ -526,6 +611,8 @@ function InstanceCard({
   onChanged: () => void;
   onEdit: () => void;
   onClone: () => void;
+  group: string | null;
+  onSetGroup: () => void;
   onOpenCrashInvestigator: (id: string) => void;
   isRunning: boolean;
   runningPid: number | null;
@@ -716,7 +803,9 @@ function InstanceCard({
                   Running (PID {runningPid})
                 </span>
               ) : instance.last_launched_at ? (
-                `Last launched ${formatInstalledDate(instance.last_launched_at)}`
+                `Last launched ${formatInstalledDate(instance.last_launched_at)}${
+                  formatPlayTime(instance.total_play_ms) ? ` · ${formatPlayTime(instance.total_play_ms)} played` : ''
+                }`
               ) : (
                 'Never launched'
               )}
@@ -1049,6 +1138,14 @@ function InstanceCard({
           Clone
         </button>
         <button
+          onClick={onSetGroup}
+          title={group ? `In group "${group}"` : 'Put this instance in a group'}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+        >
+          <FolderInput className="h-3.5 w-3.5" aria-hidden="true" />
+          Group
+        </button>
+        <button
           onClick={() => onOpenCrashInvestigator(instance.instance_id)}
           disabled={effectiveBusy || recoveryBlocked}
           className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
@@ -1103,6 +1200,10 @@ function CreateInstanceDialog({
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [loaders, setLoaders] = useState<string[]>([]);
   const [mcVersions, setMcVersions] = useState<string[]>([]);
+  // Vanilla only: loaders publish builds for releases, not for snapshots.
+  const [showSnapshots, setShowSnapshots] = useState(false);
+  const [snapshotVersions, setSnapshotVersions] = useState<string[]>([]);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1297,12 +1398,45 @@ function CreateInstanceDialog({
                 onChange={(e) => setMcVersion(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
               >
-                {mcVersions.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
+                {loader === 'vanilla' && showSnapshots && snapshotVersions.length > 0 && (
+                  <optgroup label="Snapshots and pre-releases">
+                    {snapshotVersions.map((v) => <option key={`s-${v}`} value={v}>{v}</option>)}
+                  </optgroup>
+                )}
+                <optgroup label="Releases">
+                  {mcVersions.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
+              {loader === 'vanilla' && (
+                <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    aria-label="Show snapshots"
+                    checked={showSnapshots}
+                    onChange={async (e) => {
+                      const on = e.target.checked;
+                      setShowSnapshots(on);
+                      setSnapshotError(null);
+                      if (on && snapshotVersions.length === 0) {
+                        try {
+                          const found = await listSnapshotVersions();
+                          setSnapshotVersions(Array.isArray(found) ? found : []);
+                        } catch (err) {
+                          setSnapshotError(formatError(err));
+                        }
+                      }
+                      if (!on && !mcVersions.includes(mcVersion) && mcVersions[0]) setMcVersion(mcVersions[0]);
+                    }}
+                    className="h-3.5 w-3.5 accent-primary"
+                  />
+                  Show snapshots (test builds; back up worlds first)
+                </span>
+              )}
+              {snapshotError && <span className="mt-1 block text-xs text-destructive">{snapshotError}</span>}
             </label>
 
             <label className="block">

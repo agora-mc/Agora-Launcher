@@ -2010,6 +2010,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         row_overrides(&mut row, &mut manifest);
         std::fs::write(

@@ -684,6 +684,7 @@ impl ImportService {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
 
         let conn = match crate::db::local_state_connection(&self.ctx.paths.local_state_db()) {
@@ -1963,6 +1964,7 @@ mod review_tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
         crate::db::upsert_instance(&conn, &row).unwrap();

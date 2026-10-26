@@ -86,7 +86,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Review the service switches. Leave Modrinth on for a larger live catalog, or off to use only Agora-curated data.',
             'Choose how Minecraft launches: delegated to the official Mojang launcher (the default, no sign-in required) or direct launch inside Agora.',
             'If you chose direct launch, let Agora prepare Java. Delegated launch skips this step because the official launcher brings its own runtime.',
-            'Connect GitHub only if you want to vote or participate in community governance.',
+            'Connect GitHub if you want to vote or participate in community governance. GitHub sign in also avoids rate limits, which can happen if you do a lot of searches and downloads.',
             'Download the signed catalog when prompted.',
             'Finish onboarding and open Browse to choose a pack, or My Instances to build an empty instance.',
           ],
@@ -211,8 +211,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           ],
         },
         {
-          title: 'Version ranges and build metadata',
-          body: 'Loaders and projects use different version schemes. Do not compare versions as plain text. Prefer Agora\'s exact compatibility result and the publisher\'s version metadata. Fabric build metadata such as +mc1.21.1 describes the target but is not a newer semantic version by itself.',
+          title: 'Versions',
+          body: 'Agora automatically determines if a version is compatible with your instance, we recommend following its suggestions unless you have a specific reason to override them. When a project has multiple versions, check the version page for release notes, changelogs, and compatibility information.',
         },
         {
           title: 'Change one variable at a time',
@@ -245,11 +245,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Read Home from top to bottom',
-          body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. The last setup that launched fine (Last Known Good) offers recovery when one exists. Compatible recommendations use your recent instance version and loader.',
+          body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. The last setup that launched fine (Last Known Good) offers recovery when one exists. Compatible curated matches use your recent instance version and loader.',
           bullets: [
             'A catalog alert means discovery data is missing or unavailable.',
             'A crash alert means the latest instance did not exit cleanly.',
-            'Recommendations are filtered for your active instance when possible; they are not paid placements.',
+            'Curated mod matches on the home page are filtered for your active instance when possible; they are not paid placements.',
           ],
         },
         {
@@ -258,17 +258,17 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           steps: [
             'Select an item to move to that area.',
             'Use the arrow button at the sidebar edge to collapse or expand it.',
-            'Hover a collapsed icon to see its name.',
+            'Hover over a collapsed icon to see its name.',
           ],
         },
         {
           title: 'Open Quick actions',
           body: 'Press Ctrl+K on Windows and Linux, or Cmd+K on macOS. Type an instance or destination name, use the arrow keys to select it, and press Enter. Escape closes the palette.',
-          callout: {
-            tone: 'tip',
-            title: 'Text fields keep their shortcuts',
-            text: 'The palette shortcut is ignored while you are typing in an input, text area, or editable field.',
-          },
+          // callout: {
+          //   tone: 'tip',
+          //   title: 'Text fields keep their shortcuts',
+          //   text: 'The palette shortcut is ignored while you are typing in an input, text area, or editable field.',
+          // },
         },
       ],
     },
@@ -286,17 +286,17 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Understand Home signals',
-          body: 'The card for the last setup that launched fine (Last Known Good) points to an explicitly promoted pre-launch snapshot, not merely the newest snapshot. Recommendations rank category overlap and then filter against the active instance\'s Minecraft version and loader.',
-          callout: {
-            tone: 'note',
-            title: 'Recovery is deliberate',
-            text: 'Restoring the last setup that launched fine (Last Known Good) creates an undo snapshot first, so the current state is not silently discarded.',
-          },
+          body: 'The card for the last setup that launched fine (Last Known Good) points to an explicitly promoted pre-launch snapshot, not merely the newest snapshot. This will overwrite the current state, but the current state will be preserved as a snapshot first.',
+          // callout: {
+          //   tone: 'note',
+          //   title: 'Recovery is deliberate',
+          //   text: 'Restoring the last setup that launched fine (Last Known Good) creates an undo snapshot first, so the current state is not silently discarded.',
+          // },
         },
-        {
-          title: 'Preserved work context',
-          body: 'Opening an item from Browse or the Instance Editor preserves the source page and scroll position. Use Back to return to the same working context. The browser-style back action is part of Agora\'s navigation history even though the app has no traditional web URLs.',
-        },
+        // {
+        //   title: 'Preserved work context',
+        //   body: 'Opening an item from Browse or the Instance Editor preserves the source page and scroll position. Use Back to return to the same working context. The browser-style back action is part of Agora\'s navigation history even though the app has no traditional web URLs.',
+        // },
       ],
     },
   },
@@ -370,7 +370,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Separate by compatibility boundary',
-          body: 'Create a new instance when changing Minecraft major/minor versions, switching loaders, evaluating an uncertain pack, or maintaining distinct server requirements. Reusing one instance across those boundaries makes rollback and diagnosis harder.',
+          body: 'We recommend you create a new instance when changing Minecraft major/minor versions, switching loaders, evaluating an uncertain pack, or maintaining distinct server requirements. Reusing one instance across those boundaries makes rollback and diagnosis harder.',
           bullets: [
             'Keep a locked play instance that is known to work.',
             'Use a disposable test instance for major updates and unverified manual files.',
@@ -383,16 +383,16 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Read operational states',
-          body: 'The Instances page can show Java provisioning progress, a running direct-launch process and PID, recent console output, or a recoverable launcher-profile warning. Prefer Reinstall Loader for a damaged profile; use delegated launch when you want the official launcher to own execution.',
+          body: 'The instance page will include various information about the instance\'s current state, including whether it is running, the command line output, lock status, and java information.',
           callout: {
             tone: 'warning',
             title: 'Kill is a last resort',
-            text: 'Terminating a running process can lose unsaved game data. Exit Minecraft normally whenever possible.',
+            text: 'Terminating a running game can lose unsaved game data. Exit Minecraft normally whenever possible.',
           },
         },
         {
           title: 'Update a prior import safely',
-          body: 'Importing the same source again updates the existing Agora copy only while its imported files and launch settings still match the last-import baseline. If you changed mods, configs, saves, screenshots, or settings in Agora, the importer offers a separately named copy instead of merging or overwriting your work.',
+          body: 'Importing the the same pack/instance again updates the existing Agora copy only while its imported files and launch settings still match the last import. If you changed mods, configs, saves, screenshots, or settings in Agora, the importer offers to create a duplicate instance instead of merging or overwriting your work.',
         },
       ],
     },
@@ -455,10 +455,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'The project source and selected artifact hash matter more than the visual card alone.',
           ],
         },
-        {
-          title: 'Audit before install',
-          body: 'Check the license, source link, update date, supported loaders, exact game versions, dependency list, curator notes, reviews, and version changelog. Immunity indicates community protection from ordinary removal pressure; it is not a technical compatibility certification.',
-        },
+        // {
+        //   title: 'Audit before install',
+        //   body: 'Check the license, source link, update date, supported loaders, exact game versions, dependency list, curator notes, reviews, and version changelog. Immunity indicates community protection from ordinary removal pressure; it is not a technical compatibility certification.',
+        // },
         {
           title: 'Work through degraded states',
           body: 'When the catalog is loading, missing, or offline, read the status panel before assuming no content exists. Download or refresh the catalog when allowed. When the individual Privacy endpoint permissions are disabled, expect only already cached data and locally available artifacts.',
@@ -503,7 +503,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'warning',
             title: 'Dependents may stop loading',
-            text: 'If another mod requires the one you remove, remove or replace the dependent as part of the reviewed plan.',
+            text: 'If another mod required the one you remove, Agora will ask you to remove it too. If you choose to keep the mod requiring the one you remove, that mod may fail to load or crash the game. Check the health report after removing mods.',
           },
         },
         {

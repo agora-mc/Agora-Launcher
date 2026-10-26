@@ -58,7 +58,16 @@ import {
   testLauncherPath,
   openDataFolder,
   restartApp,
+  parseWindowSize,
+  WINDOW_SIZE_KEY,
+  type WindowSize,
+  msaListAccounts,
+  msaRemoveAccount,
+  msaSwitchAccount,
+  type MsaAccountSummary,
 } from '../lib/tauri';
+import { WindowSizeEditor } from '../components/WindowSizeEditor';
+import { SkinSettings } from '../components/SkinSettings';
 import type { CredentialStorageStatus, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus, MsaLoginPrompt } from '../lib/tauri';
 import { Privacy } from './Privacy';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
@@ -365,13 +374,31 @@ export function Settings({
     return () => { cancelled = true; };
   }, []);
 
+  const [msaAccounts, setMsaAccounts] = useState<MsaAccountSummary[]>([]);
+  // Reload the active account and the list together: signing out or in can
+  // change which account is active.
+  const refreshMsaAccounts = useCallback(async () => {
+    const [creds, accounts] = await Promise.all([
+      msaGetStatus().catch(() => null),
+      msaListAccounts().catch(() => [] as MsaAccountSummary[]),
+    ]);
+    setMsaCreds(creds);
+    setMsaAccounts(Array.isArray(accounts) ? accounts : []);
+  }, []);
+
   // Load MSA status on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const creds = await msaGetStatus();
-        if (!cancelled) setMsaCreds(creds);
+        const [creds, accounts] = await Promise.all([
+          msaGetStatus(),
+          msaListAccounts().catch(() => [] as MsaAccountSummary[]),
+        ]);
+        if (!cancelled) {
+          setMsaCreds(creds);
+          setMsaAccounts(Array.isArray(accounts) ? accounts : []);
+        }
       } catch {
         if (!cancelled) setMsaCreds(null);
       } finally {
@@ -554,6 +581,7 @@ export function Settings({
       const creds = await msaCompleteLogin();
       setMsaCreds(creds);
       setMsaPrompt(null);
+      await refreshMsaAccounts();
     } catch (e) {
       setMsaError(formatError(e));
       setMsaPrompt(null);
@@ -575,10 +603,38 @@ export function Settings({
     try {
       await msaLogout();
       setMsaCreds(null);
+      await refreshMsaAccounts();
     } catch (e) {
       showToast(formatError(e), 'error');
     }
   };
+
+  const handleMsaSwitch = async (uuid: string) => {
+    try {
+      const active = await msaSwitchAccount(uuid);
+      await refreshMsaAccounts();
+      showToast(`Now launching as ${active.username}.`, 'success');
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const handleMsaRemove = async (uuid: string) => {
+    try {
+      await msaRemoveAccount(uuid);
+      await refreshMsaAccounts();
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const otherMsaAccounts = (
+    <OtherMsaAccounts
+      accounts={msaAccounts.filter((account) => !account.active)}
+      onSwitch={handleMsaSwitch}
+      onRemove={handleMsaRemove}
+    />
+  );
 
   const toggleLaunchMode = async (value: boolean) => {
     setDirectLaunch(value);
@@ -1622,18 +1678,39 @@ export function Settings({
             Required for direct launch mode. Used to authenticate with Minecraft services.
           </p>
           <DegradedCredentialNotice backend={credentialStorage?.microsoft} portable={isPortable} />
-          <button
-            onClick={handleMsaSignOut}
-            className="text-xs text-muted-foreground hover:text-foreground underline"
-          >
-            Sign out
-          </button>
+          {otherMsaAccounts}
+          {!msaCreds.needs_reauth && msaPrompt && (
+            <MsaDeviceFlowPanel
+              prompt={msaPrompt}
+              polling={msaBusy}
+              onCancel={handleMsaCancelSignIn}
+            />
+          )}
+          {!msaCreds.needs_reauth && msaError && <p className="text-xs text-destructive">{msaError}</p>}
+          <div className="flex flex-wrap items-center gap-3">
+            {!msaCreds.needs_reauth && (
+              <button
+                onClick={handleMsaSignIn}
+                disabled={msaBusy}
+                className="rounded-lg border border-input px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
+              >
+                {msaBusy ? 'Waiting…' : 'Add another account'}
+              </button>
+            )}
+            <button
+              onClick={handleMsaSignOut}
+              className="text-xs text-muted-foreground hover:text-foreground underline"
+            >
+              Sign out {msaCreds.username}
+            </button>
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">
             Sign in with your Microsoft account to enable direct in-app launching (without the Mojang launcher).
           </p>
+          {otherMsaAccounts}
 
           {msaPrompt && (
             <MsaDeviceFlowPanel
@@ -2329,6 +2406,7 @@ export function Settings({
             </>
           ),
         },
+        { id: 'skin', label: 'Skin & cape', content: msaCreds && !msaCreds.needs_reauth ? <SkinSettings /> : <p className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">Sign in with a Microsoft account on the Sign in page to change your skin and cape.</p> },
       ],
     },
     {
@@ -2344,6 +2422,7 @@ export function Settings({
           content: (
             <>
               {launchModeCard}
+              <GameStartWindowSettings />
               {gate(launcherPathCard)}
               {disclaimerCard}
             </>
@@ -2359,6 +2438,7 @@ export function Settings({
             </>
           ),
         },
+        { id: 'window', label: 'Game window', content: <GameWindowSettings /> },
       ],
     },
     {
@@ -2483,5 +2563,144 @@ export function Settings({
         </div>
       </div>
     </div>
+  );
+}
+
+/** Global default for the game window size; instances can override it. */
+function GameWindowSettings() {
+  const [value, setValue] = useState<WindowSize | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getSetting(WINDOW_SIZE_KEY)
+      .then((stored) => setValue(parseWindowSize(stored)))
+      .catch((e) => { setValue(null); setError(formatError(e)); });
+  }, []);
+
+  return (
+    <SettingsSection icon={Cpu} title="Game window">
+      <p className="text-xs text-muted-foreground">
+        The size Minecraft opens at when Agora starts it (direct launch). An instance can set its own size on
+        its Java &amp; Args tab. With the official launcher, set the resolution on its installation instead.
+      </p>
+      {value === undefined ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : (
+        <WindowSizeEditor
+          value={value}
+          noneLabel="Let the game decide"
+          onSave={async (size) => {
+            try {
+              await setSetting(WINDOW_SIZE_KEY, size);
+            } catch (e) {
+              throw new Error(formatError(e));
+            }
+            setValue(size);
+          }}
+        />
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </SettingsSection>
+  );
+}
+
+/** Signed-in accounts other than the active one, with switch and remove. */
+function OtherMsaAccounts({
+  accounts,
+  onSwitch,
+  onRemove,
+}: {
+  accounts: MsaAccountSummary[];
+  onSwitch: (uuid: string) => Promise<void>;
+  onRemove: (uuid: string) => Promise<void>;
+}) {
+  if (accounts.length === 0) return null;
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-muted-foreground">Other signed-in accounts</p>
+      <ul className="divide-y divide-border rounded-lg border border-border">
+        {accounts.map((account) => (
+          <li key={account.uuid} className="flex items-center justify-between gap-2 px-3 py-2">
+            <span className="min-w-0 truncate text-sm">
+              {account.username}
+              {account.needs_reauth && <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">sign in again</span>}
+            </span>
+            <span className="flex shrink-0 gap-2">
+              <button
+                type="button"
+                onClick={() => void onSwitch(account.uuid)}
+                className="rounded-md border border-input px-2 py-1 text-xs font-medium hover:bg-accent"
+              >
+                Use for launching
+              </button>
+              <button
+                type="button"
+                onClick={() => void onRemove(account.uuid)}
+                className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground underline"
+              >
+                Remove
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** What the launcher window does while a game runs. */
+function GameStartWindowSettings() {
+  const [mode, setMode] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getSetting('launcher_on_game_start')
+      .then((value) => setMode(typeof value === 'string' ? value : 'keep'))
+      .catch(() => setMode('keep'));
+  }, []);
+
+  const choose = async (next: string) => {
+    const previous = mode;
+    setMode(next);
+    setError(null);
+    try {
+      await setSetting('launcher_on_game_start', next);
+    } catch (e) {
+      setMode(previous);
+      setError(formatError(e));
+    }
+  };
+
+  const options: { value: string; label: string; hint: string }[] = [
+    { value: 'keep', label: 'Keep Agora open', hint: 'The window stays where it is.' },
+    { value: 'minimize', label: 'Minimize Agora', hint: 'Comes back when the game closes (direct launch).' },
+    { value: 'hide', label: 'Hide Agora until the game closes', hint: 'Direct launch only; with the official launcher Agora minimizes instead, because it is not told when the game closes.' },
+  ];
+
+  return (
+    <SettingsSection icon={Rocket} title="When the game starts">
+      {mode === null ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : (
+        <div className="space-y-2" role="radiogroup" aria-label="When the game starts">
+          {options.map((option) => (
+            <label key={option.value} className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                name="launcher-on-game-start"
+                checked={mode === option.value}
+                onChange={() => void choose(option.value)}
+                className="mt-1 accent-primary"
+              />
+              <span>
+                <span className="block">{option.label}</span>
+                <span className="block text-xs text-muted-foreground">{option.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </SettingsSection>
   );
 }

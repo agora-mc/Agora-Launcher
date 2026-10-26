@@ -1869,6 +1869,7 @@ impl LauncherImportService {
                         _ => "auto".to_string(),
                     },
                     import_source: Some(source_label.to_string()),
+                    total_play_ms: 0,
                 };
 
                 let conn = match crate::db::local_state_connection(&self.ctx.paths.local_state_db())
@@ -2170,6 +2171,7 @@ impl LauncherImportService {
                         .map(|row| row.launch_mode_override.clone())
                         .unwrap_or_else(|| "auto".into()),
                     import_source: Some(source_label.to_string()),
+                    total_play_ms: 0,
                 };
 
                 if let Err(e) = crate::db::upsert_instance(&conn, &row) {

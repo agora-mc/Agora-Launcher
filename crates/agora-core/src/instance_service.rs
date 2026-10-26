@@ -131,6 +131,11 @@ pub struct DelegatedLaunchPreparation {
     pub selection_applied: bool,
 }
 
+/// `user_preferences` key holding the instance's notes.
+pub const NOTES_KEY: &str = "agora_notes";
+/// Settings key mapping instance id to its group name in My Instances.
+pub const INSTANCE_GROUPS_KEY: &str = "instance_groups";
+
 /// Narrow adapter type: a synchronous callback that moves a quarantined
 /// directory to the OS trash. The desktop adapter supplies the real
 /// `trash::delete` implementation; core never depends on the `trash` crate.
@@ -521,28 +526,219 @@ impl InstanceService {
     /// same way the launcher will, so a malformed quote is rejected while the
     /// user is looking at the field rather than at a failed launch.
     pub fn set_wrapper_command(&self, instance_id: &str, wrapper: &str) -> LauncherResult<()> {
-        let instance_id = self.validate_id(instance_id)?;
         let trimmed = wrapper.trim().to_string();
         if !trimmed.is_empty() {
             crate::launch_planner::parse_argument_string(&trimmed)?;
         }
+        let value = (!trimmed.is_empty()).then_some(serde_json::Value::String(trimmed));
+        self.set_user_preference(
+            instance_id,
+            "agora_wrapper_command",
+            value,
+            "wrapper-command",
+        )
+    }
+
+    /// Set (or clear, with `None`) a fixed game window size for this instance.
+    /// Without one the global default applies, and without that the game's own.
+    pub fn set_window_size(
+        &self,
+        instance_id: &str,
+        size: Option<(u32, u32)>,
+    ) -> LauncherResult<()> {
+        let value = match size {
+            Some((width, height)) => {
+                let value = serde_json::json!({ "width": width, "height": height });
+                if crate::launch_service::parse_window_size(&value).is_none() {
+                    return Err(LauncherError::Generic {
+                        code: "ERR_WINDOW_SIZE".into(),
+                        message: "Window width and height must each be between 200 and 16384."
+                            .into(),
+                    });
+                }
+                Some(value)
+            }
+            None => None,
+        };
+        self.set_user_preference(
+            instance_id,
+            crate::launch_service::WINDOW_SIZE_KEY,
+            value,
+            "window-size",
+        )
+    }
+
+    /// Set the commands run before and after a direct launch and the extra
+    /// environment variables for the game. Blank commands and an empty map
+    /// clear them. Commands are parsed now, as the launcher will, so a
+    /// malformed quote is refused here rather than at launch.
+    pub fn set_launch_hooks(
+        &self,
+        instance_id: &str,
+        pre_launch: &str,
+        post_exit: &str,
+        env: std::collections::BTreeMap<String, String>,
+    ) -> LauncherResult<()> {
+        let command = |value: &str| -> LauncherResult<Option<serde_json::Value>> {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            crate::launch_planner::parse_argument_string(trimmed)?;
+            Ok(Some(serde_json::Value::String(trimmed.to_string())))
+        };
+        let pre = command(pre_launch)?;
+        let post = command(post_exit)?;
+        if let Some(bad) = env
+            .keys()
+            .find(|name| !crate::launch_service::valid_env_name(name))
+        {
+            return Err(LauncherError::Generic {
+                code: "ERR_ENV_VAR_NAME".into(),
+                message: format!("'{bad}' is not a valid environment variable name."),
+            });
+        }
+        let env = (!env.is_empty()).then(|| serde_json::json!(env));
+        self.set_user_preference(
+            instance_id,
+            crate::launch_service::PRE_LAUNCH_KEY,
+            pre,
+            "launch-hooks",
+        )?;
+        self.set_user_preference(
+            instance_id,
+            crate::launch_service::POST_EXIT_KEY,
+            post,
+            "launch-hooks",
+        )?;
+        self.set_user_preference(
+            instance_id,
+            crate::launch_service::ENV_VARS_KEY,
+            env,
+            "launch-hooks",
+        )
+    }
+
+    /// Switch sharing of game settings (`options.txt`) and of the server list
+    /// with other instances on or off. Switching one on when no shared copy
+    /// exists yet makes this instance's the shared one.
+    pub fn set_sharing(
+        &self,
+        instance_id: &str,
+        options: bool,
+        servers: bool,
+    ) -> LauncherResult<()> {
+        use crate::shared_settings::{SHARE_OPTIONS_KEY, SHARE_SERVERS_KEY};
+        let value = |on: bool| on.then_some(serde_json::Value::Bool(true));
+        self.set_user_preference(instance_id, SHARE_OPTIONS_KEY, value(options), "sharing")?;
+        self.set_user_preference(instance_id, SHARE_SERVERS_KEY, value(servers), "sharing")?;
+        let (has_options, has_servers) = crate::shared_settings::shared_copy_exists(&self.ctx);
+        if (options && !has_options) || (servers && !has_servers) {
+            let instance_id = self.validate_id(instance_id)?;
+            let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+            let manifest = crate::helpers::read_manifest(&manifest_path)?;
+            let dir = self.ctx.paths.instance_dir(&instance_id)?;
+            let _ = crate::shared_settings::capture(&self.ctx, &dir, &manifest);
+        }
+        Ok(())
+    }
+
+    /// Free-form notes about this instance. Blank clears them.
+    pub fn set_notes(&self, instance_id: &str, notes: &str) -> LauncherResult<()> {
+        let notes = notes.trim_end();
+        if notes.len() > 64 * 1024 {
+            return Err(LauncherError::Generic {
+                code: "ERR_NOTES_TOO_LONG".into(),
+                message: "Notes are limited to 64 KB.".into(),
+            });
+        }
+        let value =
+            (!notes.trim().is_empty()).then(|| serde_json::Value::String(notes.to_string()));
+        self.set_user_preference(instance_id, NOTES_KEY, value, "notes")
+    }
+
+    /// Which group each instance is filed under in My Instances. Instances
+    /// without an entry are ungrouped. Entries for deleted instances are
+    /// harmless and dropped the next time the map is written.
+    pub fn groups(&self) -> LauncherResult<std::collections::BTreeMap<String, String>> {
+        let conn = self.connection()?;
+        Ok(crate::db::get_setting(&conn, INSTANCE_GROUPS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default())
+    }
+
+    /// File an instance under a group, or ungroup it with `None` or a blank
+    /// name. Kept in one settings entry rather than per instance because
+    /// grouping is how the library is laid out, not part of the instance.
+    pub fn set_group(&self, instance_id: &str, group: Option<&str>) -> LauncherResult<()> {
+        let instance_id = self.validate_id(instance_id)?;
+        let group = group.map(str::trim).filter(|name| !name.is_empty());
+        if group.is_some_and(|name| name.chars().count() > 64) {
+            return Err(LauncherError::Generic {
+                code: "ERR_GROUP_NAME".into(),
+                message: "Group names are limited to 64 characters.".into(),
+            });
+        }
+        let existing: std::collections::HashSet<String> = self
+            .list()?
+            .into_iter()
+            .map(|row| row.instance_id)
+            .collect();
+        if !existing.contains(&instance_id) {
+            return Err(LauncherError::Generic {
+                code: "ERR_INSTANCE_NOT_FOUND".into(),
+                message: format!("Instance '{instance_id}' not found."),
+            });
+        }
+        let mut groups = self.groups()?;
+        groups.retain(|id, _| existing.contains(id));
+        match group {
+            Some(name) => {
+                groups.insert(instance_id, name.to_string());
+            }
+            None => {
+                groups.remove(&instance_id);
+            }
+        }
+        let conn = self.connection()?;
+        crate::db::set_setting(&conn, INSTANCE_GROUPS_KEY, &serde_json::json!(groups)).map_err(
+            |error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            },
+        )
+    }
+
+    /// Write one key of the manifest's `user_preferences` (removing it for
+    /// `None`). Stored there so it travels with an exported instance and needs
+    /// no migration.
+    fn set_user_preference(
+        &self,
+        instance_id: &str,
+        key: &str,
+        value: Option<serde_json::Value>,
+        operation: &str,
+    ) -> LauncherResult<()> {
+        let instance_id = self.validate_id(instance_id)?;
         let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
         let _lock = self.ctx.lock_manager.acquire(
             crate::lock_manager::LockResource::Instance(instance_id.clone()),
-            "wrapper-command",
+            operation,
         )?;
         let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
         if !manifest.user_preferences.is_object() {
             manifest.user_preferences = serde_json::json!({});
         }
         if let Some(preferences) = manifest.user_preferences.as_object_mut() {
-            if trimmed.is_empty() {
-                preferences.remove("agora_wrapper_command");
-            } else {
-                preferences.insert(
-                    "agora_wrapper_command".into(),
-                    serde_json::Value::String(trimmed),
-                );
+            match value {
+                Some(value) => {
+                    preferences.insert(key.into(), value);
+                }
+                None => {
+                    preferences.remove(key);
+                }
             }
         }
         crate::helpers::atomic_write_manifest(&manifest_path, &manifest)
@@ -757,10 +953,7 @@ impl InstanceService {
                 message: error.to_string(),
             })?
             .ok_or(LauncherError::LaunchFailed)?;
-        let user_override = crate::db::get_setting(&conn, "jvm_always_pre_touch")
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
+        let user_override = crate::db::global_always_pre_touch(&conn);
         let manifest = read_manifest(&self.ctx.paths.instance_manifest(&instance_id)?)?;
         let memory_mb = if row.jvm_memory_mode == "auto" {
             if let Some(manifest) = manifest.as_ref() {
@@ -1262,6 +1455,7 @@ impl InstanceService {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         let mut new_manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
@@ -1421,10 +1615,7 @@ impl InstanceService {
 
         // Launcher profile
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
-            let user_override = crate::db::get_setting(&conn, "jvm_always_pre_touch")
-                .ok()
-                .flatten()
-                .and_then(|value| value.as_bool());
+            let user_override = crate::db::global_always_pre_touch(&conn);
             let jvm = crate::models::JvmConfig {
                 memory_mb: new_row.jvm_memory_mb,
                 gc: new_row.jvm_gc.clone(),
@@ -1675,10 +1866,7 @@ impl InstanceService {
             });
         }
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
-            let user_override = crate::db::get_setting(&conn, "jvm_always_pre_touch")
-                .ok()
-                .flatten()
-                .and_then(|value| value.as_bool());
+            let user_override = crate::db::global_always_pre_touch(&conn);
             let jvm = crate::models::JvmConfig {
                 memory_mb: row.jvm_memory_mb,
                 gc: row.jvm_gc.clone(),
@@ -1863,6 +2051,7 @@ pub(crate) fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) ->
         icon_path: None,
         launch_mode_override: "auto".into(),
         import_source: None,
+        total_play_ms: 0,
     }
 }
 
@@ -2075,6 +2264,33 @@ mod tests {
             .into_iter()
             .map(|s| s.id)
             .collect()
+    }
+
+    #[test]
+    fn groups_and_notes_round_trip() {
+        let (ctx, _root) = instance_with_mod();
+        let service = InstanceService::new(ctx.clone());
+        service.set_group("inst", Some("  Modded  ")).unwrap();
+        assert_eq!(
+            service.groups().unwrap().get("inst").map(String::as_str),
+            Some("Modded")
+        );
+        service.set_group("inst", Some(" ")).unwrap();
+        assert!(service.groups().unwrap().is_empty());
+        assert!(service.set_group("missing", Some("x")).is_err());
+
+        service
+            .set_notes(
+                "inst",
+                "Seed 1234
+",
+            )
+            .unwrap();
+        let manifest = service.get("inst").unwrap().unwrap().manifest.unwrap();
+        assert_eq!(manifest.user_preferences[NOTES_KEY], "Seed 1234");
+        service.set_notes("inst", "  ").unwrap();
+        let manifest = service.get("inst").unwrap().unwrap().manifest.unwrap();
+        assert!(manifest.user_preferences.get(NOTES_KEY).is_none());
     }
 
     #[test]

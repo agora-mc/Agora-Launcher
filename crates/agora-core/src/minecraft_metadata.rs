@@ -104,3 +104,56 @@ pub async fn ensure_base_version_metadata(
 
     Ok(info)
 }
+
+/// Snapshot, pre-release and release-candidate versions, newest first, for
+/// vanilla instances. Old alpha and beta versions are left out: they need
+/// launch fixes Agora does not carry.
+pub async fn list_snapshot_versions(
+    minecraft_root: &Path,
+    policy: &NetworkPolicy,
+) -> LauncherResult<Vec<String>> {
+    policy.check(NetworkCategory::MojangMetadata)?;
+    let clients = LaunchHttpClients::new()?;
+    let manifest: MojangVersionManifest = launch_planner::load_json_cache_first(
+        clients.for_category(NetworkCategory::MojangMetadata),
+        VERSION_MANIFEST_URL,
+        &minecraft_root
+            .join("metadata")
+            .join("version_manifest_v2.json"),
+        None,
+        policy,
+        NetworkCategory::MojangMetadata,
+    )
+    .await?;
+    Ok(snapshot_ids(&manifest))
+}
+
+fn snapshot_ids(manifest: &MojangVersionManifest) -> Vec<String> {
+    manifest
+        .versions
+        .iter()
+        .filter(|version| version.type_ == "snapshot")
+        .map(|version| version.id.clone())
+        .collect()
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn only_snapshot_types_are_listed_newest_first() {
+        let manifest: MojangVersionManifest = serde_json::from_value(serde_json::json!({
+            "latest": {"release": "26.3", "snapshot": "26w44a"},
+            "versions": [
+                {"id": "26w44a", "type": "snapshot", "url": "https://x/1"},
+                {"id": "26.3", "type": "release", "url": "https://x/2"},
+                {"id": "26.3-pre1", "type": "snapshot", "url": "https://x/3"},
+                {"id": "b1.7.3", "type": "old_beta", "url": "https://x/4"},
+                {"id": "a1.0.4", "type": "old_alpha", "url": "https://x/5"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(snapshot_ids(&manifest), vec!["26w44a", "26.3-pre1"]);
+    }
+}

@@ -599,6 +599,8 @@ function BrowseContent({
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerRef = useRef<HTMLElement>(null);
   const [pickerInstanceId, setPickerInstanceId] = useState('');
+  // Leave out what the selected instance already has, as Modrinth's app does.
+  const [hideInstalled, setHideInstalled] = useState(false);
   const [installTarget, setInstallTarget] = useState<{
     intent: InstallIntent;
     instanceName: string;
@@ -897,6 +899,10 @@ function BrowseContent({
         : null,
     };
   };
+
+  const shownItems = hideInstalled && activeInstance
+    ? items.filter((item) => !contextFor(item)?.installed)
+    : items;
 
   // ---- The Bazaar (High Interaction Browse): owned set + item mapping ----
   const bazaarOwnedIds = useMemo(() => {
@@ -1630,6 +1636,17 @@ function BrowseContent({
             <option key={s.value} value={s.value}>{s.label}</option>
           ))}
         </select>
+        {activeInstance && (
+          <label className="flex items-center gap-2 text-sm" title={`Leave out what ${activeInstance.row.name} already has`}>
+            <input
+              type="checkbox"
+              checked={hideInstalled}
+              onChange={(e) => setHideInstalled(e.target.checked)}
+              className="h-4 w-4 accent-primary"
+            />
+            Hide installed
+          </label>
+        )}
       </div>
 
       {/* Active filter chips */}
@@ -1820,7 +1837,7 @@ function BrowseContent({
       ) : layout === 'grid' ? (
         <div data-tour="browse-results">
           <BrowseTileResults
-            items={items}
+            items={shownItems}
             contextFor={contextFor}
             onSelectMod={handleSelectItem}
             selectedItems={selectedItems}
@@ -1830,7 +1847,7 @@ function BrowseContent({
       ) : (
         <div data-tour="browse-results">
           <BrowseListResults
-            items={items}
+            items={shownItems}
             contextFor={contextFor}
             onSelectMod={handleSelectItem}
             selectedItems={selectedItems}

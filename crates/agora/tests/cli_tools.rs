@@ -170,6 +170,7 @@ fn create_instance(data_dir: &Path, id: &str, mods: &[ModFixture]) {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         },
     )
     .unwrap();
@@ -665,6 +666,71 @@ fn instance_wrapper_refuses_an_unmatched_quote() {
     assert!(
         !output.status.success(),
         "a malformed wrapper must be rejected up front"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// instance window, server
+// ---------------------------------------------------------------------------
+
+#[test]
+fn instance_window_sets_shows_and_clears_the_size() {
+    let root = temp_root();
+    create_instance(&root.0, "win", &[]);
+
+    let set = agora(&root.0, &["instance", "window", "win", "1280x720"]);
+    assert!(set.status.success(), "stderr: {}", stderr(&set));
+    assert!(
+        stdout(&set).contains("Window: 1280x720"),
+        "{}",
+        stdout(&set)
+    );
+
+    let too_small = agora(&root.0, &["instance", "window", "win", "10x10"]);
+    assert!(!too_small.status.success());
+
+    let clear = agora(&root.0, &["instance", "window", "win", "--clear"]);
+    assert!(
+        stdout(&clear).contains("Window: global default"),
+        "{}",
+        stdout(&clear)
+    );
+}
+
+#[test]
+fn server_add_list_and_remove() {
+    let root = temp_root();
+    create_instance(&root.0, "srv", &[]);
+
+    let add = agora(
+        &root.0,
+        &[
+            "server",
+            "add",
+            "srv",
+            "play.example.net:25570",
+            "--name",
+            "Home",
+        ],
+    );
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+    let listed = agora(&root.0, &["server", "list", "srv"]);
+    assert!(
+        stdout(&listed).contains("play.example.net:25570"),
+        "{}",
+        stdout(&listed)
+    );
+    assert!(stdout(&listed).contains("Home"), "{}", stdout(&listed));
+
+    let remove = agora(&root.0, &["server", "remove", "srv", "1"]);
+    assert!(remove.status.success(), "stderr: {}", stderr(&remove));
+    assert!(stdout(&agora(&root.0, &["server", "list", "srv"])).contains("No servers."));
+
+    let worlds = agora(&root.0, &["world", "list", "srv"]);
+    assert!(
+        stdout(&worlds).contains("No worlds."),
+        "{}",
+        stdout(&worlds)
     );
 }
 

@@ -55,6 +55,18 @@ function splitVersion(version: string): VersionParts {
  * versions (`0.16.9`, `50.1.0`) are plain numeric triples, but the prerelease
  * path keeps the sort stable if one ever appears.
  */
+/**
+ * Lifetime play time as a short label: "45 min", "3.5 h", "120 h". Returns
+ * null for nothing recorded, so callers can leave the label out entirely.
+ */
+export function formatPlayTime(ms: number | null | undefined): string | null {
+  if (!ms || ms < 60_000) return null;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = ms / 3_600_000;
+  return hours < 10 ? `${(Math.floor(hours * 10) / 10).toString()} h` : `${Math.floor(hours)} h`;
+}
+
 export function compareVersionsDescending(a: string, b: string): number {
   const va = splitVersion(a);
   const vb = splitVersion(b);

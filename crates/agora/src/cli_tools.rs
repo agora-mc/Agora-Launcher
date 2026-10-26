@@ -258,11 +258,82 @@ pub enum InstanceToolsCmd {
         #[arg(long, help = "Remove the wrapper command")]
         clear: bool,
     },
+    /// Show, or set, the commands run before and after a direct launch and
+    /// the game's extra environment variables. Options replace what is set;
+    /// --clear removes all of them.
+    Hooks {
+        instance: String,
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "Command run before the game starts; empty to remove"
+        )]
+        pre: Option<String>,
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "Command run after the game exits; empty to remove"
+        )]
+        post: Option<String>,
+        #[arg(
+            long = "env",
+            value_name = "NAME=VALUE",
+            help = "Environment variable for the game; repeat for more"
+        )]
+        env: Vec<String>,
+        #[arg(long, conflicts_with_all = ["pre", "post", "env"], help = "Remove all launch commands and variables")]
+        clear: bool,
+    },
+    /// Show, or set, whether this instance shares its game settings
+    /// (options.txt) and server list with other instances that also share.
+    Share {
+        instance: String,
+        #[arg(long, value_name = "on|off")]
+        options: Option<String>,
+        #[arg(long, value_name = "on|off")]
+        servers: Option<String>,
+    },
+    /// Show, or set, an instance's notes. --clear removes them.
+    Notes {
+        instance: String,
+        #[arg(conflicts_with = "clear", help = "New notes, replacing the old")]
+        text: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Show, or set, the group an instance is filed under in My Instances.
+    /// --clear ungroups it.
+    Group {
+        instance: String,
+        #[arg(conflicts_with = "clear")]
+        name: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Show, or set, the size the game window opens at (direct launch). With
+    /// no size, shows the current one; --clear falls back to the global default.
+    Window {
+        instance: String,
+        #[arg(conflicts_with = "clear", help = "WIDTHxHEIGHT, e.g. 1280x720")]
+        size: Option<String>,
+        #[arg(long, help = "Use the global default instead")]
+        clear: bool,
+    },
+}
+
+/// Parse `WIDTHxHEIGHT`.
+fn parse_size(size: &str) -> anyhow::Result<(u32, u32)> {
+    let (width, height) = size
+        .to_ascii_lowercase()
+        .split_once('x')
+        .map(|(w, h)| (w.trim().parse::<u32>(), h.trim().parse::<u32>()))
+        .ok_or_else(|| anyhow::anyhow!("Give the size as WIDTHxHEIGHT, e.g. 1280x720"))?;
+    Ok((width?, height?))
 }
 
 /// Ask a yes/no question on the terminal. Without a terminal there is nobody
 /// to ask, so the refusal says to pass `--yes` instead.
-fn confirm(question: &str, refusal: &str) -> anyhow::Result<bool> {
+pub(crate) fn confirm(question: &str, refusal: &str) -> anyhow::Result<bool> {
     if !std::io::stdin().is_terminal() {
         anyhow::bail!("{refusal}");
     }
@@ -577,6 +648,217 @@ pub async fn run_instance_tools(
                 match current {
                     Some(command) => println!("Wrapper: {command}"),
                     None => println!("Wrapper: none"),
+                }
+            }
+        }
+        InstanceToolsCmd::Hooks {
+            instance,
+            pre,
+            post,
+            env,
+            clear,
+        } => {
+            let current = |service: &InstanceService| -> anyhow::Result<agora_core::launch_service::LaunchHooks> {
+                let detail = service
+                    .get(&instance)?
+                    .ok_or_else(|| anyhow::anyhow!("Instance '{instance}' not found"))?;
+                Ok(detail
+                    .manifest
+                    .as_ref()
+                    .map(agora_core::launch_service::LaunchHooks::from_manifest)
+                    .unwrap_or_default())
+            };
+            if clear {
+                service.set_launch_hooks(&instance, "", "", Default::default())?;
+            } else if pre.is_some() || post.is_some() || !env.is_empty() {
+                let existing = current(&service)?;
+                let env = if env.is_empty() {
+                    existing.env
+                } else {
+                    env.iter()
+                        .map(|pair| {
+                            pair.split_once('=')
+                                .map(|(name, value)| (name.to_string(), value.to_string()))
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("Give variables as NAME=VALUE, not '{pair}'")
+                                })
+                        })
+                        .collect::<anyhow::Result<_>>()?
+                };
+                service.set_launch_hooks(
+                    &instance,
+                    &pre.unwrap_or_else(|| existing.pre_launch.unwrap_or_default()),
+                    &post.unwrap_or_else(|| existing.post_exit.unwrap_or_default()),
+                    env,
+                )?;
+            }
+            let hooks = current(&service)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "instanceId": instance,
+                        "preLaunch": hooks.pre_launch,
+                        "postExit": hooks.post_exit,
+                        "env": hooks.env,
+                    }))?
+                );
+            } else {
+                println!(
+                    "Pre-launch: {}",
+                    hooks.pre_launch.as_deref().unwrap_or("none")
+                );
+                println!(
+                    "Post-exit:  {}",
+                    hooks.post_exit.as_deref().unwrap_or("none")
+                );
+                if hooks.env.is_empty() {
+                    println!("Environment: none");
+                } else {
+                    for (name, value) in &hooks.env {
+                        println!("Environment: {name}={value}");
+                    }
+                }
+            }
+        }
+        InstanceToolsCmd::Share {
+            instance,
+            options,
+            servers,
+        } => {
+            let switch = |value: &str| match value.to_ascii_lowercase().as_str() {
+                "on" | "true" | "yes" => Ok(true),
+                "off" | "false" | "no" => Ok(false),
+                other => Err(anyhow::anyhow!("Use on or off, not '{other}'")),
+            };
+            let current = || -> anyhow::Result<(bool, bool)> {
+                let detail = service
+                    .get(&instance)?
+                    .ok_or_else(|| anyhow::anyhow!("Instance '{instance}' not found"))?;
+                Ok(detail
+                    .manifest
+                    .as_ref()
+                    .map(agora_core::shared_settings::sharing)
+                    .unwrap_or_default())
+            };
+            if options.is_some() || servers.is_some() {
+                let (now_options, now_servers) = current()?;
+                let options = options
+                    .as_deref()
+                    .map(switch)
+                    .transpose()?
+                    .unwrap_or(now_options);
+                let servers = servers
+                    .as_deref()
+                    .map(switch)
+                    .transpose()?
+                    .unwrap_or(now_servers);
+                service.set_sharing(&instance, options, servers)?;
+            }
+            let (options, servers) = current()?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "instanceId": instance, "options": options, "servers": servers,
+                    }))?
+                );
+            } else {
+                let word = |on: bool| if on { "shared" } else { "not shared" };
+                println!("Game settings: {}", word(options));
+                println!("Server list:   {}", word(servers));
+            }
+        }
+        InstanceToolsCmd::Notes {
+            instance,
+            text,
+            clear,
+        } => {
+            if clear {
+                service.set_notes(&instance, "")?;
+            } else if let Some(text) = text {
+                service.set_notes(&instance, &text)?;
+            }
+            let detail = service
+                .get(&instance)?
+                .ok_or_else(|| anyhow::anyhow!("Instance '{instance}' not found"))?;
+            let notes = detail
+                .manifest
+                .as_ref()
+                .and_then(|manifest| {
+                    manifest
+                        .user_preferences
+                        .get(agora_core::instance_service::NOTES_KEY)
+                })
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "instanceId": instance, "notes": notes })
+                    )?
+                );
+            } else {
+                println!("{}", notes.as_deref().unwrap_or("No notes."));
+            }
+        }
+        InstanceToolsCmd::Group {
+            instance,
+            name,
+            clear,
+        } => {
+            if clear {
+                service.set_group(&instance, None)?;
+            } else if let Some(name) = &name {
+                service.set_group(&instance, Some(name))?;
+            }
+            let group = service.groups()?.get(&instance).cloned();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "instanceId": instance, "group": group })
+                    )?
+                );
+            } else {
+                println!("Group: {}", group.as_deref().unwrap_or("none"));
+            }
+        }
+        InstanceToolsCmd::Window {
+            instance,
+            size,
+            clear,
+        } => {
+            if clear {
+                service.set_window_size(&instance, None)?;
+            } else if let Some(size) = size {
+                service.set_window_size(&instance, Some(parse_size(&size)?))?;
+            }
+            let detail = service
+                .get(&instance)?
+                .ok_or_else(|| anyhow::anyhow!("Instance '{instance}' not found"))?;
+            let current = detail.manifest.as_ref().and_then(|manifest| {
+                manifest
+                    .user_preferences
+                    .get(agora_core::launch_service::WINDOW_SIZE_KEY)
+                    .and_then(agora_core::launch_service::parse_window_size)
+            });
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "instanceId": instance,
+                        "window": current.map(|(width, height)| serde_json::json!({
+                            "width": width,
+                            "height": height,
+                        })),
+                    }))?
+                );
+            } else {
+                match current {
+                    Some((width, height)) => println!("Window: {width}x{height}"),
+                    None => println!("Window: global default"),
                 }
             }
         }

@@ -5,6 +5,11 @@ import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
 import { PluginSurface } from '../features/plugins/PluginSurface';
 import { ConsoleView } from '../components/ConsoleView';
+import { WorldsPanel } from '../components/WorldsPanel';
+import { WindowSizeEditor } from '../components/WindowSizeEditor';
+import { LaunchHooksEditor } from '../components/LaunchHooksEditor';
+import { ShareLogPanel } from '../components/ShareLogPanel';
+import { ScreenshotsPanel } from '../components/ScreenshotsPanel';
 import { takeRequestedEditorTab } from '../lib/editorDeepLink';
 import { focusSkipTarget } from '../lib/skipLink';
 import { InstallFlow } from '../components/InstallFlow';
@@ -92,6 +97,19 @@ import {
   revealPath,
   clearCachedInstanceUpdates,
   type InstanceDetail,
+  type QuickPlay,
+  parseWindowSize,
+  setInstanceWindowSize,
+  setInstanceLaunchHooks,
+  setInstanceNotes,
+  setInstanceSharing,
+  SHARE_OPTIONS_KEY,
+  SHARE_SERVERS_KEY,
+  NOTES_KEY,
+  PRE_LAUNCH_KEY,
+  POST_EXIT_KEY,
+  ENV_VARS_KEY,
+  WINDOW_SIZE_KEY,
   type InstanceManifest,
   type ModGroups,
   type OrphanedDependency,
@@ -117,7 +135,7 @@ import {
 } from '../lib/tauri';
 import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { useConfirm } from '@/components/ui/confirm';
-import { formatDateTime } from '@/lib/utils';
+import { formatDateTime, formatPlayTime } from '@/lib/utils';
 import { copiedMemoryNote, formatMemoryMb, readCopiedMemory } from '@/lib/importDisplay';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
@@ -263,6 +281,18 @@ function javaSettingsKey(row: InstanceDetail['row']): string {
   ]);
 }
 
+function stringPreference(detail: InstanceDetail, key: string): string {
+  const value = detail.manifest?.user_preferences?.[key];
+  return typeof value === 'string' ? value : '';
+}
+
+const NO_ENV: Record<string, string> = {};
+function envPreference(detail: InstanceDetail): Record<string, string> {
+  const value = detail.manifest?.user_preferences?.[ENV_VARS_KEY];
+  if (!value || typeof value !== 'object') return NO_ENV;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+}
+
 function wrapperCommandOf(detail: InstanceDetail): string {
   const value = detail.manifest?.user_preferences?.agora_wrapper_command;
   return typeof value === 'string' ? value : '';
@@ -311,7 +341,7 @@ function previewJavaMajor(version: string | undefined): number {
   return 8;
 }
 
-export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess, healthReport, onReviewHealth, onRefreshHealth, launchFailure, onDismissLaunchFailure }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void>; healthReport?: HealthReport | null; onReviewHealth?: (instanceId: string, instanceName: string, report: HealthReport) => void; onRefreshHealth?: (instanceId: string) => Promise<void> | void; launchFailure?: { exitCode: number | null } | null; onDismissLaunchFailure?: (instanceId: string) => void }) {
+export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onQuickPlay, onInvestigate, processLogs, processState, onKillProcess, healthReport, onReviewHealth, onRefreshHealth, launchFailure, onDismissLaunchFailure }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onQuickPlay?: (instanceId: string, quickPlay: QuickPlay) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void>; healthReport?: HealthReport | null; onReviewHealth?: (instanceId: string, instanceName: string, report: HealthReport) => void; onRefreshHealth?: (instanceId: string) => Promise<void> | void; launchFailure?: { exitCode: number | null } | null; onDismissLaunchFailure?: (instanceId: string) => void }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const detailRef = useRef<InstanceDetail | null>(null);
   detailRef.current = detail;
@@ -346,7 +376,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const { confirm, prompt } = useConfirm();
 
   // Sub-sidebar active tab
-  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>(() => (takeRequestedEditorTab() === 'console' ? 'console' : 'mods'));
+  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'worlds' | 'screenshots' | 'notes' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>(() => (takeRequestedEditorTab() === 'console' ? 'console' : 'mods'));
 
   // Snapshots state (Phase 6)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -2157,6 +2187,11 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 {row?.last_launched_at && (
                   <span className="ml-2">· Last launched {formatInstalledDate(row.last_launched_at)}</span>
                 )}
+                {formatPlayTime(row?.total_play_ms) && (
+                  <span className="ml-2" title="Time in game across launches Agora ran itself">
+                    · {formatPlayTime(row?.total_play_ms)} played
+                  </span>
+                )}
                 {!row?.is_locked && (
                   <button
                     type="button"
@@ -2340,14 +2375,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
       {/* Sub-sidebar tabs */}
       <div className="agora-tabbar">
-        {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'snapshots', 'loadout-profiles', 'templates', 'migrate', 'import', 'export', 'console'] as const).map((tab) => (
+        {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'worlds', 'screenshots', 'notes', 'snapshots', 'loadout-profiles', 'templates', 'migrate', 'import', 'export', 'console'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             data-active={activeTab === tab}
             className="agora-tab text-sm"
           >
-            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'migrate' ? 'Version Move' : tab === 'import' ? 'Other launchers & files' : tab === 'export' ? 'Export' : 'Console'}
+            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'worlds' ? 'Worlds & Servers' : tab === 'screenshots' ? 'Screenshots' : tab === 'notes' ? 'Notes' : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'migrate' ? 'Version Move' : tab === 'import' ? 'Other launchers & files' : tab === 'export' ? 'Export' : 'Console'}
           </button>
         ))}
         <button
@@ -3268,6 +3303,43 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         </div>
       )}
 
+      {activeTab === 'screenshots' && (
+        <ScreenshotsPanel instanceId={instanceId} onStatus={setStatus} onError={setError} />
+      )}
+
+      {activeTab === 'notes' && detail && (
+        <InstanceNotes
+          notes={stringPreference(detail, NOTES_KEY)}
+          onSave={async (notes) => {
+            try {
+              await setInstanceNotes(instanceId, notes);
+              setStatus('Notes saved.');
+              await reloadInstance();
+            } catch (e) {
+              setError(formatError(e));
+            }
+          }}
+        />
+      )}
+
+      {activeTab === 'worlds' && (
+        <WorldsPanel
+          instanceId={instanceId}
+          running={processRunning || processLaunching || processStopping}
+          sharing={detail ? {
+            options: detail.manifest?.user_preferences?.[SHARE_OPTIONS_KEY] === true,
+            servers: detail.manifest?.user_preferences?.[SHARE_SERVERS_KEY] === true,
+          } : undefined}
+          onSetSharing={async (options, servers) => {
+            await setInstanceSharing(instanceId, options, servers);
+            await reloadInstance();
+          }}
+          onQuickPlay={onQuickPlay ? (quickPlay) => onQuickPlay(instanceId, quickPlay) : undefined}
+          onStatus={setStatus}
+          onError={setError}
+        />
+      )}
+
       {activeTab === 'console' && (
         <section className="rounded-xl border border-border bg-card p-4 space-y-3">
           <h3 className="font-semibold text-sm">Game Console</h3>
@@ -3280,6 +3352,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             logBuffer={processLogs?.filter((l) => l.instance_id === instanceId)}
           />
         </section>
+      )}
+
+      {activeTab === 'console' && (
+        <div className="mt-4">
+          <ShareLogPanel instanceId={instanceId} />
+        </div>
       )}
 
       {activeTab === 'java-args' && (
@@ -3621,6 +3699,54 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         </section>
       )}
 
+      {activeTab === 'java-args' && detail && (
+        <section className="mt-4 rounded-xl border border-border bg-card p-4 space-y-3">
+          <h3 className="font-semibold text-sm">Game window</h3>
+          <p className="text-xs text-muted-foreground">
+            The size Minecraft opens at when Agora starts it (direct launch). With the official launcher, set
+            the resolution on its installation instead; Agora leaves that setting alone.
+          </p>
+          <WindowSizeEditor
+            value={parseWindowSize(detail.manifest?.user_preferences?.[WINDOW_SIZE_KEY])}
+            noneLabel="Use the default from Settings"
+            disabled={recoveryBlocked}
+            onSave={async (size) => {
+              try {
+                await setInstanceWindowSize(instanceId, size);
+              } catch (e) {
+                throw new Error(formatError(e));
+              }
+              setStatus(size ? `Window size set to ${size.width}×${size.height}.` : 'Window size now follows the default.');
+              await reloadInstance();
+            }}
+          />
+        </section>
+      )}
+
+      {activeTab === 'java-args' && detail && (
+        <section className="mt-4 rounded-xl border border-border bg-card p-4 space-y-3">
+          <h3 className="font-semibold text-sm">Launch commands</h3>
+          <p className="text-xs text-muted-foreground">
+            Used when Agora starts the game itself (direct launch); the official launcher runs the game on its own.
+          </p>
+          <LaunchHooksEditor
+            preLaunch={stringPreference(detail, PRE_LAUNCH_KEY)}
+            postExit={stringPreference(detail, POST_EXIT_KEY)}
+            env={envPreference(detail)}
+            disabled={recoveryBlocked}
+            onSave={async (preLaunch, postExit, env) => {
+              try {
+                await setInstanceLaunchHooks(instanceId, preLaunch, postExit, env);
+              } catch (e) {
+                throw new Error(formatError(e));
+              }
+              setStatus('Launch commands saved.');
+              await reloadInstance();
+            }}
+          />
+        </section>
+      )}
+
       {disablePlanTarget && (
         <DependencyPrompt
           title={disablePlanTarget.rows.length > 1 ? 'Disable selected content and dependents' : 'Disable content and dependents'}
@@ -3643,10 +3769,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           displayNameFor={(update) =>
             displayedContentRows.find((content) => content.filename === update.filename)?.display_name
             ?? update.filename}
-          onConfirm={() => {
-            const updates = pendingUpdates;
+          onConfirm={(selected) => {
             setPendingUpdates(null);
-            applyUpdates(updates);
+            if (selected.length > 0) applyUpdates(selected);
           }}
           onCancel={() => setPendingUpdates(null)}
         />
@@ -3932,5 +4057,36 @@ function BackButton({ onBack }: { onBack: () => void }) {
     >
       ← Back
     </button>
+  );
+}
+
+/** Free-form notes kept with the instance (they travel with an export). */
+function InstanceNotes({ notes, onSave }: { notes: string; onSave: (notes: string) => Promise<void> }) {
+  const [text, setText] = useState(notes);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setText(notes), [notes]);
+  return (
+    <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+      <h3 className="font-semibold text-sm">Notes</h3>
+      <p className="text-xs text-muted-foreground">
+        Anything worth remembering about this instance: seeds, what you changed and why. Stored in plain text in the
+        instance&apos;s manifest, so keep passwords out of it.
+      </p>
+      <textarea
+        aria-label="Instance notes"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={12}
+        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm resize-y"
+      />
+      <button
+        type="button"
+        disabled={saving || text === notes}
+        onClick={async () => { setSaving(true); try { await onSave(text); } finally { setSaving(false); } }}
+        className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+      >
+        {saving ? 'Saving…' : 'Save notes'}
+      </button>
+    </section>
   );
 }

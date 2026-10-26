@@ -1952,6 +1952,118 @@ pub fn build_command(request: BuildCommandRequest<'_>) -> LauncherResult<Prepare
 
 /// Spawn the prepared command while leaving ownership and lifecycle handling
 /// with the desktop or CLI caller.
+/// Where the game goes straight after it starts, instead of the title screen.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "target", rename_all = "snake_case")]
+pub enum QuickPlay {
+    /// A world, by its folder name under `saves/`.
+    Singleplayer(String),
+    /// A server address, `host` or `host:port`.
+    Multiplayer(String),
+}
+
+/// Whether a version understands the 1.20+ Quick Play arguments. Mojang ships
+/// them as feature-gated game arguments, so their presence is the test.
+fn supports_quick_play(version: &VersionInfo) -> bool {
+    version.arguments.as_ref().is_some_and(|arguments| {
+        arguments
+            .game
+            .iter()
+            .any(|value| value.to_string().contains("--quickPlayMultiplayer"))
+    })
+}
+
+/// Split `host[:port]`, allowing a bracketed IPv6 host.
+pub(crate) fn split_server_address(address: &str) -> (String, Option<String>) {
+    let address = address.trim();
+    if let Some(rest) = address.strip_prefix('[') {
+        if let Some((host, tail)) = rest.split_once(']') {
+            let port = tail.strip_prefix(':').filter(|p| !p.is_empty());
+            return (host.to_string(), port.map(str::to_string));
+        }
+    }
+    match address.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => (
+            host.to_string(),
+            (!port.is_empty()).then(|| port.to_string()),
+        ),
+        _ => (address.to_string(), None),
+    }
+}
+
+/// Game arguments that send the game straight into a world or server.
+///
+/// The arguments are appended explicitly rather than by switching on Mojang's
+/// feature flags, because those flags also pull in a `quickPlayPath` log file
+/// Agora does not use. Versions before 1.20 can still join a server through
+/// the older `--server`/`--port` pair; they have no way to open a world.
+pub fn quick_play_args(version: &VersionInfo, target: &QuickPlay) -> LauncherResult<Vec<String>> {
+    let invalid = |message: &str| LauncherError::Generic {
+        code: "ERR_QUICK_PLAY".into(),
+        message: message.into(),
+    };
+    match target {
+        QuickPlay::Singleplayer(world) => {
+            if world.trim().is_empty() {
+                return Err(invalid("Choose a world to open."));
+            }
+            if !supports_quick_play(version) {
+                return Err(invalid(
+                    "Opening a world directly needs Minecraft 1.20 or newer.",
+                ));
+            }
+            Ok(vec!["--quickPlaySingleplayer".into(), world.clone()])
+        }
+        QuickPlay::Multiplayer(address) => {
+            let (host, port) = split_server_address(address);
+            if host.is_empty() || host.chars().any(char::is_whitespace) {
+                return Err(invalid("That server address is not valid."));
+            }
+            if supports_quick_play(version) {
+                let joined = match port {
+                    Some(port) if host.contains(':') => format!("[{host}]:{port}"),
+                    Some(port) => format!("{host}:{port}"),
+                    None => host,
+                };
+                Ok(vec!["--quickPlayMultiplayer".into(), joined])
+            } else {
+                let mut args = vec!["--server".into(), host];
+                args.extend(["--port".into(), port.unwrap_or_else(|| "25565".into())]);
+                Ok(args)
+            }
+        }
+    }
+}
+
+/// Launch features and any extra game arguments for a fixed window size.
+///
+/// Modern versions carry `--width`/`--height` behind the
+/// `has_custom_resolution` feature; versions that still use the single
+/// `minecraftArguments` string accept the same flags appended by hand.
+pub fn window_size_launch(
+    version: &VersionInfo,
+    size: Option<(u32, u32)>,
+) -> (LaunchFeatures, Vec<String>) {
+    let mut features = LaunchFeatures::default();
+    let Some((width, height)) = size else {
+        return (features, Vec::new());
+    };
+    if version.arguments.is_some() {
+        features.values.insert("has_custom_resolution".into(), true);
+        features.resolution_width = Some(width);
+        features.resolution_height = Some(height);
+        (features, Vec::new())
+    } else {
+        let extra = vec![
+            "--width".into(),
+            width.to_string(),
+            "--height".into(),
+            height.to_string(),
+        ];
+        (features, extra)
+    }
+}
+
 /// Run the game under a wrapper command such as `mangohud` or
 /// `gamescope -W 1920 -H 1080 --`.
 ///
@@ -4142,6 +4254,81 @@ async fn download_verified_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn modern_version() -> VersionInfo {
+        VersionInfo {
+            arguments: Some(launch::VersionArguments {
+                jvm: Vec::new(),
+                game: vec![serde_json::json!({
+                    "rules": [{"action": "allow", "features": {"is_quick_play_multiplayer": true}}],
+                    "value": ["--quickPlayMultiplayer", "${quickPlayMultiplayer}"]
+                })],
+            }),
+            ..VersionInfo::default()
+        }
+    }
+
+    fn legacy_version() -> VersionInfo {
+        VersionInfo {
+            minecraft_arguments: Some("--username ${auth_player_name}".into()),
+            ..VersionInfo::default()
+        }
+    }
+
+    #[test]
+    fn quick_play_uses_modern_flags_when_the_version_has_them() {
+        let world = QuickPlay::Singleplayer("My World".into());
+        assert_eq!(
+            quick_play_args(&modern_version(), &world).unwrap(),
+            vec!["--quickPlaySingleplayer", "My World"]
+        );
+        let server = QuickPlay::Multiplayer("play.example.net:25570".into());
+        assert_eq!(
+            quick_play_args(&modern_version(), &server).unwrap(),
+            vec!["--quickPlayMultiplayer", "play.example.net:25570"]
+        );
+    }
+
+    #[test]
+    fn quick_play_falls_back_to_server_and_port_on_old_versions() {
+        let server = QuickPlay::Multiplayer("play.example.net".into());
+        assert_eq!(
+            quick_play_args(&legacy_version(), &server).unwrap(),
+            vec!["--server", "play.example.net", "--port", "25565"]
+        );
+        let v6 = QuickPlay::Multiplayer("[::1]:25570".into());
+        assert_eq!(
+            quick_play_args(&legacy_version(), &v6).unwrap(),
+            vec!["--server", "::1", "--port", "25570"]
+        );
+        let world = QuickPlay::Singleplayer("World".into());
+        assert!(quick_play_args(&legacy_version(), &world).is_err());
+    }
+
+    #[test]
+    fn quick_play_rejects_blank_or_spaced_targets() {
+        assert!(quick_play_args(&modern_version(), &QuickPlay::Singleplayer(" ".into())).is_err());
+        assert!(quick_play_args(
+            &modern_version(),
+            &QuickPlay::Multiplayer("bad host".into())
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn window_size_uses_features_or_appended_flags() {
+        let (features, extra) = window_size_launch(&modern_version(), Some((1280, 720)));
+        assert_eq!(features.values.get("has_custom_resolution"), Some(&true));
+        assert_eq!(features.resolution_width, Some(1280));
+        assert!(extra.is_empty());
+
+        let (features, extra) = window_size_launch(&legacy_version(), Some((854, 480)));
+        assert!(features.values.is_empty());
+        assert_eq!(extra, vec!["--width", "854", "--height", "480"]);
+
+        let (features, extra) = window_size_launch(&modern_version(), None);
+        assert!(features.values.is_empty() && extra.is_empty());
+    }
 
     #[test]
     fn adopted_client_jar_uses_loader_profile_filename() {

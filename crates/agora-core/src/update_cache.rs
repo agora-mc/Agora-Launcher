@@ -1312,6 +1312,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         crate::db::upsert_instance(&conn, &row).unwrap();
 
@@ -1347,6 +1348,7 @@ mod tests {
                 icon_path: None,
                 launch_mode_override: "auto".into(),
                 import_source: None,
+                total_play_ms: 0,
             };
             crate::db::upsert_instance(&conn, &row).unwrap();
             set_cached_instance_updates(&conn, id, &sample_updates()).unwrap();
@@ -2015,6 +2017,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         crate::db::upsert_instance(&conn, &row).unwrap();
         let mut updates = sample_updates();
@@ -2097,6 +2100,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         crate::db::upsert_instance(&conn, &row).unwrap();
         let mut updates = sample_updates();

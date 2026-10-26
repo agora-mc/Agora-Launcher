@@ -24,6 +24,7 @@
 
 use crate::error::{LauncherError, LauncherResult};
 use crate::network;
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -91,6 +92,8 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
             "user.auth.xboxlive.com",
             "xsts.auth.xboxlive.com",
             "api.minecraftservices.com",
+            // Skin and cape textures, shown on the skin page.
+            "textures.minecraft.net",
         ],
         // Deliberately empty: hosts for this category come from the signed
         // manifest via `HostPolicy::SignedManifest`, never from a compile-time
@@ -108,6 +111,9 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
         // Deliberately empty: any public host is authorized per request by
         // `HostPolicy::AnyPublicHost`, and only for this category.
         ClientCategory::CommunityImage => &[],
+        ClientCategory::LogUpload => &["api.mclo.gs"],
+        // Not an HTTP category; the empty list fails closed if it ever is.
+        ClientCategory::GameServer => &[],
     }
 }
 
@@ -192,6 +198,11 @@ pub enum ClientCategory {
     /// Reached only through `community_image`, which checks the bytes are an
     /// image before anything displays them.
     CommunityImage,
+    /// A game log the user chose to share, sent to mclo.gs.
+    LogUpload,
+    /// Status pings to Minecraft servers in an instance's server list. Not
+    /// HTTP: listed so the gate, Lockdown Mode and the Privacy page cover it.
+    GameServer,
 }
 
 /// How a category's requests are bounded in time.
@@ -233,7 +244,7 @@ impl ClientCategory {
     ///
     /// This is the single definition that client construction and
     /// [`Self::index`] are both derived from — see [`HttpClients`].
-    const ALL: [ClientCategory; 15] = [
+    const ALL: [ClientCategory; 17] = [
         ClientCategory::MojangMetadata,
         ClientCategory::MojangContent,
         ClientCategory::Loader,
@@ -249,6 +260,8 @@ impl ClientCategory {
         ClientCategory::PluginUpdate,
         ClientCategory::PluginPackage,
         ClientCategory::CommunityImage,
+        ClientCategory::LogUpload,
+        ClientCategory::GameServer,
     ];
 
     /// Position of this category in [`Self::ALL`].
@@ -271,6 +284,8 @@ impl ClientCategory {
             ClientCategory::PluginUpdate => 12,
             ClientCategory::PluginPackage => 13,
             ClientCategory::CommunityImage => 14,
+            ClientCategory::LogUpload => 15,
+            ClientCategory::GameServer => 16,
         }
     }
 
@@ -364,6 +379,155 @@ pub struct HttpClients {
     by_category: [reqwest::Client; ClientCategory::ALL.len()],
 }
 
+// ---------------------------------------------------------------------------
+// Proxy
+// ---------------------------------------------------------------------------
+
+/// Settings key holding the user's proxy choice.
+pub const PROXY_SETTING_KEY: &str = "network_proxy";
+const PROXY_SECRET_ACCOUNT: &str = "proxy-password";
+const PROXY_SECRET_FILE: &str = "proxy-password.enc";
+const PROXY_SECRET_CONTEXT: &[u8] = b"agora-proxy-password";
+
+/// How Agora's own requests reach the internet. The game is not affected.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ProxySetting {
+    /// The `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment variables.
+    #[default]
+    System,
+    /// Connect directly, ignoring any environment proxy.
+    None,
+    /// One proxy for everything: `http://`, `https://`, `socks5://` or
+    /// `socks5h://`. The password, if any, lives in the OS credential store.
+    Manual {
+        url: String,
+        #[serde(default)]
+        username: Option<String>,
+    },
+}
+
+impl ProxySetting {
+    /// Refuse a manual proxy reqwest could not use, before it is saved.
+    pub fn validate(&self) -> LauncherResult<()> {
+        if let ProxySetting::Manual { url, .. } = self {
+            let parsed = reqwest::Url::parse(url.trim()).map_err(|_| LauncherError::Generic {
+                code: "ERR_PROXY_URL".into(),
+                message: "Give the proxy as a URL, for example http://proxy.example:8080.".into(),
+            })?;
+            if !matches!(parsed.scheme(), "http" | "https" | "socks5" | "socks5h")
+                || parsed.host_str().is_none()
+            {
+                return Err(LauncherError::Generic {
+                    code: "ERR_PROXY_URL".into(),
+                    message: "The proxy must be an http, https, socks5 or socks5h URL with a host."
+                        .into(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+static PROXY: std::sync::RwLock<Option<ProxySetting>> = std::sync::RwLock::new(None);
+
+/// Use this proxy for every HTTP client built from now on. Called once at
+/// startup from the saved setting; a change takes effect after a restart.
+pub fn configure_proxy(setting: ProxySetting) {
+    if let Ok(mut slot) = PROXY.write() {
+        *slot = Some(setting);
+    }
+}
+
+/// Read the saved proxy choice.
+pub fn saved_proxy(conn: &rusqlite::Connection) -> ProxySetting {
+    crate::db::get_setting(conn, PROXY_SETTING_KEY)
+        .ok()
+        .flatten()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+/// Save the proxy choice. `password: Some("")` removes a stored password;
+/// `None` keeps whatever is stored.
+pub fn save_proxy(
+    conn: &rusqlite::Connection,
+    setting: &ProxySetting,
+    password: Option<&str>,
+) -> LauncherResult<()> {
+    setting.validate()?;
+    let value = serde_json::to_value(setting).map_err(|e| LauncherError::Generic {
+        code: "ERR_PROXY_SAVE".into(),
+        message: e.to_string(),
+    })?;
+    crate::db::set_setting(conn, PROXY_SETTING_KEY, &value).map_err(|e| {
+        LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: e.to_string(),
+        }
+    })?;
+    match password {
+        Some("") => crate::auth::clear_secret(
+            crate::auth::KEYRING_SERVICE_NAME,
+            PROXY_SECRET_ACCOUNT,
+            PROXY_SECRET_FILE,
+        ),
+        Some(password) => crate::auth::store_secret(
+            crate::auth::KEYRING_SERVICE_NAME,
+            PROXY_SECRET_ACCOUNT,
+            PROXY_SECRET_FILE,
+            PROXY_SECRET_CONTEXT,
+            password,
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Whether a proxy password is stored (never the password itself).
+pub fn proxy_password_stored() -> bool {
+    crate::auth::load_secret(
+        crate::auth::KEYRING_SERVICE_NAME,
+        PROXY_SECRET_ACCOUNT,
+        PROXY_SECRET_FILE,
+        PROXY_SECRET_CONTEXT,
+    )
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+fn apply_proxy(builder: reqwest::ClientBuilder) -> LauncherResult<reqwest::ClientBuilder> {
+    let setting = PROXY
+        .read()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_default();
+    Ok(match setting {
+        ProxySetting::System => builder,
+        ProxySetting::None => builder.no_proxy(),
+        ProxySetting::Manual { url, username } => {
+            let mut proxy =
+                reqwest::Proxy::all(url.trim()).map_err(|e| LauncherError::Generic {
+                    code: "ERR_PROXY_URL".into(),
+                    message: format!("The saved proxy cannot be used: {e}"),
+                })?;
+            if let Some(username) = username.filter(|name| !name.is_empty()) {
+                let password = crate::auth::load_secret(
+                    crate::auth::KEYRING_SERVICE_NAME,
+                    PROXY_SECRET_ACCOUNT,
+                    PROXY_SECRET_FILE,
+                    PROXY_SECRET_CONTEXT,
+                )
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+                proxy = proxy.basic_auth(&username, &password);
+            }
+            builder.proxy(proxy)
+        }
+    })
+}
+
 impl HttpClients {
     /// Build a full set of category-aware clients.
     ///
@@ -412,6 +576,7 @@ impl HttpClients {
             .user_agent(category.user_agent())
             .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(4);
+        let builder = apply_proxy(builder)?;
         let builder = match category.time_budget() {
             TimeBudget::Request { total } => builder.timeout(total),
             // `timeout` still applies as the outer ceiling; `read_timeout` is

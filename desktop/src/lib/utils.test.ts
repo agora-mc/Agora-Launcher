@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { compareVersionsDescending, formatDateTime, sortLoaderVersionsLatestFirst } from './utils';
+import { compareVersionsDescending, formatDateTime, formatPlayTime, sortLoaderVersionsLatestFirst } from './utils';
 
 describe('compareVersionsDescending', () => {
   it('orders plain dotted versions newest-first', () => {
@@ -65,5 +65,20 @@ describe('formatDateTime', () => {
     expect(formatDateTime('')).toBe('Unknown');
     expect(formatDateTime('   ')).toBe('Unknown');
     expect(formatDateTime('not a date')).toBe('Unknown');
+  });
+});
+
+describe('formatPlayTime', () => {
+  it('hides anything under a minute', () => {
+    expect(formatPlayTime(0)).toBeNull();
+    expect(formatPlayTime(null)).toBeNull();
+    expect(formatPlayTime(59_000)).toBeNull();
+  });
+
+  it('uses minutes, then tenths of an hour, then whole hours', () => {
+    expect(formatPlayTime(45 * 60_000)).toBe('45 min');
+    expect(formatPlayTime(3.56 * 3_600_000)).toBe('3.5 h');
+    expect(formatPlayTime(2 * 3_600_000)).toBe('2 h');
+    expect(formatPlayTime(120.9 * 3_600_000)).toBe('120 h');
   });
 });

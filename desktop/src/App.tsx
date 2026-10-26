@@ -28,6 +28,7 @@ import {
   isProviderItemId,
   type ControlifyOffer,
   type HealthReport,
+  type QuickPlay,
 } from './lib/tauri';
 import { OfflineBanner } from './components/offline-banner';
 import { SandboxBanner } from './components/sandbox-banner';
@@ -243,6 +244,7 @@ interface PendingControlifyLaunch {
   directLaunch: boolean;
   detailed: boolean;
   onAwaitingHealth?: () => void;
+  quickPlay?: QuickPlay;
 }
 
 interface ControlifyInstallRequest {
@@ -612,9 +614,9 @@ function AppContent() {
   // used in a dependency array, so memoizing them bought nothing anyway.
   const continueControlifyLaunch = async (request: PendingControlifyLaunch) => {
     if (request.detailed) {
-      return startLaunchDetailed(request.instanceId, request.directLaunch, request.onAwaitingHealth);
+      return startLaunchDetailed(request.instanceId, request.directLaunch, request.onAwaitingHealth, request.quickPlay);
     }
-    return startLaunch(request.instanceId, request.directLaunch);
+    return startLaunch(request.instanceId, request.directLaunch, request.quickPlay);
   };
 
   /**
@@ -678,10 +680,14 @@ function AppContent() {
     }
   };
 
-  const launchWithControlify = async (instanceId: string, directLaunch: boolean): Promise<boolean> => {
-    const intercepted = await maybeOfferControlify({ instanceId, directLaunch, detailed: false });
+  const launchWithControlify = async (
+    instanceId: string,
+    directLaunch: boolean,
+    quickPlay?: QuickPlay,
+  ): Promise<boolean> => {
+    const intercepted = await maybeOfferControlify({ instanceId, directLaunch, detailed: false, quickPlay });
     if (intercepted) return false;
-    return startLaunch(instanceId, directLaunch);
+    return startLaunch(instanceId, directLaunch, quickPlay);
   };
 
   const launchDetailedWithControlify = async (
@@ -768,6 +774,12 @@ function AppContent() {
 
   const handleInstanceEditorLaunch = async (instanceId: string) => {
     return launchWithControlify(instanceId, await resolveDirectLaunch(instanceId));
+  };
+
+  // Quick Play always launches directly: the official launcher cannot be told
+  // to open a world or join a server.
+  const handleInstanceEditorQuickPlay = async (instanceId: string, quickPlay: QuickPlay) => {
+    return launchWithControlify(instanceId, true, quickPlay);
   };
 
   const openHealthReview = (instanceId: string, instanceName: string, report: HealthReport) => {
@@ -1091,6 +1103,7 @@ function AppContent() {
                   onOpenModDetail={handleInstanceEditorOpenMod}
                   onOpenBrowseForInstance={navigateToBrowse}
                   onLaunch={handleInstanceEditorLaunch}
+                  onQuickPlay={handleInstanceEditorQuickPlay}
                   processState={processState}
                   onKillProcess={killProcess}
                   onInvestigate={handleInstanceEditorInvestigate}

@@ -499,6 +499,7 @@ pub async fn launch_instance(
         mode: agora_core::launch_service::LaunchMode::Delegated,
         health_policy: health_policy_for_approval(allow_health_blockers),
         health_scan_token,
+        quick_play: None,
     };
     let state_for_monitor = state.inner().clone();
     let launch_result = agora_core::launch_service::LaunchService::new(ctx.clone())
@@ -617,6 +618,7 @@ impl agora_core::launch_service::LaunchProgress for DelegatedLaunchProgress {
         let instance_id = self.instance_id.clone();
         let started = started.clone();
         tokio::spawn(async move {
+            apply_window_on_game_start(&app, true);
             let _ = app.emit(
                 "game-started",
                 serde_json::json!({
@@ -722,6 +724,7 @@ pub async fn launch_instance_with_recovery(
         mode: agora_core::launch_service::LaunchMode::Direct,
         health_policy: health_policy_for_approval(allow_health_blockers),
         health_scan_token,
+        quick_play: None,
     };
     let task = tokio::spawn(async move {
         agora_core::launch_service::LaunchService::new(ctx)
@@ -760,6 +763,7 @@ pub async fn launch_instance_direct(
     instance_id: String,
     allow_health_blockers: Option<bool>,
     health_scan_token: Option<String>,
+    quick_play: Option<agora_core::launch_planner::QuickPlay>,
 ) -> LauncherResult<u32> {
     use tokio::sync::oneshot;
 
@@ -820,6 +824,7 @@ pub async fn launch_instance_direct(
         mode: agora_core::launch_service::LaunchMode::Direct,
         health_policy: health_policy_for_approval(allow_health_blockers),
         health_scan_token,
+        quick_play,
     };
     let task = tokio::spawn(async move {
         agora_core::launch_service::LaunchService::new(ctx)
@@ -1092,6 +1097,7 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
                     },
                 );
             }
+            apply_window_on_game_start(&app, false);
             let _ = app.emit(
                 "game-started",
                 serde_json::json!({
@@ -1154,6 +1160,9 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         tokio::spawn(async move {
             let mut shared = state.lock().await;
             shared.running_processes.remove(&result.session_id);
+            if shared.running_processes.is_empty() {
+                restore_window_after_game(&app);
+            }
             let _ = app.emit(
                 "game-exited",
                 serde_json::json!({
@@ -1437,6 +1446,415 @@ pub async fn list_manifest_mc_versions(
     Ok(loader_manifests::list_mc_versions(loader.as_deref()))
 }
 
+/// Run a blocking world/server operation off the async runtime.
+async fn with_worlds<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    op: impl FnOnce(agora_core::worlds::WorldService) -> LauncherResult<T> + Send + 'static,
+) -> LauncherResult<T> {
+    let ctx = crate::core_context(app)?;
+    tokio::task::spawn_blocking(move || op(agora_core::worlds::WorldService::new(ctx)))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Worlds in an instance with name, mode, size and icon, most recent first.
+#[tauri::command]
+pub async fn list_worlds(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_core::worlds::WorldInfo>> {
+    with_worlds(&app, move |worlds| worlds.list(&instance_id)).await
+}
+
+/// Change the name a world shows in game; its folder is kept.
+#[tauri::command]
+pub async fn rename_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+    folder: String,
+    name: String,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.rename(&instance_id, &folder, &name)
+    })
+    .await
+}
+
+/// Copy a world next to itself; returns the new folder name.
+#[tauri::command]
+pub async fn copy_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+    folder: String,
+) -> LauncherResult<String> {
+    with_worlds(&app, move |worlds| worlds.copy(&instance_id, &folder)).await
+}
+
+/// Move a world to the system recycle bin.
+#[tauri::command]
+pub async fn delete_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+    folder: String,
+) -> LauncherResult<()> {
+    let trash = crate::instances::trash_adapter();
+    with_worlds(&app, move |worlds| {
+        worlds.delete(&instance_id, &folder, &trash)
+    })
+    .await
+}
+
+/// Save a world as a zip the user places with a save dialog. `None` when the
+/// dialog was cancelled.
+#[tauri::command]
+pub async fn export_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+    folder: String,
+) -> LauncherResult<Option<String>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Export world")
+        .set_directory(exports_folder(&app)?)
+        .set_file_name(format!("{folder}.zip"))
+        .add_filter("Zip archive", &["zip"])
+        .save_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let destination = handle.path().to_path_buf();
+    let shown = destination.to_string_lossy().to_string();
+    with_worlds(&app, move |worlds| {
+        worlds.export(&instance_id, &folder, &destination)
+    })
+    .await?;
+    Ok(Some(shown))
+}
+
+/// Add a world from a zip the user picks. `None` when the dialog was cancelled.
+#[tauri::command]
+pub async fn import_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Option<String>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Import world")
+        .add_filter("Zip archive", &["zip"])
+        .pick_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let archive = handle.path().to_path_buf();
+    with_worlds(&app, move |worlds| worlds.import(&instance_id, &archive))
+        .await
+        .map(Some)
+}
+
+/// Worlds and servers played most recently, for Home.
+#[tauri::command]
+pub async fn list_recent_play(
+    app: tauri::AppHandle,
+    limit: usize,
+) -> LauncherResult<Vec<agora_core::worlds::RecentPlay>> {
+    with_worlds(&app, move |worlds| worlds.recent(limit.min(50))).await
+}
+
+/// The instance's screenshots, newest first.
+#[tauri::command]
+pub async fn list_screenshots(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_core::worlds::ScreenshotInfo>> {
+    with_worlds(&app, move |worlds| worlds.list_screenshots(&instance_id)).await
+}
+
+/// One screenshot as a `data:` URL.
+#[tauri::command]
+pub async fn read_screenshot(
+    app: tauri::AppHandle,
+    instance_id: String,
+    file: String,
+) -> LauncherResult<String> {
+    with_worlds(&app, move |worlds| {
+        worlds.screenshot_data_url(&instance_id, &file)
+    })
+    .await
+}
+
+/// Rename a screenshot, keeping its extension; returns the new name.
+#[tauri::command]
+pub async fn rename_screenshot(
+    app: tauri::AppHandle,
+    instance_id: String,
+    file: String,
+    name: String,
+) -> LauncherResult<String> {
+    with_worlds(&app, move |worlds| {
+        worlds.rename_screenshot(&instance_id, &file, &name)
+    })
+    .await
+}
+
+/// Move a screenshot to the system recycle bin.
+#[tauri::command]
+pub async fn delete_screenshot(
+    app: tauri::AppHandle,
+    instance_id: String,
+    file: String,
+) -> LauncherResult<()> {
+    let trash = crate::instances::trash_adapter();
+    with_worlds(&app, move |worlds| {
+        worlds.delete_screenshot(&instance_id, &file, &trash)
+    })
+    .await
+}
+
+/// The instance's in-game multiplayer server list.
+#[tauri::command]
+pub async fn list_servers(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_core::worlds::ServerEntry>> {
+    with_worlds(&app, move |worlds| worlds.list_servers(&instance_id)).await
+}
+
+#[tauri::command]
+pub async fn add_server(
+    app: tauri::AppHandle,
+    instance_id: String,
+    name: String,
+    address: String,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.add_server(&instance_id, &name, &address)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn update_server(
+    app: tauri::AppHandle,
+    instance_id: String,
+    index: usize,
+    name: String,
+    address: String,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.update_server(&instance_id, index, &name, &address)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_server(
+    app: tauri::AppHandle,
+    instance_id: String,
+    index: usize,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.remove_server(&instance_id, index)
+    })
+    .await
+}
+
+#[derive(serde::Serialize)]
+pub struct ProxyView {
+    pub setting: agora_core::http_client::ProxySetting,
+    /// Whether a password is stored; the password itself never leaves core.
+    pub password_stored: bool,
+}
+
+/// The saved proxy choice. It is in effect only after a restart.
+#[tauri::command]
+pub async fn get_proxy_setting(app: tauri::AppHandle) -> LauncherResult<ProxyView> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let conn =
+            agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
+                    message: e.to_string(),
+                }
+            })?;
+        Ok(ProxyView {
+            setting: agora_core::http_client::saved_proxy(&conn),
+            password_stored: agora_core::http_client::proxy_password_stored(),
+        })
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Save the proxy choice. `password`: `None` keeps the stored one, `""` removes it.
+#[tauri::command]
+pub async fn set_proxy_setting(
+    app: tauri::AppHandle,
+    setting: agora_core::http_client::ProxySetting,
+    password: Option<String>,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let conn =
+            agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
+                    message: e.to_string(),
+                }
+            })?;
+        agora_core::http_client::save_proxy(&conn, &setting, password.as_deref())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// The instance's latest log and newest crash reports, which can be shared.
+#[tauri::command]
+pub async fn list_shareable_logs(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_core::log_share::ShareableLog>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || agora_core::log_share::shareable_logs(&ctx, &instance_id))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Exactly the text sharing a log would upload.
+#[tauri::command]
+pub async fn preview_log_share(
+    app: tauri::AppHandle,
+    instance_id: String,
+    path: String,
+) -> LauncherResult<agora_core::log_share::LogPreview> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || agora_core::log_share::preview(&ctx, &instance_id, &path))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Upload a log to mclo.gs and return its link.
+#[tauri::command]
+pub async fn share_log(
+    app: tauri::AppHandle,
+    instance_id: String,
+    path: String,
+) -> LauncherResult<agora_core::log_share::SharedLog> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::log_share::upload(&ctx, &instance_id, &path).await
+}
+
+/// The active account's skin and capes.
+#[tauri::command]
+pub async fn skin_profile(app: tauri::AppHandle) -> LauncherResult<agora_core::skins::SkinProfile> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::skins::profile(&ctx).await
+}
+
+/// Skins saved on this computer.
+#[tauri::command]
+pub async fn skin_library(
+    app: tauri::AppHandle,
+) -> LauncherResult<Vec<agora_core::skins::SavedSkin>> {
+    let ctx = crate::core_context(&app)?;
+    Ok(agora_core::skins::library(&ctx))
+}
+
+/// Pick a skin PNG and save it to the library. `None` when cancelled.
+#[tauri::command]
+pub async fn add_skin_to_library(
+    app: tauri::AppHandle,
+    name: String,
+    variant: agora_core::skins::SkinVariant,
+) -> LauncherResult<Option<agora_core::skins::SavedSkin>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Choose a skin")
+        .add_filter("Skin image", &["png"])
+        .pick_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(|e| LauncherError::Generic {
+            code: "ERR_SKIN_FILE".into(),
+            message: format!("Could not read the file: {e}"),
+        })?;
+        let name = if name.trim().is_empty() {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Skin")
+                .to_string()
+        } else {
+            name
+        };
+        agora_core::skins::save_to_library(&ctx, &name, variant, &bytes).map(Some)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+#[tauri::command]
+pub async fn remove_skin_from_library(app: tauri::AppHandle, id: String) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::skins::remove_from_library(&ctx, &id)
+}
+
+/// Upload a saved skin and make it active.
+#[tauri::command]
+pub async fn wear_saved_skin(app: tauri::AppHandle, id: String) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::skins::use_saved(&ctx, &id).await
+}
+
+/// Go back to the default skin.
+#[tauri::command]
+pub async fn reset_skin(app: tauri::AppHandle) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::skins::reset_skin(&ctx).await
+}
+
+/// Show a cape the account owns, or hide capes with `None`.
+#[tauri::command]
+pub async fn set_cape(app: tauri::AppHandle, cape_id: Option<String>) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::skins::set_cape(&ctx, cape_id.as_deref()).await
+}
+
+/// Ask a server for its status (online, players, version, latency).
+#[tauri::command]
+pub async fn ping_server(address: String) -> LauncherResult<agora_core::server_ping::ServerStatus> {
+    agora_core::server_ping::ping(&address).await
+}
+
+/// Move a server one place up (`-1`) or down (`1`).
+#[tauri::command]
+pub async fn move_server(
+    app: tauri::AppHandle,
+    instance_id: String,
+    index: usize,
+    offset: i32,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.move_server(&instance_id, index, offset)
+    })
+    .await
+}
+
+/// Minecraft snapshot and pre-release versions for vanilla instances, newest first.
+#[tauri::command]
+pub async fn list_snapshot_versions(app: tauri::AppHandle) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
+    let policy = agora_core::network::NetworkPolicy::from_ctx(&ctx)?;
+    agora_core::minecraft_metadata::list_snapshot_versions(
+        &ctx.paths.minecraft_runtime_root(),
+        &policy,
+    )
+    .await
+}
+
 /// Read a JSON-encoded setting from `local_state.db`.
 #[tauri::command]
 pub async fn get_setting(
@@ -1538,6 +1956,51 @@ pub async fn focus_main_window(app: tauri::AppHandle) -> LauncherResult<()> {
         let _ = window.set_focus();
     }
     Ok(())
+}
+
+/// Set when Agora minimized or hid its window for a game, so only a window
+/// Agora moved is put back.
+static WINDOW_STASHED_FOR_GAME: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Minimize or hide the launcher when a game starts, per the
+/// `launcher_on_game_start` setting (`keep`, `minimize`, `hide`). A delegated
+/// launch never reports its exit back, so it is only ever minimized: a hidden
+/// window would have nothing to bring it back.
+fn apply_window_on_game_start(app: &tauri::AppHandle, delegated: bool) {
+    let mode = crate::core_context(app)
+        .ok()
+        .and_then(|ctx| agora_core::db::local_state_connection(&ctx.paths.local_state_db()).ok())
+        .and_then(|conn| {
+            agora_core::db::get_setting(&conn, "launcher_on_game_start")
+                .ok()
+                .flatten()
+        })
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let moved = match mode.as_str() {
+        "hide" if !delegated => window.hide().is_ok(),
+        "hide" | "minimize" => window.minimize().is_ok(),
+        _ => false,
+    };
+    if moved && !delegated {
+        WINDOW_STASHED_FOR_GAME.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Bring the launcher back after the last directly launched game exits, if
+/// Agora put it away.
+fn restore_window_after_game(app: &tauri::AppHandle) {
+    if WINDOW_STASHED_FOR_GAME.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
 }
 
 /// Begin the GitHub OAuth Device Flow and return the code the user must enter.
@@ -3399,13 +3862,40 @@ pub async fn msa_refresh(
     Ok(MsaAccountStatus::from(&refreshed))
 }
 
-/// Sign out and clear stored MSA credentials.
+/// Sign the active account out. Another signed-in account, if any, becomes
+/// active in its place.
 #[tauri::command]
 pub async fn msa_logout(
     _app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
 ) -> LauncherResult<()> {
-    agora_core::msa::clear_credentials()
+    agora_core::msa::sign_out_active().map(|_| ())
+}
+
+/// Every Microsoft account signed in to Agora, the active one first.
+#[tauri::command]
+pub async fn msa_list_accounts() -> LauncherResult<Vec<agora_core::msa::MsaAccountSummary>> {
+    tokio::task::spawn_blocking(agora_core::msa::list_accounts)
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Make another signed-in account the one direct launch uses.
+#[tauri::command]
+pub async fn msa_switch_account(
+    uuid: String,
+) -> LauncherResult<agora_core::msa::MsaAccountSummary> {
+    tokio::task::spawn_blocking(move || agora_core::msa::switch_account(&uuid))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Forget one signed-in account.
+#[tauri::command]
+pub async fn msa_remove_account(uuid: String) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || agora_core::msa::remove_account(&uuid))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 /// Compute the JVM preview using the same GC and pre-touch rules as launch.
@@ -3612,6 +4102,110 @@ pub async fn set_instance_wrapper_command(
     tokio::task::spawn_blocking(move || {
         agora_core::instance_service::InstanceService::new(ctx)
             .set_wrapper_command(&instance_id, &wrapper)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Set the commands run around a direct launch and the game's extra
+/// environment variables. Blank values clear them.
+#[tauri::command]
+pub async fn set_instance_launch_hooks(
+    app: tauri::AppHandle,
+    instance_id: String,
+    pre_launch: String,
+    post_exit: String,
+    env: std::collections::BTreeMap<String, String>,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::instance_service::InstanceService::new(ctx).set_launch_hooks(
+            &instance_id,
+            &pre_launch,
+            &post_exit,
+            env,
+        )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Share this instance's game settings and/or server list with other instances.
+#[tauri::command]
+pub async fn set_instance_sharing(
+    app: tauri::AppHandle,
+    instance_id: String,
+    options: bool,
+    servers: bool,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::instance_service::InstanceService::new(ctx).set_sharing(
+            &instance_id,
+            options,
+            servers,
+        )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Save this instance's notes; blank clears them.
+#[tauri::command]
+pub async fn set_instance_notes(
+    app: tauri::AppHandle,
+    instance_id: String,
+    notes: String,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::instance_service::InstanceService::new(ctx).set_notes(&instance_id, &notes)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Instance id to group name, for laying out My Instances.
+#[tauri::command]
+pub async fn list_instance_groups(
+    app: tauri::AppHandle,
+) -> LauncherResult<std::collections::BTreeMap<String, String>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::instance_service::InstanceService::new(ctx).groups()
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// File an instance under a group, or ungroup it with `None`.
+#[tauri::command]
+pub async fn set_instance_group(
+    app: tauri::AppHandle,
+    instance_id: String,
+    group: Option<String>,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::instance_service::InstanceService::new(ctx)
+            .set_group(&instance_id, group.as_deref())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Set or clear (both `None`) this instance's fixed game window size.
+#[tauri::command]
+pub async fn set_instance_window_size(
+    app: tauri::AppHandle,
+    instance_id: String,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::instance_service::InstanceService::new(ctx)
+            .set_window_size(&instance_id, width.zip(height))
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?

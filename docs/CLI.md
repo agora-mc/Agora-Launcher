@@ -204,6 +204,11 @@ agora instance revert <INSTANCE_ID>
 agora instance loader-version <INSTANCE_ID> <VERSION> [--yes]
 agora instance java <INSTANCE_ID> [--path <FILE> | --clear-path] [--memory <MB>] [--jvm-args <ARGS>]
 agora instance wrapper <INSTANCE_ID> [<COMMAND> | --clear]
+agora instance window <INSTANCE_ID> [<WIDTH>x<HEIGHT> | --clear]
+agora instance hooks <INSTANCE_ID> [--pre <COMMAND>] [--post <COMMAND>] [--env NAME=VALUE ...] [--clear]
+agora instance notes <INSTANCE_ID> [<TEXT> | --clear]
+agora instance group <INSTANCE_ID> [<NAME> | --clear]
+agora instance share <INSTANCE_ID> [--options on|off] [--servers on|off]
 ```
 
 Examples:
@@ -236,6 +241,51 @@ agora instance purge <ENTRY_ID> --yes
 `instance java` with no options shows the current settings. `--path` must name an existing file, and `--clear-path` goes back to the global Java setting. `--memory` is in MB; Agora keeps heap sizes between 2048 and 32768 and says so when it adjusts one. Setting memory makes the choice manual, as creation does. `--jvm-args` replaces the instance's arguments.
 
 `instance wrapper` sets the command the game is launched under, for example a frame-timing overlay. It is checked the way the launcher reads it, so an unmatched quote is refused. An empty command or `--clear` removes it.
+
+`instance window` sets the size the game window opens at, for example `1280x720`; each side must be between 200 and 16384. `--clear` goes back to the global default (`agora_window_size` in settings), and without either the game picks its own size. It applies to direct launch; the official launcher keeps the resolution set on its own installation.
+
+`instance hooks` sets a command run in the instance folder before a direct launch (if it fails, the game is not started), a command run after the game exits, and environment variables for the game and both commands. Commands are split on spaces with quotes respected; no shell is used. Both get `INST_NAME`, `INST_ID`, `INST_DIR`, `INST_MC_DIR` and `INST_JAVA`, the same variables Prism Launcher provides. An option replaces only what it names; `--env` replaces all variables; `--clear` removes everything.
+
+`instance notes` keeps free-form text with the instance, in plain text in its manifest. `instance group` files the instance under a group on My Instances. `instance share` keeps game settings (`options.txt`, except resource packs and other per-instance keys) and the server list the same across every instance that shares them: the shared copy is written in before each launch and taken back when the game closes. The first instance to share provides the shared copy.
+
+### Worlds and servers
+
+```text
+agora world list <INSTANCE_ID>
+agora world rename <INSTANCE_ID> <WORLD_FOLDER> <NAME>
+agora world copy <INSTANCE_ID> <WORLD_FOLDER>
+agora world delete <INSTANCE_ID> <WORLD_FOLDER> [--yes]
+agora world export <INSTANCE_ID> <WORLD_FOLDER> --out <FILE.zip>
+agora world import <INSTANCE_ID> <FILE.zip>
+agora server list <INSTANCE_ID> [--ping]
+agora server add <INSTANCE_ID> <ADDRESS> [--name <NAME>]
+agora server remove <INSTANCE_ID> <POSITION>
+```
+
+A world is named by its folder under `saves/`, which `world list` shows. `world rename` changes the name shown in game and keeps the folder, so data pack choices and `launch --world` keep pointing at it. `world delete` moves the world to the system recycle bin and asks first unless you pass `--yes`. `world import` accepts a zip holding the world at its root or inside one folder, and picks a free folder name.
+
+`server` edits the game's own multiplayer list (`servers.dat`), keeping the icons and other details the game stored. Positions start at 1, in the order `server list` prints. `--ping` also asks each server whether it is online, with its player count and latency, using the game's own status protocol (Minecraft 1.7 and later). Servers reachable only through a DNS `SRV` record show as offline. Pinging is covered by Lockdown Mode and the Server status switch on the Privacy page.
+
+### Logs, proxy and skins
+
+```text
+agora log list <INSTANCE_ID>
+agora log share <INSTANCE_ID> [--path logs/latest.log] [--preview] [--yes]
+agora proxy show | system | none
+agora proxy set <URL> [--username <NAME>]
+agora skin show
+agora skin wear <FILE.png> [--slim]
+agora skin reset
+agora skin cape <NAME | none>
+```
+
+`log share` uploads the latest game log or a recent crash report to mclo.gs and prints the link. User folder names, anything shaped like a token and the signed-in account's own token are removed first; `--preview` prints exactly what would be sent. It asks before uploading unless `--yes`, and is covered by Lockdown Mode and the Log sharing switch.
+
+`proxy` sets how Agora's own requests reach the internet: `system` uses the `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` environment variables (the default), `none` connects directly, and `set` takes an `http`, `https`, `socks5` or `socks5h` URL. A password is read from the `AGORA_PROXY_PASSWORD` environment variable and kept in the operating-system credential store. The change applies the next time Agora starts. Minecraft itself does not use this proxy.
+
+`skin` changes the active Microsoft account's skin and cape, as changing them on minecraft.net would. A skin must be a 64×64 (or 64×32) PNG.
+
+All of these refuse to run while the game has the instance open, because Minecraft rewrites both files when it closes.
 
 ### Mods and content
 
@@ -549,7 +599,11 @@ See `docs/plugins/publishing.md` for what the signature does and does not prove.
 agora launch <INSTANCE>
 agora launch <INSTANCE> --timings
 agora launch <INSTANCE> --yes
+agora launch <INSTANCE> --world <WORLD_FOLDER>
+agora launch <INSTANCE> --server <HOST[:PORT]>
 ```
+
+`--world` opens a world as soon as the game starts (Minecraft 1.20 or newer), and `--server` joins a server (any version that can join servers from the command line). They cannot be combined.
 
 The CLI writes the total session duration to standard error. `--timings` adds individual launch-phase durations there as well.
 
@@ -563,7 +617,9 @@ The CLI launches directly through Agora core. Microsoft authentication is theref
 agora auth login
 agora auth login --no-browser
 agora auth status
-agora auth logout
+agora auth list
+agora auth switch <USERNAME_OR_UUID>
+agora auth logout [--account <USERNAME_OR_UUID>]
 ```
 
 These commands manage the Microsoft/Xbox/Minecraft identity used for direct launch. They are separate from the GitHub account used by desktop governance features.
@@ -571,6 +627,8 @@ These commands manage the Microsoft/Xbox/Minecraft identity used for direct laun
 `auth login` uses the Microsoft device-code flow: it prints a short code and a verification URL, opens the URL in your browser unless `--no-browser` is given, and then waits until you finish signing in. Press Ctrl-C to cancel. The device code and every token stay inside Agora; nothing is pasted back into the terminal.
 
 Sessions created before Agora moved to its own Microsoft application cannot be renewed. `auth status` reports those as `sign_in_required`; run `auth login` once to restore direct launch. Instances and other accounts are unaffected.
+
+More than one account can be signed in. `auth login` with a different account adds it and makes it the active one; the previous account stays signed in. `auth list` marks the active account with `*`, and `auth switch` changes which one launches use. `auth logout` signs out the active account, and the next signed-in account becomes active; `--account` signs out a particular one.
 
 Authentication is not scoped by `--data-dir`. `auth logout` removes the shared operating-system credential entry and can sign the desktop app out even when the CLI uses a disposable data root.
 

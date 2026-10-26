@@ -49,6 +49,8 @@ rand = { workspace = true }
 semver = { workspace = true }
 tar = "0.4"
 flate2 = "1"
+fastnbt = "2"
+walkdir = { workspace = true }
 
 # Directory junctions for shared folders on Windows. `std`'s symlink_dir needs
 # Developer Mode or elevation and, when it fails, callers silently fall back to

@@ -586,7 +586,7 @@ pub async fn poll_login(
     let oauth = run_device_poll(&poller, flow.interval_secs, flow.expires_at, cancel).await?;
 
     let credentials = run_minecraft_chain(clients, &oauth, true).await?;
-    store_credentials(&credentials)?;
+    store_signed_in_account(&credentials)?;
     Ok(credentials)
 }
 
@@ -1139,9 +1139,233 @@ pub fn store_credentials(creds: &MsaCredentials) -> LauncherResult<()> {
     )
 }
 
-/// Clear stored MSA credentials (sign out).
+/// Clear the active account's stored credentials. Other signed-in accounts
+/// are untouched; [`sign_out_active`] is the user-facing sign-out.
 pub fn clear_credentials() -> LauncherResult<()> {
     crate::auth::clear_secret(KEYRING_SERVICE, KEYRING_ACCOUNT, CREDENTIALS_FALLBACK_FILE)
+}
+
+// ---------------------------------------------------------------------------
+// More than one account
+// ---------------------------------------------------------------------------
+//
+// The active account keeps the original slot, so launching, refreshing and
+// status checks read exactly what they always did. Every other signed-in
+// account has a slot of its own, named after its Minecraft UUID, and a small
+// index records which ones exist. One slot per account rather than one blob for
+// all of them: Windows Credential Manager caps an entry at 2.5 KB, and a single
+// credential already takes most of that.
+
+const ACCOUNT_INDEX_ACCOUNT: &str = "msa-accounts";
+const ACCOUNT_INDEX_FILE: &str = "msa-accounts.enc";
+
+/// A signed-in account as the account switcher shows it. No tokens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MsaAccountSummary {
+    pub uuid: String,
+    pub username: String,
+    /// The account launches use.
+    pub active: bool,
+    /// Signed in with an older Agora; needs one fresh sign-in.
+    pub needs_reauth: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AccountIndexEntry {
+    uuid: String,
+    username: String,
+}
+
+fn account_slot(uuid: &str) -> LauncherResult<(String, String)> {
+    let plain = uuid.replace('-', "").to_ascii_lowercase();
+    if plain.is_empty() || !plain.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(err("ERR_MSA_ACCOUNT", "That account id is not valid."));
+    }
+    Ok((
+        format!("msa-credentials-{plain}"),
+        format!("msa-credentials-{plain}.enc"),
+    ))
+}
+
+fn same_account(a: &str, b: &str) -> bool {
+    a.replace('-', "").eq_ignore_ascii_case(&b.replace('-', ""))
+}
+
+fn load_index() -> LauncherResult<Vec<AccountIndexEntry>> {
+    let Some(json) = crate::auth::load_secret(
+        KEYRING_SERVICE,
+        ACCOUNT_INDEX_ACCOUNT,
+        ACCOUNT_INDEX_FILE,
+        CREDENTIALS_KEY_CONTEXT,
+    )?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(serde_json::from_str(&json).unwrap_or_default())
+}
+
+fn store_index(entries: &[AccountIndexEntry]) -> LauncherResult<()> {
+    if entries.is_empty() {
+        return crate::auth::clear_secret(
+            KEYRING_SERVICE,
+            ACCOUNT_INDEX_ACCOUNT,
+            ACCOUNT_INDEX_FILE,
+        );
+    }
+    let json = serde_json::to_string(entries).map_err(|e| {
+        err(
+            "ERR_MSA_STORED_SERIALIZE",
+            format!("Failed to serialize the account list: {e}"),
+        )
+    })?;
+    crate::auth::store_secret(
+        KEYRING_SERVICE,
+        ACCOUNT_INDEX_ACCOUNT,
+        ACCOUNT_INDEX_FILE,
+        CREDENTIALS_KEY_CONTEXT,
+        &json,
+    )
+}
+
+fn load_parked(uuid: &str) -> LauncherResult<Option<MsaCredentials>> {
+    let (account, file) = account_slot(uuid)?;
+    let Some(json) =
+        crate::auth::load_secret(KEYRING_SERVICE, &account, &file, CREDENTIALS_KEY_CONTEXT)?
+    else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str(&json).ok())
+}
+
+/// Copy a credential into its own slot and list it.
+fn park(creds: &MsaCredentials) -> LauncherResult<()> {
+    let (account, file) = account_slot(&creds.uuid)?;
+    let json = serde_json::to_string(creds).map_err(|e| {
+        err(
+            "ERR_MSA_STORED_SERIALIZE",
+            format!("Failed to serialize credentials: {e}"),
+        )
+    })?;
+    crate::auth::store_secret(
+        KEYRING_SERVICE,
+        &account,
+        &file,
+        CREDENTIALS_KEY_CONTEXT,
+        &json,
+    )?;
+    let mut index = load_index()?;
+    index.retain(|entry| !same_account(&entry.uuid, &creds.uuid));
+    index.push(AccountIndexEntry {
+        uuid: creds.uuid.clone(),
+        username: creds.username.clone(),
+    });
+    store_index(&index)
+}
+
+fn unpark(uuid: &str) -> LauncherResult<()> {
+    let (account, file) = account_slot(uuid)?;
+    crate::auth::clear_secret(KEYRING_SERVICE, &account, &file)?;
+    let mut index = load_index()?;
+    index.retain(|entry| !same_account(&entry.uuid, uuid));
+    store_index(&index)
+}
+
+/// Store a freshly signed-in account as the active one. A different account
+/// that was active stays signed in, parked in its own slot.
+fn store_signed_in_account(creds: &MsaCredentials) -> LauncherResult<()> {
+    if let Ok(Some(current)) = load_credentials() {
+        if !same_account(&current.uuid, &creds.uuid) {
+            park(&current)?;
+        }
+    }
+    store_credentials(creds)?;
+    // Signing in again to a parked account makes it active; drop the copy.
+    if load_index()?
+        .iter()
+        .any(|entry| same_account(&entry.uuid, &creds.uuid))
+    {
+        unpark(&creds.uuid)?;
+    }
+    Ok(())
+}
+
+/// Every signed-in account, the active one first.
+pub fn list_accounts() -> LauncherResult<Vec<MsaAccountSummary>> {
+    let mut accounts = Vec::new();
+    let active = load_credentials()?;
+    if let Some(creds) = &active {
+        accounts.push(summary(creds, true));
+    }
+    for entry in load_index()? {
+        if active
+            .as_ref()
+            .is_some_and(|creds| same_account(&creds.uuid, &entry.uuid))
+        {
+            continue;
+        }
+        let needs_reauth = load_parked(&entry.uuid)?
+            .map(|creds| creds.needs_reauth())
+            .unwrap_or(true);
+        accounts.push(MsaAccountSummary {
+            uuid: entry.uuid,
+            username: entry.username,
+            active: false,
+            needs_reauth,
+        });
+    }
+    Ok(accounts)
+}
+
+/// Make another signed-in account the one launches use.
+///
+/// Ordered so an interruption at any point leaves both accounts stored
+/// somewhere: the current account is parked before the chosen one replaces it,
+/// and the chosen one's parked copy is removed last.
+pub fn switch_account(uuid: &str) -> LauncherResult<MsaAccountSummary> {
+    let target = load_parked(uuid)?.ok_or_else(|| {
+        err(
+            "ERR_MSA_ACCOUNT",
+            "That account is not signed in to Agora any more.",
+        )
+    })?;
+    if let Some(current) = load_credentials()? {
+        if same_account(&current.uuid, uuid) {
+            unpark(uuid)?;
+            return Ok(summary(&current, true));
+        }
+        park(&current)?;
+    }
+    store_credentials(&target)?;
+    unpark(uuid)?;
+    Ok(summary(&target, true))
+}
+
+/// Forget one account. Removing the active account makes the next signed-in
+/// account active, so launching keeps working when there is one.
+pub fn remove_account(uuid: &str) -> LauncherResult<()> {
+    match load_credentials()? {
+        Some(current) if same_account(&current.uuid, uuid) => sign_out_active().map(|_| ()),
+        _ => unpark(uuid),
+    }
+}
+
+/// Sign the active account out. Returns the account that became active in its
+/// place, if another one is signed in.
+pub fn sign_out_active() -> LauncherResult<Option<MsaAccountSummary>> {
+    clear_credentials()?;
+    let Some(next) = load_index()?.into_iter().next() else {
+        return Ok(None);
+    };
+    switch_account(&next.uuid).map(Some)
+}
+
+fn summary(creds: &MsaCredentials, active: bool) -> MsaAccountSummary {
+    MsaAccountSummary {
+        uuid: creds.uuid.clone(),
+        username: creds.username.clone(),
+        active,
+        needs_reauth: creds.needs_reauth(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1749,6 +1973,70 @@ mod tests {
 
     fn test_clients() -> HttpClients {
         HttpClients::new().expect("http clients")
+    }
+
+    fn account(uuid: &str, name: &str) -> MsaCredentials {
+        MsaCredentials {
+            username: name.into(),
+            uuid: uuid.into(),
+            ..current_creds()
+        }
+    }
+
+    fn names() -> Vec<(String, bool)> {
+        list_accounts()
+            .unwrap()
+            .into_iter()
+            .map(|a| (a.username, a.active))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn signing_in_a_second_account_keeps_the_first() {
+        let _test_lock = TEST_MSA_MUTEX.lock().await;
+        let _td = write_test_msa_creds(&account("aaaa1111", "Alice"));
+        let _ = store_index(&[]);
+
+        store_signed_in_account(&account("bbbb2222", "Bob")).unwrap();
+        assert_eq!(names(), vec![("Bob".into(), true), ("Alice".into(), false)]);
+
+        // Signing in again as the same person replaces, not duplicates.
+        store_signed_in_account(&account("bbbb2222", "Bob")).unwrap();
+        assert_eq!(names().len(), 2);
+
+        // Signing in to the parked account makes it active without a copy.
+        store_signed_in_account(&account("aaaa1111", "Alice")).unwrap();
+        assert_eq!(names(), vec![("Alice".into(), true), ("Bob".into(), false)]);
+        let _ = store_index(&[]);
+    }
+
+    #[tokio::test]
+    async fn switching_and_removing_accounts() {
+        let _test_lock = TEST_MSA_MUTEX.lock().await;
+        let _td = write_test_msa_creds(&account("aaaa1111", "Alice"));
+        let _ = store_index(&[]);
+        store_signed_in_account(&account("bbbb2222", "Bob")).unwrap();
+        store_signed_in_account(&account("cccc3333", "Cara")).unwrap();
+
+        let switched = switch_account("aaaa1111").unwrap();
+        assert_eq!(switched.username, "Alice");
+        assert_eq!(load_credentials().unwrap().unwrap().username, "Alice");
+        assert_eq!(names().len(), 3);
+        assert!(switch_account("dddd4444").is_err());
+        assert!(switch_account("../x").is_err());
+
+        remove_account("bbbb2222").unwrap();
+        assert_eq!(
+            names(),
+            vec![("Alice".into(), true), ("Cara".into(), false)]
+        );
+
+        // Signing out the active account hands over to the next one.
+        let next = sign_out_active().unwrap().unwrap();
+        assert_eq!(next.username, "Cara");
+        assert_eq!(names(), vec![("Cara".into(), true)]);
+        assert!(sign_out_active().unwrap().is_none());
+        assert!(names().is_empty());
     }
 
     #[tokio::test]

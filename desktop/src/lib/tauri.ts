@@ -361,6 +361,8 @@ export interface InstanceRow {
   icon_path: string | null;
   launch_mode_override: 'auto' | 'direct' | 'delegated';
   import_source: string | null;
+  /** Lifetime play time in ms; counts only launches Agora ran itself. */
+  total_play_ms?: number;
 }
 
 /** Which content provider a file came from, recorded when it was installed. */
@@ -764,8 +766,23 @@ export const launchInstance = (
     restartLauncher,
   });
 
-export const launchInstanceDirect = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
-  invoke<number>('launch_instance_direct', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
+/** Where the game goes as soon as it starts: a world folder or a server address. */
+export type QuickPlay =
+  | { kind: 'singleplayer'; target: string }
+  | { kind: 'multiplayer'; target: string };
+
+export const launchInstanceDirect = (
+  instanceId: string,
+  allowHealthBlockers = false,
+  healthScanToken?: string,
+  quickPlay?: QuickPlay,
+) =>
+  invoke<number>('launch_instance_direct', {
+    instanceId,
+    allowHealthBlockers,
+    healthScanToken: healthScanToken ?? null,
+    quickPlay: quickPlay ?? null,
+  });
 
 /**
  * Coarse recovery action for launch_instance_with_recovery.
@@ -1375,6 +1392,125 @@ export const setDatapackWorlds = (instanceId: string, filename: string, worlds: 
 /** Existing worlds of an instance (folders under saves/ with a level.dat). */
 export const listInstanceWorlds = (instanceId: string) =>
   invoke<string[]>('list_instance_worlds', { instanceId });
+
+/** Snapshot and pre-release versions for vanilla instances, newest first. */
+export const listSnapshotVersions = () => invoke<string[]>('list_snapshot_versions');
+
+/** Serialized `worlds::WorldInfo`. */
+export interface WorldInfo {
+  /** Folder under saves/; the stable identity Quick Play uses. */
+  folder: string;
+  name: string;
+  last_played_ms: number | null;
+  game_mode: 'survival' | 'creative' | 'adventure' | 'spectator' | null;
+  hardcore: boolean;
+  version_name: string | null;
+  size_bytes: number;
+  icon_data_url: string | null;
+}
+/** Serialized `worlds::ServerEntry`. */
+export interface ServerEntry {
+  name: string;
+  address: string;
+  icon_data_url: string | null;
+}
+export const listWorlds = (instanceId: string) =>
+  invoke<WorldInfo[]>('list_worlds', { instanceId });
+export const renameWorld = (instanceId: string, folder: string, name: string) =>
+  invoke<void>('rename_world', { instanceId, folder, name });
+export const copyWorld = (instanceId: string, folder: string) =>
+  invoke<string>('copy_world', { instanceId, folder });
+/** Moves the world to the system recycle bin. */
+export const deleteWorld = (instanceId: string, folder: string) =>
+  invoke<void>('delete_world', { instanceId, folder });
+/** Opens a save dialog; resolves to the saved path, or null if cancelled. */
+export const exportWorld = (instanceId: string, folder: string) =>
+  invoke<string | null>('export_world', { instanceId, folder });
+/** Opens a file picker; resolves to the new folder name, or null if cancelled. */
+export const importWorld = (instanceId: string) =>
+  invoke<string | null>('import_world', { instanceId });
+/** Serialized `worlds::RecentPlay`. */
+export interface RecentPlay {
+  kind: 'world' | 'server';
+  instance_id: string;
+  instance_name: string;
+  target: string;
+  label: string;
+  last_played_ms: number;
+}
+export const listRecentPlay = (limit: number) => invoke<RecentPlay[]>('list_recent_play', { limit });
+/** Serialized `worlds::ScreenshotInfo`. */
+export interface ScreenshotInfo { file: string; size_bytes: number; taken: string | null; path: string }
+export const listScreenshots = (instanceId: string) =>
+  invoke<ScreenshotInfo[]>('list_screenshots', { instanceId });
+/** The image as a `data:` URL. */
+export const readScreenshot = (instanceId: string, file: string) =>
+  invoke<string>('read_screenshot', { instanceId, file });
+export const renameScreenshot = (instanceId: string, file: string, name: string) =>
+  invoke<string>('rename_screenshot', { instanceId, file, name });
+/** Moves the screenshot to the system recycle bin. */
+export const deleteScreenshot = (instanceId: string, file: string) =>
+  invoke<void>('delete_screenshot', { instanceId, file });
+export const listServers = (instanceId: string) =>
+  invoke<ServerEntry[]>('list_servers', { instanceId });
+export const addServer = (instanceId: string, name: string, address: string) =>
+  invoke<void>('add_server', { instanceId, name, address });
+export const updateServer = (instanceId: string, index: number, name: string, address: string) =>
+  invoke<void>('update_server', { instanceId, index, name, address });
+export const removeServer = (instanceId: string, index: number) =>
+  invoke<void>('remove_server', { instanceId, index });
+export type SkinVariant = 'classic' | 'slim';
+export interface Cape { id: string; alias: string; active: boolean; image_data_url: string | null }
+export interface SkinProfile { username: string; variant: SkinVariant; skin_data_url: string | null; capes: Cape[] }
+export interface SavedSkin { id: string; name: string; variant: SkinVariant; data_url: string }
+export const skinProfile = () => invoke<SkinProfile>('skin_profile');
+export const skinLibrary = () => invoke<SavedSkin[]>('skin_library');
+/** Opens a file picker; resolves to the saved skin, or null if cancelled. */
+export const addSkinToLibrary = (name: string, variant: SkinVariant) =>
+  invoke<SavedSkin | null>('add_skin_to_library', { name, variant });
+export const removeSkinFromLibrary = (id: string) => invoke<void>('remove_skin_from_library', { id });
+export const wearSavedSkin = (id: string) => invoke<void>('wear_saved_skin', { id });
+export const resetSkin = () => invoke<void>('reset_skin');
+/** null hides capes. */
+export const setCape = (capeId: string | null) => invoke<void>('set_cape', { capeId });
+
+/** Serialized `http_client::ProxySetting`. */
+export type ProxySetting =
+  | { mode: 'system' }
+  | { mode: 'none' }
+  | { mode: 'manual'; url: string; username?: string | null };
+export interface ProxyView { setting: ProxySetting; password_stored: boolean }
+export const getProxySetting = () => invoke<ProxyView>('get_proxy_setting');
+/** `password`: undefined keeps the stored one, '' removes it. Takes effect after a restart. */
+export const setProxySetting = (setting: ProxySetting, password?: string) =>
+  invoke<void>('set_proxy_setting', { setting, password: password ?? null });
+
+export interface ShareableLog { path: string; label: string; size_bytes: number; modified: string | null }
+export interface LogPreview { path: string; text: string; dropped_lines: number }
+export const listShareableLogs = (instanceId: string) =>
+  invoke<ShareableLog[]>('list_shareable_logs', { instanceId });
+export const previewLogShare = (instanceId: string, path: string) =>
+  invoke<LogPreview>('preview_log_share', { instanceId, path });
+/** Uploads the previewed text to mclo.gs; resolves to its link. */
+export const shareLog = (instanceId: string, path: string) =>
+  invoke<{ url: string }>('share_log', { instanceId, path });
+
+/** Serialized `server_ping::ServerStatus`. */
+export interface ServerStatus {
+  online: boolean;
+  latency_ms: number | null;
+  players_online: number | null;
+  players_max: number | null;
+  version: string | null;
+  motd: string | null;
+  icon_data_url: string | null;
+  error: string | null;
+}
+/** Rejects only when the request is not allowed (Lockdown Mode or its Privacy switch). */
+export const pingServer = (address: string) =>
+  invoke<ServerStatus>('ping_server', { address });
+export const moveServer = (instanceId: string, index: number, offset: -1 | 1) =>
+  invoke<void>('move_server', { instanceId, index, offset });
 /** Copy the enabled data packs into the instance's worlds now. */
 export const syncInstanceDatapacks = (instanceId: string) =>
   invoke<DatapackSyncReport>('sync_instance_datapacks', { instanceId });
@@ -2272,8 +2408,23 @@ export const msaRefresh = () =>
 export const credentialStorageStatus = () =>
   invoke<CredentialStorageStatus>('credential_storage_status');
 
+/** Signs the active account out; another signed-in account becomes active. */
 export const msaLogout = () =>
   invoke<void>('msa_logout');
+
+/** Serialized `msa::MsaAccountSummary`. No tokens. */
+export interface MsaAccountSummary {
+  uuid: string;
+  username: string;
+  active: boolean;
+  needs_reauth: boolean;
+}
+export const msaListAccounts = () =>
+  invoke<MsaAccountSummary[]>('msa_list_accounts');
+export const msaSwitchAccount = (uuid: string) =>
+  invoke<MsaAccountSummary>('msa_switch_account', { uuid });
+export const msaRemoveAccount = (uuid: string) =>
+  invoke<void>('msa_remove_account', { uuid });
 
 export const computeGcArgs = (
   javaVersion: number,
@@ -3528,3 +3679,42 @@ export const createDesktopShortcut = (instanceId: string, displayName: string) =
  *  a malformed quote is rejected here rather than at launch time. */
 export const setInstanceWrapperCommand = (instanceId: string, wrapper: string) =>
   invoke<void>('set_instance_wrapper_command', { instanceId, wrapper });
+/** Preference key shared by the per-instance and global window size. */
+export const WINDOW_SIZE_KEY = 'agora_window_size';
+export interface WindowSize { width: number; height: number }
+/** Read a stored `{ width, height }`, or null for "no fixed size". */
+export function parseWindowSize(value: unknown): WindowSize | null {
+  if (!value || typeof value !== 'object') return null;
+  const { width, height } = value as Record<string, unknown>;
+  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 200 && n <= 16384;
+  return ok(width) && ok(height) ? { width, height } : null;
+}
+/** Preference keys for the launch commands (`launch_service::*_KEY`). */
+export const PRE_LAUNCH_KEY = 'agora_pre_launch_command';
+export const POST_EXIT_KEY = 'agora_post_exit_command';
+export const ENV_VARS_KEY = 'agora_env_vars';
+/** Set the commands run around a direct launch and the game's extra environment variables. */
+export const setInstanceLaunchHooks = (
+  instanceId: string,
+  preLaunch: string,
+  postExit: string,
+  env: Record<string, string>,
+) => invoke<void>('set_instance_launch_hooks', { instanceId, preLaunch, postExit, env });
+/** `user_preferences` switches for sharing with other instances (`shared_settings`). */
+export const SHARE_OPTIONS_KEY = 'agora_share_options';
+export const SHARE_SERVERS_KEY = 'agora_share_servers';
+export const setInstanceSharing = (instanceId: string, options: boolean, servers: boolean) =>
+  invoke<void>('set_instance_sharing', { instanceId, options, servers });
+/** `user_preferences` key holding an instance's notes. */
+export const NOTES_KEY = 'agora_notes';
+export const setInstanceNotes = (instanceId: string, notes: string) =>
+  invoke<void>('set_instance_notes', { instanceId, notes });
+/** Instance id to group name; ungrouped instances are absent. */
+export const listInstanceGroups = () =>
+  invoke<Record<string, string>>('list_instance_groups');
+/** File an instance under a group; null or blank ungroups it. */
+export const setInstanceGroup = (instanceId: string, group: string | null) =>
+  invoke<void>('set_instance_group', { instanceId, group });
+/** Set this instance's window size; null clears it so the global default applies. */
+export const setInstanceWindowSize = (instanceId: string, size: WindowSize | null) =>
+  invoke<void>('set_instance_window_size', { instanceId, width: size?.width ?? null, height: size?.height ?? null });

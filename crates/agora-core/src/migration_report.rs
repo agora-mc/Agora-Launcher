@@ -753,6 +753,7 @@ impl ModrinthChecker for LiveModrinthChecker {
             icon_path: None,
             launch_mode_override: "auto".to_string(),
             import_source: None,
+            total_play_ms: 0,
         };
 
         let candidates = crate::modrinth::list_raw_modrinth_versions_http(

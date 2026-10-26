@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { JumpBackIn } from '@/components/JumpBackIn';
+import type { QuickPlay } from '@/lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
 import { RegistryStatusView } from '../components/registry-status-view';
 import {
@@ -45,7 +47,7 @@ export function Home({
   onNavigateTab: (tab: Tab) => void;
   onOpenInstance: (instanceId: string) => void;
   onOpenMod: (itemId: string) => void;
-  onLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
+  onLaunch: (instanceId: string, directLaunch: boolean, quickPlay?: QuickPlay) => Promise<boolean>;
   processState: ProcessState;
   onKillProcess: () => Promise<void>;
   /** Health reports from the app-level monitor (the same data My Instances reads). */
@@ -323,6 +325,11 @@ export function Home({
         }}
         onKill={() => { void onKillProcess(); }}
         onBrowsePacks={() => onNavigateTab('browse')}
+      />
+
+      <JumpBackIn
+        disabled={processState.phase === 'launching' || processState.phase === 'running'}
+        onPlay={(instanceId, quickPlay) => { void onLaunch(instanceId, true, quickPlay); }}
       />
 
 

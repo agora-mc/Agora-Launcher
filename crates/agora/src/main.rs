@@ -20,8 +20,10 @@ use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
 
 mod cli_govniche;
+mod cli_network;
 mod cli_tools;
 mod cli_updates;
+mod cli_worlds;
 
 /// The guide `agora skill` prints for an AI agent driving this CLI.
 const AGENT_SKILL: &str = include_str!("../skills/agora/SKILL.md");
@@ -218,6 +220,17 @@ enum Commands {
         yes: bool,
         #[arg(long, help = "Print launch phase timings to stderr")]
         timings: bool,
+        #[arg(
+            long,
+            conflicts_with = "server",
+            help = "Open this world (its folder name under saves/) once the game starts; Minecraft 1.20+"
+        )]
+        world: Option<String>,
+        #[arg(
+            long,
+            help = "Join this server (host or host:port) once the game starts"
+        )]
+        server: Option<String>,
     },
     /// Manage the Microsoft account used for direct launch.
     Auth {
@@ -294,6 +307,31 @@ enum Commands {
     Template {
         #[command(subcommand)]
         action: cli_tools::TemplateCmd,
+    },
+    /// List, rename, copy, delete, export, or import an instance's worlds.
+    World {
+        #[command(subcommand)]
+        action: cli_worlds::WorldCmd,
+    },
+    /// List, add, or remove an instance's multiplayer servers.
+    Server {
+        #[command(subcommand)]
+        action: cli_worlds::ServerCmd,
+    },
+    /// Share an instance's game log or crash report as a mclo.gs link.
+    Log {
+        #[command(subcommand)]
+        action: cli_network::LogCmd,
+    },
+    /// Show or set the proxy for Agora's own requests.
+    Proxy {
+        #[command(subcommand)]
+        action: cli_network::ProxyCmd,
+    },
+    /// Show or change the active Microsoft account's skin and cape.
+    Skin {
+        #[command(subcommand)]
+        action: cli_network::SkinCmd,
     },
     /// Find the mod that breaks a launch by turning halves of your mods off and on.
     Bisect {
@@ -855,7 +893,32 @@ enum AuthCmd {
         no_browser: bool,
     },
     Status,
-    Logout,
+    /// Sign out. Without --account, signs out the active account; another
+    /// signed-in account then becomes active.
+    Logout {
+        #[arg(long, help = "Username or UUID of the account to sign out")]
+        account: Option<String>,
+    },
+    /// List every signed-in Microsoft account.
+    List,
+    /// Make another signed-in account the one launches use.
+    Switch {
+        /// Username or UUID.
+        account: String,
+    },
+}
+
+/// Find a signed-in account by username (case-insensitive) or UUID.
+fn find_account(query: &str) -> anyhow::Result<agora_core::msa::MsaAccountSummary> {
+    let plain = |value: &str| value.replace('-', "").to_ascii_lowercase();
+    agora_core::msa::list_accounts()?
+        .into_iter()
+        .find(|account| {
+            account.username.eq_ignore_ascii_case(query) || plain(&account.uuid) == plain(query)
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("No signed-in account matches '{query}'. See 'agora auth list'.")
+        })
 }
 
 #[derive(Subcommand)]
@@ -1171,8 +1234,30 @@ fn exit_code_from_error(err: &anyhow::Error) -> i32 {
     }
 }
 
-#[tokio::main]
-async fn main() {
+/// The Windows main thread has a 1 MB stack. Building this many subcommands
+/// and dispatching them takes more than that in a debug build, so the CLI runs
+/// on a thread with room to spare.
+const CLI_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+fn main() {
+    let worker = std::thread::Builder::new()
+        .name("agora-cli".into())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(CLI_STACK_BYTES)
+                .build()
+                .expect("start the async runtime")
+                .block_on(async_main())
+        })
+        .expect("start the CLI thread");
+    if worker.join().is_err() {
+        std::process::exit(1);
+    }
+}
+
+async fn async_main() {
     agora_core::lock_manager::set_program_name("Agora CLI");
     let cli = Cli::parse();
     let output_fmt = match cli.output {
@@ -1272,7 +1357,7 @@ async fn main() {
     }
     cleanup_before_command(&cli.command, &ctx, &trash_adapter(), &progress, json);
     let data_dir = paths.root().to_path_buf();
-    let result = run_command(cli, &paths, &data_dir, &ctx, output_fmt).await;
+    let result = Box::pin(run_command(cli, &paths, &data_dir, &ctx, output_fmt)).await;
     if let Err(e) = result {
         progress.log("error", &e.to_string());
         let code = exit_code_from_error(&e);
@@ -1536,6 +1621,9 @@ fn touches_instances(command: &Commands) -> bool {
             | Commands::Snapshots { .. }
             | Commands::Import { .. }
             | Commands::Launch { .. }
+            | Commands::World { .. }
+            | Commands::Server { .. }
+            | Commands::Log { .. }
             | Commands::Mcp { .. }
             | Commands::Pack { .. }
             | Commands::Technic { .. }
@@ -3593,12 +3681,57 @@ async fn run_auth_command(
                 }
             }
         },
-        AuthCmd::Logout => {
-            agora_core::msa::clear_credentials()?;
+        AuthCmd::Logout { account } => {
+            let next = match account {
+                Some(query) => {
+                    let target = find_account(&query)?;
+                    agora_core::msa::remove_account(&target.uuid)?;
+                    agora_core::msa::list_accounts()?
+                        .into_iter()
+                        .find(|account| account.active)
+                }
+                None => agora_core::msa::sign_out_active()?,
+            };
             if json {
-                println!("{}", serde_json::json!({"status": "logged_out"}));
+                println!(
+                    "{}",
+                    serde_json::json!({"status": "logged_out", "active": next.map(|a| a.username)})
+                );
             } else {
                 println!("Signed out.");
+                if let Some(next) = next {
+                    println!("Now using {}.", next.username);
+                }
+            }
+        }
+        AuthCmd::List => {
+            let accounts = agora_core::msa::list_accounts()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&accounts)?);
+            } else if accounts.is_empty() {
+                println!("No accounts. Run 'agora auth login'.");
+            } else {
+                for account in accounts {
+                    println!(
+                        "{} {}{}",
+                        if account.active { "*" } else { " " },
+                        account.username,
+                        if account.needs_reauth {
+                            " (sign in again)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+        }
+        AuthCmd::Switch { account } => {
+            let target = find_account(&account)?;
+            let active = agora_core::msa::switch_account(&target.uuid)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&active)?);
+            } else {
+                println!("Now using {}.", active.username);
             }
         }
     }
@@ -4223,6 +4356,9 @@ async fn run_command(
                             "Launched: {}",
                             row.last_launched_at.clone().unwrap_or_default()
                         );
+                        if row.total_play_ms > 0 {
+                            println!("Played:   {} min", row.total_play_ms / 60_000);
+                        }
                     }
                 }
                 None => {
@@ -4508,8 +4644,14 @@ async fn run_command(
             instance,
             yes,
             timings,
+            world,
+            server,
         } => {
-            run_launch_service(ctx, &instance, yes, timings, output_fmt).await?;
+            use agora_core::launch_planner::QuickPlay;
+            let quick_play = world
+                .map(QuickPlay::Singleplayer)
+                .or(server.map(QuickPlay::Multiplayer));
+            run_launch_service(ctx, &instance, yes, timings, quick_play, output_fmt).await?;
         }
         Commands::Auth { action } => {
             Box::pin(run_auth_command(action, data_dir, ctx, output_fmt)).await?
@@ -4880,6 +5022,19 @@ async fn run_command(
             }
         },
         Commands::Template { action } => cli_tools::run_template_command(action, ctx, output_fmt)?,
+        Commands::World { action } => {
+            cli_worlds::run_world_command(action, ctx, &trash_adapter(), output_fmt)?
+        }
+        Commands::Server { action } => {
+            Box::pin(cli_worlds::run_server_command(action, ctx, output_fmt)).await?
+        }
+        Commands::Log { action } => {
+            Box::pin(cli_network::run_log_command(action, ctx, output_fmt)).await?
+        }
+        Commands::Proxy { action } => cli_network::run_proxy_command(action, ctx, output_fmt)?,
+        Commands::Skin { action } => {
+            Box::pin(cli_network::run_skin_command(action, ctx, output_fmt)).await?
+        }
     }
 
     Ok(())
@@ -5125,6 +5280,7 @@ async fn run_launch_service(
     instance: &str,
     yes: bool,
     timings: bool,
+    quick_play: Option<agora_core::launch_planner::QuickPlay>,
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
@@ -5137,6 +5293,7 @@ async fn run_launch_service(
             agora_core::launch_service::HealthPolicy::BlockOnRed
         },
         health_scan_token: None,
+        quick_play,
     };
     let progress = ConsoleLaunchProgress { json, timings };
     let launch_started = std::time::Instant::now();

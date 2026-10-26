@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { ProxySettings } from '@/components/ProxySettings';
 import { getSetting, setSetting } from '../lib/tauri';
 import { Switch } from '../components/ui/switch';
 import { Badge } from '../components/ui/badge';
@@ -85,6 +86,24 @@ const ENDPOINTS: Endpoint[] = [
     hosts: 'login.microsoftonline.com / user.auth.xboxlive.com / xsts.auth.xboxlive.com / api.minecraftservices.com',
     purpose: 'Authenticate with Microsoft/Xbox to launch Minecraft.',
     note: 'Only used when launching with direct sign-in (Phase 5).',
+    default: true,
+    group: 'Launch',
+  },
+  {
+    key: 'network_server_ping_enabled',
+    name: 'Server status',
+    hosts: 'The servers in your instances\' server lists',
+    purpose: 'Show whether a saved server is online, its player count and latency, on the Worlds & Servers tab.',
+    note: 'Only when you open that tab or press Refresh. The servers see your IP address, as they do when the game itself pings them.',
+    default: true,
+    group: 'Launch',
+  },
+  {
+    key: 'network_log_upload_enabled',
+    name: 'Log sharing (mclo.gs)',
+    hosts: 'api.mclo.gs',
+    purpose: 'Upload a game log you choose to share, to get a link for a support channel.',
+    note: 'Only when you press Share log and confirm. Account tokens and your user folder name are removed first.',
     default: true,
     group: 'Launch',
   },
@@ -319,6 +338,8 @@ export function Privacy() {
           </div>
         ))}
       </div>
+
+      <ProxySettings />
 
       {/* Footer note */}
       <p className="text-[10px] text-muted-foreground pt-1 border-t border-border">
