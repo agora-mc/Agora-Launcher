@@ -513,7 +513,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'warning',
             title: 'Dependents may stop loading',
-            text: 'If another mod required the one you remove, Agora will ask you to remove it too. If you choose to keep the mod requiring the one you remove, that mod may fail to load or crash the game. Check the health report after removing mods.',
+            text: 'If another mod required the one you removed, Agora will ask you to remove it too. If you choose to keep the mod requiring the one you removed, that mod may fail to load or crash the game. Check the health report after removing mods.',
           },
         },
         {
@@ -611,17 +611,17 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'How data packs reach your worlds',
-          body: 'Minecraft only loads data packs from inside each world, not from the instance. Agora keeps the Data Packs list of the instance as the source of truth and copies every enabled data pack into your worlds: before each launch, and right after you install, remove, enable, disable, or change a data pack.',
+          body: 'Minecraft only loads data packs from inside each world, not from the instance. Agora keeps the instance\'s data pack list and adds/removes them from your worlds when you launch or change that list.',
           bullets: [
-            'By default a data pack goes to all worlds. Select Worlds… on its row to pick specific worlds instead.',
+            'By default a data pack goes to all worlds. Select "Worlds…" on its row to pick specific worlds instead.',
             'The row shows where it is, for example All worlds (3) or 2 of 3 worlds.',
-            'A world created while you play gets your data packs at the next sync, so a brand-new world has them from its second session. Select Sync now on the Data Packs tab to add them sooner.',
+            'A world created while you play gets your data packs at the next sync, so a brand-new world has them from its second session. Select "Sync now" on the Data Packs tab to add them sooner.',
             'Agora only ever removes or replaces data pack files it placed itself. If a world already has a different file with the same name, Agora leaves it alone and says so.',
           ],
         },
         {
           title: 'Import a local file',
-          body: 'Use Import Mod or the drop zone for a local JAR. Use the corresponding content picker for supported resource packs, shaders, and data packs. Confirm the file came from a trusted source and matches the instance.',
+          body: 'Use Import Mod or the drop zone for a local mod file. Use the corresponding content picker for supported resource packs, shaders, and data packs. Confirm the file came from a trusted source and matches the instance.',
           callout: {
             tone: 'warning',
             title: 'Manual files have fewer guarantees',
@@ -630,17 +630,17 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Group a long list',
-          body: 'A large instance is easier to read grouped than alphabetical. In the content toolbar, next to the search and filter controls, the Group dropdown re-sorts the list into sections. Each group header has its own enable and disable button, so you can switch a whole set at once.',
+          body: 'A large instance is easier to read the list of mods grouped, rather than only alphabetically. In the content toolbar, next to the search and filter controls, the Group dropdown re-sorts the list into sections. Each group header has its own enable and disable button, so you can switch a whole set at once.',
           steps: [
             'Open My Instances, select Edit, then a content tab such as Mods.',
             'Use the Group dropdown in the toolbar above the list.',
-            'Choose Pack vs you, Category, or Source.',
+            'Choose "Modpack vs Added by You", "Category", or "Source".',
             'Collapse the sections you are not working on.',
           ],
           callout: {
             tone: 'tip',
             title: 'Pack content is marked',
-            text: 'In an instance created from a modpack, Group: Pack vs you separates what the pack brought from what you added. That same distinction is what lets a pack update leave your additions alone.',
+            text: 'In an instance created from a modpack, Group: Modpack vs Added by You separates what the pack brought from what you added. That same distinction is what lets a pack update leave your additions alone.',
           },
         },
         {
@@ -726,12 +726,12 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Handle the health screen',
-          body: 'Before launching, Agora checks for problems. A blocker is something that will stop the game from working, so it is best to fix it first. A warning is something worth knowing that you can choose to ignore. Agora may offer to turn off a problem mod for you right from the screen.',
+          body: 'Before launching, Agora checks for problems. A blocker is something that will stop the game from working, so it is best to fix it first. A warning is a potential issue or concern that you should be aware of or fix. Agora may offer to turn off a problem mod for you right from the screen.',
           steps: [
             'Read what the problem is and which mod it is about.',
             'Fix missing mods or the wrong Java version first. These are the most common causes.',
             'Before turning off a mod, check whether other mods need it.',
-            'Launch Anyway is there if you want to try regardless. We suggest taking a snapshot first.',
+            '"Launch Anyway" is offered if you want to try launching regardless. We suggest taking a snapshot first.',
           ],
         },
         {
@@ -750,7 +750,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Read which mods need a different loader version.',
             'Select Switch and launch to change to the suggested version and start the game. If you are only reviewing, the same button is called Switch version.',
             'If you would rather pick a version yourself, use Choose compatible version.',
-            'If no single version suits every mod, Agora cannot switch for you. You may need to remove or update one of the mods instead.',
+            'If no single loaderversion suits every mod installed, Agora cannot switch loaders for you. You may need to remove or update one of the mods instead.',
             'Some versions ask you to confirm before switching, because Agora could not fully check them.',
             'After switching, Agora checks the instance again.',
           ],
@@ -767,7 +767,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'What the pre-launch check can and cannot catch, how to quiet warnings you have already looked at, and how to grab useful logs when something goes wrong.',
+      summary: 'This section covers what the pre-launch check can and cannot catch, how to quiet warnings you have already looked at, and how to grab useful logs when something goes wrong.',
       outcomes: [
         'Know what the health check covers.',
         'Mute warnings without hiding new problems.',
@@ -1536,7 +1536,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     description: 'Use Agora from the couch with a gamepad, and add controller support to Minecraft itself.',
     keywords: ['controller', 'gamepad', 'handheld', 'big picture', 'couch', 'Steam Deck', 'Controlify', 'joystick'],
     basic: {
-      summary: 'Press a button on a connected controller and Agora becomes controller-driven throughout: the same pages you already use, sized for reading at a distance and navigable with the stick. There is nothing to turn on first. Minecraft itself still needs a mod for controller input, and Agora offers to install it when you launch.',
+      summary: 'Press a button on a connected controller and Agora becomes controller-driven throughout: the same app, but sized for reading at a distance and navigable with the controller. There is nothing to turn on first. Minecraft itself still needs a mod for controller input, and Agora offers to install it when you launch.',
       outcomes: [
         'Drive Agora with a gamepad, without a keyboard or mouse.',
         'Know every button and what it does.',
