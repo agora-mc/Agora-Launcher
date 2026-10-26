@@ -640,12 +640,12 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'tip',
             title: 'Pack content is marked',
-            text: 'In an instance created from a modpack, Group: Modpack vs Added by You separates what the pack brought from what you added. That same distinction is what lets a pack update leave your additions alone.',
+            text: 'In an instance created from a modpack, "Group: Modpack vs Added by You" separates what the pack brought from what you added. That same distinction is what lets a pack update leave your additions alone.',
           },
         },
         {
           title: 'Make your own groups',
-          body: 'The built-in groupings are derived from what Agora already knows. To sort mods your own way, open the three-dot menu at the end of a row and choose Set group. Name a new group or pick an existing one. Once at least one group exists, Group: My groups appears in the dropdown alongside the built-in options.',
+          body: 'The built-in groupings are derived from what Agora already knows. To sort mods your own way, open the three-dot menu at the end of a row and choose Set group. Name a new group or pick an existing one. Once at least one group exists, "Group: My groups" appears in the dropdown alongside the built-in options.',
           callout: {
             tone: 'note',
             title: 'One mod at a time',
@@ -668,7 +668,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Ask why a mod is here',
-          body: 'Open the three-dot menu at the end of a row and choose Why is this here. Agora traces that file back and answers with one of four things: you installed it directly, it came from the instance\'s modpack, another mod needs it, or it was a dependency and nothing needs it any more. It then lists the installed mods that currently require it. Most launchers show what a mod depends on; this is the opposite direction, which is the one you are looking in when you find a JAR you do not recognise.',
+          body: 'Open the three-dot menu at the end of a row and choose Why is this here. Agora traces that file back and answers with one of four things: You installed it directly, it came from the instance\'s modpack, another mod needs it, or it was a dependency and nothing needs it any more. It then lists the installed mods that currently require it.',
           callout: {
             tone: 'tip',
             title: 'Ask before you remove',
@@ -686,7 +686,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Switch groups of mods on and off',
-          body: 'Loadout profiles and the on/off switches let you keep, say, performance mods, visual mods, and big content mods as separate groups you can turn on together. Keep the libraries a mod needs switched on alongside it. We suggest taking a named snapshot before changing a core library or a mod that changes world generation.',
+          body: 'Loadout profiles and the on/off switches let you keep different groups of mods, such as performance mods, visual mods, and big content mods as separate groups you can turn on/off together. Keep the libraries a mod needs switched on alongside it. We suggest taking a named snapshot before changing a core library or a mod that changes world generation.',
         },
         {
           title: 'Protect persistent game data',
