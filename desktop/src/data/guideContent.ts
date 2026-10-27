@@ -967,7 +967,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Import a pack',
-          body: 'On My Instances, click Import pack file at the top and pick a .mrpack or an Agora pack file. (In an instance\'s editor, the Import pack as new instance button at the top does the same, and the Other launchers & files tab has Select File & Import for a .mrpack or Prism .zip.) Either kind of pack opens a review before anything is created: the new instance\'s name, every file with where it comes from (a Modrinth or other download, or a copy inside the pack), what is left out, and anything that would stop the import.',
+          body: 'On My Instances, click Import pack file at the top and pick a .mrpack or an Agora pack file. (In an instance\'s editor, the "Import pack as new instance" button at the top does the same, and the Other launchers & files tab has "Select File & Import" for a .mrpack or Prism .zip.) Either kind of pack opens a review before anything is created: the new instance\'s name, every file with where it comes from (a Modrinth or other download, or a copy inside the pack), what is left out, and anything that would stop the import.',
           steps: [
             'Choose a pack file from someone you trust.',
             'In the review, check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
