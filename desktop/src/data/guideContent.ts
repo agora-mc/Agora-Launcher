@@ -815,7 +815,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Test the top suspect',
-          body: 'Select Disable & Relaunch. Agora creates a recovery snapshot before changing the enabled state. After testing, choose Yes, fixed or Still crashing so the investigation can record the result and continue.',
+          body: 'Select "Disable & Relaunch". Agora creates a recovery snapshot before changing the enabled state. After testing, choose "Yes", "Fixed" or "Still crashing" so the investigation can record the result and continue.',
           steps: [
             'Read the suspect name and evidence summary.',
             'Review any dependent mods that would also be affected.',
@@ -826,7 +826,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'When no single mod looks guilty',
-          body: 'If the evidence does not point anywhere, use guided bisect. Agora disables half your mods, you launch and report whether it still crashes, and it halves the remaining candidates each round until one is left. A handful of launches will find a culprit that no crash log named.',
+          body: 'If the evidence does not point anywhere, use guided bisect. Agora disables half your mods, you launch and report whether it still crashes, and Agora halves the remaining candidates each round until one is left. A handful of launches will find a culprit that no crash log named.',
           callout: {
             tone: 'note',
             title: 'Each half is kept loadable',
@@ -893,7 +893,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Compare and restore',
-          body: 'Show diff lists which files were added, removed, or changed since the snapshot. Restore puts the instance back to how it was, and saves a snapshot of the current state first in case you change your mind. Delete removes just that one snapshot. Snapshots you make yourself can include your worlds. The automatic ones Agora takes before each launch leave worlds out so launching stays quick.',
+          body: '"Show diff" lists which files were added, removed, or changed since the snapshot. Restore puts the instance back to how it was, and saves a snapshot of the current state first in case you change your mind. Delete removes just that one snapshot. Snapshots you make yourself can include your worlds. The automatic ones Agora takes before each launch leave worlds out so launching stays quick.',
           callout: {
             tone: 'note',
             title: 'The last setup that launched fine is saved automatically',
@@ -940,7 +940,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Keep your own backups too',
-          body: 'Snapshots and profiles are stored on this computer, alongside the instance. They are not a backup somewhere else and do not sync anywhere. To be able to rebuild an instance elsewhere, export a pack or lockfile, and back up worlds you cannot replace separately.',
+          body: 'Snapshots and profiles are stored on this computer, alongside the instance. They are not a cloud backup and do not sync anywhere. To be able to rebuild an instance elsewhere, export a pack or lockfile, and back up worlds you cannot replace separately.',
           callout: {
             tone: 'warning',
             title: 'A lockfile is not a world backup',
@@ -997,13 +997,13 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           steps: [
             'On the Export tab, pick Export as Modrinth Pack (.mrpack) and choose where to save it.',
             'Send the file to your friend, or copy it to the other computer.',
-            'In Agora there, go to My Instances, click Import pack file, and pick the file. Prism, Modrinth App and other launchers can open a .mrpack too.',
+            'In Agora on the other computer, go to My Instances, click Import pack file, and pick the file. Prism, Modrinth App and other launchers can open a .mrpack too.',
             'Review the name and the file list, choose Import, let Agora finish preparing, then launch once to check it.',
           ],
           callout: {
             tone: 'note',
             title: 'The Agora pack (.json) is lighter but needs sources',
-            text: 'The Agora pack lists mods without including them, so each mod needs a catalog or Modrinth source to be installed on the other side. If some do not have one, Agora names them before saving. Choose .mrpack to send those files along; the Agora pack never carries resource packs, shader packs or datapacks. Disabled mods stay disabled on the other side, and the import review marks them. The pack carries the instance name you see in Agora.',
+            text: 'The Agora pack lists mods without including the actual files so it is only a single small text file. As long as the correct sources are available on the other end and all mods in the instance have a source, the instance can be recreated. If you want to send a pack to someone who does not have access to the same sources or Agora in general, use Export as Modrinth Pack (.mrpack) instead.',
           },
         },
         {
@@ -1401,10 +1401,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Open an instance, choose a target version from the list, and check. Checking changes nothing at all — it reports whether every installed mod has a build for that version. The list only offers versions your loader actually supports, so a version you cannot reach is never presented as an option.',
         },
         {
-          title: 'Read the statuses honestly',
-          body: 'Each mod lands in one of a few groups, and the difference between them matters more than the total.',
+          title: 'Read the statuses to understand the verdict',
+          body: 'Each mod lands in one of a few groups that determine its compatibility with the target version.',
           bullets: [
-            'Ready: a build exists for the target version.',
+            'Ready: a build exists for the target version, works immediately.',
             'No build yet: nothing published so far. Waiting is often enough.',
             'Looks abandoned: no activity for a long time.',
             'Has a replacement: the author points at a successor.',
@@ -1413,8 +1413,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           ],
           callout: {
             tone: 'note',
-            title: 'One unknown makes the whole report provisional',
-            text: 'A mod Agora could not check is reported as unchecked, never as dead, and its presence stops the report claiming to be complete.',
+            title: 'One unknown makes the report unfinished',
+            text: 'A mod Agora could not check is reported as unchecked, not as dead, and its presence stops the report claiming to be complete.',
           },
         },
         {
