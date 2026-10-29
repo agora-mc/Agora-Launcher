@@ -2,12 +2,16 @@
 //!
 //! Slice 2 is moving Minecraft-only modules here from agora-core.
 
+pub mod agora_pack_import;
+pub mod bisect_service;
 pub mod browse_cache;
 pub mod clone;
 pub mod context;
 pub mod controller_service;
 pub mod curated_pack;
 pub mod datapack_sync;
+pub mod dependency_service;
+pub mod download_cache;
 pub mod export_service;
 pub mod gc;
 pub mod health;
@@ -34,7 +38,9 @@ pub mod loader_compatibility;
 pub mod loader_download;
 pub mod loader_manifests;
 pub mod loader_service;
+pub mod loadout_service;
 pub mod lockfile;
+pub mod log_share;
 pub mod maintenance;
 pub mod mcp_dispatcher;
 pub mod memory_recommendation;
@@ -46,6 +52,7 @@ pub mod modrinth;
 pub mod msa;
 pub mod official_launcher;
 pub mod override_sanitizer;
+pub mod pack_file_import;
 pub mod pack_install;
 pub mod pack_inventory;
 pub mod pack_merge;
@@ -54,16 +61,20 @@ pub mod package;
 pub mod plugin_backend;
 pub mod providers;
 pub mod prune_service;
+pub mod recently_deleted;
 pub mod resolver;
 pub mod runtime_catalog;
 pub mod runtime_manager;
 pub mod runtime_service;
 pub mod server_export;
+pub mod server_ping;
+pub mod skins;
 pub mod state;
 pub mod technic;
 pub mod template_service;
 pub mod update_cache;
 pub mod version_migration;
+pub mod worlds;
 
 pub use context::{register_into, registry, testing_context};
 pub use package::game_package;

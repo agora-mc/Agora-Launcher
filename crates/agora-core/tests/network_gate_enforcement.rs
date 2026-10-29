@@ -126,12 +126,17 @@ fn the_gate_refuses_blocking_requests() {
 #[tokio::test]
 async fn the_gate_runs_before_url_validation() {
     let clients = deny_everything();
-    // A URL that URL validation would reject on its own (plain HTTP). If the
-    // gate ran second, the error would name the scheme instead.
-    let error =
-        http_client::checked_get_bytes(&clients, ClientCategory::GitHub, "http://github.com/x")
-            .await
-            .expect_err("must be refused");
+    // A URL that URL validation would reject on its own (a host outside the
+    // GitHub allowlist). If the gate ran second, the error would name the host
+    // instead. HTTPS on purpose: a plain-HTTP literal here is what code
+    // scanning traced into the request path as "may use HTTP".
+    let error = http_client::checked_get_bytes(
+        &clients,
+        ClientCategory::GitHub,
+        "https://example.invalid/x",
+    )
+    .await
+    .expect_err("must be refused");
     assert!(
         format!("{error:?}").contains("ERR_NETWORK_GATE_MISSING"),
         "the gate did not run first: {error:?}"

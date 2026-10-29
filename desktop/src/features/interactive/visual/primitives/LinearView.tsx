@@ -30,7 +30,7 @@ export function LinearViewToggle({
         type="button"
         onClick={() => onChange(false)}
         aria-pressed={!linear}
-        className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${!linear ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+        className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${!linear ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}`}
       >
         {spatialLabel}
       </button>
@@ -38,7 +38,7 @@ export function LinearViewToggle({
         type="button"
         onClick={() => onChange(true)}
         aria-pressed={linear}
-        className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${linear ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+        className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${linear ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}`}
       >
         {linearLabel}
       </button>

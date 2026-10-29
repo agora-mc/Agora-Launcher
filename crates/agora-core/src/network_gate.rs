@@ -111,6 +111,8 @@ fn endpoint_setting(category: ClientCategory) -> Option<&'static str> {
         ClientCategory::PinnedArtifact | ClientCategory::ConsentedContent => None,
         // Decoration on a page the user opened; Lockdown alone governs it.
         ClientCategory::CommunityImage => None,
+        ClientCategory::LogUpload => Some("network_log_upload_enabled"),
+        ClientCategory::GameServer => Some("network_server_ping_enabled"),
     }
 }
 

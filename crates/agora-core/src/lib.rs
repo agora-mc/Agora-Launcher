@@ -5,6 +5,7 @@
 //! or any MCP-protocol crate. Every operation takes a `&Ctx` (introduced
 //! later). For now this crate only hosts the pure data/error modules moved
 //! out of the desktop crate in Phase 1A.
+#![warn(clippy::large_futures)]
 
 pub mod app_paths;
 pub mod artifact_hash;
@@ -15,6 +16,7 @@ pub mod bisect;
 pub mod catalog_install;
 pub mod change_feed;
 pub mod community_image;
+pub mod connectivity;
 pub mod content_fomod;
 pub mod content_store;
 pub mod content_thunderstore;
@@ -82,8 +84,10 @@ pub mod registry;
 pub mod registry_sync;
 pub mod settings;
 pub mod shared_folder;
+pub mod shared_settings;
 pub mod snapshot;
 pub mod snapshot_service;
+pub mod source_identify;
 pub mod task_scheduler;
 pub mod version_changelogs;
 pub mod version_match;

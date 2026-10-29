@@ -32,7 +32,15 @@ const PILLARS = [
   },
   {
     title: 'Controller support',
-    body: 'Unlike other launchers, Agora is designed to be fully navigable with a controller. Browse, vote, launch Minecraft,and install mods without ever touching a keyboard or mouse.',
+    body: 'Unlike other launchers, Agora is designed to be fully navigable with a controller. Browse, vote, launch Minecraft, and install mods without ever touching a keyboard or mouse.',
+  },
+  {
+    title: 'AI support',
+    body: 'We offer Agora CLI on its own or bundled in the desktop app so that AI agents can easily run Agora and help you build packs or diagnose issues. Agora also offers an MCP server if needed.',
+  },
+  {
+    title: 'Debug tools',
+    body: 'Agora has quality crash recovery and debug tools so you are never left testing file by file.',
   },
 ];
 

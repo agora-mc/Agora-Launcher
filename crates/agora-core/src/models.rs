@@ -34,6 +34,10 @@ pub struct InstanceRow {
     /// Local-only provenance label populated from `instance_imports`.
     #[serde(default)]
     pub import_source: Option<String>,
+    /// Lifetime time spent in the game, in milliseconds. Only launches Agora
+    /// runs itself are counted; the official launcher reports nothing back.
+    #[serde(default)]
+    pub total_play_ms: i64,
 }
 
 fn default_launch_mode_override() -> String {

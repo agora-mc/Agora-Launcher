@@ -36,7 +36,7 @@ chrono = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 ed25519-dalek = { workspace = true }
-zip = "0.6"
+zip = { version = "9", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2", "time", "zstd"] }
 sevenz-rust2 = "0.23"
 toml = "0.8.2"
 urlencoding = "2"

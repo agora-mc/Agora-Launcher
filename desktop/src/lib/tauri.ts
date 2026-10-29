@@ -361,6 +361,8 @@ export interface InstanceRow {
   icon_path: string | null;
   launch_mode_override: 'auto' | 'direct' | 'delegated';
   import_source: string | null;
+  /** Lifetime play time in ms; counts only launches Agora ran itself. */
+  total_play_ms?: number;
 }
 
 /** Which content provider a file came from, recorded when it was installed. */
@@ -412,11 +414,20 @@ export interface InstanceManifest {
   user_preferences: Record<string, unknown>;
 }
 
+/** A pack entry the instance still lacks: it failed, or needs an action from the user. */
+export interface InstancePackGap {
+  filename: string;
+  display_name: string;
+  status: 'failed' | 'needs_action';
+  reason: string | null;
+}
+
 export interface InstanceDetail {
   row: InstanceRow;
   manifest: InstanceManifest | null;
   snapshot_readiness: 'ready' | 'pending' | 'failed';
   snapshot_error: string | null;
+  pack_gaps: InstancePackGap[];
 }
 
 export type CurationStatus = 'curated' | 'under_review' | 'uncurated' | 'archived' | 'unknown';
@@ -502,22 +513,6 @@ export interface SourcePin {
   tag: string;
   asset: string;
   sha256: string;
-}
-
-/** What importing a pack did with the mods it names. Serialized `mod_install::PackImportResult`. */
-export interface PackImportResult {
-  instanceId: string;
-  /** Mods the pack names that were not installed, each with the reason. */
-  skipped: SkippedPackMod[];
-  /** Notices for installed mods whose source published no checksum. */
-  unverified: string[];
-}
-
-/** One pack mod the import could not install. Serialized `mod_install::SkippedPackMod`. */
-export interface SkippedPackMod {
-  name: string;
-  code: string;
-  message: string;
 }
 
 export interface RegistryItem {
@@ -724,6 +719,28 @@ export const createInstance = (request: CreateInstanceRequest) =>
   invoke<InstanceRow>('create_instance', { request });
 export const deleteInstance = (instanceId: string) =>
   invoke<void>('delete_instance', { instanceId });
+export interface RecentlyDeletedEntry {
+  entry_id: string;
+  instance_id: string;
+  name: string;
+  minecraft_version: string;
+  loader: string;
+  import_source: string | null;
+  deleted_at: string;
+  expires_at: string;
+  size_bytes: number;
+}
+export interface RestoreOutcome {
+  instance_id: string;
+  original_instance_id: string;
+  renamed: boolean;
+}
+export const listRecentlyDeleted = () =>
+  invoke<RecentlyDeletedEntry[]>('list_recently_deleted');
+export const restoreDeletedInstance = (entryId: string) =>
+  invoke<RestoreOutcome>('restore_deleted_instance', { entryId });
+export const purgeDeletedInstance = (entryId: string) =>
+  invoke<void>('purge_deleted_instance', { entryId });
 export const unlockInstance = (instanceId: string) =>
   invoke<void>('unlock_instance', { instanceId });
 export const lockInstance = (instanceId: string) =>
@@ -764,8 +781,23 @@ export const launchInstance = (
     restartLauncher,
   });
 
-export const launchInstanceDirect = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
-  invoke<number>('launch_instance_direct', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
+/** Where the game goes as soon as it starts: a world folder or a server address. */
+export type QuickPlay =
+  | { kind: 'singleplayer'; target: string }
+  | { kind: 'multiplayer'; target: string };
+
+export const launchInstanceDirect = (
+  instanceId: string,
+  allowHealthBlockers = false,
+  healthScanToken?: string,
+  quickPlay?: QuickPlay,
+) =>
+  invoke<number>('launch_instance_direct', {
+    instanceId,
+    allowHealthBlockers,
+    healthScanToken: healthScanToken ?? null,
+    quickPlay: quickPlay ?? null,
+  });
 
 /**
  * Coarse recovery action for launch_instance_with_recovery.
@@ -799,6 +831,12 @@ export interface UpdateInfo {
   latest_version: string;
   target_version: string;
   source: string;
+  /** Set when only a newer build for another Minecraft version exists (a note, not an update). */
+  needs_minecraft?: string | null;
+  /** True when nothing shows the version is newer: listed for manual choice, never an update. */
+  uncertain?: boolean;
+  /** Release date of latest_version, if the source published one. */
+  latest_released?: string | null;
 }
 
 export const checkInstanceUpdates = (instanceId: string) =>
@@ -861,6 +899,10 @@ export const getLkgMarker = (instanceId: string) =>
 
 export const exportLockfile = (instanceId: string) =>
   invoke<Record<string, unknown>>('export_lockfile', { instanceId });
+
+/** Opens a save dialog and writes the lockfile text there. Resolves to the saved path, or null if cancelled. */
+export const saveLockfileExport = (instanceId: string, contents: string) =>
+  invoke<string | null>('save_lockfile_export', { instanceId, contents });
 
 export interface SnapshotDiffEntry {
   path: string;
@@ -997,6 +1039,8 @@ export interface HealthBlocker {
   suggested_action: string | null;
   /** Present when this blocker is a loader requirement finding. */
   loader_compatibility?: LoaderCompatibilityIssue | null;
+  /** The tracked jar that would satisfy this blocker, when its file is missing from mods/ (Rust: missing_file). */
+  missing_file?: string | null;
 }
 
 export interface HealthRecommendation {
@@ -1012,6 +1056,8 @@ export interface HealthReport {
   warnings: HealthWarning[];
   blockers: HealthBlocker[];
   recommendations: HealthRecommendation[];
+  /** Enabled mod filenames the manifest tracks but mods/ lacks (Rust: missing_files). */
+  missing_files?: string[];
   scan_token: string;
 }
 
@@ -1181,6 +1227,14 @@ export const listAuditLog = (limit?: number) =>
 export const checkRegistryUpdate = (force?: boolean) =>
   invoke<RegistryStatus>('check_registry_update', { force });
 export const getRegistryStatus = () => invoke<RegistryStatus>('get_registry_status');
+export type ConnectivityState = 'unknown' | 'reachable' | 'unreachable';
+export interface ConnectivitySnapshot {
+  state: ConnectivityState;
+  /** Unix seconds when the request that set `state` finished. */
+  last_outcome_at: number | null;
+}
+export const getConnectivityStatus = () =>
+  invoke<ConnectivitySnapshot>('get_connectivity_status');
 export const extractOverrides = (zipPath: string, instanceId: string) =>
   invoke<ExtractionResult>('extract_overrides', { zipPath, instanceId });
 
@@ -1353,12 +1407,139 @@ export const setDatapackWorlds = (instanceId: string, filename: string, worlds: 
 /** Existing worlds of an instance (folders under saves/ with a level.dat). */
 export const listInstanceWorlds = (instanceId: string) =>
   invoke<string[]>('list_instance_worlds', { instanceId });
+
+/** Snapshot and pre-release versions for vanilla instances, newest first. */
+export const listSnapshotVersions = () => invoke<string[]>('list_snapshot_versions');
+
+/** Serialized `worlds::WorldInfo`. */
+export interface WorldInfo {
+  /** Folder under saves/; the stable identity Quick Play uses. */
+  folder: string;
+  name: string;
+  last_played_ms: number | null;
+  game_mode: 'survival' | 'creative' | 'adventure' | 'spectator' | null;
+  hardcore: boolean;
+  version_name: string | null;
+  size_bytes: number;
+  icon_data_url: string | null;
+}
+/** Serialized `worlds::ServerEntry`. */
+export interface ServerEntry {
+  name: string;
+  address: string;
+  icon_data_url: string | null;
+}
+export const listWorlds = (instanceId: string) =>
+  invoke<WorldInfo[]>('list_worlds', { instanceId });
+export const renameWorld = (instanceId: string, folder: string, name: string) =>
+  invoke<void>('rename_world', { instanceId, folder, name });
+export const copyWorld = (instanceId: string, folder: string) =>
+  invoke<string>('copy_world', { instanceId, folder });
+/** Moves the world to the system recycle bin. */
+export const deleteWorld = (instanceId: string, folder: string) =>
+  invoke<void>('delete_world', { instanceId, folder });
+/** Opens a save dialog; resolves to the saved path, or null if cancelled. */
+export const exportWorld = (instanceId: string, folder: string) =>
+  invoke<string | null>('export_world', { instanceId, folder });
+/** Opens a file picker; resolves to the new folder name, or null if cancelled. */
+export const importWorld = (instanceId: string) =>
+  invoke<string | null>('import_world', { instanceId });
+/** Serialized `worlds::RecentPlay`. */
+export interface RecentPlay {
+  kind: 'world' | 'server';
+  instance_id: string;
+  instance_name: string;
+  target: string;
+  label: string;
+  last_played_ms: number;
+}
+export const listRecentPlay = (limit: number) => invoke<RecentPlay[]>('list_recent_play', { limit });
+/** Serialized `worlds::ScreenshotInfo`. */
+export interface ScreenshotInfo { file: string; size_bytes: number; taken: string | null; path: string }
+export const listScreenshots = (instanceId: string) =>
+  invoke<ScreenshotInfo[]>('list_screenshots', { instanceId });
+/** The image as a `data:` URL. */
+export const readScreenshot = (instanceId: string, file: string) =>
+  invoke<string>('read_screenshot', { instanceId, file });
+export const renameScreenshot = (instanceId: string, file: string, name: string) =>
+  invoke<string>('rename_screenshot', { instanceId, file, name });
+/** Moves the screenshot to the system recycle bin. */
+export const deleteScreenshot = (instanceId: string, file: string) =>
+  invoke<void>('delete_screenshot', { instanceId, file });
+export const listServers = (instanceId: string) =>
+  invoke<ServerEntry[]>('list_servers', { instanceId });
+export const addServer = (instanceId: string, name: string, address: string) =>
+  invoke<void>('add_server', { instanceId, name, address });
+export const updateServer = (instanceId: string, index: number, name: string, address: string) =>
+  invoke<void>('update_server', { instanceId, index, name, address });
+export const removeServer = (instanceId: string, index: number) =>
+  invoke<void>('remove_server', { instanceId, index });
+export type SkinVariant = 'classic' | 'slim';
+export interface Cape { id: string; alias: string; active: boolean; image_data_url: string | null }
+export interface SkinProfile { username: string; variant: SkinVariant; skin_data_url: string | null; capes: Cape[] }
+export interface SavedSkin { id: string; name: string; variant: SkinVariant; data_url: string }
+export const skinProfile = () => invoke<SkinProfile>('skin_profile');
+export const skinLibrary = () => invoke<SavedSkin[]>('skin_library');
+/** Opens a file picker; resolves to the saved skin, or null if cancelled. */
+export const addSkinToLibrary = (name: string, variant: SkinVariant) =>
+  invoke<SavedSkin | null>('add_skin_to_library', { name, variant });
+export const removeSkinFromLibrary = (id: string) => invoke<void>('remove_skin_from_library', { id });
+export const wearSavedSkin = (id: string) => invoke<void>('wear_saved_skin', { id });
+export const resetSkin = () => invoke<void>('reset_skin');
+/** null hides capes. */
+export const setCape = (capeId: string | null) => invoke<void>('set_cape', { capeId });
+
+/** Serialized `http_client::ProxySetting`. */
+export type ProxySetting =
+  | { mode: 'system' }
+  | { mode: 'none' }
+  | { mode: 'manual'; url: string; username?: string | null };
+export interface ProxyView { setting: ProxySetting; password_stored: boolean }
+export const getProxySetting = () => invoke<ProxyView>('get_proxy_setting');
+/** `password`: undefined keeps the stored one, '' removes it. Takes effect after a restart. */
+export const setProxySetting = (setting: ProxySetting, password?: string) =>
+  invoke<void>('set_proxy_setting', { setting, password: password ?? null });
+
+export interface ShareableLog { path: string; label: string; size_bytes: number; modified: string | null }
+export interface LogPreview { path: string; text: string; dropped_lines: number }
+export const listShareableLogs = (instanceId: string) =>
+  invoke<ShareableLog[]>('list_shareable_logs', { instanceId });
+export const previewLogShare = (instanceId: string, path: string) =>
+  invoke<LogPreview>('preview_log_share', { instanceId, path });
+/** Uploads the previewed text to mclo.gs; resolves to its link. */
+export const shareLog = (instanceId: string, path: string) =>
+  invoke<{ url: string }>('share_log', { instanceId, path });
+
+/** Serialized `server_ping::ServerStatus`. */
+export interface ServerStatus {
+  online: boolean;
+  latency_ms: number | null;
+  players_online: number | null;
+  players_max: number | null;
+  version: string | null;
+  motd: string | null;
+  icon_data_url: string | null;
+  error: string | null;
+}
+/** Rejects only when the request is not allowed (Lockdown Mode or its Privacy switch). */
+export const pingServer = (address: string) =>
+  invoke<ServerStatus>('ping_server', { address });
+export const moveServer = (instanceId: string, index: number, offset: -1 | 1) =>
+  invoke<void>('move_server', { instanceId, index, offset });
 /** Copy the enabled data packs into the instance's worlds now. */
 export const syncInstanceDatapacks = (instanceId: string) =>
   invoke<DatapackSyncReport>('sync_instance_datapacks', { instanceId });
 
+/** Opens a save dialog for the pack. Resolves to the saved path, or null if cancelled. */
 export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack') =>
-  invoke<string>('export_instance_pack', { instanceId, format });
+  invoke<string | null>('export_instance_pack', { instanceId, format });
+
+/**
+ * Mods an export in this format could not carry to a friend: no catalog or Modrinth
+ * source, and the format only lists mods. Empty for `.mrpack`, which bundles them.
+ */
+export const exportSourcelessMods = (instanceId: string, format: 'json' | 'mrpack') =>
+  invoke<string[] | null>('export_sourceless_mods', { instanceId, format });
 
 export const pickOpenFile = (title: string, extensions: string[]) =>
   invoke<string | null>('pick_open_file', { title, extensions });
@@ -1396,6 +1577,11 @@ export interface ContentInventory {
   has_shaderpacks: boolean;
   has_datapacks: boolean;
   has_saves: boolean;
+  /** Counts of what the import copies; null when that folder could not be read. */
+  mod_count: number | null;
+  resourcepack_count: number | null;
+  shaderpack_count: number | null;
+  world_count: number | null;
 }
 
 export interface LauncherImportCandidate {
@@ -1433,6 +1619,8 @@ export interface LauncherImportDiscovery {
   prism: LauncherDiscovery;
   curseforge: LauncherDiscovery;
   modrinth: LauncherDiscovery;
+  /** Folder that imported copies are written into. */
+  instances_root: string;
 }
 
 export interface ImportSelection {
@@ -1490,8 +1678,138 @@ export const planLauncherImports = (selections: ImportSelection[]) =>
 export const executeLauncherImports = (plan: LauncherImportPlan) =>
   invoke<LauncherImportBatchResult>('execute_launcher_imports', { plan });
 
-export const importInstancePack = (sourcePath: string) =>
-  invoke<PackImportResult>('import_instance_pack', { sourcePath });
+/** One mod entry of an Agora pack file, as the pack recorded it. */
+export interface AgoraPackEntry {
+  filename: string;
+  version: string | null;
+  registry_id: string | null;
+  modrinth_id: string | null;
+  sha256: string | null;
+  source: string | null;
+  /** Absent means enabled. `false` installs the mod switched off. */
+  enabled?: boolean | null;
+}
+
+export type PackEntryStatus = 'installed' | 'failed' | 'needs_action';
+export type PackNeedsAction = 'enable_modrinth' | 'open_settings';
+
+/** How one pack entry ended. Every entry gets exactly one. */
+export interface PackEntryOutcome {
+  name: string;
+  status: PackEntryStatus;
+  /** Installed only: the bytes matched the SHA-256 the pack pinned. */
+  verified_against_pack: boolean;
+  /** Why it failed or what it needs; for an unverified install, the caveat. */
+  reason: string | null;
+  action: PackNeedsAction | null;
+  /** The catalog name when known; `name` (the filename) otherwise. */
+  display_name?: string | null;
+  /** Handed back to retry a needs-action entry. */
+  entry: AgoraPackEntry;
+}
+
+export interface PackImportReport {
+  instance_id: string;
+  instance_name: string;
+  total: number;
+  installed: number;
+  outcomes: PackEntryOutcome[];
+  warnings: string[];
+}
+
+/** `report` is null for formats without a per-mod report (.mrpack). */
+export interface PackImportOutcome {
+  instance_id: string;
+  report: PackImportReport | null;
+}
+
+/** The instance block of an Agora pack file. */
+export interface AgoraPackInstance {
+  id: string | null;
+  name: string | null;
+  minecraft_version: string;
+  loader: string;
+  loader_version: string;
+}
+
+/**
+ * Where a pack entry would be fetched from, judged without downloading:
+ * `curated` (the catalog), `modrinth`, `download` (a link in a Modrinth pack
+ * to another allowed host), `bundled` (the file is inside the pack), or
+ * `cannot_get` (no usable source).
+ */
+export type PlannedPackSource = 'curated' | 'modrinth' | 'download' | 'bundled' | 'cannot_get';
+
+/** One line of the import review. Not a result: nothing is installed yet. */
+export interface PlannedPackEntry {
+  name: string;
+  display_name: string | null;
+  source: PlannedPackSource;
+  /** The pack pinned a valid SHA-256, so the download can be checked against it. */
+  checkable: boolean;
+  /** What needs action, or why the entry will not install. Null when it is ready. */
+  reason: string | null;
+  action: PackNeedsAction | null;
+  /** The pack marks this mod disabled, so it will be installed switched off. */
+  arrives_disabled?: boolean;
+  /** What kind of file this is: mod, shader, resourcepack, datapack, world, or other. */
+  content_type: string;
+}
+
+export interface PackImportPlan {
+  pack_name: string;
+  instance: AgoraPackInstance;
+  entries: PlannedPackEntry[];
+  /** SHA-256 of the exact file that was reviewed; the import is held to it. */
+  file_sha256: string;
+  file_size: number;
+  /** An instance already has the name the pack would get. */
+  name_taken: boolean;
+  /** A free name to start from: the pack's name, else "Name (2)". */
+  suggested_name: string;
+  /** What the import will not bring over, each with the reason. */
+  left_out: string[];
+  /** What Agora cannot do safely; the import is not offered while any remain. */
+  problems: string[];
+  /** Files that cannot be fetched. "Import anyway" imports without exactly these. */
+  soft_problems: string[];
+  /** Other things worth knowing before importing. */
+  notes: string[];
+}
+
+/**
+ * Import a pack file as a new instance. `reviewedSha256` is the plan's
+ * `file_sha256`; the import refuses a changed file. `name` is the instance
+ * name chosen in the review.
+ */
+export const importInstancePack = (
+  sourcePath: string,
+  reviewedSha256?: string | null,
+  name?: string | null,
+  skipUnfetchable = false,
+) =>
+  invoke<PackImportOutcome>('import_instance_pack', {
+    sourcePath,
+    reviewedSha256: reviewedSha256 ?? null,
+    name: name ?? null,
+    skipUnfetchable,
+  });
+/** Drop the copy a .mrpack review staged (the review was cancelled). */
+export const discardPackReview = (sha256: string) =>
+  invoke<void>('discard_pack_review', { sha256 });
+/** What importing a pack file (.agora-pack.json or .mrpack) would do. Writes and downloads nothing. */
+export const planPackImport = (sourcePath: string) =>
+  invoke<PackImportPlan>('plan_pack_import', { sourcePath });
+/**
+ * Try needs-action entries again on the instance the import created.
+ * `allowModrinthOnce` lets these entries use Modrinth without turning the
+ * Modrinth setting on.
+ */
+export const retryPackImportEntries = (
+  instanceId: string,
+  entries: AgoraPackEntry[],
+  allowModrinthOnce: boolean,
+) => invoke<PackImportReport>('retry_pack_import_entries', { instanceId, entries, allowModrinthOnce });
 export const importModrinthPackByUrl = (downloadUrl: string, packIconUrl?: string | null) =>
   invoke<string>('import_modrinth_pack_by_url', {
     downloadUrl,
@@ -1685,6 +2003,8 @@ export interface CuratedAnnotation {
   id: string;
   name: string;
   curator_note: string | null;
+  /** The curator's plain-text install warning. Null when the item has none. */
+  curator_warning: string | null;
   net_score: number | null;
   is_immune: boolean;
   base_categories: string[];
@@ -2103,8 +2423,23 @@ export const msaRefresh = () =>
 export const credentialStorageStatus = () =>
   invoke<CredentialStorageStatus>('credential_storage_status');
 
+/** Signs the active account out; another signed-in account becomes active. */
 export const msaLogout = () =>
   invoke<void>('msa_logout');
+
+/** Serialized `msa::MsaAccountSummary`. No tokens. */
+export interface MsaAccountSummary {
+  uuid: string;
+  username: string;
+  active: boolean;
+  needs_reauth: boolean;
+}
+export const msaListAccounts = () =>
+  invoke<MsaAccountSummary[]>('msa_list_accounts');
+export const msaSwitchAccount = (uuid: string) =>
+  invoke<MsaAccountSummary>('msa_switch_account', { uuid });
+export const msaRemoveAccount = (uuid: string) =>
+  invoke<void>('msa_remove_account', { uuid });
 
 export const computeGcArgs = (
   javaVersion: number,
@@ -2132,18 +2467,38 @@ export interface Snapshot {
   file_count: number;
   size_estimate: number;
   /** Absent on snapshots taken before origins were recorded. */
-  origin?: 'user' | 'migration' | 'automatic';
+  origin?: 'user' | 'migration' | 'automatic' | 'lock';
   /** The recorded origin, or the one inferred from the label for older snapshots. */
-  effective_origin: 'user' | 'migration' | 'automatic';
+  effective_origin: 'user' | 'migration' | 'automatic' | 'lock';
   is_lkg: boolean;
   is_current_lkg: boolean;
   is_pre_restore: boolean;
+}
+
+/** One item a profile records, with the on/off state it was saved in. */
+export interface LoadoutItem {
+  filename: string;
+  content_type: string;
+  enabled: boolean;
+}
+
+/** Enabled items per kind, counted when the profile was saved. */
+export interface LoadoutCoverage {
+  mods: number;
+  resourcepacks: number;
+  shaders: number;
+  datapacks: number;
+  worlds: number;
 }
 
 export interface LoadoutProfile {
   name: string;
   enabled_mods: string[];
   created_at: string;
+  /** Null for profiles saved before counts were recorded. */
+  covers?: LoadoutCoverage | null;
+  /** Every item the profile records, on and off. Null for profiles saved before this. */
+  items?: LoadoutItem[] | null;
 }
 
 export interface ImportResult {
@@ -2731,11 +3086,42 @@ export const listLoadoutProfiles = (instanceId: string) =>
 export const createLoadoutProfile = (instanceId: string, name: string) =>
   invoke<LoadoutProfile>('create_loadout_profile', { instanceId, name });
 
-export const applyLoadoutProfile = (instanceId: string, profileName: string) =>
-  invoke<void>('apply_loadout_profile', { instanceId, profileName });
+/** What applying a profile does with enabled mods it does not list. `keep` leaves them on; `off` switches them off. */
+export type UnlistedModsChoice = 'keep' | 'off';
+
+export const listLoadoutUnlistedMods = (instanceId: string, profileName: string) =>
+  invoke<string[]>('list_loadout_unlisted_mods', { instanceId, profileName });
+
+export const applyLoadoutProfile = (instanceId: string, profileName: string, unlistedMods: UnlistedModsChoice) =>
+  invoke<void>('apply_loadout_profile', { instanceId, profileName, unlistedMods });
 
 export const deleteLoadoutProfile = (instanceId: string, profileName: string) =>
   invoke<void>('delete_loadout_profile', { instanceId, profileName });
+
+/** How one item would change when a profile is saved again from the instance's setup. */
+export type LoadoutChangeKind =
+  | { added: { enabled: boolean } }
+  | 'turned_on'
+  | 'turned_off'
+  | { removed: { enabled: boolean } };
+
+export interface LoadoutChange {
+  filename: string;
+  /** Empty for a profile saved before it recorded kinds. */
+  content_type: string;
+  kind: LoadoutChangeKind;
+}
+
+export interface LoadoutUpdate {
+  name: string;
+  changes: LoadoutChange[];
+}
+
+export const previewLoadoutUpdate = (instanceId: string, profileName: string) =>
+  invoke<LoadoutUpdate>('preview_loadout_update', { instanceId, profileName });
+
+export const updateLoadoutProfile = (instanceId: string, profileName: string) =>
+  invoke<LoadoutUpdate>('update_loadout_profile', { instanceId, profileName });
 
 export const importInstance = (sourcePath: string, symlinkSaves: boolean, name?: string) =>
   invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves, name: name ?? null });
@@ -2858,6 +3244,11 @@ export interface BrowsePage {
   hasMore: boolean;
   /** Providers that could not answer this query. Everyone else still shows. */
   providerFailures?: ProviderFailure[];
+  /**
+   * Set when the first page is empty under an instance's version or loader
+   * filter: how many matches that filter hid. `more` means at least that many.
+   */
+  hiddenByFilters?: { count: number; more: boolean } | null;
 }
 
 export const browseSearch = (
@@ -3303,3 +3694,42 @@ export const createDesktopShortcut = (instanceId: string, displayName: string) =
  *  a malformed quote is rejected here rather than at launch time. */
 export const setInstanceWrapperCommand = (instanceId: string, wrapper: string) =>
   invoke<void>('set_instance_wrapper_command', { instanceId, wrapper });
+/** Preference key shared by the per-instance and global window size. */
+export const WINDOW_SIZE_KEY = 'agora_window_size';
+export interface WindowSize { width: number; height: number }
+/** Read a stored `{ width, height }`, or null for "no fixed size". */
+export function parseWindowSize(value: unknown): WindowSize | null {
+  if (!value || typeof value !== 'object') return null;
+  const { width, height } = value as Record<string, unknown>;
+  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 200 && n <= 16384;
+  return ok(width) && ok(height) ? { width, height } : null;
+}
+/** Preference keys for the launch commands (`launch_service::*_KEY`). */
+export const PRE_LAUNCH_KEY = 'agora_pre_launch_command';
+export const POST_EXIT_KEY = 'agora_post_exit_command';
+export const ENV_VARS_KEY = 'agora_env_vars';
+/** Set the commands run around a direct launch and the game's extra environment variables. */
+export const setInstanceLaunchHooks = (
+  instanceId: string,
+  preLaunch: string,
+  postExit: string,
+  env: Record<string, string>,
+) => invoke<void>('set_instance_launch_hooks', { instanceId, preLaunch, postExit, env });
+/** `user_preferences` switches for sharing with other instances (`shared_settings`). */
+export const SHARE_OPTIONS_KEY = 'agora_share_options';
+export const SHARE_SERVERS_KEY = 'agora_share_servers';
+export const setInstanceSharing = (instanceId: string, options: boolean, servers: boolean) =>
+  invoke<void>('set_instance_sharing', { instanceId, options, servers });
+/** `user_preferences` key holding an instance's notes. */
+export const NOTES_KEY = 'agora_notes';
+export const setInstanceNotes = (instanceId: string, notes: string) =>
+  invoke<void>('set_instance_notes', { instanceId, notes });
+/** Instance id to group name; ungrouped instances are absent. */
+export const listInstanceGroups = () =>
+  invoke<Record<string, string>>('list_instance_groups');
+/** File an instance under a group; null or blank ungroups it. */
+export const setInstanceGroup = (instanceId: string, group: string | null) =>
+  invoke<void>('set_instance_group', { instanceId, group });
+/** Set this instance's window size; null clears it so the global default applies. */
+export const setInstanceWindowSize = (instanceId: string, size: WindowSize | null) =>
+  invoke<void>('set_instance_window_size', { instanceId, width: size?.width ?? null, height: size?.height ?? null });

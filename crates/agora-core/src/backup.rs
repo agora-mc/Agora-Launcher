@@ -521,8 +521,8 @@ pub fn export_snapshot(
         let file = fs::File::create(&temp_path)
             .map_err(|error| format!("failed to create backup artifact: {error}"))?;
         let mut zip = zip::ZipWriter::new(file);
-        let options =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
 
         // Write the manifest first so an importer can validate without
         // scanning the whole zip.  The writer is buffered automatically by
@@ -778,7 +778,10 @@ fn validate_zip_file_set<R: Read + std::io::Seek>(
         let entry = archive
             .by_index(index)
             .map_err(|error| format!("failed to read backup zip entry {index}: {error}"))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|error| format!("failed to read backup zip entry {index}: {error}"))?
+            .into_owned();
         if name == BACKUP_MANIFEST_NAME {
             if entry.is_dir() {
                 return Err("backup manifest entry must not be a directory".into());
@@ -1192,6 +1195,117 @@ fn validate_zip_entry_name(name: &str) -> Result<(), String> {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Instance-level entry points shared by every front end
+// ---------------------------------------------------------------------------
+
+fn backup_error(message: String) -> crate::error::LauncherError {
+    crate::error::LauncherError::Generic {
+        code: "ERR_BACKUP".into(),
+        message,
+    }
+}
+
+/// Write a snapshot of `instance_id` out to `export_dir`. Returns the artifact path.
+pub async fn export_instance_backup(
+    ctx: &crate::ctx::Ctx,
+    instance_id: &str,
+    snapshot_id: &str,
+    export_dir: &Path,
+) -> crate::error::LauncherResult<String> {
+    let sanitized = crate::paths::sanitize_id(instance_id);
+    let instance_dir = ctx.paths.instance_dir(&sanitized)?;
+    let snapshot_id = snapshot_id.to_string();
+    let export_dir = export_dir.to_path_buf();
+    ctx.task_scheduler
+        .run_blocking(
+            crate::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                export_snapshot(&instance_dir, &snapshot_id, &export_dir)
+                    .map(|path| path.to_string_lossy().into_owned())
+            },
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup export task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+/// Read a backup artifact into `instance_id` as a restorable snapshot, under the
+/// instance lock. The artifact is untrusted input; [`import_backup`] validates it all.
+pub async fn import_instance_backup(
+    ctx: &crate::ctx::Ctx,
+    instance_id: &str,
+    artifact_path: &Path,
+) -> crate::error::LauncherResult<crate::snapshot::Snapshot> {
+    let sanitized = crate::paths::sanitize_id(instance_id);
+    let instance_dir = ctx.paths.instance_dir(&sanitized)?;
+    let lock_manager = ctx.lock_manager.clone();
+    let artifact_path = artifact_path.to_path_buf();
+    ctx.task_scheduler
+        .run_blocking(
+            crate::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let _lock = lock_manager
+                    .acquire(
+                        crate::lock_manager::LockResource::Instance(sanitized.clone()),
+                        "import-backup",
+                    )
+                    .map_err(|e| e.to_string())?;
+                import_backup(&instance_dir, &artifact_path)
+            },
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup import task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+/// Apply a retention policy to `instance_id`, returning the snapshot ids removed.
+pub async fn apply_instance_retention(
+    ctx: &crate::ctx::Ctx,
+    instance_id: &str,
+    policy: BackupRetentionPolicy,
+) -> crate::error::LauncherResult<Vec<String>> {
+    let sanitized = crate::paths::sanitize_id(instance_id);
+    let instance_dir = ctx.paths.instance_dir(&sanitized)?;
+    ctx.task_scheduler
+        .run_blocking(
+            crate::task_scheduler::BlockingPriority::Background,
+            move || run_backup_retention(&instance_dir, &policy),
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup retention task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+/// The snapshot ids [`apply_instance_retention`] would remove for `policy`,
+/// without removing anything. Lets a front end ask before deleting.
+pub fn preview_instance_retention(
+    ctx: &crate::ctx::Ctx,
+    instance_id: &str,
+    policy: &BackupRetentionPolicy,
+) -> crate::error::LauncherResult<Vec<String>> {
+    let sanitized = crate::paths::sanitize_id(instance_id);
+    let instance_dir = ctx.paths.instance_dir(&sanitized)?;
+    if instance_dir.join(crate::snapshot::RESTORE_MARKER).exists() {
+        return Ok(Vec::new());
+    }
+    let snapshots = crate::snapshot::list_snapshots(&instance_dir).map_err(backup_error)?;
+    let lkg = crate::lkg::read_lkg_state(&instance_dir).unwrap_or_default();
+    Ok(plan_backup_retention(&snapshots, &lkg, policy))
+}
+
+/// The instance id a backup artifact says it came from (provenance only). The
+/// artifact's manifest is validated first, so a damaged file is refused here.
+pub fn backup_artifact_instance_id(artifact_path: &Path) -> crate::error::LauncherResult<String> {
+    validate_artifact_path(artifact_path).map_err(backup_error)?;
+    let file = fs::File::open(artifact_path)
+        .map_err(|e| backup_error(format!("cannot open backup: {e}")))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| backup_error(format!("not a valid backup archive: {e}")))?;
+    let manifest = read_and_validate_manifest(&mut archive).map_err(backup_error)?;
+    Ok(crate::paths::sanitize_id(&manifest.instance_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1529,7 +1643,7 @@ mod tests {
             let tampered_path = tmp.path().join("tampered.zip");
             let out_file = std::fs::File::create(&tampered_path).unwrap();
             let mut writer = zip::ZipWriter::new(out_file);
-            let opts = zip::write::FileOptions::default()
+            let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
             writer.start_file(BACKUP_MANIFEST_NAME, opts).unwrap();
@@ -1590,12 +1704,12 @@ mod tests {
             let mut archive = zip::ZipArchive::new(file).unwrap();
             let out_file = std::fs::File::create(&tampered_path).unwrap();
             let mut writer = zip::ZipWriter::new(out_file);
-            let opts = zip::write::FileOptions::default()
+            let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             // Copy all original entries.
             for index in 0..archive.len() {
                 let mut entry = archive.by_index(index).unwrap();
-                let name = entry.name().to_string();
+                let name = entry.name().unwrap().into_owned();
                 let mut bytes = Vec::new();
                 entry.read_to_end(&mut bytes).unwrap();
                 writer.start_file(&name, opts).unwrap();
@@ -1642,11 +1756,11 @@ mod tests {
             };
             let out_file = std::fs::File::create(&tampered_path).unwrap();
             let mut writer = zip::ZipWriter::new(out_file);
-            let opts = zip::write::FileOptions::default()
+            let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             for index in 0..archive.len() {
                 let mut entry = archive.by_index(index).unwrap();
-                let name = entry.name().to_string();
+                let name = entry.name().unwrap().into_owned();
                 if name == BACKUP_MANIFEST_NAME {
                     let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
                     writer.start_file(&name, opts).unwrap();

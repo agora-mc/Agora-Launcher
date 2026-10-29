@@ -35,6 +35,13 @@ export type TourAdvance =
   | { kind: 'click'; anchors?: readonly TourAnchor[] }
   /** A form control inside one of the step's anchors changed. */
   | { kind: 'change'; anchors?: readonly TourAnchor[] }
+  /**
+   * The user is working in a text field inside one of the step's anchors:
+   * focusing it or typing in it. Typing counts too because a dialog may focus
+   * its first field on open, before the step has started, so a focus event
+   * alone would never arrive.
+   */
+  | { kind: 'focus'; anchors?: readonly TourAnchor[] }
   /** An anchor is present in the DOM (a page, dialog, or panel opened). */
   | { kind: 'appear'; anchor: TourAnchor }
   /** The app reported a completed operation. */
@@ -69,6 +76,13 @@ export interface TourStep {
   offTrackHint?: string;
   /** Overrides the Continue button label on `next` steps. */
   continueLabel?: string;
+  /**
+   * Where Skip step goes, by step id. Used where skipping one step makes the
+   * following ones meaningless (skipping "Create Instance" also skips the
+   * dialog steps), so Skip does not leave the user on steps that ask for a
+   * dialog they chose not to open. Defaults to the next step.
+   */
+  skipTo?: string;
   /**
    * Dock the instruction card against the top or bottom of the viewport instead
    * of vertically centering it on the spotlight. Used on pages where the
@@ -123,6 +137,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     advance: { kind: 'appear', anchor: 'create-instance-dialog' },
     waitingHint: 'Click “+ Create Instance”.',
     offTrackHint: 'Open My Instances again to continue.',
+    skipTo: 'browse-nav',
   },
   {
     id: 'create-instance-form',
@@ -132,8 +147,21 @@ export const TOUR_STEPS: readonly TourStep[] = [
       + 'memory Minecraft gets. The defaults are fine for now — just give it a name.',
     anchors: ['create-instance-form'],
     gate: 'create-instance-dialog',
-    advance: { kind: 'next' },
+    // Typing a name or pressing Create moves on by itself. Create is checked
+    // here as well as on the next step: the instance can be made from this
+    // step, and the walkthrough must not be left waiting on a dialog that has
+    // already closed.
+    advance: {
+      kind: 'any',
+      of: [
+        { kind: 'focus' },
+        { kind: 'click', anchors: ['create-instance-submit'] },
+        { kind: 'next' },
+      ],
+    },
+    waitingHint: 'Type a name to continue, or press Continue.',
     offTrackHint: 'Open “+ Create Instance” again to continue.',
+    skipTo: 'browse-nav',
   },
   {
     id: 'create-instance-submit',
@@ -144,6 +172,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     advance: { kind: 'signal', signal: 'instance-created' },
     waitingHint: 'Waiting for the instance to be created…',
     offTrackHint: 'Open “+ Create Instance” again to continue.',
+    skipTo: 'browse-nav',
   },
   {
     id: 'browse-nav',
@@ -180,16 +209,19 @@ export const TOUR_STEPS: readonly TourStep[] = [
   },
   {
     id: 'mod-detail-upvote',
-    title: 'Upvote what you love',
+    title: 'Votes are public',
+    // Explain-only on purpose: a vote posts a public GitHub reaction under the
+    // user's own account, so the tour points at the arrow instead of asking for
+    // a click.
     body:
-      'Your votes are the heart of what makes Agora community-driven: each upvote helps Agora '
-      + 'bring you and every other user only the best content. Give this one an upvote.',
+      'Votes help decide what rises to the top of Agora. Each one is public: an upvote posts a GitHub '
+      + 'reaction under your own account, where anyone can see it. Nothing is posted unless you click '
+      + 'the arrow, so you can carry on without voting.',
     anchors: ['mod-detail-upvote'],
     gate: 'mod-detail-upvote',
-    advance: { kind: 'click' },
-    waitingHint: 'Click the upvote arrow on this page.',
-    unavailableHint: 'Voting needs a GitHub sign-in — sign in from Settings, or skip this step.',
-    offTrackHint: 'Pick a curated item from Browse to vote, or skip this step.',
+    advance: { kind: 'next' },
+    unavailableHint: 'Voting needs a GitHub sign-in in Settings. You can carry on without it.',
+    offTrackHint: 'Pick a curated item from Browse to see voting, or skip this step.',
     cardEdge: 'bottom',
   },
   {
@@ -201,7 +233,9 @@ export const TOUR_STEPS: readonly TourStep[] = [
     anchors: ['mod-detail-install'],
     gate: 'page-mod-detail',
     advance: { kind: 'appear', anchor: 'install-panel' },
-    waitingHint: 'Click “Install to Instance”.',
+    // The button reads "Change version" once the mod is already in this
+    // instance, so the hint names both labels.
+    waitingHint: 'Click “Install to Instance” (or “Change version” if it is already installed here).',
     offTrackHint: 'Open an item from Browse to continue.',
     cardEdge: 'bottom',
   },
@@ -210,20 +244,22 @@ export const TOUR_STEPS: readonly TourStep[] = [
     title: 'Choose where it goes',
     body:
       'Pick the instance you want this mod installed into. If the right one is already selected, '
-      + 'the tour moves straight on.',
-    anchors: ['install-instance-select'],
+      + 'press Continue.',
+    // The wrapper is a fallback spotlight only and must not advance the step.
+    // The picker preselects the instance you came from, so it is already on
+    // screen when this step starts; advancing on it chained straight through
+    // the step (one click, two steps, a counter jump, and no picker shown).
+    anchors: ['install-instance-select', 'install-instance-chosen'],
     gate: 'install-panel',
     advance: {
       kind: 'any',
       of: [
         { kind: 'change' },
-        // The picker preselects the instance you came from, and re-picking the
-        // same option fires no change event; an instance being chosen is enough.
-        { kind: 'appear', anchor: 'install-instance-chosen' },
+        { kind: 'next' },
         { kind: 'appear', anchor: 'install-version-list' },
       ],
     },
-    waitingHint: 'Select your instance from the list.',
+    waitingHint: 'Select your instance from the list, or press Continue if the right one is selected.',
     offTrackHint: 'Reopen “Install to Instance” to continue.',
     cardEdge: 'bottom',
   },
@@ -380,6 +416,8 @@ export type TourEvent =
   | { type: 'dom-click'; anchors: readonly TourAnchor[] }
   /** A `change` event fired inside these anchors (innermost first). */
   | { type: 'dom-change'; anchors: readonly TourAnchor[] }
+  /** The user focused or typed in a text field inside these anchors (innermost first). */
+  | { type: 'dom-focus'; anchors: readonly TourAnchor[] }
   /** This anchor is currently in the DOM. */
   | { type: 'anchor-present'; anchor: TourAnchor }
   | { type: 'signal'; signal: TourSignal };
@@ -408,6 +446,9 @@ export function advanceSatisfiedBy(
         && matchesAnchors(advance.anchors ?? step.anchors, event.anchors);
     case 'change':
       return event.type === 'dom-change'
+        && matchesAnchors(advance.anchors ?? step.anchors, event.anchors);
+    case 'focus':
+      return event.type === 'dom-focus'
         && matchesAnchors(advance.anchors ?? step.anchors, event.anchors);
     case 'appear':
       return event.type === 'anchor-present' && event.anchor === advance.anchor;
@@ -469,8 +510,12 @@ export function tourReducer(
   switch (event.type) {
     case 'back':
       return requireManual(goTo(steps, state.index - 1));
-    case 'skip':
-      return goTo(steps, state.index + 1);
+    case 'skip': {
+      const target = current.skipTo === undefined
+        ? -1
+        : steps.findIndex((candidate) => candidate.id === current.skipTo);
+      return goTo(steps, target > state.index ? target : state.index + 1);
+    }
     case 'next':
       // Continue is always the user's own choice, so it works even on a step
       // reached via Back that would otherwise auto-advance.

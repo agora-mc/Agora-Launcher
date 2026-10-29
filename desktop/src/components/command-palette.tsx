@@ -15,6 +15,11 @@ import { usePlugins } from '@/features/plugins/PluginProvider';
 import { runPluginCommand } from '@/features/plugins/api';
 import { showToast } from './Toast';
 import { formatError } from '@/lib/tauri';
+import {
+  matchSettingsSections,
+  requestSettingsSection,
+  type SettingsSectionTarget,
+} from '@/lib/settingsSection';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -43,7 +48,7 @@ const NO_GAMES: { gameId: string; label: string }[] = [];
 type ResultItem =
   | { __section: string }
   | { __type: 'instance'; instance_id: string; name: string; loader: string; loader_version: string; minecraft_version: string }
-  | { __type: 'setting'; label: string; tab: Tab; icon: string }
+  | { __type: 'setting'; label: string; tab: Tab; icon: string; section?: SettingsSectionTarget }
   | { __type: 'game'; gameId: string; label: string }
   | { __type: 'plugin'; id: string; pluginId: string; label: string; exportName: string };
 
@@ -96,9 +101,23 @@ export function CommandPalette({
     const filteredInstances = instances.filter((inst) =>
       query ? inst.name.toLowerCase().includes(query.toLowerCase()) : true,
     );
-    const filteredSettings = (navigationItems ?? SETTINGS_ITEMS).filter((item) =>
-      query ? item.label.toLowerCase().includes(query.toLowerCase()) : true,
-    );
+    const settingsItems = navigationItems ?? SETTINGS_ITEMS;
+    const filteredSettings: ResultItem[] = [
+      ...settingsItems.filter((item) =>
+        query ? item.label.toLowerCase().includes(query.toLowerCase()) : true,
+      ).map((item) => ({ __type: 'setting' as const, ...item })),
+      // Named sections of Settings, found by their label or what they cover.
+      // Only offered where Settings is a destination of the shown game.
+      ...(settingsItems.some((item) => item.tab === 'settings')
+        ? matchSettingsSections(query).map((entry) => ({
+            __type: 'setting' as const,
+            label: entry.label,
+            tab: 'settings' as const,
+            icon: entry.icon,
+            section: entry.target,
+          }))
+        : []),
+    ];
     const filteredGames = switchGameItems.filter((game) =>
       query ? game.label.toLowerCase().includes(query.toLowerCase()) : true,
     );
@@ -118,9 +137,7 @@ export function CommandPalette({
     }
     if (filteredSettings.length > 0) {
       r.push({ __section: 'Settings' });
-      for (const s of filteredSettings) {
-        r.push({ __type: 'setting', ...s });
-      }
+      r.push(...filteredSettings);
     }
     if (filteredGames.length > 0) {
       r.push({ __section: 'Switch game' });
@@ -217,6 +234,7 @@ export function CommandPalette({
       onNavigate('instances', item.instance_id);
     } else if (item.__type === 'setting') {
       onOpenChange(false);
+      if (item.section) requestSettingsSection(item.section);
       onNavigate(item.tab);
     } else if (item.__type === 'game') {
       onOpenChange(false);
@@ -255,7 +273,7 @@ export function CommandPalette({
             className="border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 h-12 text-base bg-transparent placeholder:text-[rgb(var(--muted))]"
           />
           <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-[rgb(var(--muted))]">
-            <kbd className="border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5">Esc</kbd>
+            <kbd className="border border-gray-300 dark:border-gray-600 rounded-sm px-1.5 py-0.5">Esc</kbd>
             {' '}to close
           </span>
         </div>
@@ -319,7 +337,7 @@ export function CommandPalette({
               if (item.__type === 'setting') {
                 return (
                   <button
-                    key={item.tab}
+                    key={`${item.tab}:${item.label}`}
                     role="option"
                     aria-selected={isItemSelected(index)}
                     onClick={() => activateItem(index)}

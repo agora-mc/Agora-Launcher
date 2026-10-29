@@ -2,7 +2,8 @@ use crate::ctx::Ctx;
 use crate::dependency_ops::VersionGrammar;
 use crate::error::{LauncherError, LauncherResult};
 use crate::governance::{
-    get_governance_summary, list_governance_events, GovernanceEvent, GovernanceSummary,
+    get_governance_summary, list_governance_events, table_exists, GovernanceEvent,
+    GovernanceSummary,
 };
 use crate::registry_sync::APP_REGISTRY_SCHEMA_VERSION;
 use crate::version_match::{evaluate_version_match, VersionMatch};
@@ -427,6 +428,13 @@ impl RegistryService {
     ) -> LauncherResult<Option<CuratedAnnotation>> {
         let conn = self.connection()?;
         get_curated_annotation(&conn, item_id)
+    }
+
+    /// Every curator install warning in the registry. Empty when the registry
+    /// predates the field. Errors other than a missing registry are returned.
+    pub fn curator_warnings(&self) -> LauncherResult<Vec<CuratorWarning>> {
+        let conn = self.connection()?;
+        get_curator_warnings(&conn)
     }
 
     /// Batch compatibility lookup: for each item_id, resolve whether it declares
@@ -1042,9 +1050,12 @@ pub fn browse_items(
     }
     if let Some(ld) = loader {
         if ld != "all" {
+            // Packs, shaders, data packs and worlds carry no mod loader, so the
+            // loader narrows mods and modpacks only.
             where_parts.push(
-                "ri.id IN (SELECT r.id FROM registry_items r, json_each(r.compatible_versions_json) cv \
-                 WHERE json_extract(cv.value, '$.loader') = ?)"
+                "(ri.content_type IN ('resourcepack', 'shader', 'datapack', 'world') \
+                 OR ri.id IN (SELECT r.id FROM registry_items r, json_each(r.compatible_versions_json) cv \
+                 WHERE json_extract(cv.value, '$.loader') = ?))"
                     .to_string(),
             );
             params.push(Box::new(ld.to_string()));
@@ -1363,17 +1374,10 @@ pub struct AuditLogEntry {
 
 /// List audit log entries from the registry DB (newest first by id).
 ///
-/// Defensively returns an empty vec if the `audit_log` table does not exist
-/// (older registry.db builds predate this table) so the UI degrades gracefully.
+/// Returns an empty vec only if the `audit_log` table does not exist (older
+/// registry.db builds predate this table). Any failed query is an error.
 pub fn list_audit_log(conn: &Connection, limit: i64) -> LauncherResult<Vec<AuditLogEntry>> {
-    let has_table: bool = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_log'",
-            [],
-            |_| Ok(true),
-        )
-        .unwrap_or(false);
-    if !has_table {
+    if !table_exists(conn, "audit_log")? {
         return Ok(Vec::new());
     }
 
@@ -1489,19 +1493,13 @@ pub fn list_under_review_items(conn: &Connection) -> LauncherResult<Vec<UnderRev
 
 /// List recent triage resolutions from the audit log.
 ///
-/// Defensively returns an empty vec if the `audit_log` table does not exist.
+/// Returns an empty vec only if the `audit_log` table does not exist. Any
+/// failed query is an error.
 pub fn list_recent_resolutions(
     conn: &Connection,
     limit: u32,
 ) -> LauncherResult<Vec<AuditLogEntry>> {
-    let has_table: bool = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_log'",
-            [],
-            |_| Ok(true),
-        )
-        .unwrap_or(false);
-    if !has_table {
+    if !table_exists(conn, "audit_log")? {
         return Ok(Vec::new());
     }
 
@@ -1550,9 +1548,10 @@ pub struct ModReview {
 
 /// Load parsed curator reviews for a single item.
 ///
-/// Reads the JSON array from `curator_reviews.top_reviews_json`, parses it,
-/// and returns the resulting `ModReview` list. On NULL/empty/missing row or
-/// parse error, returns `Ok(vec![])`.
+/// Reads the JSON array from `curator_reviews.top_reviews_json` and parses it.
+/// An item with no row, or a NULL/empty cell, has no reviews: `Ok(vec![])`.
+/// A failed query, or a cell that does not parse, is an error: it must not look
+/// like "no reviews".
 pub fn list_mod_reviews(conn: &Connection, item_id: String) -> LauncherResult<Vec<ModReview>> {
     let mut stmt = conn
         .prepare("SELECT top_reviews_json FROM curator_reviews WHERE item_id = ?1")
@@ -1561,17 +1560,28 @@ pub fn list_mod_reviews(conn: &Connection, item_id: String) -> LauncherResult<Ve
             message: e.to_string(),
         })?;
 
-    let raw: Option<String> = stmt.query_row([item_id], |row| row.get(0)).ok();
+    let raw: Option<String> =
+        match stmt.query_row([item_id.as_str()], |row| row.get::<_, Option<String>>(0)) {
+            Ok(raw) => raw,
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                return Err(LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: format!("Cannot read curator reviews for '{item_id}': {e}"),
+                })
+            }
+        };
 
     let json_str = match raw {
         Some(s) if !s.is_empty() => s,
         _ => return Ok(Vec::new()),
     };
 
-    let parsed: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
-        Ok(v) => v,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let parsed: Vec<serde_json::Value> =
+        serde_json::from_str(&json_str).map_err(|e| LauncherError::Generic {
+            code: "ERR_CURATOR_REVIEWS_PARSE".to_string(),
+            message: format!("Curator reviews for '{item_id}' are not readable JSON: {e}"),
+        })?;
 
     let mut out = Vec::new();
     for val in parsed {
@@ -1966,6 +1976,8 @@ pub struct CuratedAnnotation {
     pub id: String,
     pub name: String,
     pub curator_note: Option<String>,
+    /// The curator's plain-text install warning. Informs and never blocks.
+    pub curator_warning: Option<String>,
     pub net_score: Option<f64>,
     pub is_immune: bool,
     pub base_categories: Vec<String>,
@@ -1989,17 +2001,24 @@ pub fn get_curated_annotation(
     conn: &Connection,
     item_id: &str,
 ) -> LauncherResult<Option<CuratedAnnotation>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT ri.id, ri.name, ri.net_score, ri.is_immune, cr.curator_note \
-             FROM registry_items ri \
-             LEFT JOIN curator_reviews cr ON cr.item_id = ri.id \
-             WHERE ri.id = ?1",
-        )
-        .map_err(|e| LauncherError::Generic {
-            code: "ERR_INVALID_QUERY".to_string(),
-            message: e.to_string(),
-        })?;
+    // A signed db from before the column existed has no warning to read, so the
+    // column is selected only when it is there. Blank values are cleaned in Rust
+    // (see `clean_curator_warning`): SQLite's TRIM strips spaces only.
+    let warning_expr = if table_has_column(conn, "curator_reviews", "curator_warning") {
+        "cr.curator_warning"
+    } else {
+        "NULL"
+    };
+    let sql = format!(
+        "SELECT ri.id, ri.name, ri.net_score, ri.is_immune, cr.curator_note, {warning_expr} \
+         FROM registry_items ri \
+         LEFT JOIN curator_reviews cr ON cr.item_id = ri.id \
+         WHERE ri.id = ?1"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| LauncherError::Generic {
+        code: "ERR_INVALID_QUERY".to_string(),
+        message: e.to_string(),
+    })?;
 
     let mut rows = stmt
         .query_map([item_id], |row| {
@@ -2008,14 +2027,22 @@ pub fn get_curated_annotation(
             let net_score: i64 = row.get(2)?;
             let is_immune: bool = row.get(3)?;
             let curator_note: Option<String> = row.get(4)?;
-            Ok((id, name, net_score, is_immune, curator_note))
+            let curator_warning: Option<String> = row.get(5)?;
+            Ok((
+                id,
+                name,
+                net_score,
+                is_immune,
+                curator_note,
+                curator_warning,
+            ))
         })
         .map_err(|e| LauncherError::Generic {
             code: "ERR_INVALID_QUERY".to_string(),
             message: e.to_string(),
         })?;
 
-    let (id, name, net_score, is_immune, curator_note) = match rows.next() {
+    let (id, name, net_score, is_immune, curator_note, curator_warning) = match rows.next() {
         Some(Ok(r)) => r,
         Some(Err(e)) => {
             return Err(LauncherError::Generic {
@@ -2052,10 +2079,78 @@ pub fn get_curated_annotation(
         id,
         name,
         curator_note,
+        curator_warning: clean_curator_warning(curator_warning),
         net_score: Some(net_score as f64),
         is_immune,
         base_categories,
     }))
+}
+
+/// A curator's install warning for one registry item.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CuratorWarning {
+    pub item_id: String,
+    pub name: String,
+    pub warning: String,
+}
+
+/// Every registry item that carries a curator install warning, by item id.
+///
+/// Returns `vec![]` when `curator_reviews` has no `curator_warning` column,
+/// which is what a registry built before the field looks like. Query errors
+/// are returned, not swallowed: the caller decides what an unreadable registry
+/// means for the user.
+pub fn get_curator_warnings(conn: &Connection) -> LauncherResult<Vec<CuratorWarning>> {
+    if !table_has_column(conn, "curator_reviews", "curator_warning") {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT ri.id, ri.name, cr.curator_warning \
+             FROM curator_reviews cr \
+             JOIN registry_items ri ON ri.id = cr.item_id \
+             WHERE cr.curator_warning IS NOT NULL \
+             ORDER BY ri.id",
+        )
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_INVALID_QUERY".to_string(),
+            message: e.to_string(),
+        })?;
+    let rows = stmt
+        .query_map([], |row| {
+            let item_id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let warning: Option<String> = row.get(2)?;
+            Ok((item_id, name, warning))
+        })
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_INVALID_QUERY".to_string(),
+            message: e.to_string(),
+        })?;
+    let mut warnings = Vec::new();
+    for row in rows {
+        let (item_id, name, warning) = row.map_err(|e| LauncherError::Generic {
+            code: "ERR_INVALID_QUERY".to_string(),
+            message: e.to_string(),
+        })?;
+        if let Some(warning) = clean_curator_warning(warning) {
+            warnings.push(CuratorWarning {
+                item_id,
+                name,
+                warning,
+            });
+        }
+    }
+    Ok(warnings)
+}
+
+/// A curator warning as shown to users: trimmed, and blank means no warning.
+///
+/// Trimming happens here rather than in SQL because SQLite's `TRIM` strips
+/// spaces only, and a value of `"\t\n"` must still read as blank.
+fn clean_curator_warning(raw: Option<String>) -> Option<String> {
+    raw.map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 /// True when `table` exists and carries `column`.
@@ -2377,9 +2472,11 @@ fn for_you_items_query(
     }
     if let Some(ld) = loader {
         if ld != "all" {
+            // Same rule as browse_items: the loader narrows mods and modpacks only.
             where_parts.push(
-                "ri.id IN (SELECT r.id FROM registry_items r, json_each(r.compatible_versions_json) cv \
-                 WHERE json_extract(cv.value, '$.loader') = ?)"
+                "(ri.content_type IN ('resourcepack', 'shader', 'datapack', 'world') \
+                 OR ri.id IN (SELECT r.id FROM registry_items r, json_each(r.compatible_versions_json) cv \
+                 WHERE json_extract(cv.value, '$.loader') = ?))"
                     .to_string(),
             );
         }
@@ -2726,6 +2823,57 @@ mod tests {
         assert!(reviews.is_empty());
     }
 
+    /// A connection to a file that is not a SQLite database, so every query on
+    /// it fails. The read paths must report that, not show an empty list.
+    fn broken_registry() -> (TempDir, Connection) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("registry.db");
+        std::fs::write(&path, b"this file is plain text, not a SQLite database").unwrap();
+        let conn = Connection::open(&path).unwrap();
+        (dir, conn)
+    }
+
+    #[test]
+    fn a_broken_registry_is_an_error_not_an_empty_list() {
+        let (_dir, conn) = broken_registry();
+        assert!(list_audit_log(&conn, 10).is_err());
+        assert!(list_recent_resolutions(&conn, 10).is_err());
+        assert!(list_mod_reviews(&conn, "any-item".into()).is_err());
+        assert!(list_under_review_items(&conn).is_err());
+    }
+
+    #[test]
+    fn a_registry_without_an_audit_log_table_has_no_entries_yet() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(list_audit_log(&conn, 10).unwrap().is_empty());
+        assert!(list_recent_resolutions(&conn, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_review_cell_that_is_null_or_absent_means_no_reviews() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE curator_reviews (item_id TEXT PRIMARY KEY, top_reviews_json TEXT);
+             INSERT INTO curator_reviews VALUES ('null-cell', NULL);",
+        )
+        .unwrap();
+        assert!(list_mod_reviews(&conn, "null-cell".into())
+            .unwrap()
+            .is_empty());
+        assert!(list_mod_reviews(&conn, "no-row".into()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_review_cell_that_does_not_parse_is_an_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE curator_reviews (item_id TEXT PRIMARY KEY, top_reviews_json TEXT);
+             INSERT INTO curator_reviews VALUES ('bad-cell', 'not json at all');",
+        )
+        .unwrap();
+        assert!(list_mod_reviews(&conn, "bad-cell".into()).is_err());
+    }
+
     #[test]
     fn test_get_manifest_dependencies() {
         let dir = temp_registry_db();
@@ -2951,6 +3099,68 @@ mod tests {
         .unwrap();
         assert_eq!(matching.len(), 1);
         assert!(missing.is_empty());
+    }
+
+    /// Under All types a loader narrows mods and modpacks, not packs: for a
+    /// Fabric context the Forge-only mod is hidden and the resource pack (which
+    /// carries no loader tag) is still shown.
+    #[test]
+    fn all_types_loader_hides_other_loaders_but_keeps_packs() {
+        let dir = temp_registry_db();
+        let db = dir.path().join("registry.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "INSERT INTO registry_items VALUES (
+                    'forge-only-mod', 'Forge Only Mod', 'mod', 'github_release',
+                    'owner/forge', 'abc', 5, 0, 5, 1.0, 'approved',
+                    0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z',
+                    '[{\"mc_version\":\"1.20.1\",\"loader\":\"forge\"}]',
+                    'Forge only', NULL, NULL, 'MIT', '2024-01-01T00:00:00Z', NULL, NULL);
+                 INSERT INTO registry_items VALUES (
+                    'faithful-pack', 'Faithful Pack', 'resourcepack', 'github_release',
+                    'owner/pack', 'def', 5, 0, 5, 1.0, 'approved',
+                    0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z',
+                    NULL, 'A pack', NULL, NULL, 'MIT', '2024-01-01T00:00:00Z', NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let conn = registry_connection(&db).unwrap();
+        let sort = SortOption::NetScore;
+        let ids = |content_type: Option<&str>| -> Vec<String> {
+            browse_items(
+                &conn,
+                content_type,
+                None,
+                &sort,
+                &all_curated_strategies(),
+                None,
+                Some("fabric"),
+                None,
+                100,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|item| item.id)
+            .collect()
+        };
+
+        let all = ids(None);
+        assert!(
+            all.contains(&"test-mod-1".to_string()),
+            "fabric mod kept: {all:?}"
+        );
+        assert!(
+            all.contains(&"faithful-pack".to_string()),
+            "pack kept under All types: {all:?}"
+        );
+        assert!(
+            !all.contains(&"forge-only-mod".to_string()),
+            "forge mod hidden for fabric: {all:?}"
+        );
+
+        // Mods only: the same loader rule for mods, and packs are out by type.
+        assert_eq!(ids(Some("mod")), vec!["test-mod-1".to_string()]);
     }
 
     #[test]
@@ -3435,6 +3645,191 @@ mod tests {
 
         let result = get_curated_annotation(&conn, "nonexistent-id").unwrap();
         assert!(result.is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // Curator install warnings
+    // -------------------------------------------------------------------
+
+    /// A registry with the curation tables. `warning_column` decides whether
+    /// `curator_reviews` has the `curator_warning` column that older compilers
+    /// never wrote.
+    fn curator_warning_db(warning_column: bool) -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("registry.db")).unwrap();
+        let warning_ddl = if warning_column {
+            ", curator_warning TEXT"
+        } else {
+            ""
+        };
+        conn.execute_batch(&format!(
+            "
+            CREATE TABLE registry_items (
+                id TEXT PRIMARY KEY, name TEXT, content_type TEXT,
+                download_strategy TEXT, source_identifier TEXT, sha256 TEXT,
+                upvotes INTEGER, downvotes INTEGER, net_score INTEGER,
+                velocity REAL, status TEXT, is_immune INTEGER,
+                immunity_reason TEXT, allow_comments INTEGER, icon_url TEXT,
+                gallery_urls_json TEXT, date_added TEXT,
+                compatible_versions_json TEXT, description TEXT,
+                body_markdown TEXT, page_url TEXT, license_id TEXT,
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
+            );
+            CREATE TABLE item_categories (item_id TEXT, category_id TEXT);
+            CREATE TABLE curator_reviews (
+                item_id TEXT PRIMARY KEY,
+                curator_note TEXT,
+                top_reviews_json TEXT{warning_ddl}
+            );
+            "
+        ))
+        .unwrap();
+        (dir, conn)
+    }
+
+    fn add_curated_item(conn: &Connection, id: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO registry_items (id, name, content_type, net_score, is_immune) \
+             VALUES (?1, ?2, 'mod', 10, 0)",
+            [id, name],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO curator_reviews (item_id, curator_note, top_reviews_json) \
+             VALUES (?1, 'A note.', '[]')",
+            [id],
+        )
+        .unwrap();
+    }
+
+    fn set_curator_warning(conn: &Connection, id: &str, warning: Option<&str>) {
+        conn.execute(
+            "UPDATE curator_reviews SET curator_warning = ?2 WHERE item_id = ?1",
+            rusqlite::params![id, warning],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn annotation_carries_curator_warning() {
+        let (_dir, conn) = curator_warning_db(true);
+        add_curated_item(&conn, "warned-mod", "Warned Mod");
+        set_curator_warning(&conn, "warned-mod", Some("Do not use Y with this mod."));
+
+        let annotation = get_curated_annotation(&conn, "warned-mod")
+            .unwrap()
+            .expect("Expected some annotation");
+        assert_eq!(
+            annotation.curator_warning,
+            Some("Do not use Y with this mod.".to_string())
+        );
+        // The warning is separate from the curator note, which is unchanged.
+        assert_eq!(annotation.curator_note, Some("A note.".to_string()));
+    }
+
+    #[test]
+    fn annotation_without_curator_warning_is_none() {
+        let (_dir, conn) = curator_warning_db(true);
+        add_curated_item(&conn, "plain-mod", "Plain Mod");
+
+        let annotation = get_curated_annotation(&conn, "plain-mod")
+            .unwrap()
+            .expect("Expected some annotation");
+        assert_eq!(annotation.curator_warning, None);
+    }
+
+    #[test]
+    fn annotation_blank_curator_warning_is_none() {
+        // Hostile input: a blank value in the signed db must not render an
+        // empty warning banner.
+        let (_dir, conn) = curator_warning_db(true);
+        add_curated_item(&conn, "blank-mod", "Blank Mod");
+        for raw in ["", "   ", "\t\n"] {
+            set_curator_warning(&conn, "blank-mod", Some(raw));
+            let annotation = get_curated_annotation(&conn, "blank-mod")
+                .unwrap()
+                .expect("Expected some annotation");
+            assert_eq!(annotation.curator_warning, None, "raw {raw:?}");
+        }
+    }
+
+    #[test]
+    fn annotation_trims_curator_warning() {
+        let (_dir, conn) = curator_warning_db(true);
+        add_curated_item(&conn, "padded-mod", "Padded Mod");
+        set_curator_warning(&conn, "padded-mod", Some("  Padded warning.  \n"));
+
+        let annotation = get_curated_annotation(&conn, "padded-mod")
+            .unwrap()
+            .expect("Expected some annotation");
+        assert_eq!(
+            annotation.curator_warning,
+            Some("Padded warning.".to_string())
+        );
+    }
+
+    #[test]
+    fn annotation_on_registry_without_warning_column_is_none() {
+        // A signed db from before the column existed must keep loading: the
+        // note still comes through and the warning is simply absent.
+        let (_dir, conn) = curator_warning_db(false);
+        add_curated_item(&conn, "old-mod", "Old Mod");
+
+        let annotation = get_curated_annotation(&conn, "old-mod")
+            .unwrap()
+            .expect("Expected some annotation");
+        assert_eq!(annotation.curator_warning, None);
+        assert_eq!(annotation.curator_note, Some("A note.".to_string()));
+    }
+
+    #[test]
+    fn curator_warnings_lists_only_real_warnings() {
+        let (_dir, conn) = curator_warning_db(true);
+        add_curated_item(&conn, "a-warned", "A Warned");
+        add_curated_item(&conn, "b-none", "B None");
+        add_curated_item(&conn, "c-blank", "C Blank");
+        add_curated_item(&conn, "d-padded", "D Padded");
+        set_curator_warning(&conn, "a-warned", Some("Do not use Y."));
+        set_curator_warning(&conn, "c-blank", Some("   "));
+        set_curator_warning(&conn, "d-padded", Some("  Other warning.  "));
+
+        let warnings = get_curator_warnings(&conn).unwrap();
+        assert_eq!(
+            warnings,
+            vec![
+                CuratorWarning {
+                    item_id: "a-warned".to_string(),
+                    name: "A Warned".to_string(),
+                    warning: "Do not use Y.".to_string(),
+                },
+                CuratorWarning {
+                    item_id: "d-padded".to_string(),
+                    name: "D Padded".to_string(),
+                    warning: "Other warning.".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn curator_warnings_empty_on_registry_without_warning_column() {
+        let (_dir, conn) = curator_warning_db(false);
+        add_curated_item(&conn, "old-mod", "Old Mod");
+
+        assert!(get_curator_warnings(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn curator_warnings_surface_query_errors() {
+        // A broken registry must be an error the caller can see, not an empty
+        // list that reads as "nothing to warn about".
+        let (_dir, conn) = curator_warning_db(true);
+        add_curated_item(&conn, "a-warned", "A Warned");
+        set_curator_warning(&conn, "a-warned", Some("Do not use Y."));
+        conn.execute_batch("DROP TABLE registry_items;").unwrap();
+
+        assert!(get_curator_warnings(&conn).is_err());
     }
 
     // -------------------------------------------------------------------

@@ -155,7 +155,7 @@ export function PackUpdatePanel({ instanceId, locked }: { instanceId: string; lo
                         onClick={() => setResolutions((prev) => ({ ...prev, [conflict.key]: choice }))}
                         disabled={busy}
                         data-active={resolutions[conflict.key] === choice}
-                        className="rounded border border-input px-2 py-1 text-xs hover:bg-accent data-[active=true]:bg-primary data-[active=true]:text-primary-foreground disabled:opacity-50"
+                        className="rounded-sm border border-input px-2 py-1 text-xs hover:bg-accent data-[active=true]:bg-primary data-[active=true]:text-primary-foreground disabled:opacity-50"
                       >
                         {choice === 'keep_ours' ? 'Keep mine' : "Take the pack's"}
                       </button>

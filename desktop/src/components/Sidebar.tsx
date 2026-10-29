@@ -114,7 +114,7 @@ export function Sidebar({
     // positioning is unchanged.
     <div className="relative flex shrink-0" style={{ width: collapsed ? 64 : width }}>
       <aside
-        className="app-sidebar decorative-shell flex h-full w-full min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card/95 shadow-[4px_0_24px_hsl(var(--midnight)/0.04)] backdrop-blur"
+        className="app-sidebar decorative-shell flex h-full w-full min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card/95 shadow-[4px_0_24px_hsl(var(--midnight)/0.04)] backdrop-blur-sm"
         data-testid="sidebar"
       >
       <div className={`border-b border-border ${collapsed ? 'p-3' : 'p-4'}`}>
@@ -137,7 +137,7 @@ export function Sidebar({
                 'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors',
                 collapsed ? 'px-0 justify-center' : '',
                 isActive
-                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  ? 'bg-primary text-primary-foreground shadow-xs'
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
               ].join(' ')}
             >
@@ -166,7 +166,7 @@ export function Sidebar({
                     'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors',
                     collapsed ? 'px-0 justify-center' : '',
                     isActive
-                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      ? 'bg-primary text-primary-foreground shadow-xs'
                       : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                   ].join(' ')}
                 >
@@ -181,19 +181,26 @@ export function Sidebar({
         )}
       </nav>
 
-      {!collapsed && (
-        <div className="space-y-1 border-t border-border p-3">
-          <button
-            onClick={onOpenCommandPalette}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            aria-label="Open command palette"
-          >
-            <Command className="h-4 w-4" aria-hidden="true" />
-            <span className="min-w-0 flex-1 text-left leading-snug">Quick actions</span>
-            <kbd className="ml-auto rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">Ctrl K</kbd>
-          </button>
-        </div>
-      )}
+      {/* Still here when collapsed (icon only), so the palette is never out of reach. */}
+      <div className="space-y-1 border-t border-border p-3">
+        <button
+          onClick={onOpenCommandPalette}
+          title={collapsed ? 'Quick actions (Ctrl K)' : undefined}
+          className={[
+            'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+            collapsed ? 'justify-center px-0' : '',
+          ].join(' ')}
+          aria-label="Open command palette"
+        >
+          <Command className="h-4 w-4" aria-hidden="true" />
+          {!collapsed && (
+            <>
+              <span className="min-w-0 flex-1 text-left leading-snug">Quick actions</span>
+              <kbd className="ml-auto rounded-sm border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">Ctrl K</kbd>
+            </>
+          )}
+        </button>
+      </div>
 
       {!collapsed && (
         <div className="border-t border-border p-4 text-xs text-muted-foreground">
@@ -215,7 +222,7 @@ export function Sidebar({
 
       <button
         onClick={() => onCollapsedChange(!collapsed)}
-        className="absolute -right-3 top-20 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:bg-accent"
+        className="absolute -right-3 top-20 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-xs hover:bg-accent"
         aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       >
         {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
@@ -241,7 +248,7 @@ export function Sidebar({
             onWidthChange(DEFAULT_WIDTH);
             onWidthCommit(DEFAULT_WIDTH);
           }}
-          className="absolute inset-y-0 -right-1 z-[5] w-2 cursor-col-resize touch-none focus:outline-none focus:ring-2 focus:ring-inset focus:ring-ring"
+          className="absolute inset-y-0 -right-1 z-5 w-2 cursor-col-resize touch-none focus:outline-hidden focus:ring-2 focus:ring-inset focus:ring-ring"
         />
       )}
     </div>
