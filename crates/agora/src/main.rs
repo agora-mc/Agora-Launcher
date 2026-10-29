@@ -19,6 +19,7 @@ use agora_game_minecraft::instance_service::{CreateInstanceRequest, InstanceServ
 use agora_game_minecraft::loader_service::LoaderService;
 use agora_game_minecraft::runtime_service::RuntimeService;
 
+mod cli_discovery;
 mod cli_govniche;
 mod cli_network;
 mod cli_tools;
@@ -366,6 +367,11 @@ enum GamesCmd {
     Discover,
     /// List supported games and their identified installs.
     List,
+    /// Add or remove game folders that Agora's store scan did not find (MASTER_SPEC §26.3).
+    Folder {
+        #[command(subcommand)]
+        action: cli_discovery::FolderCmd,
+    },
     /// Manage pinned bases for games.
     Base {
         #[command(subcommand)]
@@ -5667,7 +5673,7 @@ async fn run_command(
         },
         Commands::Games { action } => match action {
             GamesCmd::Discover => {
-                let report = agora_core::game_discovery::discover_all();
+                let report = agora_core::game_discovery::discover_with_folders(&ctx.paths);
                 if json {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
@@ -5675,7 +5681,7 @@ async fn run_command(
                 }
             }
             GamesCmd::List => {
-                let report = agora_core::game_discovery::discover_all();
+                let report = agora_core::game_discovery::discover_with_folders(&ctx.paths);
                 let inventory = agora_core::game_registry::identify_installs(
                     &ctx.games,
                     &report,
@@ -5691,13 +5697,14 @@ async fn run_command(
                     print_games_list(&ctx.games, &inventory);
                 }
             }
+            GamesCmd::Folder { action } => cli_discovery::run_games_folder(action, ctx, json)?,
             GamesCmd::Base { action } => match action {
                 BaseCmd::Build {
                     install_id,
                     mode,
                     include_excluded,
                 } => {
-                    let report = agora_core::game_discovery::discover_all();
+                    let report = agora_core::game_discovery::discover_with_folders(&ctx.paths);
                     let inventory = agora_core::game_registry::identify_installs(
                         &ctx.games,
                         &report,
@@ -6567,7 +6574,7 @@ async fn run_command(
                             &instance_id,
                             game_def,
                             launch_options,
-                            &agora_core::game_discovery::discover_all,
+                            &|| agora_core::game_discovery::discover_with_folders(&ctx.paths),
                             &agora_core::game_launch::SystemLauncher,
                         ) {
                             Ok(p) => p,
@@ -6745,7 +6752,8 @@ async fn run_command(
                                 (store, running_from)
                             }
                             agora_game_api::BaseReference::Unpinned { install, .. } => {
-                                let report = agora_core::game_discovery::discover_all();
+                                let report =
+                                    agora_core::game_discovery::discover_with_folders(&ctx.paths);
                                 let matching = report.installs.iter().find(|discovered| {
                                     agora_core::game_registry::make_install_id(
                                         &discovered.store,
@@ -8739,7 +8747,7 @@ fn run_games_import(
                 name,
                 copy_saves,
             };
-            let discovered = agora_core::game_discovery::discover_all();
+            let discovered = agora_core::game_discovery::discover_with_folders(&ctx.paths);
             let inventory = agora_core::game_registry::identify_installs(
                 &ctx.games,
                 &discovered,

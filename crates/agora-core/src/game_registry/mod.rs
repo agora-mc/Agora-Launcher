@@ -442,6 +442,32 @@ impl GameRegistry {
         self.store_products
             .get(&(store.clone(), product.to_string()))
     }
+
+    /// The games whose executable (a version source a game declares) is inside `folder`. A folder
+    /// the user added is identified by this: a game is in it when its executable is there.
+    pub fn games_with_executable_in(&self, folder: &Path) -> Vec<GameId> {
+        self.games()
+            .filter(|game| {
+                game.version_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        agora_game_api::VersionSource::Executable { path }
+                            if folder.join(path.as_str()).is_file()
+                    )
+                })
+            })
+            .map(|game| game.id.clone())
+            .collect()
+    }
+
+    /// The one game a folder holds. Two games matching the same folder is no answer at all, so
+    /// the folder stays unidentified rather than guessing.
+    pub fn game_for_folder(&self, folder: &Path) -> Option<GameId> {
+        match self.games_with_executable_in(folder).as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -547,9 +573,17 @@ pub fn identify_installs(
         .collect();
 
     for bg in base_games {
-        if let Some(game_id) = registry.game_for_store_product(&bg.store, &bg.product) {
+        // A folder the user added has no store product, so it is matched by its executable.
+        let claimed = if bg.store == agora_game_api::StoreId::direct() {
+            registry.game_for_folder(&bg.location)
+        } else {
+            registry
+                .game_for_store_product(&bg.store, &bg.product)
+                .cloned()
+        };
+        if let Some(game_id) = claimed {
             let game_def = registry
-                .game(game_id)
+                .game(&game_id)
                 .expect("game definition must exist for claimed product");
 
             let add_ons: Vec<DiscoveredInstall> = report
@@ -567,7 +601,7 @@ pub fn identify_installs(
             let runtime = resolve_runtime(game_def, bg, read_version);
 
             installs.push(IdentifiedInstall {
-                game: game_id.clone(),
+                game: game_id,
                 install_id,
                 discovered: bg.clone(),
                 add_ons,

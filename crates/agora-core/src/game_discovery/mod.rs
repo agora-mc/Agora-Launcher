@@ -1,3 +1,4 @@
+pub mod custom_folders;
 pub mod epic;
 pub mod file_version;
 pub mod gog;
@@ -58,6 +59,17 @@ impl DiscoveryReport {
 pub trait StoreAdapter: Send + Sync {
     fn store_id(&self) -> StoreId;
     fn discover(&self, volume_detector: &VolumeDetector) -> DiscoveryReport;
+}
+
+/// Discover all game installs and add-ons across all supported stores, then the game folders the
+/// user added by hand (MASTER_SPEC §26.3). Discovery and identification use this so a custom
+/// folder is found the same way everywhere.
+pub fn discover_with_folders(paths: &crate::app_paths::AppPaths) -> DiscoveryReport {
+    let mut report = discover_all();
+    let (installs, warnings) = custom_folders::discover_folders(paths);
+    report.installs.extend(installs);
+    report.warnings.extend(warnings);
+    report
 }
 
 /// Discover all game installs and add-ons across all supported stores.
