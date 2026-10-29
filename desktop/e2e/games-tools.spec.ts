@@ -368,15 +368,17 @@ test('a game that declares no tools says so, and says nothing is to be built', a
 test('a tools list that fails shows the error, with a way to try again', async ({ page }) => {
   await boot(page);
   // The list answers with an error from the core, not with a list: the page must show that, not "no tools".
+  // The failure lasts until the test lifts it: React's StrictMode runs the load twice on mount, so a
+  // failure that lasted one call would be answered by the second call, and the page would show the list.
   await page.addInitScript(() => {
     const target = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+      __failToolsList?: boolean;
     };
     const inner = target.__TAURI_INTERNALS__.invoke;
-    let failed = false;
+    target.__failToolsList = true;
     target.__TAURI_INTERNALS__.invoke = (command: string, args: Record<string, unknown> = {}) => {
-      if (command === 'games_tools_list' && !failed) {
-        failed = true;
+      if (command === 'games_tools_list' && target.__failToolsList) {
         return Promise.reject({ code: 'core_failed', message: 'The instance could not be read.' });
       }
       return inner(command, args);
@@ -388,6 +390,9 @@ test('a tools list that fails shows the error, with a way to try again', async (
   await expect(alert).toBeVisible();
   await expect(page.getByTestId('tools-empty')).toHaveCount(0);
 
+  await page.evaluate(() => {
+    (window as unknown as { __failToolsList?: boolean }).__failToolsList = false;
+  });
   await alert.getByRole('button', { name: 'Try again' }).click();
   await expect(card(page, 'Nemesis')).toBeVisible();
 });

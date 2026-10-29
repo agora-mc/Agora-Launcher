@@ -260,6 +260,18 @@ pub fn require_swap_confirmed(capture: CaptureMode, confirmed: bool) -> Result<(
     Ok(())
 }
 
+/// A run that follows a refusal has to say what was refused. An empty or blank reason is refused here,
+/// because the screen's own check is not the only thing standing between a click and the run.
+pub fn require_named_refusal(refusal: Option<&str>) -> Result<(), GamesError> {
+    match refusal {
+        Some(reason) if reason.trim().is_empty() => Err(GamesError::new(
+            INVALID_REQUEST,
+            "A run that follows a refusal has to say what was refused.",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -436,14 +448,7 @@ pub async fn games_tools_run(
     let tool = tool_id_of(&tool_id)?;
     let capture = parse_capture(&capture)?;
     require_swap_confirmed(capture, confirm_swap)?;
-    if let Some(reason) = &refusal {
-        if reason.trim().is_empty() {
-            return Err(GamesError::new(
-                INVALID_REQUEST,
-                "A run that follows a refusal has to say what was refused.",
-            ));
-        }
-    }
+    require_named_refusal(refusal.as_deref())?;
     with_ctx(app, move |ctx| {
         let game = definition_of(&ctx, &instance_id)?;
         let cancel = CancellationToken::new();
@@ -677,6 +682,16 @@ mod tests {
         assert!(require_swap_confirmed(CaptureMode::Auto, false).is_ok());
         assert!(require_swap_confirmed(CaptureMode::Links, false).is_ok());
         assert!(require_swap_confirmed(CaptureMode::Vfs, false).is_ok());
+    }
+
+    #[test]
+    fn a_run_after_a_refusal_must_name_the_refusal() {
+        assert!(require_named_refusal(None).is_ok());
+        assert!(require_named_refusal(Some("injection failed")).is_ok());
+        for hostile in ["", "   ", "\n\t"] {
+            let error = require_named_refusal(Some(hostile)).expect_err(hostile);
+            assert_eq!(error.code, INVALID_REQUEST, "{hostile:?}");
+        }
     }
 
     #[test]
