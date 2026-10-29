@@ -4207,6 +4207,9 @@ backend that owns the instance, so a second game can never displace Minecraft's.
 core budget fell to 1,160. Merging master's UX fixes of September 2026 (data packs synced to
 worlds, Java provisioning progress, captured launch output) raised it to 1,206: they were written
 against core while Minecraft still lived there, and moved into the package with the merge.
+The merge of master's ~173 commits on 2026-10-28 (pack import, worlds, recently deleted, bisect and
+loadout services, skins, log sharing, the download cache) raised it again, to 1,530; Phase 5 still
+takes it to zero.
 Per-store user paths (Steam's `Skyrim Special Edition` and GOG's `Skyrim Special Edition GOG`
 under Documents and AppData) cannot be expressed by `GamePath` yet; Phase 3 needs them.
 
