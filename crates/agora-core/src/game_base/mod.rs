@@ -130,7 +130,7 @@ pub struct BaseListing {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum BaseEntry {
-    Readable(BaseListing),
+    Readable(Box<BaseListing>),
     Damaged(DamagedBase),
 }
 
@@ -1011,7 +1011,10 @@ pub fn list_bases(paths: &AppPaths) -> Result<Vec<BaseEntry>, BaseError> {
         match read_manifest_file(&path) {
             Ok(manifest) => {
                 let present = manifest.location.exists() && manifest.location.is_dir();
-                found.push(BaseEntry::Readable(BaseListing { manifest, present }));
+                found.push(BaseEntry::Readable(Box::new(BaseListing {
+                    manifest,
+                    present,
+                })));
             }
             Err(error) => found.push(BaseEntry::Damaged(DamagedBase {
                 base_id,
@@ -1149,7 +1152,10 @@ pub fn remove_base(paths: &AppPaths, base_id: &str) -> Result<(), BaseError> {
     if !manifest_path.exists() {
         return Err(BaseError::NotFound(base_id.to_string()));
     }
-    match read_manifest_file(&manifest_path) {
+    // A record that cannot be read at all is an error, not a damaged record: a failed read of a
+    // healthy record must never be taken as permission to delete a folder elsewhere.
+    let text = std::fs::read_to_string(&manifest_path)?;
+    match serde_json::from_str::<BaseManifest>(&text) {
         Ok(manifest) => {
             if !is_own_base_folder(paths, &manifest, base_id) {
                 return Err(BaseError::Other(format!(
@@ -1163,8 +1169,9 @@ pub fn remove_base(paths: &AppPaths, base_id: &str) -> Result<(), BaseError> {
             let _ = std::fs::remove_file(&manifest_path);
             Ok(())
         }
-        // The record is damaged, so there is no recorded location to check. Only the folder the
-        // id names in the data folder's bases folder is removed, and only if it is a plain folder.
+        // The record reads but is not a base record, so there is no recorded location to check.
+        // Only the folder the id names in the data folder's bases folder is removed, and only if
+        // it is a plain folder.
         Err(_) => remove_damaged_base(paths, base_id, &manifest_path),
     }
 }

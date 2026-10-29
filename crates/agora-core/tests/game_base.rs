@@ -1503,6 +1503,29 @@ fn removing_a_damaged_record_refuses_a_folder_that_is_not_a_plain_folder() {
 }
 
 #[test]
+fn removing_a_record_that_cannot_be_read_is_refused_and_deletes_nothing() {
+    // A record that cannot be read is not a damaged record: the removal must not take the read
+    // failure as permission to delete the folder under the bases folder.
+    let tmp = TempDir::new().unwrap();
+    let paths = AppPaths::from_root(tmp.path().join("data"));
+    let base_id = "skyrim-se_steam_2.0.0_nobuild";
+    std::fs::create_dir_all(paths.base_manifests_dir()).unwrap();
+    // A folder at the record's path makes reading the record fail.
+    let record = paths.base_manifest_path(base_id);
+    std::fs::create_dir(&record).unwrap();
+    let folder = paths.bases_dir().join(base_id);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("SkyrimSE.exe"), b"exe").unwrap();
+
+    assert!(matches!(
+        remove_base(&paths, base_id),
+        Err(BaseError::Io(_))
+    ));
+    assert!(folder.join("SkyrimSE.exe").exists(), "the folder is kept");
+    assert!(record.exists(), "the record is kept");
+}
+
+#[test]
 fn remove_refuses_ids_that_could_name_the_data_folder_and_deletes_nothing() {
     let tmp = TempDir::new().unwrap();
     let data = tmp.path().join("data");

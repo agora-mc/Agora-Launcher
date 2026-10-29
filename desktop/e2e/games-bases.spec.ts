@@ -90,6 +90,14 @@ const cleanQuick = {
   problems: [],
 };
 
+/** A record Agora cannot read: listed with its file and reason, and it has no game or version to show. */
+const damagedRecord = {
+  baseId: 'skyrim-se_steam_2.0.0_nobuild',
+  manifestPath: 'D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json',
+  error: 'D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json is not a valid base record: EOF while parsing an object',
+  usedBy: [],
+};
+
 const builtCopied = {
   status: 'built',
   baseId: spareBase.baseId,
@@ -119,7 +127,7 @@ test.afterEach(async ({ page }) => {
 });
 
 test('the bases are listed with their mode, disk use and users, and a base in use cannot be removed', async ({ page }) => {
-  await boot(page, { games_base_list: { bases: [usedBase, spareBase] } });
+  await boot(page, { games_base_list: { bases: [usedBase, spareBase], damaged: [] } });
   await openSetup(page);
 
   const cards = page.getByTestId('base-card');
@@ -138,7 +146,7 @@ test('the bases are listed with their mode, disk use and users, and a base in us
 
 test('a quick check reports a clean base, and a full check runs on request', async ({ page }) => {
   await boot(page, {
-    games_base_list: { bases: [usedBase] },
+    games_base_list: { bases: [usedBase], damaged: [] },
     games_base_verify: cleanQuick,
   });
   await openSetup(page);
@@ -150,7 +158,7 @@ test('a quick check reports a clean base, and a full check runs on request', asy
 
 test('a base that needs attention names the damaged files', async ({ page }) => {
   await boot(page, {
-    games_base_list: { bases: [usedBase] },
+    games_base_list: { bases: [usedBase], damaged: [] },
     games_base_verify: {
       baseId: usedBase.baseId,
       depth: 'full',
@@ -177,7 +185,7 @@ test('a base that needs attention names the damaged files', async ({ page }) => 
 
 test('removing an unused base asks first, then removes it and says so', async ({ page }) => {
   await boot(page, {
-    games_base_list: { bases: [spareBase] },
+    games_base_list: { bases: [spareBase], damaged: [] },
     games_base_remove: { baseId: spareBase.baseId, status: 'removed' },
   });
   await openSetup(page);
@@ -190,7 +198,7 @@ test('removing an unused base asks first, then removes it and says so', async ({
 });
 
 test('cancelling the removal keeps the base', async ({ page }) => {
-  await boot(page, { games_base_list: { bases: [spareBase] } });
+  await boot(page, { games_base_list: { bases: [spareBase], damaged: [] } });
   await openSetup(page);
 
   await page.getByTestId('base-card').getByRole('button', { name: 'Remove base' }).click();
@@ -201,7 +209,7 @@ test('cancelling the removal keeps the base', async ({ page }) => {
 
 test('building a Copied base explains the mode, then reports what was built', async ({ page }) => {
   await boot(page, {
-    games_base_list: { bases: [] },
+    games_base_list: { bases: [], damaged: [] },
     games_base_build: builtCopied,
   });
   await openSetup(page);
@@ -223,7 +231,7 @@ test('building a Copied base explains the mode, then reports what was built', as
 
 test('a Linked build that cannot link offers a Copied build with its cost, and does not switch by itself', async ({ page }) => {
   await boot(page, {
-    games_base_list: { bases: [] },
+    games_base_list: { bases: [], damaged: [] },
     games_base_build: { status: 'link_unavailable', reason: 'base is on another volume', copiedBytesNeeded: 16 * GB },
   });
   await openSetup(page);
@@ -248,7 +256,7 @@ test('an install whose version Agora cannot tell cannot be built from', async ({
     storeBuild: null,
     runtime: { status: 'unidentified', reasons: ['the executable could not be read'] },
   };
-  await boot(page, { games_base_list: { bases: [] } }, unidentified);
+  await boot(page, { games_base_list: { bases: [], damaged: [] } }, unidentified);
   await openSetup(page);
 
   await page.getByRole('button', { name: 'Build a base' }).click();
@@ -260,7 +268,7 @@ test('an install whose version Agora cannot tell cannot be built from', async ({
 });
 
 test('an empty list says what to do next', async ({ page }) => {
-  await boot(page, { games_base_list: { bases: [] } });
+  await boot(page, { games_base_list: { bases: [], damaged: [] } });
   await openSetup(page);
 
   const empty = page.getByTestId('bases-empty');
@@ -278,7 +286,7 @@ test('a list that does not come back as a list is an error, not an empty list', 
 });
 
 test('a backend error shows its own message', async ({ page }) => {
-  await boot(page, { games_base_list: { bases: [] } });
+  await boot(page, { games_base_list: { bases: [], damaged: [] } });
   // The mock answers from a table; this one makes the command fail the way the backend does.
   await page.addInitScript(() => {
     const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
@@ -290,5 +298,50 @@ test('a backend error shows its own message', async ({ page }) => {
   await openSetup(page);
 
   await expect(page.getByRole('alert')).toContainText('Agora could not read the list of instances');
+  await expect(page.getByTestId('bases-empty')).toHaveCount(0);
+});
+
+test('a damaged base record is listed with its file and reason, offers no checks, and its removal asks first', async ({ page }) => {
+  await boot(page, {
+    games_base_list: { bases: [], damaged: [damagedRecord] },
+    games_base_remove: { baseId: damagedRecord.baseId, status: 'removed' },
+  });
+  await openSetup(page);
+
+  const card = page.getByTestId('damaged-base-card');
+  await expect(card).toHaveCount(1);
+  await expect(card.getByRole('heading', { name: 'Damaged base record' })).toBeVisible();
+  await expect(card).toContainText('Agora cannot read this base');
+  await expect(card).toContainText(damagedRecord.manifestPath);
+  await expect(card).toContainText('is not a valid base record');
+  await expect(card.getByRole('button', { name: 'Check base (quick)' })).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Check every file (full)' })).toHaveCount(0);
+  await expect(page.getByTestId('bases-empty')).toHaveCount(0);
+
+  await card.getByRole('button', { name: 'Remove base' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Remove this damaged base record?')).toBeVisible();
+  await expect(dialog).toContainText('Its record file is deleted');
+  await dialog.getByRole('button', { name: 'Remove base' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Removed the damaged base record.' })).toBeVisible();
+});
+
+test('a damaged base record in use cannot be removed, and names the instances that use it', async ({ page }) => {
+  await boot(page, {
+    games_base_list: { bases: [], damaged: [{ ...damagedRecord, usedBy: [{ instanceId: 'nordic-run', name: 'Nordic Run' }] }] },
+  });
+  await openSetup(page);
+
+  const card = page.getByTestId('damaged-base-card');
+  await expect(card).toContainText('Used by Nordic Run. Remove or move those instances before removing this base.');
+  await expect(card.getByRole('button', { name: 'Remove base' })).toBeDisabled();
+});
+
+test('a damaged record beside built bases is listed with them, and the list is not empty', async ({ page }) => {
+  await boot(page, { games_base_list: { bases: [spareBase], damaged: [damagedRecord] } });
+  await openSetup(page);
+
+  await expect(page.getByTestId('base-card')).toHaveCount(1);
+  await expect(page.getByTestId('damaged-base-card')).toHaveCount(1);
   await expect(page.getByTestId('bases-empty')).toHaveCount(0);
 });

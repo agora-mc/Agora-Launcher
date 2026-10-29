@@ -33,32 +33,50 @@ const verifyClean = {
   problems: [],
 };
 
+const damagedRecord = {
+  baseId: 'skyrim-se_steam_2.0.0_nobuild',
+  manifestPath: 'D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json',
+  error: 'D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json is not a valid base record: EOF',
+  usedBy: [],
+};
+
 describe('listBases', () => {
   beforeEach(() => {
     invokeMock.mockReset();
   });
 
   it('returns the bases the backend lists, for this game', async () => {
-    invokeMock.mockResolvedValueOnce({ bases: [base] });
-    await expect(listBases('skyrim-se')).resolves.toEqual({ bases: [base] });
+    invokeMock.mockResolvedValueOnce({ bases: [base], damaged: [] });
+    await expect(listBases('skyrim-se')).resolves.toEqual({ bases: [base], damaged: [] });
     expect(invokeMock).toHaveBeenCalledWith('games_base_list', { gameId: 'skyrim-se' });
   });
 
   it('accepts an empty list as a real answer', async () => {
-    invokeMock.mockResolvedValueOnce({ bases: [] });
-    await expect(listBases('skyrim-se')).resolves.toEqual({ bases: [] });
+    invokeMock.mockResolvedValueOnce({ bases: [], damaged: [] });
+    await expect(listBases('skyrim-se')).resolves.toEqual({ bases: [], damaged: [] });
+  });
+
+  it('returns a damaged record with its file, its reason and its users', async () => {
+    const withUser = { ...damagedRecord, usedBy: [{ instanceId: 'nordic-run', name: 'Nordic Run' }] };
+    invokeMock.mockResolvedValueOnce({ bases: [], damaged: [withUser] });
+    await expect(listBases('skyrim-se')).resolves.toEqual({ bases: [], damaged: [withUser] });
   });
 
   // A reply that is not the documented shape must reject, never read as "no bases".
   it.each([
     ['null (an unmocked command answers this)', null],
     ['a bare array', [base]],
-    ['an object without bases', { items: [base] }],
-    ['bases that is not a list', { bases: null }],
-    ['a base with a mode it does not know', { bases: [{ ...base, mode: 'hybrid' }] }],
-    ['a base without its size', { bases: [{ ...base, copiedBytes: undefined }] }],
-    ['a base whose users are not named', { bases: [{ ...base, usedBy: [{ instanceId: 'x' }] }] }],
-    ['a size that is not a number', { bases: [{ ...base, linkedBytes: '16 GB' }] }],
+    ['an object without bases', { items: [base], damaged: [] }],
+    ['bases that is not a list', { bases: null, damaged: [] }],
+    ['no damaged list at all', { bases: [base] }],
+    ['a damaged list that is not a list', { bases: [], damaged: 'none' }],
+    ['a base with a mode it does not know', { bases: [{ ...base, mode: 'hybrid' }], damaged: [] }],
+    ['a base without its size', { bases: [{ ...base, copiedBytes: undefined }], damaged: [] }],
+    ['a base whose users are not named', { bases: [{ ...base, usedBy: [{ instanceId: 'x' }] }], damaged: [] }],
+    ['a size that is not a number', { bases: [{ ...base, linkedBytes: '16 GB' }], damaged: [] }],
+    ['a damaged record without its file', { bases: [], damaged: [{ ...damagedRecord, manifestPath: undefined }] }],
+    ['a damaged record without its reason', { bases: [], damaged: [{ ...damagedRecord, error: null }] }],
+    ['a damaged record whose users are not named', { bases: [], damaged: [{ ...damagedRecord, usedBy: [{ name: 'x' }] }] }],
   ])('rejects %s', async (_label, reply) => {
     invokeMock.mockResolvedValueOnce(reply);
     await expect(listBases('skyrim-se')).rejects.toThrow('games_base_list did not return the documented shape.');
