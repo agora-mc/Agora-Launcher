@@ -620,6 +620,33 @@ mod tests {
     }
 
     #[test]
+    fn the_shared_install_inventory_includes_a_custom_folder() {
+        // `installed_games` is what the desktop and the CLI ask for installs; it must see the
+        // folders the user added, not only the stores.
+        let tmp = tempfile::tempdir().unwrap();
+        let game_dir = tmp.path().join("MyDndCopy");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        std::fs::write(game_dir.join("OnlyHere.exe"), b"x").unwrap();
+        let registry = std::sync::Arc::new(registry_with(vec![game(
+            "folder-only-game",
+            "Folder Only Game",
+            "OnlyHere.exe",
+        )]));
+        let ctx =
+            crate::ctx::CoreContext::for_testing(tmp.path().join("data")).with_games(registry);
+        add_folder_checked(&ctx.paths, &ctx.games, &game_dir.display().to_string(), &[]).unwrap();
+
+        let inventory = crate::game_registry::installed_games(&ctx);
+        assert!(
+            inventory
+                .installs
+                .iter()
+                .any(|i| i.game.to_string() == "folder-only-game"),
+            "the custom folder is in the inventory"
+        );
+    }
+
+    #[test]
     fn a_folder_in_the_list_reports_whether_it_is_still_there() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = paths_in(tmp.path());
