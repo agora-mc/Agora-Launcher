@@ -889,6 +889,29 @@ fn the_setup_is_refused_when_it_is_not_there() {
 }
 
 #[test]
+fn a_chosen_setup_is_summarised_and_a_missing_one_is_refused() {
+    let f = fixture();
+    let ini = f.setup.join("ModOrganizer.ini");
+    let found = game_import::inspect_setup(&ini).expect("the setup the user chose is readable");
+    assert_eq!(found.ini_path, ini);
+    assert_eq!(found.game_name.as_deref(), Some("Skyrim Special Edition"));
+    assert_eq!(found.profiles, vec!["Test Profile".to_string()]);
+    assert_eq!(
+        found.mod_count,
+        Some(3),
+        "Alpha, Beta and Gamma are the setup's mod folders"
+    );
+    assert_eq!(found.found_by, "chosen by you");
+
+    // A chosen path that is not there is refused, never summarised as an empty setup.
+    let missing = f.setup.join("nope/ModOrganizer.ini");
+    assert!(matches!(
+        game_import::inspect_setup(&missing),
+        Err(ImportError::NoSetup(_))
+    ));
+}
+
+#[test]
 fn an_unknown_game_is_refused() {
     let f = fixture();
     let text = std::fs::read_to_string(f.setup.join("ModOrganizer.ini")).unwrap();

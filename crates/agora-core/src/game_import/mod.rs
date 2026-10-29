@@ -157,6 +157,17 @@ pub fn scan() -> ScanReport {
     report
 }
 
+/// Summarise one setup the user chose (a `ModOrganizer.ini` path), for the same view a scan gives.
+/// Unlike the scan, an unreadable file is an error here, so a chosen setup is never shown as one
+/// with no profiles when the real reason is that it could not be read.
+pub fn inspect_setup(ini_path: &Path) -> Result<SetupFound, ImportError> {
+    if !ini_path.is_file() {
+        return Err(ImportError::NoSetup(ini_path.to_path_buf()));
+    }
+    read_text_optional(ini_path)?;
+    Ok(summarise(ini_path, "chosen by you".to_string()))
+}
+
 fn summarise(ini_path: &Path, found_by: String) -> SetupFound {
     let text = std::fs::read(ini_path)
         .map(|b| String::from_utf8_lossy(&b).to_string())
