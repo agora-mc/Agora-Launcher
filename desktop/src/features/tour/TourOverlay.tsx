@@ -287,7 +287,7 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
               type="button"
               onClick={() => setCollapsed(true)}
               title="Hide the tour card so you can see what's behind it"
-              className="rounded px-1.5 py-0.5 font-semibold hover:bg-accent hover:text-accent-foreground"
+              className="rounded-sm px-1.5 py-0.5 font-semibold hover:bg-accent hover:text-accent-foreground"
             >
               Hide
             </button>

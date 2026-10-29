@@ -364,7 +364,7 @@ export function ProviderDetail({
               {summary.downloads != null && <span>{summary.downloads.toLocaleString()} downloads</span>}
               {detail?.license && <span>License: {detail.license}</span>}
               {summary.categories.slice(0, 6).map((category) => (
-                <span key={category} className="rounded bg-muted px-1.5 py-0.5">{category}</span>
+                <span key={category} className="rounded-sm bg-muted px-1.5 py-0.5">{category}</span>
               ))}
             </div>
           </div>

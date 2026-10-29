@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../../tailwind.config.js";
 
 /* ═══════════════════════════════════════════════════════════════════════
    Agora web — Civic Gold
@@ -69,45 +68,47 @@
     border-radius: 0.35rem;
   }
 
-  /* Scale Tailwind's fixed text utilities with user preference — mirrors
-     desktop/index.css. Every step is one notch larger than Tailwind's
-     default, which is the site-wide type bump. */
-  :root .text-xs {
-    font-size: calc(0.8125rem * var(--font-scale));
-    line-height: calc(1.125rem * var(--font-scale));
+  /* Tailwind 4 preflight: keep buttons pointing as they did on Tailwind 3,
+     and keep the bare `border` colour on the hairline (see borderColor in
+     tailwind.config.js). */
+  button,
+  [role='button'] {
+    cursor: pointer;
   }
-  :root .text-sm {
-    font-size: calc(0.9375rem * var(--font-scale));
-    line-height: calc(1.4rem * var(--font-scale));
+  *,
+  ::before,
+  ::after,
+  ::backdrop {
+    border-color: #24374f;
   }
-  :root .text-base {
-    font-size: calc(1.0625rem * var(--font-scale));
-    line-height: calc(1.65rem * var(--font-scale));
-  }
-  :root .text-lg {
-    font-size: calc(1.1875rem * var(--font-scale));
-    line-height: calc(1.8rem * var(--font-scale));
-  }
-  :root .text-xl {
-    font-size: calc(1.375rem * var(--font-scale));
-    line-height: calc(1.9rem * var(--font-scale));
-  }
-  :root .text-2xl {
-    font-size: calc(1.625rem * var(--font-scale));
-    line-height: calc(2.1rem * var(--font-scale));
-  }
-  :root .text-3xl {
-    font-size: calc(2rem * var(--font-scale));
-    line-height: calc(2.45rem * var(--font-scale));
-  }
-  :root .text-4xl {
-    font-size: calc(2.5rem * var(--font-scale));
-    line-height: calc(2.9rem * var(--font-scale));
-  }
-  :root .text-5xl {
-    font-size: calc(3.25rem * var(--font-scale));
-    line-height: calc(3.5rem * var(--font-scale));
-  }
+}
+
+/* Scale Tailwind's fixed text utilities with user preference — mirrors
+   desktop/index.css. Every step is one notch larger than Tailwind's
+   default, which is the site-wide type bump.
+
+   These are theme tokens rather than `:root .text-*` overrides so that
+   variants (`md:text-5xl`, `sm:text-base`) get the same scale. Tailwind 3
+   generated variants for classes declared in @layer; Tailwind 4 does not. */
+@theme {
+  --text-xs: calc(0.8125rem * var(--font-scale));
+  --text-xs--line-height: calc(1.125rem * var(--font-scale));
+  --text-sm: calc(0.9375rem * var(--font-scale));
+  --text-sm--line-height: calc(1.4rem * var(--font-scale));
+  --text-base: calc(1.0625rem * var(--font-scale));
+  --text-base--line-height: calc(1.65rem * var(--font-scale));
+  --text-lg: calc(1.1875rem * var(--font-scale));
+  --text-lg--line-height: calc(1.8rem * var(--font-scale));
+  --text-xl: calc(1.375rem * var(--font-scale));
+  --text-xl--line-height: calc(1.9rem * var(--font-scale));
+  --text-2xl: calc(1.625rem * var(--font-scale));
+  --text-2xl--line-height: calc(2.1rem * var(--font-scale));
+  --text-3xl: calc(2rem * var(--font-scale));
+  --text-3xl--line-height: calc(2.45rem * var(--font-scale));
+  --text-4xl: calc(2.5rem * var(--font-scale));
+  --text-4xl--line-height: calc(2.9rem * var(--font-scale));
+  --text-5xl: calc(3.25rem * var(--font-scale));
+  --text-5xl--line-height: calc(3.5rem * var(--font-scale));
 }
 
 /* ── Layout system ─────────────────────────────────────────────────────

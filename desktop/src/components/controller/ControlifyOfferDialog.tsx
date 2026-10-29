@@ -50,7 +50,7 @@ export function ControlifyOfferDialog({ offer, onAccept, onDecline }: Controlify
   return (
     <div
       ref={dialogRef}
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-80 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-xs"
       role="presentation"
       onKeyDown={handleKeyDown}
     >
@@ -74,6 +74,7 @@ export function ControlifyOfferDialog({ offer, onAccept, onDecline }: Controlify
             ref={closeRef}
             type="button"
             onClick={onDecline}
+            data-modal-close=""
             aria-label="Close Controlify offer"
             className="rounded-xl p-2 text-slate-400 hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
           >

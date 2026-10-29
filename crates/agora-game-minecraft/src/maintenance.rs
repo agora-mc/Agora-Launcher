@@ -36,6 +36,21 @@ pub async fn prewarm_recent_instances(ctx: Ctx) -> Result<WarmupSummary, String>
         .map_err(|error| format!("startup maintenance worker failed: {error}"))?
 }
 
+/// Send expired "Recently deleted" entries to the OS trash on the background
+/// lane. Failures are counted and leave the entry in place.
+pub async fn cleanup_recently_deleted(
+    ctx: Ctx,
+    trash: crate::instance_service::TrashFn,
+) -> Result<crate::recently_deleted::CleanupSummary, String> {
+    let scheduler = ctx.task_scheduler.clone();
+    scheduler
+        .run_blocking(BlockingPriority::Background, move || {
+            crate::instance_service::InstanceService::new(ctx).cleanup_recently_deleted(&trash)
+        })
+        .await
+        .map_err(|error| format!("recently deleted cleanup worker failed: {error}"))
+}
+
 fn prewarm_blocking(ctx: &Ctx) -> Result<WarmupSummary, String> {
     let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
         .map_err(|error| format!("could not open local state for startup maintenance: {error}"))?;

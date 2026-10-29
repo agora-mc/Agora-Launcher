@@ -57,6 +57,8 @@ const BOOT_REPLIES = {
   plugins_enabled: false,
   list_plugins: [],
   list_plugin_contributions: [],
+  get_connectivity_status: { state: 'unknown', last_outcome_at: null },
+  list_recent_play: [],
 };
 
 async function boot(page: Page, games: unknown, settings: Record<string, unknown> = {}) {

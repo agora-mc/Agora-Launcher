@@ -175,6 +175,7 @@ impl InstallService {
                 message: e,
             })?;
         self.append_curated_conflict_warnings(&mut plan, &load.manifest);
+        self.append_curator_warnings(&mut plan);
         Ok(plan)
     }
 
@@ -206,6 +207,8 @@ impl InstallService {
             .is_file()
             .then(|| self.ctx.paths.registry_db());
         let loader_service = crate::loader_service::LoaderService::new(self.ctx.clone());
+        let download_cache =
+            crate::download_cache::DownloadCache::new(self.ctx.paths.download_cache_dir());
         InstallPipeline
             .execute_plan_with_scheduler(
                 plan,
@@ -217,6 +220,7 @@ impl InstallService {
                     scheduler: Some(&self.ctx.task_scheduler),
                     registry_db_path: registry_db.as_deref(),
                     loader_service: Some(&loader_service),
+                    download_cache: Some(&download_cache),
                 },
             )
             .await
@@ -243,6 +247,7 @@ impl InstallService {
                 message: e,
             })?;
         self.append_curated_conflict_warnings(&mut plan, &load.manifest);
+        self.append_curator_warnings(&mut plan);
         Ok(plan)
     }
 
@@ -264,6 +269,27 @@ impl InstallService {
             };
         plan.warnings
             .extend(curated_conflict_warnings(plan, manifest, &conflicts));
+    }
+
+    /// Show the curator's install warnings for the items this plan writes.
+    ///
+    /// No registry means there is nothing to warn about. Any other read failure
+    /// becomes a plan warning, so the review never says "nothing to check" when
+    /// the check did not run. It never blocks the install.
+    fn append_curator_warnings(&self, plan: &mut ResolvedInstallPlan) {
+        match agora_core::registry::RegistryService::new(self.ctx.clone()).curator_warnings() {
+            Ok(warnings) => {
+                plan.warnings
+                    .extend(curator_warning_plan_warnings(plan, &warnings));
+            }
+            Err(LauncherError::RegistryMissing) => {}
+            Err(error) => plan.warnings.push(crate::install_pipeline::PlanWarning {
+                code: CURATOR_WARNINGS_UNAVAILABLE_CODE.into(),
+                message: format!(
+                    "Agora could not check this install against curator warnings: {error}"
+                ),
+            }),
+        }
     }
 
     /// Check that the instance is not locked.
@@ -355,6 +381,106 @@ impl InstallService {
 
         let bytes =
             agora_core::download::download_mod_bytes(&self.ctx.http_clients, download_url).await?;
+
+        self.commit_verified_artifact(
+            instance_id,
+            filename,
+            content_type,
+            download_url,
+            registry_id,
+            modrinth_id,
+            source,
+            version,
+            expected_sha1,
+            expected_sha256,
+            None,
+            None,
+            pinned_sha256,
+            accept_hash_confirmation,
+            bytes,
+        )
+    }
+
+    /// [`install_artifact`](Self::install_artifact) plus a SHA-256 the caller
+    /// *requires* the bytes to have, on top of whatever the source published.
+    ///
+    /// A hash published by the source is checked whenever there is one; a hash
+    /// pinned by someone else (a shared pack file) is a separate requirement, so
+    /// it is checked unconditionally, before anything is written. There is no
+    /// "install anyway" for it: the caller named the exact file it expects.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn install_artifact_pinned(
+        &self,
+        instance_id: &str,
+        filename: &str,
+        content_type: &str,
+        download_url: &str,
+        registry_id: Option<&str>,
+        modrinth_id: Option<&str>,
+        source: &str,
+        version: Option<&str>,
+        expected_sha1: Option<&str>,
+        expected_sha256: Option<&str>,
+        required_sha256: Option<&str>,
+        expected_sha512: Option<&str>,
+    ) -> LauncherResult<InstalledMod> {
+        self.check_not_locked(instance_id)?;
+
+        let dir = self.ctx.paths.instance_dir(instance_id)?;
+        agora_core::helpers::check_disk_space(&dir)?;
+
+        let bytes =
+            agora_core::download::download_mod_bytes(&self.ctx.http_clients, download_url).await?;
+
+        self.commit_verified_artifact(
+            instance_id,
+            filename,
+            content_type,
+            download_url,
+            registry_id,
+            modrinth_id,
+            source,
+            version,
+            expected_sha1,
+            expected_sha256,
+            required_sha256,
+            expected_sha512,
+            None,
+            false,
+            bytes,
+        )
+    }
+
+    /// Verify downloaded bytes and, only if every check passes, write them into
+    /// the instance and record them in its manifest.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_verified_artifact(
+        &self,
+        instance_id: &str,
+        filename: &str,
+        content_type: &str,
+        download_url: &str,
+        registry_id: Option<&str>,
+        modrinth_id: Option<&str>,
+        source: &str,
+        version: Option<&str>,
+        expected_sha1: Option<&str>,
+        expected_sha256: Option<&str>,
+        required_sha256: Option<&str>,
+        expected_sha512: Option<&str>,
+        pinned_sha256: Option<&str>,
+        accept_hash_confirmation: bool,
+        bytes: Vec<u8>,
+    ) -> LauncherResult<InstalledMod> {
+        // The name becomes a path under the instance: it must be one portable
+        // file name, whatever the source or the pack claims.
+        if !agora_core::app_paths::is_safe_file_name(filename) {
+            return Err(LauncherError::Generic {
+                code: "ERR_INVALID_FILENAME".into(),
+                message: format!("'{filename}' is not a safe file name; nothing was installed."),
+            });
+        }
+        let dir = self.ctx.paths.instance_dir(instance_id)?;
         let manifest_path = self.ctx.paths.instance_manifest(instance_id)?;
         let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
 
@@ -399,6 +525,22 @@ impl InstallService {
             filename,
             version,
         )?;
+        // The strongest hash the source published is checked as well as the
+        // SHA-1, so a SHA-1 collision cannot stand in for the real file.
+        if let Some(published) = expected_sha512
+            .map(|h| h.trim().to_lowercase())
+            .filter(|h| !h.is_empty())
+        {
+            if agora_core::download::sha512_hex(&bytes) != published {
+                return Err(LauncherError::HashMismatch);
+            }
+        }
+        if let Some(required) = required_sha256 {
+            let required = required.trim().to_lowercase();
+            if required.is_empty() || check.sha256 != required {
+                return Err(LauncherError::HashMismatch);
+            }
+        }
         let installed_sha256 = check.sha256;
         let hash_verified = check.verified;
         let target_dir = dir.join(agora_core::helpers::content_subdir(content_type));
@@ -652,6 +794,49 @@ fn effective_filename(item: &InstalledMod) -> String {
     }
 }
 
+/// Plan-warning code for a curator install warning on an item the plan writes.
+/// The desktop review keys off this code to show these warnings up front.
+pub const CURATOR_WARNING_CODE: &str = "WARN_CURATOR_WARNING";
+
+/// Plan-warning code for a registry that could not be read for curator warnings.
+pub const CURATOR_WARNINGS_UNAVAILABLE_CODE: &str = "WARN_CURATOR_WARNINGS_UNAVAILABLE";
+
+/// Curator install warnings for the items `plan` writes, one per item.
+///
+/// Only planned adds are checked, so the warning sits in the review that comes
+/// before anything is written. A warned item pulled in as a dependency counts
+/// too. Ids match exactly, the same key the annotation lookup uses.
+pub(crate) fn curator_warning_plan_warnings(
+    plan: &ResolvedInstallPlan,
+    warnings: &[agora_core::registry::CuratorWarning],
+) -> Vec<crate::install_pipeline::PlanWarning> {
+    use crate::install_pipeline::{PlanWarning, ResolvedArtifact};
+    use std::collections::HashSet;
+
+    let mut reported: HashSet<&str> = HashSet::new();
+    let mut out = Vec::new();
+    for add in &plan.files_to_add {
+        let metadata = match &add.artifact {
+            ResolvedArtifact::Download(download) => &download.metadata,
+            ResolvedArtifact::LocalFile(local) => &local.metadata,
+        };
+        let Some(item_id) = metadata.registry_id.as_deref() else {
+            continue;
+        };
+        if !reported.insert(item_id) {
+            continue;
+        }
+        let Some(warning) = warnings.iter().find(|w| w.item_id == item_id) else {
+            continue;
+        };
+        out.push(PlanWarning {
+            code: CURATOR_WARNING_CODE.into(),
+            message: format!("Curator warning for {}: {}", warning.name, warning.warning),
+        });
+    }
+    out
+}
+
 /// Curated-conflict warnings for the content set `plan` would leave behind.
 ///
 /// Only pairs that this plan *creates* are reported: at least one side has to
@@ -849,6 +1034,7 @@ mod curated_conflict_tests {
             },
             size: 0,
             installed_as_dependency: false,
+            replaces_missing_file: false,
         }
     }
 
@@ -877,6 +1063,7 @@ mod curated_conflict_tests {
             files_to_remove: removes,
             files_to_disable: vec![],
             files_to_promote: vec![],
+            files_to_enable: vec![],
             snapshot: SnapshotPlan {
                 label: String::new(),
                 estimated_bytes: 0,
@@ -975,5 +1162,124 @@ mod curated_conflict_tests {
                 .len(),
             1
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Curator install warnings: one plan warning per planned item
+    // -------------------------------------------------------------------
+
+    fn curator_warning(
+        item_id: &str,
+        name: &str,
+        text: &str,
+    ) -> agora_core::registry::CuratorWarning {
+        agora_core::registry::CuratorWarning {
+            item_id: item_id.into(),
+            name: name.into(),
+            warning: text.into(),
+        }
+    }
+
+    #[test]
+    fn a_planned_warned_item_gets_a_plan_warning_with_its_text() {
+        let plan = plan_adding(vec![adding("xaeros-minimap", Some("24.0"))], vec![]);
+        let warnings = curator_warning_plan_warnings(
+            &plan,
+            &[curator_warning(
+                "xaeros-minimap",
+                "Xaero's Minimap",
+                "Do not use XaeroPlus with this mod.",
+            )],
+        );
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, CURATOR_WARNING_CODE);
+        assert_eq!(
+            warnings[0].message,
+            "Curator warning for Xaero's Minimap: Do not use XaeroPlus with this mod."
+        );
+    }
+
+    #[test]
+    fn an_unplanned_warned_item_stays_quiet() {
+        let plan = plan_adding(vec![adding("sodium", Some("0.5.3"))], vec![]);
+        assert!(curator_warning_plan_warnings(
+            &plan,
+            &[curator_warning(
+                "xaeros-minimap",
+                "Xaero's Minimap",
+                "Do not use XaeroPlus."
+            )]
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn removing_a_warned_item_does_not_warn() {
+        // Only what the plan writes is reviewed. A removal writes nothing new.
+        let removal = crate::install_pipeline::FileRemove {
+            filename: "xaeros-minimap.jar".into(),
+            content_type: None,
+        };
+        let plan = plan_adding(vec![], vec![removal]);
+        assert!(curator_warning_plan_warnings(
+            &plan,
+            &[curator_warning(
+                "xaeros-minimap",
+                "Xaero's Minimap",
+                "Do not use XaeroPlus."
+            )]
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_warned_item_named_twice_is_reported_once() {
+        let plan = plan_adding(
+            vec![
+                adding("xaeros-minimap", None),
+                adding("xaeros-minimap", None),
+            ],
+            vec![],
+        );
+        let warnings = curator_warning_plan_warnings(
+            &plan,
+            &[curator_warning(
+                "xaeros-minimap",
+                "Xaero's Minimap",
+                "Do not use XaeroPlus.",
+            )],
+        );
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_warning_list_and_an_empty_plan_produce_nothing() {
+        let plan = plan_adding(vec![adding("xaeros-minimap", None)], vec![]);
+        assert!(curator_warning_plan_warnings(&plan, &[]).is_empty());
+        let empty = plan_adding(vec![], vec![]);
+        assert!(curator_warning_plan_warnings(
+            &empty,
+            &[curator_warning(
+                "xaeros-minimap",
+                "Xaero's Minimap",
+                "Do not use XaeroPlus."
+            )]
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_near_miss_or_wrong_case_id_does_not_attach_the_warning() {
+        // Identity is the registry id exactly, the same key the annotation
+        // lookup uses. A similar id must not put a warning on another mod.
+        let warning = [curator_warning(
+            "xaeros-minimap",
+            "Xaero's Minimap",
+            "Do not use XaeroPlus.",
+        )];
+        let near = plan_adding(vec![adding("xaeros-minimap-extra", None)], vec![]);
+        assert!(curator_warning_plan_warnings(&near, &warning).is_empty());
+        let wrong_case = plan_adding(vec![adding("Xaeros-Minimap", None)], vec![]);
+        assert!(curator_warning_plan_warnings(&wrong_case, &warning).is_empty());
     }
 }

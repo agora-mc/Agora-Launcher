@@ -68,7 +68,7 @@ function RequirementRow({ requirement }: { requirement: LoaderChooserRequirement
       ? `${requirement.modIds.length} mods`
       : null;
   return (
-    <div className="rounded border border-border bg-background/60 p-2 text-xs">
+    <div className="rounded-sm border border-border bg-background/60 p-2 text-xs">
       <p className="font-medium">
         {requirement.targetId} {predicate}
         <span className="ml-1 text-muted-foreground">
@@ -81,7 +81,7 @@ function RequirementRow({ requirement }: { requirement: LoaderChooserRequirement
         </p>
       )}
       {affected && (
-        <p className="mt-0.5 break-words text-muted-foreground">
+        <p className="mt-0.5 wrap-break-word text-muted-foreground">
           Required by {affected}
         </p>
       )}
@@ -142,7 +142,7 @@ export function LoaderChooser({
         currently provide. Switch to a compatible version, or skip installing the
         incompatible mods.
       </p>
-      <div className="mt-2 rounded border border-border bg-background/60 p-2 text-xs">
+      <div className="mt-2 rounded-sm border border-border bg-background/60 p-2 text-xs">
         <p className="font-medium">Loader: {currentLabel}</p>
         {recommendedVersion && recommendedVersion !== currentVersion ? (
           <p className="mt-1 text-muted-foreground">
@@ -178,7 +178,7 @@ export function LoaderChooser({
             disabled={disabled}
           >
             <SelectTrigger
-              className="h-8 w-auto min-w-[12rem] text-xs"
+              className="h-8 w-auto min-w-48 text-xs"
               aria-label="Choose compatible version"
             >
               <span className="text-muted-foreground">Choose compatible version</span>
@@ -253,7 +253,7 @@ export function LoaderChooser({
               </p>
             )}
             {conflicts.map((conflict, index) => (
-              <div key={`conflict-${index}`} className="rounded border border-destructive bg-background/60 p-2">
+              <div key={`conflict-${index}`} className="rounded-sm border border-destructive bg-background/60 p-2">
                 <p className="text-xs font-medium">Conflict</p>
                 <p className="text-xs text-muted-foreground">{conflict.message}</p>
                 <p className="text-xs text-muted-foreground">

@@ -97,6 +97,9 @@ export interface BrowseBazaarProps {
    */
   stall?: string;
   onStallChange?: (stallId: string) => void;
+  /** True while the current stall's first page is still loading. The shelf then
+   *  says it is loading rather than that the stall is empty. */
+  loading?: boolean;
 }
 
 /* Tiny feedback sound, respecting the global ambience sound setting. */
@@ -285,11 +288,16 @@ function VibeBars({ state }: { state: BazaarState }) {
   );
 }
 
-function GachaMachine({ state, pool, onPick }: { state: BazaarState; pool: BazaarItem[]; onPick: (item: BazaarItem) => void }) {
+function GachaMachine({ state, pool, onPick, loading }: { state: BazaarState; pool: BazaarItem[]; onPick: (item: BazaarItem) => void; loading: boolean }) {
   const artRef = useRef<HTMLCanvasElement>(null);
   const [spinning, setSpinning] = useState(false);
   const [hint, setHint] = useState('Give it a crank');
   const rafRef = useRef(0);
+  // Nothing to draw from while the stall loads, or when it is empty. Saying
+  // "You've got everything!" there would be a lie about the user's taste.
+  const cannotCrank = loading || pool.length === 0;
+  const idleHint = loading ? 'Loading…' : 'Nothing on this stall to crank yet';
+  const shownHint = cannotCrank ? idleHint : hint;
   const reduced = useMemo(() => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches, []);
 
   const draw = useCallback((fn: (c: CanvasRenderingContext2D, w: number, h: number) => void) => {
@@ -306,7 +314,7 @@ function GachaMachine({ state, pool, onPick }: { state: BazaarState; pool: Bazaa
   }, [draw]);
 
   const spin = useCallback(() => {
-    if (spinning) return;
+    if (spinning || cannotCrank) return;
     setSpinning(true);
     setHint('Cranking…');
     blip(300, 0.1, 'square', 0.05);
@@ -335,7 +343,7 @@ function GachaMachine({ state, pool, onPick }: { state: BazaarState; pool: Bazaa
       }
     };
     rafRef.current = requestAnimationFrame(step);
-  }, [spinning, pool, state, onPick, draw, reduced]);
+  }, [spinning, cannotCrank, pool, state, onPick, draw, reduced]);
 
   return (
     <div
@@ -348,15 +356,15 @@ function GachaMachine({ state, pool, onPick }: { state: BazaarState; pool: Bazaa
     >
       <canvas ref={artRef} className="bazaar-gacha-art" aria-hidden="true" />
       <b>Surprise me</b>
-      <small className="bazaar-gacha-hint">{hint}</small>
-      <button type="button" className="bazaar-gacha-btn" disabled={spinning} onClick={(e) => { e.stopPropagation(); spin(); }}>
+      <small className="bazaar-gacha-hint">{shownHint}</small>
+      <button type="button" className="bazaar-gacha-btn" disabled={spinning || cannotCrank} onClick={(e) => { e.stopPropagation(); spin(); }}>
         {spinning ? 'Cranking…' : '🎰 Crank'}
       </button>
     </div>
   );
 }
 
-export function BrowseBazaar({ items, instanceVersion, ownedIds, onOpenMod, onExit, hasMore = false, loadMoreLoading = false, onLoadMore, onInstallBag, stall: stallProp, onStallChange, initialSettledOrder, onSettledOrderChange }: BrowseBazaarProps) {
+export function BrowseBazaar({ items, instanceVersion, ownedIds, onOpenMod, onExit, hasMore = false, loadMoreLoading = false, onLoadMore, onInstallBag, stall: stallProp, onStallChange, initialSettledOrder, onSettledOrderChange, loading = false }: BrowseBazaarProps) {
   const [state, setState] = useState<BazaarState>(() => {
     const loaded = loadBazaarState();
     return { ...loaded, owned: Object.fromEntries(Array.from(ownedIds).map((id) => [id, true])) };
@@ -519,25 +527,27 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onOpenMod, onEx
     <div className="bazaar" data-testid="browse-bazaar">
 
       <div className="bazaar-scroll">
-        <header className="bazaar-header agora-hero compact">
-          <h1>The Bazaar</h1>
-          <span className="bazaar-sub">Wander. Poke things. Take what you like.</span>
-          <div className="bazaar-header-right">
-            <button type="button" className="bazaar-back" onClick={onExit} data-testid="bazaar-exit">
-              ← Back to Browse
-            </button>
-            <button
-              type="button"
-              className="bazaar-pack"
-              title="See what you've picked"
-              onClick={() => { setBagOpen(true); blip(560, 0.09); }}
-              data-testid="bazaar-open-bag"
-            >
-              <span style={{ fontSize: 17 }}>🎒</span>
-              <b>{bagCount}</b>
-              <span className="bazaar-sub">picked</span>
-            </button>
+        <header className="agora-hero compact">
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <h2 className="text-2xl font-bold">The Bazaar</h2>
+            <div className="bazaar-header-right">
+              <button type="button" className="bazaar-back" onClick={onExit} data-testid="bazaar-exit">
+                ← Back to Browse
+              </button>
+              <button
+                type="button"
+                className="bazaar-pack"
+                title="See what you've picked"
+                onClick={() => { setBagOpen(true); blip(560, 0.09); }}
+                data-testid="bazaar-open-bag"
+              >
+                <span style={{ fontSize: 17 }}>🎒</span>
+                <b>{bagCount}</b>
+                <span className="bazaar-sub">in your bag</span>
+              </button>
+            </div>
           </div>
+          <p className="text-muted-foreground">Wander. Poke things. Take what you like.</p>
         </header>
 
         <div className="bazaar-stalls" role="tablist" aria-label="Market stalls">
@@ -555,9 +565,10 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onOpenMod, onEx
             </button>
           ))}
         </div>
+        <p className="bazaar-stall-note">Each stall shows one kind of content. Pick one to browse it.</p>
 
         <div className="bazaar-row">
-          <GachaMachine state={state} pool={items} onPick={setOpen} />
+          <GachaMachine state={state} pool={items} onPick={setOpen} loading={loading} />
           <VibeBars state={state} />
         </div>
 
@@ -574,9 +585,11 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onOpenMod, onEx
               rare={curatedIds.has(item.id)}
             />
           ))}
-          {shelf.length === 0 && (
-            <p className="bazaar-empty">Nothing on this stall yet. Try another one.</p>
-          )}
+          {shelf.length === 0 && (loading ? (
+            <p className="bazaar-empty" role="status">Loading this stall…</p>
+          ) : (
+            <p className="bazaar-empty">Nothing on this stall right now. Try another stall above.</p>
+          ))}
         </div>
 
         {hasMore && (
@@ -755,7 +768,10 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onOpenMod, onEx
         {toast}
       </div>
 
-      <div aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' }}>
+      {/* top/left pinned: with no offsets this box sits at the static position
+          after the app shell, 1px below the window, and gives the whole window
+          a vertical scrollbar. */}
+      <div aria-live="polite" style={{ position: 'absolute', top: 0, left: 0, width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' }}>
         {toast ?? ''}
       </div>
         </>,

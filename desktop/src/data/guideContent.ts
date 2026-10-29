@@ -31,6 +31,44 @@ export interface GuideTopic {
   advanced: GuidePage;
 }
 
+export interface GuideOverview {
+  title: string;
+  body: string;
+  terms: { term: string; definition: string }[];
+  callout: GuideCallout;
+}
+
+/** Orientation shown at the top of the app's Home page and the website's docs home. */
+export const GUIDE_OVERVIEW: GuideOverview = {
+  title: 'What Agora manages',
+  body: 'Agora looks after the files and settings around modded Minecraft: instances, mods, packs, Java runtimes, snapshots, compatibility checks, and recovery. By default, the official Minecraft launcher still runs the game and handles your Microsoft account.',
+  terms: [
+    {
+      term: 'Instance',
+      definition: 'An isolated Minecraft setup with its own version, loader, mods, and settings.',
+    },
+    {
+      term: 'Mod loader',
+      definition: 'Software such as Fabric or Quilt that lets Minecraft load mods. Each instance has its own.',
+    },
+    {
+      term: 'Catalog',
+      definition: 'Agora\'s community-curated collection of mods, packs, and more. Downloading it turns on discovery and governance features.',
+    },
+  ],
+  callout: {
+    tone: 'note',
+    title: 'Your existing game is separate',
+    text: 'Creating an Agora instance does not replace your normal Minecraft installation. Changes stay inside the selected instance.',
+  },
+};
+
+/**
+ * Written for players, not developers, on both the basic and advanced pages. Describe what the
+ * player sees and can do, using the labels on screen; leave out how Agora works underneath unless
+ * it changes what they should do. Suggest kindly ("we recommend", "it is worth") rather than
+ * instruct, and prefer plain words over terms like artifact, endpoint, or transaction.
+ */
 export const GUIDE_TOPICS: GuideTopic[] = [
   {
     id: 'getting-started',
@@ -48,27 +86,13 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
       sections: [
         {
-          title: 'What Agora manages',
-          body: 'Agora manages the files and settings around modded Minecraft: instances, mods, packs, Java runtimes, snapshots, compatibility checks, and recovery. By default, the official Minecraft launcher still handles game execution and your Microsoft account.',
-          bullets: [
-            'An instance is an isolated Minecraft setup with its own version, loader, mods, and settings.',
-            'The catalog is Agora\'s community-curated collection of mods, packs, and more. Downloading it enables discovery and governance features.',
-            'A mod loader, such as Fabric or Quilt, lets Minecraft load mods. The loader belongs to an instance.',
-          ],
-          callout: {
-            tone: 'note',
-            title: 'Your existing game is separate',
-            text: 'Creating an Agora instance does not replace your normal Minecraft installation. Changes stay inside the selected instance.',
-          },
-        },
-        {
-          title: 'Onboarding, you did this already!',
+          title: 'Onboarding',
           body: 'The onboarding wizard checks the optional services and local tools Agora can use. You can skip optional connections and change them later in Settings.',
           steps: [
             'Review the service switches. Leave Modrinth on for a larger live catalog, or off to use only Agora-curated data.',
             'Choose how Minecraft launches: delegated to the official Mojang launcher (the default, no sign-in required) or direct launch inside Agora.',
             'If you chose direct launch, let Agora prepare Java. Delegated launch skips this step because the official launcher brings its own runtime.',
-            'Connect GitHub only if you want to vote or participate in community governance.',
+            'Connect GitHub if you want to vote or participate in community governance. GitHub sign in also avoids rate limits, which can happen if you do a lot of searches and downloads.',
             'Download the signed catalog when prompted.',
             'Finish onboarding and open Browse to choose a pack, or My Instances to build an empty instance.',
           ],
@@ -82,46 +106,46 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Keep Pack release selected: it installs the exact mod builds the curator tested. Flexible lets you pick another Minecraft version, but mods without a build for it are left out, and the install stops if a required one is missing.',
             'Set the instance name, then choose Check pack. It lists the Minecraft version and loader, how many mods will be installed, anything left out or missing, and each mod with its version. It does not show memory or download size; adjust memory afterwards in the instance editor.',
             'Launch the new instance. Resolve any health warnings before selecting Launch Anyway.',
-            'Play for at least 60 seconds so Agora can establish a Last Known Good recovery point.',
+            'Play for at least 60 seconds so Agora can save the last setup that launched fine (Last Known Good) as a recovery point.',
           ],
         },
       ],
     },
     advanced: {
-      summary: 'Treat onboarding as a policy decision: choose which external services, runtime sources, launch responsibilities, and cached data Agora may use.',
+      summary: 'Every choice you made during setup can be changed later. This page explains what each one does, so you can turn on only what you want.',
       outcomes: [
-        'Configure a minimal-network or fully featured installation intentionally.',
-        'Know which setup choices are reversible and where their controls live.',
-        'Verify the catalog and runtime state before building instances.',
+        'Know what each optional service is for.',
+        'Know where to change your setup choices later.',
+        'Check that everything is ready before building a big instance.',
       ],
       sections: [
         {
-          title: 'Choose a service boundary',
-          body: 'Agora can run with only its cached catalog, or enrich results with Modrinth, GitHub governance, and an external MCP client. Each integration has a separate purpose and can be disabled independently.',
+          title: 'What each connection is for',
+          body: 'Agora works on its own with just its catalog. Everything else is optional, and you can turn each one on or off separately.',
           bullets: [
-            'Modrinth consent enables the feature; Privacy network permission controls whether live API and CDN access is allowed.',
-            'GitHub governance sign-in is only used for community curation, never for launching or downloading.',
-            'Microsoft sign-in is only needed for direct in-app launching and online play. Delegated launch uses the official launcher.',
+            'Modrinth adds many more mods to Browse. If it is on but nothing shows up, check that Modrinth is also allowed under Privacy.',
+            'GitHub sign-in is only for voting and community curation. You never need it to download or play.',
+            'Microsoft sign-in is only needed if you launch Minecraft from inside Agora. If the official launcher starts the game (the default), sign in there instead.',
           ],
         },
         {
-          title: 'Validate the local foundation',
-          body: 'Before constructing a large instance, verify the cached catalog, selected launch mode, Java policy, and network policy. This avoids discovering a blocked download or incompatible runtime halfway through an install plan.',
+          title: 'Before building a big instance',
+          body: 'A quick check now can save you from a failed download halfway through a large pack.',
           steps: [
-            'Open Settings and enable Advanced mode if you need Privacy, manual JVM, or MCP controls.',
-            'Confirm the Catalog status is ready and current.',
-            'Choose Automatic, Prompt, or Manual Java management.',
-            'Review every enabled endpoint in Privacy, especially catalog, Modrinth, loader, Mojang, authentication, and runtime access.',
-            'Create a small test instance and launch it once before importing a large pack.',
+            'Open Settings. Turn on Advanced mode if you want to see Privacy and the more detailed Java options.',
+            'Make sure the catalog says it is ready.',
+            'Choose how Agora handles Java: Automatic is the easiest.',
+            'If you have turned anything off under Privacy, make sure the things you need are still allowed.',
+            'Try a small instance first and launch it once before importing a large pack.',
           ],
         },
         {
-          title: 'Reset or revisit onboarding choices',
-          body: 'Onboarding is not a permanent configuration contract. The Services, Accounts, Launching, Java, Updates, and Privacy sections expose the same operational choices with more detail.',
+          title: 'Changing your mind later',
+          body: 'Nothing you choose during setup is permanent. Settings has a section for each one: Services, Accounts, Launching, Java, Updates, and Privacy.',
           callout: {
             tone: 'tip',
-            title: 'Prefer explicit checks',
-            text: 'When preparing an offline machine, download the catalog, loader metadata, required mods, and Java runtime. Lockdown Mode blocks every network endpoint in the backend; test the exact launch workflow while you still have time to fix missing files.',
+            title: 'Playing without internet?',
+            text: 'Download the catalog, your mods, and Java while you are still online, then launch once to make sure everything is there. The Privacy & offline guide walks through it.',
           },
         },
       ],
@@ -165,46 +189,46 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Read compatibility before popularity',
-          body: 'A popular project can still be wrong for your instance. Start from an instance-aware Browse search, look for Compatible, inspect the Versions page, and review the install plan before applying it.',
+          body: 'A popular project can still be wrong for your instance. When searching in the browse tab, select your instance in the top dropdown so Agora can filter the results to meet your instance.',
           callout: {
             tone: 'warning',
-            title: 'Major match is not a guarantee',
-            text: 'A major-version match is weaker than an exact compatible result. Back up the instance and expect to test it.',
+            title: 'Back up your instance',
+            text: 'We always recommend making a backup of your instance before making significant changes.',
           },
         },
       ],
     },
     advanced: {
-      summary: 'Compatibility is a graph, not a label. Advanced modding means reasoning about exact artifacts, transitive dependencies, optional integrations, loader profiles, and configuration state.',
+      summary: 'Once you have more than a handful of mods, a few habits make problems much easier to avoid and to track down.',
       outcomes: [
-        'Evaluate an install plan beyond its top-level mod.',
-        'Understand why a file can pass basic filtering and still fail at runtime.',
-        'Build repeatable test habits for complex mod sets.',
+        'Know why one mod can bring several others with it.',
+        'Understand why a mod can look compatible and still cause trouble.',
+        'Add mods to a big instance without losing track of what changed.',
       ],
       sections: [
         {
-          title: 'Think in resolved artifacts',
-          body: 'A project name is not the installed unit. The installed unit is a specific file with a source, game version, loader set, and hash. When troubleshooting, record the exact artifact rather than saying only that a project is installed.',
+          title: 'The exact version matters',
+          body: 'Two people can both have "Sodium" installed and still have different files. When asking for help, mention the exact version you have, not just the mod\'s name.',
           bullets: [
-            'Required dependencies must resolve before the operation can proceed.',
-            'Optional dependencies may unlock integrations but also enlarge the compatibility surface.',
-            'Conflicts may be declared by curators, project metadata, or the local health scanner.',
-            'A file copied in manually may have less metadata than a file installed through Agora.',
+            'Some mods need other mods to work. Agora adds those for you when you install.',
+            'Optional extras add support for other mods. They are handy, but each one is another thing that could clash.',
+            'Agora warns you about mods known to clash, whether the mod\'s author, a curator, or Agora\'s own checks spotted it.',
+            'A file you add yourself may not carry as much information, so Agora can tell you less about it.',
           ],
         },
         {
-          title: 'Version ranges and build metadata',
-          body: 'Loaders and projects use different version schemes. Do not compare versions as plain text. Prefer Agora\'s exact compatibility result and the publisher\'s version metadata. Fabric build metadata such as +mc1.21.1 describes the target but is not a newer semantic version by itself.',
+          title: 'Versions',
+          body: 'Agora works out which versions suit your instance. We recommend going with its suggestion unless you have a reason not to. When a mod has several versions, its Versions tab has the release notes and which Minecraft versions each one supports.',
         },
         {
-          title: 'Change one variable at a time',
-          body: 'For large instances, treat changes as experiments. Create a snapshot, install one coherent group, launch, and confirm stability before continuing. Loadout profiles can isolate feature groups without deleting files.',
+          title: 'Change one thing at a time',
+          body: 'On a big instance, adding lots of mods at once makes it hard to tell which one caused a problem. Adding a few at a time, and launching in between, keeps it easy. Loadout profiles can also switch groups of mods on and off without removing them.',
           steps: [
-            'Start from a known-good snapshot.',
-            'Apply a reviewed install plan.',
-            'Launch and exercise the affected game area.',
-            'If stable, name a new snapshot or let a successful session promote the Last Known Good state.',
-            'If unstable, restore and revise the dependency or version choice.',
+            'Start from a snapshot of a setup that launched fine.',
+            'Install a few mods.',
+            'Launch and try out the parts of the game they change.',
+            'If stable, name a new snapshot or let a successful session mark the last setup that launched fine (Last Known Good).',
+            'If something breaks, restore the snapshot and try a different version or fewer mods.',
           ],
         },
       ],
@@ -227,11 +251,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Read Home from top to bottom',
-          body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. Last Known Good offers recovery when one exists. Compatible recommendations use your recent instance version and loader.',
+          body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. The last setup that launched fine (Last Known Good) offers recovery when one exists. Compatible curated matches use your recent instance version and loader.',
           bullets: [
             'A catalog alert means discovery data is missing or unavailable.',
             'A crash alert means the latest instance did not exit cleanly.',
-            'Recommendations are filtered for your active instance when possible; they are not paid placements.',
+            'Curated mod matches on the home page are filtered for your active instance when possible; they are not paid placements.',
           ],
         },
         {
@@ -240,45 +264,44 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           steps: [
             'Select an item to move to that area.',
             'Use the arrow button at the sidebar edge to collapse or expand it.',
-            'Hover a collapsed icon to see its name.',
+            'Hover over a collapsed icon to see its name.',
           ],
         },
         {
           title: 'Open Quick actions',
           body: 'Press Ctrl+K on Windows and Linux, or Cmd+K on macOS. Type an instance or destination name, use the arrow keys to select it, and press Enter. Escape closes the palette.',
-          callout: {
-            tone: 'tip',
-            title: 'Text fields keep their shortcuts',
-            text: 'The palette shortcut is ignored while you are typing in an input, text area, or editable field.',
-          },
+          // callout: {
+          //   tone: 'tip',
+          //   title: 'Text fields keep their shortcuts',
+          //   text: 'The palette shortcut is ignored while you are typing in an input, text area, or editable field.',
+          // },
         },
       ],
     },
     advanced: {
-      summary: 'Customize the application shell for dense workflows and understand how Home derives its alerts, recovery state, and recommendations.',
+      summary: 'A few extra ways to arrange Agora the way you like, and what the recovery card on Home actually restores.',
       outcomes: [
-        'Resize and reset the sidebar efficiently.',
-        'Interpret recommendation and recovery cards precisely.',
-        'Use navigation history without losing Browse or editor context.',
+        'Resize and reset the sidebar.',
+        'Know what restoring from Home does.',
       ],
       sections: [
         {
-          title: 'Tune the shell',
-          body: 'Drag the sidebar divider between its minimum and maximum width. Use Left or Right while the divider is focused for keyboard resizing, hold Shift for larger increments, and double-click the divider to reset it. Layout choices persist locally.',
+          title: 'Resize the sidebar',
+          body: 'Drag the edge of the sidebar to make it wider or narrower. With the keyboard, focus the edge and press Left or Right (hold Shift to move further). Double-click the edge to put it back to its normal size. Agora remembers your choice.',
         },
         {
-          title: 'Understand Home signals',
-          body: 'The Last Known Good card points to an explicitly promoted pre-launch snapshot, not merely the newest snapshot. Recommendations rank category overlap and then filter against the active instance\'s Minecraft version and loader.',
-          callout: {
-            tone: 'note',
-            title: 'Recovery is deliberate',
-            text: 'Restoring a Last Known Good state creates an undo snapshot first, so the current state is not silently discarded.',
-          },
+          title: 'The recovery card on Home',
+          body: 'The card for the last setup that launched fine (Last Known Good) takes you back to how the instance was the last time it launched and ran properly, which is not always your newest snapshot. Restoring replaces the instance\'s current mods and settings, but Agora saves a snapshot of them first, so you can change your mind.',
+          // callout: {
+          //   tone: 'note',
+          //   title: 'Recovery is deliberate',
+          //   text: 'Restoring the last setup that launched fine (Last Known Good) creates an undo snapshot first, so the current state is not silently discarded.',
+          // },
         },
-        {
-          title: 'Preserved work context',
-          body: 'Opening an item from Browse or the Instance Editor preserves the source page and scroll position. Use Back to return to the same working context. The browser-style back action is part of Agora\'s navigation history even though the app has no traditional web URLs.',
-        },
+        // {
+        //   title: 'Preserved work context',
+        //   body: 'Opening an item from Browse or the Instance Editor preserves the source page and scroll position. Use Back to return to the same working context. The browser-style back action is part of Agora\'s navigation history even though the app has no traditional web URLs.',
+        // },
       ],
     },
   },
@@ -320,11 +343,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Use instance cards',
-          body: 'Each card shows the instance name, loader, Minecraft version, last launch, and lock state. Launch starts the game, Edit opens the full editor, Troubleshoot opens diagnostic tools, and Delete permanently removes the instance after confirmation.',
+          body: 'Each card shows the instance name, loader, Minecraft version, last launch, and lock state. Launch starts the game, Edit opens the full editor, Troubleshoot opens diagnostic tools, and Delete removes the Agora copy of the instance after confirmation. Anything you imported from another launcher is left alone, and the deleted instance waits in Recently deleted (below the cards) for 30 days, where you can Restore it or Delete it now.',
           callout: {
             tone: 'warning',
             title: 'Export before deleting',
-            text: 'Snapshots are local recovery points, not an external backup. Export anything you need before deleting an instance.',
+            text: 'Snapshots are local recovery points, not an external backup. Recently deleted keeps an instance for 30 days, then moves it to your Recycle Bin; export anything you need to keep for good.',
           },
         },
         {
@@ -343,38 +366,38 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Use instances as controlled environments: establish a baseline, isolate purpose-specific builds, and manage mutable and reproducible states intentionally.',
+      summary: 'Tips for keeping several instances organized, so a working setup stays working while you experiment elsewhere.',
       outcomes: [
-        'Design an instance strategy for testing and long-term play.',
-        'Use locks and snapshots as separate safeguards.',
-        'Interpret running, provisioning, and recoverable-profile states.',
+        'Decide when to make a new instance instead of changing an old one.',
+        'Use locks and snapshots together.',
+        'Know what the instance page tells you.',
       ],
       sections: [
         {
-          title: 'Separate by compatibility boundary',
-          body: 'Create a new instance when changing Minecraft major/minor versions, switching loaders, evaluating an uncertain pack, or maintaining distinct server requirements. Reusing one instance across those boundaries makes rollback and diagnosis harder.',
+          title: 'When to make a new instance',
+          body: 'We recommend making a new instance when you change Minecraft version, switch loaders, try out a pack you are unsure about, or play on a server with its own mod list. Keeping these apart makes it much easier to undo a change or work out what broke.',
           bullets: [
-            'Keep a locked, known-good play instance.',
-            'Use a disposable test instance for major updates and unverified manual files.',
-            'Clone from a lockfile when exact reproducibility matters.',
+            'Keep one locked instance you know works, just for playing.',
+            'Try big updates and files you downloaded yourself in a spare test instance first.',
+            'Clone from a lockfile when you need an exact copy.',
           ],
         },
         {
           title: 'Locking versus snapshots',
-          body: 'A lock blocks future content edits; a snapshot captures a restorable state. Use both for important instances: snapshot the baseline, then lock it. Unlocking does not erase the snapshot.',
+          body: 'A lock stops anyone, including you, from changing an instance\'s mods by accident. A snapshot saves a copy you can go back to. For an instance you care about, we suggest both: take a snapshot, then lock it. Unlocking later does not remove the snapshot.',
         },
         {
-          title: 'Read operational states',
-          body: 'The Instances page can show Java provisioning progress, a running direct-launch process and PID, recent console output, or a recoverable launcher-profile warning. Prefer Reinstall Loader for a damaged profile; use delegated launch when you want the official launcher to own execution.',
+          title: 'What the instance page shows',
+          body: 'The instance page shows whether the game is running, the game\'s log output, whether the instance is locked, and which Java it uses.',
           callout: {
             tone: 'warning',
             title: 'Kill is a last resort',
-            text: 'Terminating a running process can lose unsaved game data. Exit Minecraft normally whenever possible.',
+            text: 'Terminating a running game can lose unsaved game data. Exit Minecraft normally whenever possible.',
           },
         },
         {
           title: 'Update a prior import safely',
-          body: 'Importing the same source again updates the existing Agora copy only while its imported files and launch settings still match the last-import baseline. If you changed mods, configs, saves, screenshots, or settings in Agora, the importer offers a separately named copy instead of merging or overwriting your work.',
+          body: 'Importing the same instance again updates the Agora copy, as long as you have not changed it since. If you have changed its mods, configs, saves, screenshots, or settings in Agora, the importer offers to make a second copy instead, so your changes are never overwritten.',
         },
       ],
     },
@@ -421,33 +444,33 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Use catalog provenance, compatibility metadata, and ranking behavior to evaluate results rather than treating search order as a recommendation guarantee.',
+      summary: 'Where Browse results come from, and what to do when the catalog is missing or you are offline. Search order is a starting point, not a recommendation.',
       outcomes: [
-        'Distinguish cached catalog data from live provider data.',
-        'Interpret discovery ranking and degraded/offline states.',
-        'Audit a project before it reaches an instance.',
+        'Know the difference between curated and Modrinth results.',
+        'Know what to do when Browse looks empty.',
+        'Share a result so someone else gets the same thing.',
       ],
       sections: [
         {
-          title: 'Understand data provenance',
-          body: 'Curated entries ship in the signed Agora catalog. Optional Modrinth results are requested live when both service consent and network permission are enabled. Detail pages may merge cached annotations with live descriptions, galleries, and versions.',
+          title: 'Where results come from',
+          body: 'Curated results come from Agora\'s own catalog, which is downloaded to your computer. If you have turned Modrinth on, Browse also asks Modrinth while you search. A detail page can show both: Agora\'s notes alongside the latest description, pictures, and versions from Modrinth.',
           bullets: [
-            'Cached data remains available offline.',
-            'Live versions can be newer than the catalog but have a different trust path.',
-            'The project source and selected artifact hash matter more than the visual card alone.',
+            'The downloaded catalog still works when you are offline.',
+            'Modrinth may have newer versions than the catalog, but they have not been reviewed by Agora\'s community.',
+            'Where a mod comes from tells you more than how its card looks.',
           ],
         },
+        // {
+        //   title: 'Audit before install',
+        //   body: 'Check the license, source link, update date, supported loaders, exact game versions, dependency list, curator notes, reviews, and version changelog. Immunity indicates community protection from ordinary removal pressure; it is not a technical compatibility certification.',
+        // },
         {
-          title: 'Audit before install',
-          body: 'Check the license, source link, update date, supported loaders, exact game versions, dependency list, curator notes, reviews, and version changelog. Immunity indicates community protection from ordinary removal pressure; it is not a technical compatibility certification.',
-        },
-        {
-          title: 'Work through degraded states',
-          body: 'When the catalog is loading, missing, or offline, read the status panel before assuming no content exists. Download or refresh the catalog when allowed. When the individual Privacy endpoint permissions are disabled, expect only already cached data and locally available artifacts.',
+          title: 'When Browse looks empty',
+          body: 'If the catalog is still loading, missing, or you are offline, Browse shows a message saying so. Read it before assuming nothing exists, and download or refresh the catalog if it offers. If you have turned things off under Privacy, you will only see what is already on your computer.',
           callout: {
             tone: 'tip',
-            title: 'Use reproducible references',
-            text: 'When sharing a result with another player, identify the exact version or export a pack or lockfile instead of relying on search position.',
+            title: 'Sharing a find with a friend',
+            text: 'Search results can be in a different order for someone else. Send them the exact version, or export a pack, so they get the same thing you did.',
           },
         },
       ],
@@ -458,95 +481,100 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Installing, removing, and updating mods',
     shortTitle: 'Install & update',
     category: 'Play',
-    description: 'Review dependency-aware plans and make content changes with recovery protection.',
+    description: 'Install, update, and remove mods, with a review before anything changes and a way to undo it.',
     keywords: ['install flow', 'dependencies', 'remove', 'updates', 'rollback', 'conflicts'],
     basic: {
-      summary: 'Agora plans content changes before touching the instance. The review screen explains added dependencies, conflicts, file changes, and the snapshot that protects the operation.',
+      summary: 'Before Agora changes anything, it shows you what an install will add and asks you to confirm. If something goes wrong, you can roll back to how the instance was before.',
       outcomes: [
-        'Install a project into the correct instance.',
-        'Review dependencies and resolve conflicts.',
-        'Update or remove content without bypassing recovery.',
+        'Install a mod into the right instance.',
+        'Know what to look at on the review screen.',
+        'Update or remove mods and still be able to undo it.',
       ],
       sections: [
         {
           title: 'Install from a detail page',
-          body: 'Select Install to Instance, choose the target, select a compatible project version, and review the plan. Packs use Create Instance from Pack because they define a complete starting instance: its form asks for a name and release, and Check pack previews the mods and versions before anything is created. Modrinth packs ask for a pack version and then open the normal install review.',
+          body: 'Select Install to Instance, pick the instance, and choose a version. Agora then shows a review screen before anything changes. Packs work a little differently: they use Create Instance from Pack, which makes a new instance for them, and Check pack shows you the mods and versions first.',
           steps: [
-            'Confirm the target instance, Minecraft version, and loader.',
-            'Choose an exact-compatible file when available.',
-            'Review required and optional dependencies.',
-            'Resolve every conflict shown in the plan.',
-            'Check the snapshot and file summary, then apply the operation.',
+            'Make sure the instance you picked is the one you meant.',
+            'Pick a version marked as compatible when there is one.',
+            'Look at what comes along with it. Some mods need others to work, and these are added for you. Optional extras are off unless you tick them.',
+            'If the review says there is an overlap to sort out, choose what to do about it. Usually that means keeping what you have or replacing it.',
+            'Select Install.',
           ],
+          callout: {
+            tone: 'tip',
+            title: 'You can always go back',
+            text: 'Agora saves a restore point right before it installs. If you do not like the result, select Roll Back on the result screen, or restore it later from the instance\'s Snapshots tab.',
+          },
         },
         {
           title: 'Remove safely',
-          body: 'Use Remove from the Mods tab instead of deleting the file manually. Agora can identify dependents, stage the removal, create a recovery snapshot, and run health checks afterward.',
+          body: 'We recommend removing mods with Remove on the Mods tab rather than deleting the file yourself. That way Agora can tell you if another mod needs it, and you can undo the removal later.',
           callout: {
             tone: 'warning',
             title: 'Dependents may stop loading',
-            text: 'If another mod requires the one you remove, remove or replace the dependent as part of the reviewed plan.',
+            text: 'If another mod required the one you removed, Agora will ask you to remove it too. If you choose to keep the mod requiring the one you removed, that mod may fail to load or crash the game. Check the health report after removing mods.',
           },
         },
         {
           title: 'Check for updates',
-          body: 'On My Instances, select Edit on the instance, open its Mods tab (Resource Packs, Shaders and Data Packs have the same control), and select Check for updates. Update an item from its row, or use Update All to review one plan for every update in that tab. Locked instances cannot be updated until you unlock them.',
+          body: 'On My Instances, select Edit on the instance, open its Mods tab, and select Check for updates. Resource Packs, Shaders and Data Packs have the same button. Update one item from its row, or use Update All to review every update in that tab at once.',
           bullets: [
-            'Locked instances are skipped.',
-            'A newer version is not automatically compatible with every other mod.',
-            'The result screen reports success, cancellation, failure, or automatic health rollback.',
+            'A locked instance cannot be updated until you unlock it.',
+            'A newer version of one mod can still clash with your others, so it is worth launching once after updating.',
           ],
         },
         {
-          title: 'Results are remembered, and badges count them',
-          body: 'Once checked, results are stored, so they survive navigating away and restarting Agora. Waiting updates show up in the instance editor, and Agora re-checks quietly in the background on an interval you can change in Settings.',
+          title: 'Agora keeps an eye out for updates',
+          body: 'After you check once, Agora remembers what it found, even after a restart. Instances with updates waiting show a badge, and Agora checks again on its own from time to time. You can change how often in Settings.',
           callout: {
             tone: 'note',
             title: 'Only offered when a build actually fits',
-            text: 'Agora prefers a build for your exact Minecraft version, and will otherwise offer one for the same version line with the right loader. A release that matches neither is not an update you can take, so it is not offered as one.',
+            text: 'Agora prefers to show you only mod versions that are exactly compatible with your instance. If a mod is for a different minor Minecraft version, it may be offered, but it is not guaranteed to work. Mods for significantly different loaders or major Minecraft versions are unlikely to work, and therefore are not offered.',
           },
         },
         {
           title: 'See what changed, and pin what should not',
-          body: 'Where the author publishes one, the changelog for a version is shown before the update applies, so you can decide with the release notes in front of you. If a mod is at a version you want to keep, pin it from the three-dot menu at the end of its row: Pin updates. Pinned mods are skipped by Update All, stop counting toward the instance badge, and can still be updated deliberately whenever you choose. The same menu item unpins.',
+          body: 'When the author has written release notes, Agora shows them before you update, so you can see what changed. If you want to stay on the version you have, open the three-dot menu at the end of the mod\'s row and choose Pin updates. Update All will leave it alone, but you can still update it yourself whenever you like. The same menu item unpins it.',
         },
       ],
     },
     advanced: {
-      summary: 'The Install Flow is a transaction planner. Use its dependency graph, conflict choices, snapshot boundary, hash checks, and post-apply health result to reason about complex changes.',
+      summary: 'A closer look at the review screen: what each part means, what happens when something goes wrong, and how to make big changes without getting lost.',
       outcomes: [
-        'Evaluate and revise a resolved install plan.',
-        'Use batch operations without losing atomic recovery.',
-        'Know what cancellation and health rollback guarantee.',
+        'Understand each part of the review screen.',
+        'Know what to do if an install leaves problems behind.',
+        'Update a large instance in manageable steps.',
       ],
       sections: [
         {
-          title: 'Inspect the resolved plan',
-          body: 'The plan is computed from the intent, selected artifact, dependencies, optional choices, conflicts, current files, and instance state. Changing an optional dependency or conflict resolution causes the plan to be resolved again before execution.',
+          title: 'Reading the review screen',
+          body: 'The review screen is laid out with the things you need to decide at the top.',
           bullets: [
-            'Blockers must be fixed before execution.',
-            'Warnings deserve review but may be acceptable for a controlled test.',
-            'File changes show the operation\'s actual scope, not only the top-level project.',
+            'Comes along with it: mods the one you chose needs in order to work. These are added for you.',
+            'Optional extras: mods that add something extra, such as support for another mod. Tick any you want.',
+            'Overlaps to sort out: something you already have clashes with what you are installing. Pick an option for each one before you can continue.',
+            'Curator warnings and Worth knowing: things the catalog\'s curators or Agora think you should read first. They do not stop the install.',
+            'Technical details: the full list of files that will be added, removed, or turned off, if you are curious.',
           ],
         },
         {
-          title: 'Understand the transaction boundary',
-          body: 'Agora creates a recovery snapshot, downloads and verifies artifacts, applies the planned changes, then runs health validation. If the final state has health blockers, Agora restores the recovery snapshot automatically.',
+          title: 'If something goes wrong',
+          body: 'After installing, Agora checks the instance for problems such as a missing required mod. If it finds one, the result screen lists what is wrong and keeps the new files in place so you can see it for yourself. From there you can fix it, or select Roll Back to put the instance back to how it was. If the install fails partway through, Agora undoes it for you.',
           callout: {
             tone: 'note',
-            title: 'Health rollback is not gameplay testing',
-            text: 'Static health checks cannot prove that a mod set is stable in every world. Launch and test the affected behavior before treating the change as known good.',
+            title: 'A clean check does not mean it is tested',
+            text: 'Agora can spot missing mods and known clashes, but it cannot tell whether everything plays well together. We recommend launching and trying out the new mod before you rely on the instance.',
           },
         },
         {
-          title: 'Batch changes strategically',
-          body: 'Group updates that belong to one compatibility family, such as a library and its dependents. Avoid updating every subsystem at once on a large instance. Smaller batches produce clearer diffs and make crash investigation more decisive.',
+          title: 'Update in smaller groups',
+          body: 'On a big instance, updating everything at once makes it hard to tell which update caused a new problem. We suggest updating a few related mods at a time, such as a library and the mods that use it.',
           steps: [
-            'Snapshot the known-good baseline.',
-            'Select one coherent update group.',
-            'Review changed artifacts and hashes.',
-            'Apply, launch, and test.',
-            'Continue only after the instance is stable.',
+            'Take a snapshot of the instance while it works.',
+            'Update a handful of related mods.',
+            'Launch and play for a bit.',
+            'If all is well, move on to the next group. If not, roll back and try fewer at once.',
           ],
         },
       ],
@@ -560,7 +588,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     description: 'Organize mods, resource packs, shaders, and data packs inside an instance.',
     keywords: ['mods tab', 'resource packs', 'shaders', 'data packs', 'enable', 'disable', 'manual jar'],
     basic: {
-      summary: 'The Instance Editor separates content by type and shows what is installed. Use Agora\'s controls so changes remain visible to snapshots, health checks, and recovery tools.',
+      summary: 'The Instance Editor shows everything installed in an instance, sorted by type. Making changes here, rather than in the folder, means Agora can warn you about problems and help you undo them.',
       outcomes: [
         'Find and manage each kind of installed content.',
         'Temporarily disable a mod without deleting it.',
@@ -583,41 +611,41 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'How data packs reach your worlds',
-          body: 'Minecraft only loads data packs from inside each world, not from the instance. Agora keeps the Data Packs list of the instance as the source of truth and copies every enabled data pack into your worlds: before each launch, and right after you install, remove, enable, disable, or change a data pack.',
+          body: 'Minecraft only loads data packs from inside each world, not from the instance. Agora keeps the instance\'s data pack list and adds/removes them from your worlds when you launch or change that list.',
           bullets: [
-            'By default a data pack goes to all worlds. Select Worlds… on its row to pick specific worlds instead.',
+            'By default a data pack goes to all worlds. Select "Worlds…" on its row to pick specific worlds instead.',
             'The row shows where it is, for example All worlds (3) or 2 of 3 worlds.',
-            'A world created while you play gets your data packs at the next sync, so a brand-new world has them from its second session. Select Sync now on the Data Packs tab to add them sooner.',
+            'A world created while you play gets your data packs at the next sync, so a brand-new world has them from its second session. Select "Sync now" on the Data Packs tab to add them sooner.',
             'Agora only ever removes or replaces data pack files it placed itself. If a world already has a different file with the same name, Agora leaves it alone and says so.',
           ],
         },
         {
           title: 'Import a local file',
-          body: 'Use Import Mod or the drop zone for a local JAR. Use the corresponding content picker for supported resource packs, shaders, and data packs. Confirm the file came from a trusted source and matches the instance.',
+          body: 'Use Import Mod or the drop zone for a local mod file. Use the corresponding content picker for supported resource packs, shaders, and data packs. Confirm the file came from a trusted source and matches the instance.',
           callout: {
             tone: 'warning',
             title: 'Manual files have fewer guarantees',
-            text: 'A manually supplied file may lack source metadata and curated compatibility information. Create a snapshot first and never run untrusted JAR files.',
+            text: 'Agora knows less about a file you add yourself, so it cannot warn you as much. We suggest taking a snapshot first, and only adding files from sources you trust.',
           },
         },
         {
           title: 'Group a long list',
-          body: 'A large instance is easier to read grouped than alphabetical. In the content toolbar, next to the search and filter controls, the Group dropdown re-sorts the list into sections. Each group header has its own enable and disable button, so you can switch a whole set at once.',
+          body: 'A large instance is easier to read the list of mods grouped, rather than only alphabetically. In the content toolbar, next to the search and filter controls, the Group dropdown re-sorts the list into sections. Each group header has its own enable and disable button, so you can switch a whole set at once.',
           steps: [
             'Open My Instances, select Edit, then a content tab such as Mods.',
             'Use the Group dropdown in the toolbar above the list.',
-            'Choose Pack vs you, Category, or Source.',
+            'Choose "Modpack vs Added by You", "Category", or "Source".',
             'Collapse the sections you are not working on.',
           ],
           callout: {
             tone: 'tip',
             title: 'Pack content is marked',
-            text: 'In an instance created from a modpack, Group: Pack vs you separates what the pack brought from what you added. That same distinction is what lets a pack update leave your additions alone.',
+            text: 'In an instance created from a modpack, "Group: Modpack vs Added by You" separates what the pack brought from what you added. That same distinction is what lets a pack update leave your additions alone.',
           },
         },
         {
           title: 'Make your own groups',
-          body: 'The built-in groupings are derived from what Agora already knows. To sort mods your own way, open the three-dot menu at the end of a row and choose Set group. Name a new group or pick an existing one. Once at least one group exists, Group: My groups appears in the dropdown alongside the built-in options.',
+          body: 'The built-in groupings are derived from what Agora already knows. To sort mods your own way, open the three-dot menu at the end of a row and choose Set group. Name a new group or pick an existing one. Once at least one group exists, "Group: My groups" appears in the dropdown alongside the built-in options.',
           callout: {
             tone: 'note',
             title: 'One mod at a time',
@@ -627,20 +655,20 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Manage content as a traceable inventory with source metadata, hashes, enabled state, and controlled manual exceptions.',
+      summary: 'Find out why a mod is installed, tidy up leftovers, and avoid surprises in your worlds when removing content.',
       outcomes: [
-        'Identify source and metadata gaps in an instance.',
-        'Use content state to run controlled compatibility tests.',
-        'Avoid configuration and world-data pitfalls when changing content.',
+        'Spot mods Agora cannot update for you.',
+        'Find out why an unfamiliar mod is installed.',
+        'Remove content without damaging your worlds.',
       ],
       sections: [
         {
-          title: 'Read the installed inventory',
-          body: 'The Mods list distinguishes the resolved project name from the physical filename and records source and install time when available. A missing catalog or provider identity is a signal that future automated updates may require manual attention.',
+          title: 'Read the Mods list',
+          body: 'The Mods list shows each mod\'s name, its file name, and where and when it was installed, when Agora knows. If Agora cannot tell where a mod came from, such as a file you added yourself, it may not be able to update it for you, so you may need to update it by hand.',
         },
         {
           title: 'Ask why a mod is here',
-          body: 'Open the three-dot menu at the end of a row and choose Why is this here. Agora traces that file back and answers with one of four things: you installed it directly, it came from the instance\'s modpack, another mod needs it, or it was a dependency and nothing needs it any more. It then lists the installed mods that currently require it. Most launchers show what a mod depends on; this is the opposite direction, which is the one you are looking in when you find a JAR you do not recognise.',
+          body: 'Open the three-dot menu at the end of a row and choose Why is this here. Agora traces that file back and answers with one of four things: You installed it directly, it came from the instance\'s modpack, another mod needs it, or it was a dependency and nothing needs it any more. It then lists the installed mods that currently require it.',
           callout: {
             tone: 'tip',
             title: 'Ask before you remove',
@@ -649,24 +677,24 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Clean up orphaned dependencies',
-          body: 'A library installed only to satisfy a mod you have since removed is an orphan. There is no separate cleanup screen to visit: after a removal, if it stranded anything, Agora asks whether to remove those as well. It can tell because it recorded at install time which entries were dependencies rather than choices.',
+          body: 'Sometimes a mod was only installed because another mod needed it. When you remove that other mod, Agora asks whether you want to remove the leftovers too. There is no separate cleanup screen to remember.',
           callout: {
             tone: 'note',
-            title: 'Orphan detection is deliberately cautious',
-            text: 'A mod that anything still points at, even optionally, is not offered for removal. Leaving a library you no longer need is harmless; removing one that something still wants is not. Anything missed this way still shows as an orphan under Why is this here.',
+            title: 'Agora plays it safe',
+            text: 'If any other mod might still use a leftover, Agora will not offer to remove it. Keeping an unused library does no harm. You can still check one yourself with Why is this here.',
           },
         },
         {
-          title: 'Design controlled mod groups',
-          body: 'Use enabled state and loadout profiles to separate performance, visual, content, and debugging groups. Keep required libraries enabled with their dependents. Record a named snapshot before changing core libraries or world-generation mods.',
+          title: 'Switch groups of mods on and off',
+          body: 'Loadout profiles and the on/off switches let you keep different groups of mods, such as performance mods, visual mods, and big content mods as separate groups you can turn on/off together. Keep the libraries a mod needs switched on alongside it. We suggest taking a named snapshot before changing a core library or a mod that changes world generation.',
         },
         {
           title: 'Protect persistent game data',
-          body: 'Removing a world-generation, storage, or content mod can leave missing blocks, items, or data in a save even if the game launches. Back up important worlds separately and test removal on a copy.',
+          body: 'Removing a mod that adds blocks, items, storage, or world generation can leave holes in a world, even if the game still starts. We recommend backing up worlds you care about and trying the removal on a copy first.',
           callout: {
             tone: 'warning',
-            title: 'A clean health scan is not a save migration',
-            text: 'Agora can validate files and known compatibility rules, but it cannot guarantee that removing content preserves every world safely.',
+            title: 'Agora cannot check your worlds',
+            text: 'Agora can tell whether your mods fit together, but not whether a world will be fine without a mod it used to have.',
           },
         },
       ],
@@ -677,7 +705,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Launching Minecraft and health checks',
     shortTitle: 'Launch & health',
     category: 'Play',
-    description: 'Choose a launch mode, resolve preflight findings, and understand running-state controls.',
+    description: 'Choose how Minecraft starts, fix problems found before launch, and see what is happening while you play.',
     keywords: ['launch', 'delegated', 'direct', 'health check', 'console', 'running'],
     basic: {
       summary: 'Agora checks an instance before launch, then either hands it to the official launcher or starts Minecraft directly, depending on your Settings choice.',
@@ -689,81 +717,79 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Choose delegated or direct launch',
-          body: 'Delegated launch is the default: Agora prepares and selects the profile, then the official launcher starts Minecraft. Direct launch keeps execution and console output inside Agora and requires Microsoft sign-in for full online play.',
+          body: 'Delegated launch is the default: Agora gets everything ready, then the official Minecraft launcher starts the game. Direct launch starts the game from Agora itself, and needs you to sign in with Microsoft to play online.',
           bullets: [
-            'Use delegated launch for the simplest account and launcher setup.',
-            'Use direct launch when you need in-app process status and console output.',
-            'Change the mode in Settings under Launching.',
-            'Instances stored with Auto follow the global mode. The current interface does not expose a per-instance override selector.',
+            'Delegated launch is the simplest, since your account stays in the official launcher.',
+            'Direct launch lets you watch the game\'s status and log output inside Agora.',
+            'You can switch in Settings under Launching.',
           ],
         },
         {
           title: 'Handle the health screen',
-          body: 'A blocker should be repaired before launch. A warning explains a risk you may choose to accept. Agora may offer to disable a problematic mod directly from the dialog.',
+          body: 'Before launching, Agora checks for problems. A blocker is something that will stop the game from working, so it is best to fix it first. A warning is a potential issue or concern that you should be aware of or fix. Agora may offer to turn off a problem mod for you right from the screen.',
           steps: [
-            'Read the finding and affected file.',
-            'Repair missing dependencies or incompatible Java first.',
-            'Disable a suspect only if you understand the dependent impact.',
-            'Use Launch Anyway only for a deliberate, recoverable test.',
+            'Read what the problem is and which mod it is about.',
+            'Fix missing mods or the wrong Java version first. These are the most common causes.',
+            'Before turning off a mod, check whether other mods need it.',
+            '"Launch Anyway" is offered if you want to try launching regardless. We suggest taking a snapshot first.',
           ],
         },
         {
           title: 'Known bad combinations',
-          body: 'Some pairs of mods are fine alone and break together. Alongside what each mod declares about itself, Agora ships a curated list of combinations reviewers have confirmed cause problems, and checks your instance against it before launch and when you install something new.',
+          body: 'Some mods work fine on their own but break when used together. Agora\'s community keeps a list of these pairs, and Agora warns you before launch, or when you install something new, if your instance has one.',
           callout: {
             tone: 'note',
-            title: 'A conflict can be scoped to particular versions',
-            text: 'Where a conflict only appeared in certain releases, the curated entry says so, and Agora stays quiet on versions it does not apply to instead of condemning the pair forever.',
+            title: 'Only the versions that clash are flagged',
+            text: 'If two mods only clashed in certain versions, Agora only warns you about those versions.',
           },
         },
         {
-          title: 'Repair a loader mismatch',
-          body: 'When enabled mods require another loader version, Agora can compare their hard requirements with signed loader-catalog candidates. Keep the current version when it is compatible; otherwise review the recommended version and the affected mods before switching.',
+          title: 'Fix a loader version mismatch',
+          body: 'Sometimes a mod needs a newer or older version of your mod loader (such as Fabric or NeoForge) than the instance has. When that happens, the health screen tells you which mods are affected and suggests a loader version that suits them all.',
           steps: [
-            'Read the unresolved loader requirements and affected mods.',
-            'Use Switch and launch when the recommended signed version satisfies every understood hard requirement. A review-only health screen labels the same action Switch version.',
-            'Use Choose compatible version when you need another valid candidate.',
-            'When no signed candidate satisfies every requirement, automatic switching is unavailable. Manual candidates are signed but require confirmation because a capability is unverified.',
-            'Rerun health after a manual or failed switch.',
-            'Change a loader version proactively from the instance editor using the Change loader version button next to the loader label.',
-            'When an install hits a loader mismatch, the review dialog shows the loader chooser: switch to a compatible version there, or skip the incompatible mods to install only what fits your current loader.',
+            'Read which mods need a different loader version.',
+            'Select Switch and launch to change to the suggested version and start the game. If you are only reviewing, the same button is called Switch version.',
+            'If you would rather pick a version yourself, use Choose compatible version.',
+            'If no single loaderversion suits every mod installed, Agora cannot switch loaders for you. You may need to remove or update one of the mods instead.',
+            'Some versions ask you to confirm before switching, because Agora could not fully check them.',
+            'After switching, Agora checks the instance again.',
           ],
           callout: {
-            tone: 'note',
-            title: 'Language providers are part of the loader',
-            text: 'Forge and NeoForge can provide language capabilities such as javafml and lowcodefml. They are not ordinary mod JAR dependencies when the selected loader supplies the required provider version.',
+            tone: 'tip',
+            title: 'Changing the loader version yourself',
+            text: 'You can change the loader version any time with the Change loader version button next to the loader name in the instance editor. When an install needs a different loader version, the review screen offers the same choice, or lets you skip the mods that do not fit.',
           },
         },
         {
           title: 'During and after launch',
-          body: 'Provisioning progress appears while Agora prepares Java or loader files. Direct launch displays a running state and game console. Exit normally from Minecraft whenever possible so saves and the recovery lifecycle complete cleanly.',
+          body: 'The first launch of an instance may take a little while as Agora downloads Java and loader files, and you will see its progress. With direct launch, Agora shows that the game is running and its log output. When you are done, we recommend quitting from inside Minecraft rather than closing the window, so your worlds save properly.',
         },
       ],
     },
     advanced: {
-      summary: 'Use launch mode, health policy, muted findings, process state, and console output as a controlled execution workflow rather than a single Play action.',
+      summary: 'This section covers what the pre-launch check can and cannot catch, how to quiet warnings you have already looked at, and how to grab useful logs when something goes wrong.',
       outcomes: [
-        'Understand preflight and runtime responsibilities.',
-        'Use warning muting without hiding new classes of problems.',
-        'Capture useful evidence from direct-launch failures.',
+        'Know what the health check covers.',
+        'Mute warnings without hiding new problems.',
+        'Find the useful part of the game\'s log.',
       ],
       sections: [
         {
-          title: 'Separate preflight from runtime',
-          body: 'Health checks can catch known incompatibilities, missing dependencies, and invalid runtime choices before process start. They cannot prove runtime behavior, graphics-driver compatibility, world integrity, or interactions that appear only during play.',
+          title: 'What the health check can catch',
+          body: 'The check before launch can spot mods known to clash, missing mods, and the wrong Java version. It cannot tell you how the game will behave once it is running, such as graphics driver problems, damaged worlds, or bugs that only show up while you play.',
         },
         {
-          title: 'Use muted findings narrowly',
-          body: 'Muting is stored by warning kind and affected mod so known acceptable findings do not interrupt every launch. If every finding is muted, Agora proceeds automatically. Revisit muted warnings after major updates instead of treating them as permanent truth.',
+          title: 'Muting warnings',
+          body: 'If you have read a warning and are happy to ignore it, you can mute it so it stops appearing for that mod. If every warning is muted, Agora launches straight away. After a big update, it is worth looking at your muted warnings again, since they may matter now.',
           callout: {
             tone: 'warning',
-            title: 'Do not mute unexplained blockers',
-            text: 'A muted message is not a fix. Keep a snapshot and document why the finding is safe for this exact instance.',
+            title: 'Muting is not fixing',
+            text: 'Muting only hides the message. We suggest muting only warnings you understand, and keeping a snapshot in case you were wrong.',
           },
         },
         {
-          title: 'Collect direct-launch evidence',
-          body: 'Use the Console tab to filter between All, Warnings+, and Errors, and switch to Raw to see the original lines, then copy the relevant sequence. Preserve the earliest error and its surrounding context; the last line is often only a consequence. Pair console output with the generated crash report when available.',
+          title: 'Getting useful logs',
+          body: 'With direct launch, the Console tab shows the game\'s log. Filter it to All, Warnings+, or Errors, or switch to Raw to see every line as written, then copy what you need. The first error is usually the most useful. The last few lines are often just the game shutting down because of it. If there is a crash report too, include it.',
         },
       ],
     },
@@ -773,7 +799,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Crash diagnosis and recovery',
     shortTitle: 'Crashes & recovery',
     category: 'Recover',
-    description: 'Use Crash Doctor, evidence-based testing, and Last Known Good recovery.',
+    description: 'Use Crash Doctor, evidence-based testing, and recovery to the last setup that launched fine (Last Known Good).',
     keywords: ['crash doctor', 'crash report', 'suspect', 'disable relaunch', 'restore'],
     basic: {
       summary: 'Crashes are usually solved fastest by preserving the current state, reading the first useful evidence, and testing one likely cause at a time. Crash Doctor guides that process.',
@@ -789,7 +815,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Test the top suspect',
-          body: 'Select Disable & Relaunch. Agora creates a recovery snapshot before changing the enabled state. After testing, choose Yes, fixed or Still crashing so the investigation can record the result and continue.',
+          body: 'Select "Disable & Relaunch". Agora creates a recovery snapshot before changing the enabled state. After testing, choose "Yes", "Fixed" or "Still crashing" so the investigation can record the result and continue.',
           steps: [
             'Read the suspect name and evidence summary.',
             'Review any dependent mods that would also be affected.',
@@ -800,7 +826,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'When no single mod looks guilty',
-          body: 'If the evidence does not point anywhere, use guided bisect. Agora disables half your mods, you launch and report whether it still crashes, and it halves the remaining candidates each round until one is left. A handful of launches will find a culprit that no crash log named.',
+          body: 'If the evidence does not point anywhere, use guided bisect. Agora disables half your mods, you launch and report whether it still crashes, and Agora halves the remaining candidates each round until one is left. A handful of launches will find a culprit that no crash log named.',
           callout: {
             tone: 'note',
             title: 'Each half is kept loadable',
@@ -809,7 +835,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Recover instead of investigate',
-          body: 'If you need to play immediately, restore the Last Known Good state from Home or the Snapshots tab. Use Restore All & Close in Crash Doctor to undo its test changes.',
+          body: 'If you need to play immediately, restore the last setup that launched fine (Last Known Good) from Home or the Snapshots tab. Use Restore All & Close in Crash Doctor to undo its test changes.',
           callout: {
             tone: 'tip',
             title: 'Keep the crash report',
@@ -819,28 +845,28 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Treat crash diagnosis as hypothesis testing. Use signal weights, dependency impact, ruled-out suspects, fingerprints, and preserved baselines to converge without contaminating evidence.',
+      summary: 'Why Crash Doctor suspects a mod, how to test it without muddying the results, and what to include when asking someone else for help.',
       outcomes: [
-        'Interpret why Crash Doctor ranked a suspect.',
-        'Run dependency-aware tests with minimal variables.',
-        'Produce a useful report when local diagnosis is inconclusive.',
+        'Understand why Crash Doctor picked a suspect.',
+        'Test one thing at a time so the answer is clear.',
+        'Put together a helpful report when you cannot solve it alone.',
       ],
       sections: [
         {
-          title: 'Read the signal breakdown',
-          body: 'A suspect score can combine stack-frame presence, curated conflicts, dependency relationships, prior local crashes, and confirmed fixes. A high score is a hypothesis, not proof. Ruled-out mods stay visible so the investigation history is auditable.',
+          title: 'Why a mod is a suspect',
+          body: 'Crash Doctor looks at several clues: whether the mod appears in the crash log, whether it is known to clash with something you have, what other mods depend on it, and whether it has caused crashes before. A high score means "worth testing first", not "definitely guilty". Mods you have already ruled out stay on the list so you can see what you have tried.',
         },
         {
-          title: 'Control the experiment',
-          body: 'Accept only the dependent disable set required for a valid test. Do not update Java, replace the loader, remove extra mods, and change JVM flags at the same time. If the crash disappears, confirm the fix before restoring unrelated features.',
+          title: 'Test one thing at a time',
+          body: 'When Crash Doctor turns off a mod, it may also need to turn off the mods that depend on it. Try not to change anything else at the same time, such as Java, the loader, or other mods, or you will not know which change fixed it. Once the crash stops, make sure it really is fixed before turning other things back on.',
         },
         {
-          title: 'Escalate with a complete evidence set',
-          body: 'Include the exact Minecraft and loader versions, mod file names, crash fingerprint or report, steps to reproduce, whether a clean world also fails, and the suspect tests already completed. Use a reproduction lockfile when sharing the exact file state is important.',
+          title: 'Asking for help',
+          body: 'People can help much faster when you include: your Minecraft and loader versions, the crash report, what you were doing when it crashed, whether it also crashes in a new world, and what you have already tried. A lockfile lets them see your exact mod list.',
           callout: {
             tone: 'note',
-            title: 'Sharing a report with an AI leaves the machine',
-            text: 'Agora has no built-in chat assistant. Copy crash report produces a redacted report you can paste into an AI assistant or the Agora Discord, and an AI tool you connect through the MCP server can read crash context itself. Either way the data goes to that tool\'s provider, so check the report for personal paths or server details first.',
+            title: 'Sharing a report sends it to someone else',
+            text: 'Copy crash report in Crash Doctor gives you a report with your file paths and username removed, ready to paste into Discord or an AI assistant. Whatever you paste goes to that service, so give it a quick read first for anything private, such as server addresses.',
           },
         },
       ],
@@ -852,13 +878,13 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     shortTitle: 'Snapshots & loadouts',
     category: 'Recover',
     description: 'Create restore points and switch between groups of enabled mods.',
-    keywords: ['snapshot', 'last known good', 'loadout', 'profile', 'diff', 'restore'],
+    keywords: ['snapshot', 'last known good', 'last setup that launched fine', 'loadout', 'profile', 'diff', 'restore'],
     basic: {
-      summary: 'Snapshots restore files to an earlier state. Loadout profiles remember which installed mods are enabled. They solve different problems and work well together.',
+      summary: 'Snapshots restore files to an earlier state. Loadout profiles remember which mods, resource packs, shader packs, data packs and worlds are switched on. They solve different problems and work well together.',
       outcomes: [
         'Create, compare, restore, and delete snapshots.',
-        'Understand automatic Last Known Good promotion.',
-        'Save and apply an enabled-mod loadout.',
+        'Understand how the last setup that launched fine (Last Known Good) is saved automatically.',
+        'Save and apply a loadout profile, and know what it covers.',
       ],
       sections: [
         {
@@ -867,51 +893,58 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Compare and restore',
-          body: 'Show diff lists added, removed, and modified files relative to the snapshot. Restore returns the instance to that state and first creates an undo snapshot. Delete removes only the selected recovery point. Automatic pre-launch recovery intentionally excludes saves so launch does not rescan large worlds; full manual and transactional snapshots use a broader scope.',
+          body: '"Show diff" lists which files were added, removed, or changed since the snapshot. Restore puts the instance back to how it was, and saves a snapshot of the current state first in case you change your mind. Delete removes just that one snapshot. Snapshots you make yourself can include your worlds. The automatic ones Agora takes before each launch leave worlds out so launching stays quick.',
           callout: {
             tone: 'note',
-            title: 'Last Known Good is automatic',
-            text: 'After a successful play session of at least 60 seconds, Agora can promote the exact pre-launch snapshot as the current Last Known Good state. Last Known Good protects mod and configuration state, not world saves.',
+            title: 'The last setup that launched fine is saved automatically',
+            text: 'After you play for at least 60 seconds without a crash, Agora remembers that setup as the last setup that launched fine (Last Known Good). It covers your mods and settings, not your worlds.',
           },
         },
         {
           title: 'Create a loadout profile',
-          body: 'Open Loadout Profiles, name the current enabled-mod arrangement, and save it. Apply another profile to switch enabled states without removing files. Relaunch Minecraft after applying a profile.',
+          body: 'Open Loadout Profiles, give the profile a name, and save it. It remembers which mods, resource packs, shader packs, data packs and worlds are switched on or off right now. Applying it later switches everything back to match.',
+          bullets: [
+            'If you have added a mod since saving the profile, Agora asks whether to keep it on or switch it off when you apply.',
+            'After adding or removing mods, use Update from setup on the profile to save the instance as it is now. Agora shows you what will change first.',
+            'Applying a profile saves an undo point under Snapshots called before-loadout, so you can go back.',
+            'A profile does not change configs, mod versions, or the loader.',
+            'Relaunch Minecraft after applying a profile.',
+          ],
         },
         {
           title: 'Export and import a backup',
-          body: 'A snapshot can be exported to a single file you can keep elsewhere or send to another machine. Importing one validates it completely before anything is written, then adds it to that instance\'s snapshot list.',
+          body: 'You can export a snapshot to a single file to keep somewhere safe or move to another computer. Importing one checks the file first, then adds it to that instance\'s list of snapshots.',
           callout: {
             tone: 'note',
             title: 'Importing never overwrites what you have',
-            text: 'Import adds a restorable snapshot and changes nothing in the instance. Agora then offers to restore it, and that step is the guarded one: it refuses while the instance is running and takes an undo snapshot first.',
+            text: 'Importing only adds the snapshot to the list. Agora then offers to restore it, which you can do once the game is closed. As with any restore, Agora saves a snapshot of the current state first.',
           },
         },
       ],
     },
     advanced: {
-      summary: 'Use snapshot diffs and loadout profiles as lightweight change management: recover file state, isolate feature sets, and preserve an auditable baseline.',
+      summary: 'Getting more out of snapshots and profiles together, and why you still want a backup of your worlds.',
       outcomes: [
-        'Interpret drift beyond simple mod counts.',
-        'Build test matrices from profiles and snapshots.',
-        'Know the storage and backup limits of both features.',
+        'Make sense of a snapshot diff.',
+        'Use snapshots and profiles together.',
+        'Know what snapshots do not protect.',
       ],
       sections: [
         {
-          title: 'Read drift precisely',
-          body: 'A diff reports added, removed, and modified paths. An enabled-to-disabled transition may appear as a removed JAR plus an added .disabled file. Configuration drift can matter even when the mod inventory is unchanged.',
+          title: 'Reading a diff',
+          body: 'A diff lists every file that was added, removed, or changed. Turning a mod off shows up as its file being removed and a .disabled copy being added, which is normal. Changed config files can matter even when the mod list looks the same.',
         },
         {
-          title: 'Combine baselines and profiles',
-          body: 'Use a named stable snapshot as the file baseline, then create profiles for client visuals, multiplayer-safe content, debugging, or performance testing. Profiles do not revert versions or configuration; restore the snapshot when those must also return to baseline.',
+          title: 'Using snapshots and profiles together',
+          body: 'Take a snapshot of a setup you know works, then make profiles for different ways to play, such as one with extra visuals and one that suits a multiplayer server. Profiles only switch things on and off. They do not change mod versions or settings, so restore the snapshot when you want those back as well.',
         },
         {
-          title: 'Plan external backup',
-          body: 'Snapshots and profiles live in Agora\'s local state and instance storage. Automatic pre-launch snapshots exclude saves, while full snapshots may include them. Neither is cloud sync or an independent backup. Export a pack or lockfile for reconstruction and back up irreplaceable saves separately.',
+          title: 'Keep your own backups too',
+          body: 'Snapshots and profiles are stored on this computer, alongside the instance. They are not a cloud backup and do not sync anywhere. To be able to rebuild an instance elsewhere, export a pack or lockfile, and back up worlds you cannot replace separately.',
           callout: {
             tone: 'warning',
             title: 'A lockfile is not a world backup',
-            text: 'Reproduction data describes content and settings, not the private contents of your saves and configuration files.',
+            text: 'A lockfile lists your mods and settings, but does not contain your worlds or config files.',
           },
         },
       ],
@@ -923,9 +956,9 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     shortTitle: 'Packs & sharing',
     category: 'Manage',
     description: 'Move complete instances between machines and verify that another instance matches.',
-    keywords: ['pack', 'mrpack', 'import', 'export', 'lockfile', 'clone', 'repair'],
+    keywords: ['pack', 'mrpack', 'import', 'export', 'lockfile', 'clone', 'repair', 'friend', 'another computer', 'transfer', 'share', 'send'],
     basic: {
-      summary: 'Packs are the easiest way to distribute a coordinated instance. Agora supports Modrinth packs and its native pack format, while reproduction lockfiles focus on proving exact file state.',
+      summary: 'A pack is the easiest way to share a whole setup with someone else. Agora can open Modrinth packs (.mrpack) and its own pack format.',
       outcomes: [
         'Import a supported pack into a new instance.',
         'Choose the right export format.',
@@ -934,13 +967,13 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Import a pack',
-          body: 'Open an instance with Edit, then use the Import tab (Select File & Import, for a .mrpack or Prism .zip) or Import Pack on the Mods tab (.mrpack or Agora pack file). A .mrpack opens a short review where you can rename the new instance before it is created. Agora prepares the loader and required content before promoting the new instance.',
+          body: 'On My Instances, click Import pack file at the top and pick a .mrpack or an Agora pack file. (In an instance\'s editor, the "Import pack as new instance" button at the top does the same, and the Other launchers & files tab has "Select File & Import" for a .mrpack or Prism .zip.) Either kind of pack opens a review before anything is created: the new instance\'s name, every file with where it comes from (a Modrinth or other download, or a copy inside the pack), what is left out, and anything that would stop the import.',
           steps: [
-            'Choose the pack file from a trusted source.',
-            'Check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
-            'Leave save symlinking off unless you understand how shared save paths behave.',
-            'Wait for preparation and health validation to finish.',
-            'Launch once and verify the pack before adding more content.',
+            'Choose a pack file from someone you trust.',
+            'In the review, check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
+            'Read the list of files and what is left out, then choose Import. Cancel leaves nothing behind.',
+            'Wait while Agora downloads and sets everything up.',
+            'Launch once to check the pack works before adding more mods.',
           ],
         },
         {
@@ -959,50 +992,64 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           },
         },
         {
-          title: 'Choose an export',
-          body: 'The editor labels the formats Export as Modrinth Pack (.mrpack) and Export as Agora Pack (.json). The Agora-native file is written as .agora-pack.json. The exported file location opens in your system file manager after a successful export.',
+          title: 'Send a setup to a friend or another computer',
+          body: 'Open the instance with Edit, go to the Export tab, and choose Export as Modrinth Pack (.mrpack). It works for any setup: mods Agora can find on Modrinth are listed with download links, and every other mod is included as a file inside the pack, so nothing is missing on the other end. Your resource packs, shader packs and datapacks go along too (linked when Modrinth hosts that exact file, otherwise included as files), because you chose them. Disabled mods are included and arrive disabled. Send the saved file however you like. Configs, keybinds, and settings are not included, and neither are saves or snapshots.',
+          steps: [
+            'On the Export tab, pick Export as Modrinth Pack (.mrpack) and choose where to save it.',
+            'Send the file to your friend, or copy it to the other computer.',
+            'In Agora on the other computer, go to My Instances, click Import pack file, and pick the file. Prism, Modrinth App and other launchers can open a .mrpack too.',
+            'Review the name and the file list, choose Import, let Agora finish preparing, then launch once to check it.',
+          ],
+          callout: {
+            tone: 'note',
+            title: 'The Agora pack (.json) is lighter but needs sources',
+            text: 'The Agora pack lists mods without including the actual files so it is only a single small text file. As long as the correct sources are available on the other end and all mods in the instance have a source, the instance can be recreated. If you want to send a pack to someone who does not have access to the same sources or Agora in general, use Export as Modrinth Pack (.mrpack) instead.',
+          },
         },
         {
-          title: 'Share responsibly',
-          body: 'Tell recipients which Minecraft and loader versions the modpack targets. Do not assume private saves, server lists, account details, or all configuration are included. Confirm that every bundled project license permits redistribution.',
+          title: 'Choose an export',
+          body: 'The Export tab offers Export as Modrinth Pack (.mrpack) and Export as Agora Pack (.json). You choose where to save the file, and afterwards Show in folder takes you straight to it.',
+        },
+        {
+          title: 'Sharing with others',
+          body: 'Let people know which Minecraft and loader versions your pack is for. Worlds, server lists, and most settings do not come along. If you plan to share the pack publicly, check that each mod\'s license allows it to be shared.',
           callout: {
-            tone: 'warning',
-            title: 'Test the export',
-            text: 'Import the exported pack into a fresh instance before relying on it as a distributable artifact.',
+            tone: 'tip',
+            title: 'Try it yourself first',
+            text: 'Before sending a pack around, import it into a fresh instance to check it works.',
           },
         },
       ],
     },
     advanced: {
-      summary: 'Use reproduction lockfiles to verify, repair, or clone exact artifact state while keeping private file contents out of the shared description.',
+      summary: 'A lockfile is an exact list of an instance\'s files. It is handy for checking that two instances match, fixing one that has drifted, or showing someone exactly what you have when asking for help.',
       outcomes: [
-        'Distinguish a distributable pack from a diagnostic lockfile.',
-        'Verify and repair drift transactionally.',
-        'Build a reliable reproduction artifact for support or testing.',
+        'Know when to use a lockfile instead of a pack.',
+        'Check an instance against a lockfile and fix differences.',
+        'Share an instance that shows a problem so others can see it too.',
       ],
       sections: [
         {
-          title: 'Understand reproduction lockfiles',
-          body: 'A lockfile records artifacts, sources, hashes, and relevant settings so another instance can be compared with the original. It avoids embedding private configuration contents. Export, copy, or paste one from the Export tab.',
+          title: 'What a lockfile is',
+          body: 'A lockfile lists every mod file in an instance, where it came from, and a few key settings, so another instance can be checked against it. It does not include your config files. You can export, copy, or paste one from the Export tab.',
         },
         {
           title: 'Verify, repair, or clone',
-          body: 'Verify compares the current instance against the lockfile. Repair snapshots the instance, downloads exact expected artifacts, removes extras, and rolls back if health validation fails. Clone builds a separate instance from the described state.',
+          body: 'Verify shows how your instance differs from the lockfile. Repair makes your instance match it, downloading what is missing and removing extras. It takes a snapshot first and undoes itself if the result has problems. Clone makes a brand-new instance that matches the lockfile and leaves yours alone.',
           steps: [
-            'Validate that the lockfile came from a trusted person or project.',
-            'Run Verify and review every missing, extra, or changed file.',
-            'Snapshot valuable local changes before Repair.',
-            'Prefer Clone when you need to preserve the original instance untouched.',
-            'Reproduce the issue before making additional changes.',
+            'Only use a lockfile from someone you trust.',
+            'Run Verify and look through what is missing, extra, or different.',
+            'If you have changes you want to keep, take a snapshot before Repair.',
+            'Choose Clone if you would rather not touch your existing instance.',
           ],
         },
         {
-          title: 'Build support-grade reproductions',
-          body: 'Minimize the instance while preserving the problem, verify it against the final lockfile, and document exact reproduction steps. Keep worlds and logs separate when they are necessary, and review them for private data before sharing.',
+          title: 'Sharing a problem with someone',
+          body: 'If you want help with a bug, it helps to cut the instance down to as few mods as still show the problem, export a lockfile, and write down the steps that cause it. If a world or log is needed, check it for anything private before sharing.',
           callout: {
             tone: 'tip',
-            title: 'Hashes identify bytes, not trust',
-            text: 'A matching hash proves two files are identical. It does not prove that the original file was safe or correctly licensed.',
+            title: 'Matching files are not proof of safety',
+            text: 'Verify can tell you two files are identical, but not whether the original was safe to use.',
           },
         },
       ],
@@ -1016,20 +1063,20 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     description: 'Select a compatible runtime and tune memory and garbage collection without guesswork.',
     keywords: ['java', 'jvm', 'memory', 'ram', 'garbage collection', 'g1gc', 'zgc'],
     basic: {
-      summary: 'Minecraft versions require compatible Java versions. Agora can discover or download runtimes and select sensible garbage-collection behavior automatically.',
+      summary: 'Each Minecraft version needs a particular version of Java. Agora can find or download the right one for you and pick sensible performance settings on its own.',
       outcomes: [
-        'Use a compatible Java runtime.',
-        'Allocate enough memory without starving the computer.',
-        'Keep automatic GC tuning unless evidence supports a change.',
+        'Use the right Java for each instance.',
+        'Give Minecraft enough memory without slowing down your computer.',
+        'Know why the automatic settings are a good default.',
       ],
       sections: [
         {
           title: 'Let Agora manage Java',
-          body: 'Automatic runtime mode selects a compatible detected or managed runtime. Managed downloads are stored for Agora and do not change your system PATH. Use Prompt if you want approval before downloads, or Manual when you maintain runtimes yourself.',
+          body: 'With Java set to Automatic, Agora uses a suitable Java already on your computer or downloads one. Java it downloads is kept just for Agora and does not affect other programs. Choose Prompt if you want Agora to ask before downloading, or Manual if you prefer to install Java yourself.',
         },
         {
-          title: 'Set memory conservatively',
-          body: 'More memory is not always faster. Allocate enough for the pack while leaving several gigabytes for the operating system, launcher, browser, and graphics driver. Increase memory when logs show genuine heap pressure, not only because a pack feels slow.',
+          title: 'Set memory sensibly',
+          body: 'More memory is not always faster. We suggest giving Minecraft enough for the pack while leaving a few gigabytes for everything else on your computer. If the game feels slow, more memory is not always the fix. It helps most when the game runs out of memory or the log says it is short.',
           callout: {
             tone: 'tip',
             title: 'Start with the pack recommendation',
@@ -1037,39 +1084,38 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           },
         },
         {
-          title: 'Keep GC on Auto',
-          body: 'Auto chooses the supported collector and flags for the selected Java runtime. On Java 21 or newer it can use Generational ZGC; older supported runtimes receive tuned G1GC behavior. The launch preview shows the effective result.',
+          title: 'Leave performance tuning on Auto',
+          body: 'Java has settings that affect how smoothly the game runs, and Auto picks good ones for your Java version. We recommend leaving it on Auto unless you have a specific reason to change it.',
         },
       ],
     },
     advanced: {
-      summary: 'Override Java and JVM behavior per instance only when measurement or a specific compatibility requirement justifies departing from automatic policy.',
+      summary: 'For when you want to choose Java or its settings yourself for one instance. The automatic choices suit most people, so it is worth having a reason before changing them.',
       outcomes: [
-        'Inspect and override runtimes safely.',
-        'Compare GC modes and pre-touch tradeoffs.',
-        'Diagnose JVM flags from the effective launch preview.',
+        'Use a different Java for one instance.',
+        'Compare the performance options fairly.',
+        'Avoid old Java settings that cause trouble.',
       ],
       sections: [
         {
-          title: 'Manage runtime precedence',
-          body: 'Settings controls global runtime policy and discovered runtimes. Java & Args can override the executable for one instance. Inspect an override before saving it and clear it when the experiment ends so automatic compatibility checks regain control.',
+          title: 'Use a different Java for one instance',
+          body: 'Settings decides which Java Agora uses everywhere. To use a different one for a single instance, pick it on that instance\'s Java & Args tab. When you are done testing, clear it again so Agora goes back to choosing a suitable Java for you.',
         },
         {
-          title: 'Choose GC intentionally',
-          body: 'Auto is the default. Low-latency ZGC can reduce long pauses with a compatible modern Java. High-efficiency G1GC is an explicit manual profile. AlwaysPreTouch commits heap pages at startup, which can reduce later stutter but increases startup time and immediate memory pressure.',
+          title: 'Trying the performance options',
+          body: 'Auto is the default. ZGC low latency can reduce sudden pauses on newer Java versions. G1GC high efficiency is another option you can pick yourself. Pre-touch allocated memory sets aside all the game\'s memory at startup, which can reduce stutter later but makes the game slower to start.',
           bullets: [
-            'Compare the same world, route, and workload.',
-            'Track pause behavior, startup time, total memory, and stability.',
-            'Do not combine collector flags from different GC families.',
+            'To compare fairly, test in the same world doing the same things.',
+            'Watch for stutter, how long the game takes to start, how much memory it uses, and whether it crashes.',
           ],
         },
         {
-          title: 'Use manual flags sparingly',
-          body: 'Manual arguments can override safe defaults or duplicate computed flags. Read the launch preview and remove stale tuning copied from older Java versions. Use Allow incompatible Java override only for a controlled test with a restorable snapshot.',
+          title: 'Use your own Java arguments sparingly',
+          body: 'Arguments you add yourself can clash with the ones Agora sets, or be out of date. The launch preview shows what will actually be used. Allowing an incompatible Java version is best kept for a quick test, with a snapshot to go back to.',
           callout: {
             tone: 'warning',
-            title: 'JVM flag lists age quickly',
-            text: 'A popular flag set for Java 8 may be invalid or harmful on Java 17, 21, or 25. Prefer the current automatic profile.',
+            title: 'Java settings from guides online age quickly',
+            text: 'A list of Java arguments written for an older Java version can cause problems on Java 17, 21, or 25. We recommend sticking with Auto.',
           },
         },
       ],
@@ -1110,29 +1156,29 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Build a precise application theme and operational configuration while preserving accessibility and understanding which controls affect layout, typography, or external behavior.',
+      summary: 'Make your own color scheme, and find the less common settings for the official launcher and Agora updates.',
       outcomes: [
-        'Use custom colors without losing contrast.',
-        'Separate density, text scale, corner, and motion effects.',
-        'Diagnose launcher-path and application-update settings.',
+        'Make custom colors that are still easy to read.',
+        'Know what each appearance setting changes.',
+        'Point Agora at the official launcher and keep Agora up to date.',
       ],
       sections: [
         {
-          title: 'Construct a custom palette',
-          body: 'Open Custom colors to tune block, navigation, background, and text colors plus surface opacity. Check light and dark content, selected states, warnings, disabled controls, and focus rings before keeping the palette.',
+          title: 'Make your own colors',
+          body: 'Open Custom colors to change the block, navigation, background, and text colors, and how see-through panels are. Before keeping a scheme, look around a few pages to check that everything is still easy to read.',
           callout: {
-            tone: 'warning',
-            title: 'Contrast applies to states too',
-            text: 'Readable body text is not enough. Verify muted text, links, borders, destructive actions, and keyboard focus against every custom surface.',
+            tone: 'tip',
+            title: 'Check more than the main text',
+            text: 'Faded text, links, borders, warning buttons, and the highlight around the selected item all need to stand out against your new colors too.',
           },
         },
         {
-          title: 'Know each preference boundary',
-          body: 'Density changes layout spacing and control dimensions. Text scale changes typography. Corner style overrides ordinary rounded utilities while intentional pills and circles remain round. Motion governs transitions, animation, and smooth scrolling throughout the app.',
+          title: 'What each appearance setting changes',
+          body: 'Density changes the spacing around buttons and panels. Text scale changes the size of text. Corner style changes how rounded corners are, though round buttons stay round. Motion controls animations and smooth scrolling.',
         },
         {
-          title: 'Maintain the launcher shell',
-          body: 'Use Launcher Path only when auto-detection cannot find the official launcher, then test the selected executable. Software Updates checks signed release delivery through GitHub Releases and can download and restart Agora. Reset Layout restores the sidebar dimensions without touching instance data.',
+          title: 'Launcher and update settings',
+          body: 'If Agora cannot find the official Minecraft launcher on its own, set Launcher Path to where it is installed. Software Updates checks for a new version of Agora and can download it and restart for you. Reset Layout puts the sidebar back to its normal size without touching your instances.',
         },
       ],
     },
@@ -1172,28 +1218,28 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Treat account state, feature consent, and network egress as separate layers. A service works only when all required layers are available.',
+      summary: 'What to check when a service is turned on but does not seem to work, and how to keep the number of connections to a minimum.',
       outcomes: [
-        'Diagnose enabled-but-unavailable integrations.',
-        'Understand account expiration and fallback behavior.',
-        'Configure a least-privilege service set.',
+        'Work out why a service you turned on is not working.',
+        'Know what to check when a sign-in stops working.',
+        'Turn on only what you actually use.',
       ],
       sections: [
         {
-          title: 'Trace the enablement chain',
-          body: 'For live Modrinth access, service consent, the Modrinth API permission, and the CDN permission must align. Similar endpoint-permission chains apply to catalog updates, governance, runtime downloads, and authentication. Lockdown Mode is a global backend block that overrides every endpoint permission.'
+          title: 'When a service is on but not working',
+          body: 'A service needs to be turned on in Services, and also allowed under Privacy. For Modrinth, both the Modrinth API and its download server need to be allowed. If Lockdown Mode is on, everything is blocked, whatever the other switches say.'
         },
         {
-          title: 'Diagnose account state',
-          body: 'If governance or AI stops working, check whether the correct GitHub connection is active and whether its session expired. If direct launch cannot authenticate, check Microsoft account status separately from Java and loader health.',
+          title: 'When a sign-in stops working',
+          body: 'If voting stops working, check under Accounts that you are signed in to GitHub and that the sign-in has not expired. If direct launch says it cannot sign in, check your Microsoft account there too. That is a separate problem from Java or mod issues.',
         },
         {
-          title: 'Use least privilege',
-          body: 'Disable services you do not use, keep direct-launch credentials unnecessary when delegated launch meets your needs, and enable network endpoints only for planned workflows. Review Privacy after onboarding because feature toggles do not replace backend network policy.',
+          title: 'Only turn on what you use',
+          body: 'We suggest turning off services you do not use. If launching through the official launcher works for you, you do not need to sign in with Microsoft in Agora at all. Privacy lets you go further and block individual kinds of connection.',
           callout: {
             tone: 'tip',
-            title: 'Separate diagnosis by layer',
-            text: 'Check feature toggle, account state, endpoint permission, and connectivity in that order.',
+            title: 'Checking in order',
+            text: 'When something will not connect, check that it is turned on, that you are signed in, that Privacy allows it, and finally that your internet is working.',
           },
         },
       ],
@@ -1204,10 +1250,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Privacy, networking, and offline use',
     shortTitle: 'Privacy & offline',
     category: 'Customize',
-    description: 'See every network category, disable egress, and prepare Agora for offline operation.',
+    description: 'See what Agora connects to, switch connections off, and get ready to play offline.',
     keywords: ['privacy', 'network', 'lockdown', 'offline', 'telemetry', 'endpoints'],
     basic: {
-      summary: 'Agora makes no automated telemetry calls. The Privacy section documents functional network destinations and lets Advanced-mode users disable the enforced endpoint groups individually.',
+      summary: 'Agora does not collect or send usage data about you. Settings lists everything Agora connects to and why, and lets you switch each connection off.',
       outcomes: [
         'Understand why Agora contacts each service category.',
         'Use Lockdown Mode as a global network block.',
@@ -1216,58 +1262,58 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'What network access is for',
-          body: 'Network access can support Modrinth discovery and files, GitHub catalog updates and governance, Mojang metadata and content, loader downloads, Microsoft authentication, Java runtime downloads, application updates, and optional AI services.',
+          body: 'Agora connects to the internet to find and download mods from Modrinth, update the catalog and handle voting through GitHub, download Minecraft, mod loaders and Java, sign you in with Microsoft, check for Agora updates, and for optional AI features.',
         },
         {
           title: 'Use Lockdown Mode for a global block',
-          body: 'Enable Advanced mode and open Privacy. Lockdown Mode disables every endpoint switch and blocks all outbound feature requests in the backend. Turn individual endpoints back on when you need finer control than an all-or-nothing block.',
+          body: 'Turn on Advanced mode in Settings and open Privacy. Lockdown Mode stops Agora from connecting to anything at all. If you want more control than all-or-nothing, turn individual connections on or off instead.',
           callout: {
             tone: 'warning',
-            title: 'Online launch may need the network',
-            text: 'Authentication, missing game files, loaders, runtimes, or mods cannot be fetched after their endpoint permissions are disabled or the machine is offline.',
+            title: 'Some things need the internet',
+            text: 'While a connection is blocked or you are offline, Agora cannot sign you in or download missing game files, loaders, Java, or mods.',
           },
         },
         {
           title: 'Prepare for offline play',
           steps: [
-            'Update the Agora catalog.',
+            'Update the Agora catalog while you are online. If it never downloaded (the first run had no internet), Browse and the Home banner say so: connect, then use Download Catalog or Retry. Until it has downloaded once, there is no catalog to browse offline.',
             'Launch each required instance once so game and loader files are present.',
             'Confirm the selected Java runtime is installed.',
             'Download planned mods and packs before disconnecting.',
-            'Disable every endpoint group and test the exact launch workflow while you still have time to correct missing files.',
+            'Turn on Lockdown Mode and try launching, while you can still go back online to fix anything missing.',
           ],
-          body: 'Offline readiness is instance-specific. One prepared instance does not guarantee that another has all required artifacts.',
+          body: 'Each instance needs its own files, so getting one ready for offline play does not prepare the others.',
         },
       ],
     },
     advanced: {
-      summary: 'Build a network policy per capability and use the live status and endpoint inventory to audit Agora\'s functional egress.',
+      summary: 'Choose exactly which connections to allow, and work out which one a feature needs when it stops working.',
       outcomes: [
-        'Map features to endpoint permissions.',
-        'Apply dependency-aware network restrictions.',
-        'Distinguish UI consent from backend enforcement.',
+        'Know which connection each feature uses.',
+        'Block connections without breaking the features you want.',
+        'Share logs without giving away private details.',
       ],
       sections: [
         {
-          title: 'Apply capability-based policy',
-          body: 'Enable only the endpoint groups needed for the workflow: catalog, governance, mod discovery, launch, runtime, authentication, updates, or AI. The individual choices are the enforced policy; Lockdown Mode overrides all of them at once for a total block.',
+          title: 'Allow only what you need',
+          body: 'Privacy groups connections by what they are for: the catalog, voting, finding mods, launching, Java downloads, signing in, Agora updates, and AI. Allow the ones for the features you use. Lockdown Mode overrides all of them and blocks everything.',
           bullets: [
-            'Disabling the Modrinth API also prevents the associated CDN workflow.',
-            'Runtime access is separate from Mojang game content and loader content.',
-            'A cached catalog does not imply that every referenced artifact is cached.',
+            'Blocking the Modrinth API also stops downloads from Modrinth.',
+            'Java downloads are a separate switch from Minecraft and loader downloads.',
+            'Having the catalog downloaded does not mean every mod in it is downloaded too.',
           ],
         },
         {
-          title: 'Audit degraded behavior',
-          body: 'When a feature fails, compare its service consent with its endpoint permission and the live Online/Offline indicator. Individual endpoint preferences are persisted and enforced by the Rust backend; Lockdown Mode is a global backend block that overrides them.'
+          title: 'When a feature stops working',
+          body: 'Check that the feature is turned on in Services and that its connection is allowed under Privacy. The Privacy page also shows whether Agora\'s last attempt to reach each server worked, which tells you whether the problem is your settings or your internet.'
         },
         {
-          title: 'Protect shared diagnostics',
-          body: 'Logs can contain local paths, usernames, server addresses, or chat context. Lockfiles intentionally omit private configuration contents, but you should still review sources and instance names before sharing. Pasting a report into an AI assistant, or letting an MCP-connected tool read crash context, sends it to that tool\'s provider.',
+          title: 'Sharing logs safely',
+          body: 'Logs can include your username, folder names, server addresses, and chat messages. Lockfiles leave out your config files, but it is still worth glancing over instance names and sources before sharing. Anything you paste into an AI assistant, or let a connected AI tool read, goes to the company that runs it.',
           callout: {
             tone: 'note',
-            title: 'No telemetry does not mean no network',
-            text: 'Agora avoids automated analytics. User-requested catalog, download, authentication, update, governance, and AI features still require functional requests when enabled.',
+            title: 'No tracking, but still some connections',
+            text: 'Agora does not send usage data about you. Features you use, such as downloading mods, signing in, updates, and voting, still need to connect to do their job.',
           },
         },
       ],
@@ -1308,24 +1354,24 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Use governance signals as auditable community evidence while keeping technical compatibility, moderation outcomes, and project trust as distinct questions.',
+      summary: 'Making sense of votes, reviews, and decisions, and how to raise a concern so it gets taken seriously.',
       outcomes: [
-        'Interpret vote distributions and action records critically.',
-        'Understand immunity and triage without overgeneralizing them.',
-        'Contribute actionable evidence to the catalog process.',
+        'Read votes and decisions in context.',
+        'Know what immunity and triage do and do not mean.',
+        'Report a concern with the details curators need.',
       ],
       sections: [
         {
-          title: 'Separate governance signals',
-          body: 'Net score, vote velocity, reviews, triage status, immunity, and compatibility are different dimensions. A strong community score is not an artifact hash check; a technical incompatibility is not automatically a governance violation.',
+          title: 'Each signal means something different',
+          body: 'Score, how fast votes are coming in, reviews, triage, immunity, and compatibility each tell you something different. A high score means the community likes a project, not that it will work with your mods. A mod that clashes with another is a bug, not a rule being broken.',
         },
         {
-          title: 'Read resolutions in context',
-          body: 'Resolution badges identify the action category, while the transparency entry records when and why it occurred. Follow the source discussion for evidence and scope. A decision about one release or behavior may not generalize to every historical version.',
+          title: 'Read decisions in context',
+          body: 'A decision\'s badge tells you what kind of action was taken, and the Transparency Log says when and why. Follow the link to the discussion for the full story. A decision about one release does not always apply to every version of the project.',
         },
         {
-          title: 'Submit useful evidence',
-          body: 'Provide exact project and artifact versions, reproducible behavior, logs where appropriate, source links, and the policy criterion involved. Remove personal data and avoid speculative accusations.',
+          title: 'Raising a concern',
+          body: 'Curators can act much faster when you include the exact project and version, what happens and how to make it happen, logs if they help, links to the source, and which rule you think it breaks. Please leave out personal details and stick to what you have seen.',
           callout: {
             tone: 'warning',
             title: 'Governance is not a support shortcut',
@@ -1355,10 +1401,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Open an instance, choose a target version from the list, and check. Checking changes nothing at all — it reports whether every installed mod has a build for that version. The list only offers versions your loader actually supports, so a version you cannot reach is never presented as an option.',
         },
         {
-          title: 'Read the statuses honestly',
-          body: 'Each mod lands in one of a few groups, and the difference between them matters more than the total.',
+          title: 'Read the statuses to understand the verdict',
+          body: 'Each mod lands in one of a few groups that determine its compatibility with the target version.',
           bullets: [
-            'Ready: a build exists for the target version.',
+            'Ready: a build exists for the target version, works immediately.',
             'No build yet: nothing published so far. Waiting is often enough.',
             'Looks abandoned: no activity for a long time.',
             'Has a replacement: the author points at a successor.',
@@ -1367,8 +1413,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           ],
           callout: {
             tone: 'note',
-            title: 'One unknown makes the whole report provisional',
-            text: 'A mod Agora could not check is reported as unchecked, never as dead, and its presence stops the report claiming to be complete.',
+            title: 'One unknown makes the report unfinished',
+            text: 'A mod Agora could not check is reported as unchecked, not as dead, and its presence stops the report claiming to be complete.',
           },
         },
         {
@@ -1378,7 +1424,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Migration is a transaction with an explicit gate on the things it cannot solve for you. Understanding what it refuses to decide is most of understanding it.',
+      summary: 'What can stop a move, what to do about mods that are not ready yet, and what you will want to check yourself afterwards.',
       outcomes: [
         'Know which conditions block a migration outright.',
         'Decide what to do about mods with no target build.',
@@ -1430,13 +1476,13 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Minecraft versions, libraries, native files, and asset objects accumulate as you create instances and move between game versions. The reclaim scan lists what no instance can currently reach, grouped by category, and changes nothing until you choose categories and confirm.',
           callout: {
             tone: 'note',
-            title: 'The scan refuses rather than guesses',
-            text: 'If any instance cannot be read, the scan reports nothing as reclaimable instead of assuming that instance needs nothing. An incomplete survey is treated as unsafe, because a file that only looks unused is exactly the file that breaks a launch.',
+            title: 'If the scan finds nothing',
+            text: 'If Agora cannot read one of your instances, it will not offer to remove anything, in case that instance needs it. Fix or remove the instance it could not read, then scan again.',
           },
         },
         {
           title: 'Put an instance on your desktop',
-          body: 'Instance integration can create a desktop shortcut. Opening it brings Agora to that instance, ready to play. It stops there rather than starting the game outright, because one click should not put a window on screen you did not ask for. If Agora is already running, the shortcut moves the existing window rather than opening a second one.',
+          body: 'Instance integration can create a desktop shortcut. Opening it brings up Agora on that instance, ready for you to press Play. If Agora is already open, it uses that window rather than opening a second one.',
         },
         {
           title: 'Share a screenshots folder',
@@ -1450,7 +1496,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'The same group of features covers portable installs, wrapper commands, and per-instance launch history. Each is a small, local mechanism with no service behind it.',
+      summary: 'Run Agora from a USB stick, start the game through another tool such as a frame-rate overlay, and look back at how recent launches went.',
       outcomes: [
         'Run Agora from removable media.',
         'Wrap the launch command with a tool such as a frame-rate overlay.',
@@ -1459,24 +1505,24 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Portable installs',
-          body: 'A file named portable.txt beside the executable makes Agora keep its data next to itself instead of in your user profile. Empty means a data folder alongside the executable; otherwise its first line names the folder, resolved relative to the executable rather than wherever you happened to run it from. Sign-ins travel with it too: a portable copy never uses your computer’s credential store, and keeps Microsoft and GitHub sign-ins encrypted in its data folder instead — so anyone who can read that folder can read them.',
+          body: 'Put an empty file named portable.txt next to Agora\'s program file, and Agora keeps all its data in a folder beside itself instead of in your user folder. To use a different folder, write its name on the first line of portable.txt. Your Microsoft and GitHub sign-ins are kept in that folder too, so anyone who can open the folder can use them. Keep the USB stick somewhere safe.',
           callout: {
             tone: 'note',
-            title: 'The environment variable still wins',
-            text: 'AGORA_DATA_DIR outranks the marker file. A portable build is a property of the copy; an exported variable is a request about this particular run.',
+            title: 'For advanced users',
+            text: 'If the AGORA_DATA_DIR environment variable is set, Agora uses that folder instead of the one in portable.txt.',
           },
         },
         {
           title: 'Wrapper commands',
-          body: 'A wrapper command runs in front of the real launch command, which is how tools like performance overlays and compositors attach themselves. Agora still builds the true command and then applies the wrapper as a visible transform, so what actually runs stays inspectable. A malformed quote is rejected in the settings field rather than at launch time.',
+          body: 'Some tools, such as frame-rate overlays, need to start the game themselves. A wrapper command tells Agora to start Minecraft through that tool. The launch preview shows the full command that will run, and the settings field tells you straight away if something is typed wrong.',
         },
         {
           title: 'Launch history',
-          body: 'Agora records preparation time, session length, outcome, and enabled mod count for each launch, keeps the most recent entries, and deletes them with the instance. It is local, with nothing sent anywhere.',
+          body: 'For each launch, Agora notes how long it took to get ready, how long you played, how it ended, and how many mods were on. Only the most recent launches are kept, nothing is sent anywhere, and the history is deleted along with the instance.',
           callout: {
             tone: 'note',
-            title: 'It does not claim to measure startup time',
-            text: 'Minecraft emits no reliable signal for "the game is ready", so that number would be invented. History compares recent runs against earlier ones and stays silent about trends until there are enough runs to mean anything.',
+            title: 'Why there is no startup time',
+            text: 'Minecraft does not report when it has finished loading, so Agora does not guess. Once there are enough launches, the history shows how recent ones compare with earlier ones.',
           },
         },
       ],
@@ -1490,7 +1536,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     description: 'Use Agora from the couch with a gamepad, and add controller support to Minecraft itself.',
     keywords: ['controller', 'gamepad', 'handheld', 'big picture', 'couch', 'Steam Deck', 'Controlify', 'joystick'],
     basic: {
-      summary: 'Press a button on a connected controller and Agora becomes controller-driven throughout: the same pages you already use, sized for reading at a distance and navigable with the stick. There is nothing to turn on first. Minecraft itself still needs a mod for controller input, and Agora offers to install it when you launch.',
+      summary: 'Press a button on a connected controller and Agora becomes controller-driven throughout: the same app, but sized for reading at a distance and navigable with the controller. There is nothing to turn on first. Minecraft itself still needs a mod for controller input, and Agora offers to install it when you launch.',
       outcomes: [
         'Drive Agora with a gamepad, without a keyboard or mouse.',
         'Know every button and what it does.',
@@ -1499,16 +1545,16 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Pick the controller up',
-          body: 'Connect a controller and press any button on it while Agora is focused. Text and hit targets grow, spacing opens up, and a highlight appears around whatever is selected. Nothing else changes — these are the same pages, not a separate mode with its own set of screens. There is no setting to enable first, because picking the controller up is the request.',
+          body: 'Connect a controller and press any button on it while Agora is open. Text and buttons get bigger, things spread out a little, and a highlight shows what is selected. These are the same pages you already know, just easier to use from the couch. There is nothing to turn on first.',
           callout: {
             tone: 'note',
-            title: 'A plugged-in controller is not enough',
-            text: 'Agora is only told a controller exists once you press something on it. A gamepad left connected for another game will not resize anything on its own.',
+            title: 'Press a button to get started',
+            text: 'Agora only notices a controller once you press something on it, so one left plugged in for another game will not change anything.',
           },
         },
         {
           title: 'Move around',
-          body: 'The highlight moves by where things actually are on screen rather than by the order they appear in the markup, so pressing down goes to what is below. When you reach the edge of a list, the page scrolls to bring more into view. The right stick scrolls whatever panel you are in without moving the highlight.',
+          body: 'Pressing a direction moves the highlight to whatever is in that direction on screen. When you reach the edge of a list, the page scrolls to show more. The right stick scrolls the panel you are in without moving the highlight.',
           bullets: [
             'D-pad or left stick: move the highlight.',
             'A: activate what is highlighted.',
@@ -1533,53 +1579,39 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'note',
             title: 'Declining is remembered',
-            text: 'Choose Not now and Agora stops asking for that instance. The launch continues either way; the offer never blocks playing.',
+            text: 'Choose Not now and Agora stops asking for that instance. The game launches either way. If you change your mind, install Controlify from Browse.',
           },
         },
       ],
     },
     advanced: {
-      summary: 'Controller support is the whole app resized for a pad, not a separate screen with its own set of destinations. Knowing what it deliberately does not cover, and when the Controlify offer stays silent, explains most of its behaviour.',
+      summary: 'What a controller cannot do in Agora yet, and when Agora will or will not offer to add Controlify.',
       outcomes: [
-        'Know how far controller support reaches, and where it does not.',
-        'Predict when the Controlify offer appears and when it does not.',
-        'Understand what the mode costs when you never use a controller.',
+        'Know where a keyboard or mouse is still handier.',
+        'Know when the Controlify offer appears.',
       ],
       sections: [
         {
-          title: 'The whole app, not a separate mode',
-          body: 'A controller drives Agora itself rather than a cut-down copy of it. Focus moves by geometry, so the stick and D-pad go where you are looking; A activates, B goes back, the shoulder buttons move between sections, and Start opens the command palette to jump anywhere. Dropdowns and sliders change in place instead of opening a system menu a controller cannot enter, and selecting a text box raises an on-screen keyboard. An earlier version had a separate handheld screen that could only list and launch instances; it has been replaced by this, so every page a mouse can reach, a controller can too.'
+          title: 'Where you may still want a keyboard',
+          body: 'The on-screen keyboard covers basic letters and numbers, which is plenty for a search or a folder name. For accented letters or other languages, a physical keyboard works better. Color pickers and file pickers open windows a controller cannot reach. The living background can only be used with a mouse and keyboard.',
         },
         {
-          title: 'Where coverage still stops',
-          body: 'Text entry is a basic-Latin keyboard: enough for a search term or a folder name, not for languages that need an input method or accented text, so a physical keyboard is still the better tool there. Colour pickers and file pickers open system windows that no controller can reach. The living background is mouse-and-keyboard only by design.',
+          title: 'Launching works the same',
+          body: 'Pressing Play with a controller does exactly what pressing it with a mouse does, including the health check before launch.',
         },
         {
-          title: 'Launching behaves identically',
-          body: 'Pressing Play with a controller is the same Play button, so it resolves direct or delegated launch the same way for that instance and runs the same pre-launch health checks. A controller is a different way to reach the same action, not a different action.',
-        },
-        {
-          title: 'When the Controlify offer stays quiet',
-          body: 'The offer only appears when there is something to accept. Agora stays silent when Controlify is already installed, when the instance is locked, when you have declined for that instance before, or when the loader has no Controlify build.',
+          title: 'When the Controlify offer appears',
+          body: 'Agora only offers Controlify when it would be useful. It will not ask if:',
           bullets: [
-            'Already installed, including installed but disabled — disabling it was deliberate, and installing again would not enable it.',
-            'A locked instance, which accepts no new mods until you unlock it.',
-            'Previously declined for that instance.',
-            'Loaders without a Controlify build. Fabric, Quilt, and NeoForge are supported.',
+            'Controlify is already installed, even if you switched it off. Installing it again would not switch it back on.',
+            'The instance is locked, since a locked instance cannot have mods added.',
+            'You chose Not now for that instance before.',
+            'The instance uses a loader Controlify does not support. Fabric, Quilt, and NeoForge are supported.',
           ],
           callout: {
             tone: 'note',
-            title: 'A hand-dropped JAR still counts',
-            text: 'Agora checks the loader id, the catalog id, and the filename, so a copy of Controlify you added yourself is recognised and you are not asked again.',
-          },
-        },
-        {
-          title: 'Cost when you have no controller',
-          body: 'Reading gamepad input requires polling every animation frame, so Agora only starts polling once a controller is actually present. Connection is reported by the browser rather than discovered by searching. If you never touch a gamepad, none of this runs.',
-          callout: {
-            tone: 'tip',
-            title: 'Undoing a decline',
-            text: 'Declining is stored per instance rather than permanently disabling the feature, so it can be reset. Installing Controlify yourself from Browse has the same effect.',
+            title: 'Added it yourself? That counts',
+            text: 'If you added Controlify to the instance by hand, Agora still recognizes it and will not ask.',
           },
         },
       ],
@@ -1627,29 +1659,29 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Treat any outside answer as a hypothesis, and keep Crash Doctor\'s one-variable testing discipline when acting on it.',
+      summary: 'Advice from someone else, or from an AI, is a good guess to test, not a sure answer. Here is how to try it safely.',
       outcomes: [
-        'Turn an outside suggestion into a reversible Agora action.',
-        'Keep deterministic evidence as the source of truth.',
-        'Automate the loop with an external agent when you want more.',
+        'Try a suggested fix in a way you can undo.',
+        'Tell which change actually fixed the problem.',
+        'Let an AI assistant work with Agora directly, if you want.',
       ],
       sections: [
         {
-          title: 'Verify before you act',
-          body: 'An AI answer is a hypothesis, not a diagnosis. Translate it into an Agora action — take a snapshot, disable a mod with dependent review, verify a lockfile, inspect Java — and change one thing at a time so you can tell what actually fixed it. Reject any suggestion that bypasses hash verification, exposes credentials, or deletes saves.',
+          title: 'Try suggestions one at a time',
+          body: 'Before acting on a suggestion, take a snapshot. Then make one change at a time, such as turning off a mod or changing Java, and launch in between, so you know which change fixed it. Be wary of any suggestion to skip Agora\'s download checks, share your passwords, or delete your worlds.',
           callout: {
             tone: 'tip',
-            title: 'Ask for falsifiable tests',
-            text: 'A useful answer predicts what evidence should change if it is correct. Test that prediction before accepting the diagnosis.',
+            title: 'Ask what should happen',
+            text: 'A helpful answer tells you what you should see if it is right, such as "the crash should stop once X is off". That makes it easy to check.',
           },
         },
         {
-          title: 'Let an agent drive Agora directly',
-          body: 'If you already run an MCP-capable AI client, the local MCP server is stronger than copy and paste: the agent can list instances, read bounded crash evidence, search local knowledge, and request supported enable/disable actions itself, with per-instance approval for anything destructive. See the MCP automation topic.',
+          title: 'Let an assistant use Agora directly',
+          body: 'Instead of copying and pasting, you can let an AI assistant app on your computer look at your instances and crash reports and suggest changes itself, with you approving each one. See Get help from an AI assistant.',
         },
         {
-          title: 'Agora still works without any of this',
-          body: 'Crash Doctor, console filters, snapshots, and lockfiles are deterministic and entirely local. Outside help is optional and should never be the only recovery path.',
+          title: 'You do not need any of this',
+          body: 'Crash Doctor, the console, snapshots, and lockfiles all work on your computer without outside help. Asking others is always optional.',
         },
       ],
     },
@@ -1707,7 +1739,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'The assistant is an agent driving the agora CLI with your user account\'s permissions. Agora gives it a version-matched guide and fail-closed defaults; the assistant app\'s approval prompts are the actual safety boundary.',
+      summary: 'How the assistant learns to use Agora, what it can reach on your computer, and when the MCP route suits you better. The approval prompts in your assistant app are what keep you in control.',
       outcomes: [
         'Understand what agora skill gives an agent.',
         'Know where the trust boundary really is.',
@@ -1755,37 +1787,37 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
       sections: [
         {
-          title: 'Choose copy and paste or MCP',
-          body: 'Copy a crash report from Crash Doctor for one-off questions. Use MCP when you already operate an external AI client and want it to inspect instances, read bounded crash evidence, search local knowledge, or request supported enable/disable actions through Agora\'s tool interface.',
+          title: 'Copy and paste, or MCP?',
+          body: 'For an occasional question, copying a crash report from Crash Doctor is simplest. MCP suits you if you already use an AI app that supports it and want it to look at your instances and crash reports, and ask to turn mods on or off, without you copying things back and forth.',
         },
         {
-          title: 'Connect a client',
-          body: 'Enable Advanced mode and AI / MCP Server in Settings. The desktop server binds only to 127.0.0.1:39741 and exposes SSE at /sse plus streamable HTTP at /mcp. Every request must send the generated token in the Authorization: Bearer <token> header; query-string tokens are not accepted.',
+          title: 'Connect an AI app',
+          body: 'Turn on Advanced mode, then AI / MCP Server, in Settings. Agora gives you a ready-made configuration to paste into your AI app, including a private access token.',
           steps: [
-            'Start the MCP server only when needed.',
-            'Copy the configuration for Kilo Code, Opencode, Claude Desktop, or another compatible client.',
-            'Store the Bearer token like a local credential.',
-            'Confirm the client can list instances before allowing any modifying action.',
-            'Stop the server when the workflow is complete.',
+            'Start the MCP server when you want to use it.',
+            'Copy the configuration for Kilo Code, Opencode, Claude Desktop, or another app that supports MCP.',
+            'Keep the access token private, like a password.',
+            'Check the app can list your instances before letting it change anything.',
+            'Stop the server when you are done.',
           ],
         },
         {
           title: 'Approve changes carefully',
-          body: 'An AI request is not proof that an action is safe. Review the target instance and requested operation. Keep important instances locked and use snapshots before permitting changes.',
+          body: 'An AI asking to do something does not mean it is a good idea. Check which instance it wants to change and what it wants to do. We recommend locking instances you care about and taking a snapshot before allowing changes.',
           callout: {
             tone: 'warning',
-            title: 'Local does not mean harmless',
-            text: 'The server listens on localhost, but other processes running as you may reach local services. Protect the token and regenerate it if exposed.',
+            title: 'Keep the token private',
+            text: 'The server only accepts connections from your own computer, but other programs running there could still reach it. If the token might have leaked, make a new one in Settings.',
           },
         },
       ],
     },
     advanced: {
-      summary: 'Operate MCP as a privileged local automation surface: authenticate clients, scope approvals per instance, monitor state, and preserve transactional recovery.',
+      summary: 'Connection details for setting up an app by hand, what each tool lets the AI do, and what to check when it will not connect.',
       outcomes: [
-        'Configure client authentication and rotate credentials.',
-        'Apply least privilege to modifying tools.',
-        'Troubleshoot connectivity without weakening the local boundary.',
+        'Set up a connection by hand and replace the token.',
+        'Decide which tools need your approval.',
+        'Fix connection problems without opening Agora up to other computers.',
       ],
       sections: [
         {
