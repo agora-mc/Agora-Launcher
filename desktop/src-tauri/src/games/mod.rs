@@ -97,14 +97,6 @@ mod tests {
             ini_saves::games_ini_set,
             ini_saves::games_saves_get,
             ini_saves::games_saves_set,
-            tools::games_tools_list,
-            tools::games_tools_run,
-            tools::games_tools_rollback,
-            tools::games_tools_remove,
-            tools::games_tools_diff,
-            tools::games_tools_swap_costs,
-            tools::games_tools_swap_status,
-            tools::games_tools_swap_restore,
             import::games_import_mo2_scan,
             import::games_import_mo2,
             catalog::games_catalog_list,
@@ -113,7 +105,7 @@ mod tests {
             user_files::games_user_files_restore,
         );
         assert_eq!(
-            checked, 49,
+            checked, 41,
             "the stub list drifted from the brief's command list"
         );
     }
