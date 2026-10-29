@@ -62,14 +62,6 @@ mod tests {
     #[test]
     fn every_stub_fails_loudly_with_not_implemented() {
         let checked = assert_every_stub_fails!(
-            tools::games_tools_list,
-            tools::games_tools_run,
-            tools::games_tools_rollback,
-            tools::games_tools_remove,
-            tools::games_tools_diff,
-            tools::games_tools_swap_costs,
-            tools::games_tools_swap_status,
-            tools::games_tools_swap_restore,
             import::games_import_mo2_scan,
             import::games_import_mo2,
             catalog::games_catalog_list,
