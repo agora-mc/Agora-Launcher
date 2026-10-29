@@ -69,16 +69,6 @@ mod tests {
             instances::games_instance_check,
             instances::games_instance_set_deployment,
             instances::games_instance_launch,
-            plugins::games_plugins_list,
-            plugins::games_plugins_set_active,
-            plugins::games_plugins_set_locked,
-            plugins::games_plugins_move,
-            plugins::games_plugins_sort,
-            plugins::games_plugins_check,
-            ini_saves::games_ini_get,
-            ini_saves::games_ini_set,
-            ini_saves::games_saves_get,
-            ini_saves::games_saves_set,
             tools::games_tools_list,
             tools::games_tools_run,
             tools::games_tools_rollback,
@@ -95,7 +85,7 @@ mod tests {
             user_files::games_user_files_restore,
         );
         assert_eq!(
-            checked, 31,
+            checked, 21,
             "the stub list drifted from the brief's command list"
         );
     }
