@@ -1,75 +1,8 @@
 use crate::auth;
 use crate::error::{LauncherError, LauncherResult};
-use crate::instances;
 use crate::models::{InstalledMod, InstanceRow, ModVersionCandidate};
-use crate::paths;
 use crate::registry;
 use std::path::Path;
-
-/// What importing a pack did with the mods it names.
-///
-/// A mod that could not be installed is never dropped silently: it is listed in
-/// `skipped` with the reason, and the frontend shows the whole list after the
-/// import. `unverified` lists installed mods whose source published no checksum.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct PackImportResult {
-    pub instance_id: String,
-    pub skipped: Vec<SkippedPackMod>,
-    pub unverified: Vec<String>,
-}
-
-/// One mod a pack named that the import could not install.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkippedPackMod {
-    /// The file the pack names, or the registry or Modrinth id when it names none.
-    pub name: String,
-    /// The error code, such as ERR_HASH_CONFIRMATION_REQUIRED.
-    pub code: String,
-    /// What the user should know: why the mod was not installed.
-    pub message: String,
-}
-
-impl SkippedPackMod {
-    fn from_error(name: &str, error: &LauncherError) -> Self {
-        Self {
-            name: name.to_string(),
-            code: error.code(),
-            message: error.to_string(),
-        }
-    }
-}
-
-/// Record what one pack mod's install came to in the import result: a failure
-/// is listed with its reason, and an install whose source published no checksum
-/// is listed as unverified. Nothing is dropped.
-fn record_pack_mod(
-    name: &str,
-    strategy: Option<&str>,
-    outcome: LauncherResult<InstalledMod>,
-    skipped: &mut Vec<SkippedPackMod>,
-    unverified: &mut Vec<String>,
-) {
-    match outcome {
-        Ok(installed) => {
-            if !installed.hash_verified {
-                unverified.push(unverified_notice(strategy, &installed.filename));
-            }
-        }
-        Err(error) => skipped.push(SkippedPackMod::from_error(name, &error)),
-    }
-}
-
-/// The sentence shown when a source published no checksum for a file.
-fn unverified_notice(strategy: Option<&str>, file: &str) -> String {
-    let source = match strategy {
-        Some("github_release") => "GitHub",
-        Some("modrinth_id") | Some("modrinth_raw") => "Modrinth",
-        _ => "The source",
-    };
-    format!("{source} published no checksum for {file}, so Agora could not verify it.")
-}
 
 /// Resolve instance info via core InstanceService.
 pub fn load_instance_info(
@@ -271,28 +204,8 @@ pub async fn install_mod_version(
     } else {
         &item.content_type
     };
-    // Which hash to expect depends on where this candidate actually came from,
-    // not on the item's preferred strategy: an item can resolve from a fallback
-    // source, and a Modrinth-served file must not be judged against a hash
-    // pinned for the GitHub release.
-    let candidate_strategy = candidate
-        .source_strategy
-        .as_deref()
-        .map(str::trim)
-        .filter(|strategy| !strategy.is_empty())
-        .unwrap_or(item.download_strategy.as_str());
-    // The manifest hash identifies the one file of a hand-pinned strategy, so
-    // only those are checked against it. Every other source is checked against
-    // the hash it published for this file, never against the manifest's, which
-    // describes at most one historical file.
-    let exp_sha256 = match candidate_strategy {
-        "direct_hash" | "technic_pack" => item
-            .sha256
-            .as_deref()
-            .map(str::trim)
-            .filter(|hash| !hash.is_empty()),
-        _ => candidate.sha256.as_deref(),
-    };
+    let exp_sha256 =
+        agora_game_minecraft::agora_pack_import::expected_sha256_for_candidate(&item, candidate);
     let pinned = agora_game_minecraft::resolver::curator_pins_for(&item, candidate)
         .into_iter()
         .next()
@@ -308,7 +221,7 @@ pub async fn install_mod_version(
         "registry",
         Some(&candidate.version),
         candidate.sha1.as_deref(),
-        exp_sha256,
+        exp_sha256.as_deref(),
         pinned.as_deref(),
         accept_hash_confirmation,
     )
@@ -377,356 +290,89 @@ pub async fn add_manual_mod(
     })?
 }
 
-/// Export pack via core ExportService.
+/// Names of the mods an export in `format` would leave a friend unable to
+/// install. The logic lives in core, so the desktop and any other front end
+/// give the same answer.
+pub async fn export_sourceless_mods(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    format: &str,
+) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(app)?;
+    agora_game_minecraft::export_service::sourceless_mods_of_instance(&ctx, instance_id, format)
+        .await
+}
+
+/// Export pack via core ExportService, to the file the user chose in the save dialog.
 pub async fn export_instance_pack(
     app: &tauri::AppHandle,
     instance_id: &str,
     format: &str,
+    out_path: &Path,
 ) -> LauncherResult<String> {
     let ctx = crate::core_context(app)?;
-    let manifest_path = paths::instance_manifest_path(app, instance_id)
-        .map_err(|_| LauncherError::InstanceCreateFailed)?;
-    if !manifest_path.exists() {
-        return Err(LauncherError::Generic {
-            code: "ERR_MANIFEST_MISSING".into(),
-            message: "Instance manifest not found.".into(),
-        });
-    }
-    let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
-    let instance_dir = ctx.paths.instance_dir(instance_id)?;
-    let exports_dir = ctx.paths.root().join("exports");
-    agora_game_minecraft::export_service::export_instance_pack(
-        &instance_dir,
-        &manifest,
-        &exports_dir,
+    agora_game_minecraft::export_service::export_pack_of_instance(
+        &ctx,
+        instance_id,
         format,
+        out_path,
     )
     .await
 }
 
-/// Import a pack file.  .mrpack → core ImportService.  .agora-pack.json → local orchestrator.
+pub use agora_game_minecraft::pack_file_import::PackImportOutcome;
+
+/// Import a pack file via core (`.mrpack` or `.agora-pack.json`).
 pub async fn import_instance_pack(
     app: &tauri::AppHandle,
     source_path: &str,
-) -> LauncherResult<PackImportResult> {
-    let lower = source_path.to_ascii_lowercase();
-    if lower.ends_with(".mrpack") {
-        import_mrpack(app, source_path).await
-    } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
-        import_agora_json(app, source_path).await
-    } else {
-        Err(LauncherError::Generic {
-            code: "ERR_INVALID_FORMAT".into(),
-            message: "Unsupported pack file extension. Use .mrpack or .agora-pack.json.".into(),
-        })
-    }
+    reviewed_sha256: Option<&str>,
+    name: Option<&str>,
+    skip_unfetchable: bool,
+) -> LauncherResult<PackImportOutcome> {
+    let ctx = crate::core_context(app)?;
+    agora_game_minecraft::pack_file_import::import_pack_file(
+        &ctx,
+        source_path,
+        reviewed_sha256,
+        name,
+        skip_unfetchable,
+        &|instance_id: &str| crate::instances::create_progress_sink(app, instance_id),
+    )
+    .await
 }
 
-async fn import_mrpack(
+/// Try pack entries again on an existing instance (after the user turned
+/// Modrinth on, or allowed it for this import). Entries already installed are
+/// not downloaded again.
+pub async fn retry_pack_import_entries(
     app: &tauri::AppHandle,
-    source_path: &str,
-) -> LauncherResult<PackImportResult> {
+    instance_id: &str,
+    entries: Vec<agora_game_minecraft::agora_pack_import::AgoraPackEntry>,
+    allow_modrinth_once: bool,
+) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportReport> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_game_minecraft::import_service::ImportService::new(ctx);
-    let request = agora_game_minecraft::import_service::ImportRequest {
-        source: agora_game_minecraft::import_service::ImportSource::mrpack(
-            Path::new(source_path).to_path_buf(),
-        ),
-        symlink_saves: false,
-    };
-    let result = svc.run_import(request).await?;
-    Ok(PackImportResult {
-        instance_id: result.instance_id,
-        ..Default::default()
-    })
-}
-
-/// Import an Agora plain-JSON pack (.agora-pack.json).
-async fn import_agora_json(
-    app: &tauri::AppHandle,
-    source_path: &str,
-) -> LauncherResult<PackImportResult> {
-    let ctx = crate::core_context(app)?;
-    let text = std::fs::read_to_string(source_path).map_err(|_| LauncherError::Generic {
-        code: "ERR_PACK_READ".into(),
-        message: format!("Cannot read pack file: {source_path}"),
-    })?;
-    let pack: serde_json::Value =
-        serde_json::from_str(&text).map_err(|_| LauncherError::Generic {
-            code: "ERR_PACK_PARSE".into(),
-            message: "Failed to parse agora-pack JSON.".into(),
-        })?;
-    let inst = pack.get("instance").ok_or_else(|| LauncherError::Generic {
-        code: "ERR_PACK_PARSE".into(),
-        message: "agora-pack missing 'instance' object.".into(),
-    })?;
-    let mc_version = inst
-        .get("minecraft_version")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| LauncherError::Generic {
-            code: "ERR_PACK_PARSE".into(),
-            message: "agora-pack missing minecraft_version.".into(),
-        })?;
-    let loader = inst
-        .get("loader")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| LauncherError::Generic {
-            code: "ERR_PACK_PARSE".into(),
-            message: "agora-pack missing loader.".into(),
-        })?;
-    let loader_version = inst
-        .get("loader_version")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| LauncherError::Generic {
-            code: "ERR_PACK_PARSE".into(),
-            message: "agora-pack missing loader_version.".into(),
-        })?;
-    let name = inst
-        .get("name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            inst.get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "imported-pack".to_string());
-    let instance_id = paths::sanitize_id(inst.get("id").and_then(|v| v.as_str()).unwrap_or(&name));
-    let instance_id = if instance_id.is_empty() {
-        "imported-pack".into()
-    } else {
-        instance_id
-    };
-    let req = instances::CreateInstanceRequest {
-        name: name.clone(),
-        instance_id: instance_id.clone(),
-        minecraft_version: mc_version.to_string(),
-        loader: loader.to_string(),
-        loader_version: loader_version.to_string(),
-        jvm_memory_mb: Some(4096),
-        jvm_memory_mode: Some("auto".into()),
-        jvm_gc: None,
-        jvm_custom_args: None,
-        jvm_always_pre_touch: None,
-        is_modpack: None,
-        pack_icon_url: None,
-        template_id: None,
-    };
-    instances::create_instance(app.clone(), req).await?;
-    // Every mod the pack names ends up either installed, or listed in the
-    // result with its reason. Nothing is dropped silently.
-    let mut skipped: Vec<SkippedPackMod> = Vec::new();
-    let mut unverified: Vec<String> = Vec::new();
-    if let Some(mods_arr) = pack.get("mods").and_then(|m| m.as_array()) {
-        for entry in mods_arr {
-            if let Some(rid) = entry
-                .get("registry_id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                let filename = entry.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-                let label = if filename.is_empty() { rid } else { filename };
-                let candidates = match list_mod_versions(app, &instance_id, rid).await {
-                    Ok(candidates) => candidates,
-                    Err(error) => {
-                        skipped.push(SkippedPackMod::from_error(label, &error));
-                        continue;
-                    }
-                };
-                let candidate = candidates
-                    .iter()
-                    .find(|c| c.filename == filename)
-                    .or_else(|| {
-                        entry
-                            .get("version")
-                            .and_then(|v| v.as_str())
-                            .and_then(|v| candidates.iter().find(|c| c.version == v))
-                    });
-                let Some(c) = candidate else {
-                    skipped.push(SkippedPackMod {
-                        name: label.to_string(),
-                        code: "ERR_VERSION_NOT_FOUND".into(),
-                        message: format!("No version of {rid} matches {label} in the registry."),
-                    });
-                    continue;
-                };
-                let outcome = install_mod_version(app, &instance_id, rid, c, false).await;
-                record_pack_mod(
-                    label,
-                    c.source_strategy.as_deref(),
-                    outcome,
-                    &mut skipped,
-                    &mut unverified,
-                );
-            } else if let Some(mid) = entry
-                .get("modrinth_id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-            {
-                let candidates = match crate::modrinth_raw::list_raw_modrinth_versions(
-                    &ctx.http_clients,
-                    app,
-                    Some(&instance_id),
-                    mid,
-                    Some("mod"),
-                )
-                .await
-                {
-                    Ok(candidates) => candidates,
-                    Err(error) => {
-                        skipped.push(SkippedPackMod::from_error(mid, &error));
-                        continue;
-                    }
-                };
-                let candidate = candidates
-                    .iter()
-                    .find(|c| c.primary)
-                    .or_else(|| candidates.first());
-                let Some(c) = candidate else {
-                    skipped.push(SkippedPackMod {
-                        name: mid.to_string(),
-                        code: "ERR_VERSION_NOT_FOUND".into(),
-                        message: format!("Modrinth project {mid} has no version to install."),
-                    });
-                    continue;
-                };
-                let outcome =
-                    crate::modrinth_raw::install_raw_modrinth(app, &instance_id, mid, c, "mod")
-                        .await;
-                record_pack_mod(
-                    mid,
-                    Some("modrinth_id"),
-                    outcome,
-                    &mut skipped,
-                    &mut unverified,
-                );
-            }
-        }
-    }
-    // Stamp PackOrigin for LocalFile pack and persist inventory.
-    // Honest identity is display name only; every id stays None so
-    // pack-update can distinguish "unknown" from "known".
-    let instance_dir = ctx.paths.instance_dir(&instance_id)?;
-    let pack_files = agora_game_minecraft::pack_inventory::collect_pack_inventory(&instance_dir)
-        .unwrap_or_default();
-    let pack_hash = if pack_files.is_empty() {
-        None
-    } else {
-        Some(agora_game_minecraft::pack_inventory::pack_content_hash(
-            &pack_files,
-        ))
-    };
-    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
-        let _ = agora_core::db::replace_instance_pack_files(&conn, &instance_id, &pack_files);
-    }
-    let manifest_path = ctx.paths.instance_manifest(&instance_id)?;
-    if let Ok(mut manifest) = agora_core::helpers::read_manifest(&manifest_path) {
-        let pack_origin = agora_core::models::PackOrigin {
-            platform: agora_core::models::PackPlatform::LocalFile,
-            pack_name: name.clone(),
-            project_id: None,
-            version_id: None,
-            version_number: None,
-            origin_url: None,
-            pack_content_hash: pack_hash,
-            pack_minecraft_version: Some(mc_version.to_string()),
-            pack_loader: Some(loader.to_string()),
-            pack_loader_version: Some(loader_version.to_string()),
-            launcher_kind: None,
-            installation_key: None,
-            source_key: None,
-            cloned_from: None,
-            installed_at: chrono::Utc::now().to_rfc3339(),
-        };
-        manifest.pack_origin = Some(pack_origin);
-        manifest.manifest_version = agora_core::models::CURRENT_MANIFEST_VERSION;
-        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
-    }
-    Ok(PackImportResult {
+    agora_game_minecraft::agora_pack_import::retry_agora_pack_entries(
+        &ctx,
         instance_id,
-        skipped,
-        unverified,
-    })
+        entries,
+        allow_modrinth_once,
+    )
+    .await
 }
 
-#[cfg(test)]
-mod pack_import_tests {
-    use super::*;
+/// What importing a pack file would do, for the review step. Core owns it.
+pub fn plan_pack_import(
+    app: &tauri::AppHandle,
+    source_path: &str,
+) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportPlan> {
+    let ctx = crate::core_context(app)?;
+    agora_game_minecraft::pack_file_import::plan_pack_file(&ctx, source_path)
+}
 
-    fn installed(filename: &str, hash_verified: bool) -> InstalledMod {
-        serde_json::from_value(serde_json::json!({
-            "filename": filename,
-            "source": "registry",
-            "sha256": "a".repeat(64),
-            "installed_at": "now",
-            "hash_verified": hash_verified,
-        }))
-        .expect("a minimal installed mod record")
-    }
-
-    #[test]
-    fn a_pack_mod_that_fails_is_reported_with_its_reason_not_dropped() {
-        let mut skipped = Vec::new();
-        let mut unverified = Vec::new();
-        record_pack_mod(
-            "xaeros-1.2.0.jar",
-            Some("github_release"),
-            Err(LauncherError::HashConfirmationRequired(
-                agora_core::error::HashConfirmation {
-                    file: "xaeros-1.2.0.jar".into(),
-                    release: Some("v1.2.0".into()),
-                    expected: "c".repeat(64),
-                    actual: "d".repeat(64),
-                    expected_from: agora_core::artifact_hash::HashOrigin::CuratorPin,
-                },
-            )),
-            &mut skipped,
-            &mut unverified,
-        );
-        assert_eq!(skipped.len(), 1);
-        assert_eq!(skipped[0].name, "xaeros-1.2.0.jar");
-        assert_eq!(skipped[0].code, "ERR_HASH_CONFIRMATION_REQUIRED");
-        assert!(skipped[0].message.contains("xaeros-1.2.0.jar"));
-        assert!(unverified.is_empty());
-    }
-
-    #[test]
-    fn an_install_whose_source_published_no_checksum_is_listed_as_unverified() {
-        let mut skipped = Vec::new();
-        let mut unverified = Vec::new();
-        record_pack_mod(
-            "old.jar",
-            Some("github_release"),
-            Ok(installed("old.jar", false)),
-            &mut skipped,
-            &mut unverified,
-        );
-        assert!(skipped.is_empty());
-        assert_eq!(
-            unverified,
-            vec![
-                "GitHub published no checksum for old.jar, so Agora could not verify it."
-                    .to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn a_verified_install_adds_nothing_to_the_report() {
-        let mut skipped = Vec::new();
-        let mut unverified = Vec::new();
-        record_pack_mod(
-            "ok.jar",
-            Some("modrinth_id"),
-            Ok(installed("ok.jar", true)),
-            &mut skipped,
-            &mut unverified,
-        );
-        assert!(skipped.is_empty());
-        assert!(unverified.is_empty());
-    }
+/// Drops the staged copy of a pack whose review was cancelled.
+pub fn discard_pack_review(app: &tauri::AppHandle, sha256: &str) -> LauncherResult<()> {
+    let ctx = crate::core_context(app)?;
+    agora_game_minecraft::import_service::ImportService::new(ctx).discard_reviewed_copy(sha256);
+    Ok(())
 }

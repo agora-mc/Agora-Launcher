@@ -146,9 +146,13 @@ cargo test -p agora-cli
 cargo check -p agora-desktop
 ```
 
-Desktop frontend (from `desktop/`): `npm run build && npm run test:unit`. `npm run build` runs the
-boundary checks, `tsc` and `vite build`. End-to-end tests (`npx playwright test`) are slower; run
-them when touching UI flows.
+Desktop frontend (from `desktop/`): `npm run build && npm run typecheck:e2e && npm run test:unit`.
+`npm run build` runs the boundary checks, `tsc` and `vite build`. `typecheck:e2e` checks the
+Playwright specs against `e2e/tsconfig.json`: the main `tsc` covers `src/` only, and Playwright
+strips types without checking them. End-to-end tests (`npx playwright test`) are slower; run them
+when touching UI flows. They use the Vite dev server, which is fine for a few specs but can be
+overloaded by a full parallel run; for the full suite use `npm run test:e2e:built`, which builds and
+tests the bundle the app ships. `E2E_PORT=<port>` runs either on another port than 5173.
 
 Compiler (from `compiler/`, in a venv with `requirements.txt`):
 `python compile.py --skip-sign --no-governance-write --governance-mode off --out ../registry.db && python ../scripts/verify_db.py`.
@@ -166,6 +170,10 @@ A new or renamed Tauri command also needs `python scripts/check_tauri_bindings.p
   lint-sensitive work.
 - Lockfiles change through their package manager, never by hand. If `npm ci` complains the lock
   is out of sync, regenerate it with the npm version CI uses (npm 11 / Node 24).
+- A static export of `web/` built on Windows writes its segment-prefetch files into nested
+  folders (`docs/__next.docs/__PAGE__.txt` instead of `docs/__next.docs.__PAGE__.txt`), so a
+  local preview logs RSC prefetch 404s even though navigation still works. This is upstream
+  bug vercel/next.js#85374. The deployed site builds on Linux and is unaffected.
 
 ## Working-copy notes
 

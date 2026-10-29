@@ -643,8 +643,13 @@ pub fn add_archive_replacing(
                     .by_index(i)
                     .map_err(|e| ContentError::CorruptArchive(format!("{e}")))?;
 
+                let entry_name = entry
+                    .name()
+                    .map_err(|e| ContentError::CorruptArchive(format!("{e}")))?
+                    .into_owned();
+
                 // Folder entries are ignored; only files count
-                if entry.is_dir() || entry.name().ends_with('/') {
+                if entry.is_dir() || entry_name.ends_with('/') {
                     continue;
                 }
 
@@ -652,13 +657,13 @@ pub fn add_archive_replacing(
                 if let Some(mode) = entry.unix_mode() {
                     if (mode & 0o170000) == 0o120000 {
                         return Err(ContentError::InvalidPath {
-                            path: entry.name().to_string(),
+                            path: entry_name.clone(),
                             reason: "zip symlink entry is not allowed".into(),
                         });
                     }
                 }
 
-                let rel_path = validate_entry_path(entry.name())?;
+                let rel_path = validate_entry_path(&entry_name)?;
                 declared_total_size = declared_total_size.saturating_add(entry.size());
                 validated_paths.push(rel_path);
                 file_indices.push(i);

@@ -59,6 +59,7 @@ function detail(rowOverrides: Record<string, unknown> = {}) {
     },
     snapshot_readiness: 'ready',
     snapshot_error: null,
+    pack_gaps: [],
   };
 }
 
@@ -106,6 +107,8 @@ beforeEach(() => {
         return undefined;
       case 'apply_loadout_profile':
         return undefined;
+      case 'list_loadout_unlisted_mods':
+        return [];
       case 'get_mod_groups': return {};
       default: return null;
     }
@@ -148,7 +151,7 @@ describe('InstanceEditor reload after mutations', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Loadout Profiles' }));
     const contentBefore = calls('list_instance_content');
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
-    await screen.findByText('Profile "Fast" applied.');
+    await screen.findByText(/Profile "Fast" applied\./);
     expect(calls('list_instance_content')).toBeGreaterThan(contentBefore);
     expect(calls('get_instance_detail')).toBeGreaterThan(1);
   });

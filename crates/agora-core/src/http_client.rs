@@ -24,6 +24,7 @@
 
 use crate::error::{LauncherError, LauncherResult};
 use crate::network;
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -91,6 +92,8 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
             "user.auth.xboxlive.com",
             "xsts.auth.xboxlive.com",
             "api.minecraftservices.com",
+            // Skin and cape textures, shown on the skin page.
+            "textures.minecraft.net",
         ],
         // Deliberately empty: hosts for this category come from the signed
         // manifest via `HostPolicy::SignedManifest`, never from a compile-time
@@ -108,6 +111,9 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
         // Deliberately empty: any public host is authorized per request by
         // `HostPolicy::AnyPublicHost`, and only for this category.
         ClientCategory::CommunityImage => &[],
+        ClientCategory::LogUpload => &["api.mclo.gs"],
+        // Not an HTTP category; the empty list fails closed if it ever is.
+        ClientCategory::GameServer => &[],
     }
 }
 
@@ -192,6 +198,11 @@ pub enum ClientCategory {
     /// Reached only through `community_image`, which checks the bytes are an
     /// image before anything displays them.
     CommunityImage,
+    /// A game log the user chose to share, sent to mclo.gs.
+    LogUpload,
+    /// Status pings to Minecraft servers in an instance's server list. Not
+    /// HTTP: listed so the gate, Lockdown Mode and the Privacy page cover it.
+    GameServer,
 }
 
 /// How a category's requests are bounded in time.
@@ -233,7 +244,7 @@ impl ClientCategory {
     ///
     /// This is the single definition that client construction and
     /// [`Self::index`] are both derived from — see [`HttpClients`].
-    const ALL: [ClientCategory; 15] = [
+    const ALL: [ClientCategory; 17] = [
         ClientCategory::MojangMetadata,
         ClientCategory::MojangContent,
         ClientCategory::Loader,
@@ -249,6 +260,8 @@ impl ClientCategory {
         ClientCategory::PluginUpdate,
         ClientCategory::PluginPackage,
         ClientCategory::CommunityImage,
+        ClientCategory::LogUpload,
+        ClientCategory::GameServer,
     ];
 
     /// Position of this category in [`Self::ALL`].
@@ -271,6 +284,8 @@ impl ClientCategory {
             ClientCategory::PluginUpdate => 12,
             ClientCategory::PluginPackage => 13,
             ClientCategory::CommunityImage => 14,
+            ClientCategory::LogUpload => 15,
+            ClientCategory::GameServer => 16,
         }
     }
 
@@ -364,6 +379,155 @@ pub struct HttpClients {
     by_category: [reqwest::Client; ClientCategory::ALL.len()],
 }
 
+// ---------------------------------------------------------------------------
+// Proxy
+// ---------------------------------------------------------------------------
+
+/// Settings key holding the user's proxy choice.
+pub const PROXY_SETTING_KEY: &str = "network_proxy";
+const PROXY_SECRET_ACCOUNT: &str = "proxy-password";
+const PROXY_SECRET_FILE: &str = "proxy-password.enc";
+const PROXY_SECRET_CONTEXT: &[u8] = b"agora-proxy-password";
+
+/// How Agora's own requests reach the internet. The game is not affected.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ProxySetting {
+    /// The `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment variables.
+    #[default]
+    System,
+    /// Connect directly, ignoring any environment proxy.
+    None,
+    /// One proxy for everything: `http://`, `https://`, `socks5://` or
+    /// `socks5h://`. The password, if any, lives in the OS credential store.
+    Manual {
+        url: String,
+        #[serde(default)]
+        username: Option<String>,
+    },
+}
+
+impl ProxySetting {
+    /// Refuse a manual proxy reqwest could not use, before it is saved.
+    pub fn validate(&self) -> LauncherResult<()> {
+        if let ProxySetting::Manual { url, .. } = self {
+            let parsed = reqwest::Url::parse(url.trim()).map_err(|_| LauncherError::Generic {
+                code: "ERR_PROXY_URL".into(),
+                message: "Give the proxy as a URL, for example http://proxy.example:8080.".into(),
+            })?;
+            if !matches!(parsed.scheme(), "http" | "https" | "socks5" | "socks5h")
+                || parsed.host_str().is_none()
+            {
+                return Err(LauncherError::Generic {
+                    code: "ERR_PROXY_URL".into(),
+                    message: "The proxy must be an http, https, socks5 or socks5h URL with a host."
+                        .into(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+static PROXY: std::sync::RwLock<Option<ProxySetting>> = std::sync::RwLock::new(None);
+
+/// Use this proxy for every HTTP client built from now on. Called once at
+/// startup from the saved setting; a change takes effect after a restart.
+pub fn configure_proxy(setting: ProxySetting) {
+    if let Ok(mut slot) = PROXY.write() {
+        *slot = Some(setting);
+    }
+}
+
+/// Read the saved proxy choice.
+pub fn saved_proxy(conn: &rusqlite::Connection) -> ProxySetting {
+    crate::db::get_setting(conn, PROXY_SETTING_KEY)
+        .ok()
+        .flatten()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+/// Save the proxy choice. `password: Some("")` removes a stored password;
+/// `None` keeps whatever is stored.
+pub fn save_proxy(
+    conn: &rusqlite::Connection,
+    setting: &ProxySetting,
+    password: Option<&str>,
+) -> LauncherResult<()> {
+    setting.validate()?;
+    let value = serde_json::to_value(setting).map_err(|e| LauncherError::Generic {
+        code: "ERR_PROXY_SAVE".into(),
+        message: e.to_string(),
+    })?;
+    crate::db::set_setting(conn, PROXY_SETTING_KEY, &value).map_err(|e| {
+        LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: e.to_string(),
+        }
+    })?;
+    match password {
+        Some("") => crate::auth::clear_secret(
+            crate::auth::KEYRING_SERVICE_NAME,
+            PROXY_SECRET_ACCOUNT,
+            PROXY_SECRET_FILE,
+        ),
+        Some(password) => crate::auth::store_secret(
+            crate::auth::KEYRING_SERVICE_NAME,
+            PROXY_SECRET_ACCOUNT,
+            PROXY_SECRET_FILE,
+            PROXY_SECRET_CONTEXT,
+            password,
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Whether a proxy password is stored (never the password itself).
+pub fn proxy_password_stored() -> bool {
+    crate::auth::load_secret(
+        crate::auth::KEYRING_SERVICE_NAME,
+        PROXY_SECRET_ACCOUNT,
+        PROXY_SECRET_FILE,
+        PROXY_SECRET_CONTEXT,
+    )
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+fn apply_proxy(builder: reqwest::ClientBuilder) -> LauncherResult<reqwest::ClientBuilder> {
+    let setting = PROXY
+        .read()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_default();
+    Ok(match setting {
+        ProxySetting::System => builder,
+        ProxySetting::None => builder.no_proxy(),
+        ProxySetting::Manual { url, username } => {
+            let mut proxy =
+                reqwest::Proxy::all(url.trim()).map_err(|e| LauncherError::Generic {
+                    code: "ERR_PROXY_URL".into(),
+                    message: format!("The saved proxy cannot be used: {e}"),
+                })?;
+            if let Some(username) = username.filter(|name| !name.is_empty()) {
+                let password = crate::auth::load_secret(
+                    crate::auth::KEYRING_SERVICE_NAME,
+                    PROXY_SECRET_ACCOUNT,
+                    PROXY_SECRET_FILE,
+                    PROXY_SECRET_CONTEXT,
+                )
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+                proxy = proxy.basic_auth(&username, &password);
+            }
+            builder.proxy(proxy)
+        }
+    })
+}
+
 impl HttpClients {
     /// Build a full set of category-aware clients.
     ///
@@ -412,6 +576,7 @@ impl HttpClients {
             .user_agent(category.user_agent())
             .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(4);
+        let builder = apply_proxy(builder)?;
         let builder = match category.time_budget() {
             TimeBudget::Request { total } => builder.timeout(total),
             // `timeout` still applies as the outer ceiling; `read_timeout` is
@@ -699,6 +864,46 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
     }
 }
 
+/// A request that could not be sent never got an answer from its server: DNS,
+/// the route, a proxy, or the TLS handshake failed. That is reported as
+/// `NetworkOffline` (not a URL-bearing `ERR_NETWORK`), so every caller shows
+/// the same honest "no internet connection" story, and the failure is recorded
+/// for the Privacy status. Callers that have context attach it with
+/// [`LauncherError::while_attempting`].
+pub fn transport_failure() -> LauncherError {
+    crate::connectivity::record_unreachable();
+    LauncherError::NetworkOffline
+}
+
+/// [`transport_failure`] for a request that failed in reqwest: the user still
+/// sees "offline", but the log keeps why (DNS, TLS, refused, timeout). The URL
+/// is stripped first, since a query string can carry a token.
+pub fn transport_failure_from(error: reqwest::Error) -> LauncherError {
+    eprintln!("[http] request failed: {}", describe_transport_error(error));
+    transport_failure()
+}
+
+fn describe_transport_error(error: reqwest::Error) -> String {
+    let kind = if error.is_timeout() {
+        "timed out"
+    } else if error.is_connect() {
+        "could not connect"
+    } else if error.is_body() || error.is_decode() {
+        "response body failed"
+    } else {
+        "transport error"
+    };
+    let error = error.without_url();
+    let mut detail = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        detail.push_str(": ");
+        detail.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    format!("{kind} ({detail})")
+}
+
 // ---------------------------------------------------------------------------
 // Checked request helpers (with per-hop redirect re-validation)
 // ---------------------------------------------------------------------------
@@ -741,18 +946,12 @@ pub async fn checked_request_with_policy(
     let mut current_url = url.to_string();
 
     loop {
-        let response =
-            client
-                .get(&current_url)
-                .send()
-                .await
-                .map_err(|e| LauncherError::Generic {
-                    code: "ERR_NETWORK".into(),
-                    message: format!(
-                        "HTTP GET failed for {}: {e}",
-                        network::sanitized_url_for_log(&current_url)
-                    ),
-                })?;
+        let response = client
+            .get(&current_url)
+            .send()
+            .await
+            .map_err(transport_failure_from)?;
+        crate::connectivity::record_reachable();
 
         // Check if the response is a redirect.
         let status = response.status();
@@ -839,13 +1038,8 @@ pub async fn checked_send(
             request = request.body(body);
         }
 
-        let response = request.send().await.map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!(
-                "HTTP request failed for {}: {e}",
-                network::sanitized_url_for_log(&current_url)
-            ),
-        })?;
+        let response = request.send().await.map_err(transport_failure_from)?;
+        crate::connectivity::record_reachable();
         if !response.status().is_redirection() {
             return Ok(response);
         }
@@ -1051,10 +1245,7 @@ where
     let content_length = response.content_length();
     on_progress(0, content_length);
     loop {
-        let chunk = response.chunk().await.map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!("Failed to read response chunk: {e}"),
-        })?;
+        let chunk = response.chunk().await.map_err(transport_failure_from)?;
         let Some(chunk) = chunk else { break };
         total = total.saturating_add(chunk.len());
         if total > max {
@@ -1087,10 +1278,7 @@ pub async fn checked_response_bytes(
     let mut data = Vec::new();
     let mut total = 0usize;
     loop {
-        let chunk = response.chunk().await.map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!("Failed to read response chunk: {e}"),
-        })?;
+        let chunk = response.chunk().await.map_err(transport_failure_from)?;
         let Some(chunk) = chunk else { break };
         total = total.saturating_add(chunk.len());
         if total > max {
@@ -1144,13 +1332,8 @@ pub async fn checked_request_with_headers(
             }
         }
 
-        let response = req.send().await.map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!(
-                "HTTP GET failed for {}: {e}",
-                network::sanitized_url_for_log(&current_url)
-            ),
-        })?;
+        let response = req.send().await.map_err(transport_failure_from)?;
+        crate::connectivity::record_reachable();
 
         if response.status().is_redirection() {
             if remaining_redirects == 0 {
@@ -1240,13 +1423,8 @@ pub fn blocking_checked_request_with_policy(
         let response = client
             .get(&current_url)
             .send()
-            .map_err(|e| LauncherError::Generic {
-                code: "ERR_NETWORK".into(),
-                message: format!(
-                    "HTTP GET failed for {}: {e}",
-                    network::sanitized_url_for_log(url)
-                ),
-            })?;
+            .map_err(transport_failure_from)?;
+        crate::connectivity::record_reachable();
 
         if response.status().is_redirection() {
             if remaining_redirects == 0 {
@@ -1325,10 +1503,7 @@ pub fn blocking_checked_get_bytes_with_policy(
     let mut bytes = Vec::new();
     limited
         .read_to_end(&mut bytes)
-        .map_err(|e| LauncherError::Generic {
-            code: "ERR_NETWORK".into(),
-            message: format!("Failed to read response body: {e}"),
-        })?;
+        .map_err(|_| transport_failure())?;
     if bytes.len() as u64 > max {
         return Err(LauncherError::Generic {
             code: "ERR_RESPONSE_TOO_LARGE".into(),
@@ -2007,5 +2182,70 @@ mod tests {
         assert!(!category_allowlist(ClientCategory::Loader).is_empty());
         assert!(!category_allowlist(ClientCategory::MojangContent).is_empty());
         assert!(!category_allowlist(ClientCategory::Registry).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod transport_failure_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A loopback port with nothing listening on it: connecting is refused at once.
+    fn closed_local_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    #[tokio::test]
+    async fn request_through_a_dead_proxy_reports_no_internet_not_a_url_error() {
+        // Policy is the subject under test here, so the process gate is the
+        // permissive test gate, as in `Ctx::for_testing`.
+        crate::network_gate::install(Arc::new(crate::network_gate::AllowAll));
+        let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{}", closed_local_port()))
+            .expect("proxy url");
+        let client = reqwest::Client::builder()
+            .proxy(proxy)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client");
+        let clients = HttpClients::for_testing(client);
+
+        let err = checked_request(
+            &clients,
+            ClientCategory::GitHub,
+            "https://api.github.com/repos/agora-mc/Agora-Launcher/releases/latest",
+        )
+        .await
+        .expect_err("a dead proxy must fail the request");
+
+        assert!(matches!(err, LauncherError::NetworkOffline), "{err:?}");
+        assert_eq!(err.code(), "ERR_NETWORK_OFFLINE");
+        assert!(!err.to_string().contains("cached"), "{err}");
+        assert_eq!(
+            crate::connectivity::snapshot().state,
+            crate::connectivity::ConnectivityState::Unreachable
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_error_description_says_why_without_the_url() {
+        let url = format!(
+            "http://127.0.0.1:{}/pack?token=SECRET-TOKEN",
+            closed_local_port()
+        );
+        let error = reqwest::Client::new()
+            .get(&url)
+            .send()
+            .await
+            .expect_err("nothing listens on that port");
+        assert!(
+            error.to_string().contains("SECRET-TOKEN"),
+            "premise: {error}"
+        );
+
+        let described = describe_transport_error(error);
+        assert!(!described.contains("SECRET-TOKEN"), "{described}");
+        assert!(!described.contains("127.0.0.1"), "{described}");
+        assert!(described.starts_with("could not connect"), "{described}");
     }
 }

@@ -408,7 +408,7 @@ export function snapshotsToVisual(rows: Snapshot[], available = true): VisualSna
     const sizeMb = row.size_estimate / (1024 * 1024);
     return {
       id: row.id,
-      label: row.label ?? (role === 'known-good' ? 'Last known good' : role === 'current-known-good' ? 'Current known good' : role === 'undo-restore' ? 'Undo restore point' : 'Manual snapshot'),
+      label: row.label ?? (role === 'known-good' ? 'Launched fine before' : role === 'current-known-good' ? 'Last setup that launched fine' : role === 'undo-restore' ? 'Undo restore point' : 'Manual snapshot'),
       createdAt: row.created_at.slice(0, 10),
       sortKey: row.created_at,
       role,

@@ -113,6 +113,7 @@ async function installHighInteractionMock(page: Page) {
             },
             snapshot_readiness: 'ready',
             snapshot_error: null,
+            pack_gaps: [],
           });
         }
         if (command === 'query_launch_state') return Promise.resolve([]);

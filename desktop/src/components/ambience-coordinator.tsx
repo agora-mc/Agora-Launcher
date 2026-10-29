@@ -9,8 +9,7 @@
  *
  *  - High Interaction forces at least `calm` and defaults to `full`, since
  *    the living world *is* that mode.
- *  - Simple mode leaves the ambience at the global setting (default off;
- *    `calm` remains available in Settings).
+ *  - Simple mode keeps the world off, whatever the global setting says.
  */
 
 import { useEffect, useRef } from 'react';
@@ -36,6 +35,11 @@ function overrideFor(activeTab: string): AmbienceProfile | null {
     return null;
   }
   const caps = presentationCapabilities(pref);
+  // Simple keeps the world off. It pins reduced motion, which now holds the
+  // world still rather than hiding it, so the off has to be stated here.
+  if (pref === 'simple') {
+    return 'off';
+  }
   // High Interaction wants the full living world (music, eggs, buddy, click
   // sparkles) on EVERY page, not just the instances tab. The Lab is the one
   // exception: it drops to `calm` itself while a bench is open so animation
@@ -43,7 +47,7 @@ function overrideFor(activeTab: string): AmbienceProfile | null {
   if (pref === 'high-interaction' && activeTab !== 'lab') {
     return caps.ambience;
   }
-  // Standard / Simple: let the global setting stand.
+  // Standard: let the global setting stand.
   return null;
 }
 

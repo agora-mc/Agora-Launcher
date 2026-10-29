@@ -8,6 +8,7 @@ import {
   killProcess,
   launchInstance,
   launchInstanceDirect,
+  type QuickPlay,
   launchInstanceWithRecovery,
   parseLauncherError,
   pickOpenFile,
@@ -92,11 +93,12 @@ export interface ProcessController {
   /** Start a health-gated launch. Shows the health dialog when warnings/blockers exist. */
   /** Returns true only when a launch command actually started. Health-deferred,
    * concurrent, and failed attempts return false. */
-  startLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
+  startLaunch: (instanceId: string, directLaunch: boolean, quickPlay?: QuickPlay) => Promise<boolean>;
   startLaunchDetailed: (
     instanceId: string,
     directLaunch: boolean,
     onAwaitingHealth?: () => void,
+    quickPlay?: QuickPlay,
   ) => Promise<LaunchStartOutcome>;
   /** Continue a launch after the user approved health warnings. Uses the mode captured in startLaunch. Returns null on success or an error string. */
   approveLaunch: () => Promise<string | null>;
@@ -212,6 +214,9 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
     });
   }, []);
   const stateRef = useRef(state);
+  // Where the pending launch should go once the game starts. Kept beside the
+  // state so a health approval continues to the same world or server.
+  const quickPlayRef = useRef<QuickPlay | undefined>(undefined);
   stateRef.current = state;
 
   // Hydrate from backend on mount — recover running state after reload.
@@ -549,7 +554,7 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
   // ---- End Java recovery helpers ----
 
   const startLaunchDetailed = useCallback(
-    async (instanceId: string, directLaunch: boolean, onAwaitingHealth?: () => void) => {
+    async (instanceId: string, directLaunch: boolean, onAwaitingHealth?: () => void, quickPlay?: QuickPlay) => {
       // Reject if any non-terminal phase is active (concurrent-launch guard).
       const current = stateRef.current;
       const activePhases: LaunchPhase[] = ['launching', 'running'];
@@ -561,6 +566,7 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
         return 'failed' as const;
       }
 
+      quickPlayRef.current = quickPlay;
       setState({
         phase: 'launching',
         instanceId,
@@ -602,7 +608,7 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
           return 'awaiting_health' as const;
         }
 
-        const newState = await executeLaunch(instanceId, directLaunch, false, healthReport.scan_token);
+        const newState = await executeLaunch(instanceId, directLaunch, false, healthReport.scan_token, quickPlay);
         setState(newState);
         return 'started' as const;
       } catch (e) {
@@ -623,8 +629,8 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
   );
 
   const startLaunch = useCallback(
-    async (instanceId: string, directLaunch: boolean) =>
-      (await startLaunchDetailed(instanceId, directLaunch)) === 'started',
+    async (instanceId: string, directLaunch: boolean, quickPlay?: QuickPlay) =>
+      (await startLaunchDetailed(instanceId, directLaunch, undefined, quickPlay)) === 'started',
     [startLaunchDetailed],
   );
 
@@ -641,6 +647,7 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
           current.directLaunch,
           true,
           current.healthReport?.scan_token,
+          quickPlayRef.current,
         );
         setState(newState);
         return null;
@@ -935,9 +942,10 @@ async function executeLaunch(
   directLaunch: boolean,
   allowHealthBlockers: boolean,
   healthScanToken?: string,
+  quickPlay?: QuickPlay,
 ): Promise<ProcessState> {
   if (directLaunch) {
-    const pid = await launchInstanceDirect(instanceId, allowHealthBlockers, healthScanToken);
+    const pid = await launchInstanceDirect(instanceId, allowHealthBlockers, healthScanToken, quickPlay);
     return launchedState(instanceId, true, pid);
   } else {
     await launchInstance(instanceId, allowHealthBlockers, healthScanToken);

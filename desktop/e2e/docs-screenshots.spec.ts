@@ -403,6 +403,7 @@ async function installFlowMock(page: Page) {
           const instanceId = args.instanceId as string;
           return Promise.resolve({
             row: { instance_id: instanceId, name: 'Test Instance', minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', is_modpack: false, is_locked: false, last_launched_at: null, jvm_memory_mb: 4096, jvm_gc: 'G1GC', jvm_custom_args: '', created_at: '2026-01-01T00:00:00Z' },
+            pack_gaps: [],
             manifest: { instance_id: instanceId, name: 'Test Instance', created_from_pack: null, minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', mods: [{ filename: 'installed-test-mod.jar', registry_id: null, modrinth_id: null, mod_jar_id: 'test-mod', source: 'manual_drag_drop', version: '1.0.0', sha256: 'a'.repeat(64), installed_at: '2026-07-01T00:00:00Z', enabled: true, content_type: 'mod' }], resourcepacks: [], shaders: [], datapacks: [], worlds: [], user_preferences: {} },
           });
         }
@@ -529,7 +530,7 @@ test('docs screenshot: install plan review', async ({ page }) => {
   await page.getByRole('button', { name: 'View Details', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Test Mod', exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Install to Instance' }).click();
+  await page.getByRole('button', { name: /Install to Instance|Installed .*Change version/ }).click();
   await pickFirstInstanceSelect(page, 'test-instance');
   await page.getByRole('button', { name: 'Next: Choose Version' }).click();
   await page.getByText('test-mod-1.0.0.jar').click();
@@ -614,6 +615,7 @@ test('docs screenshot: loader compatibility repair', async ({ page }) => {
             },
             snapshot_readiness: 'ready',
             snapshot_error: null,
+            pack_gaps: [],
           });
         }
         if (command === 'check_instance_crash') return Promise.resolve(null);

@@ -17,7 +17,7 @@ async function installHealthMock(page: Page, options: {
     let callbackId = 0;
     const counts: Record<string, number> = {};
     const lastArgs: Record<string, Record<string, unknown>> = {};
-    const eventListeners = new Map<string, (payload: unknown) => void>();
+    const eventListeners = new Map<string, number>();
     const row = {
       instance_id: 'health-test', name: 'Health Test', loader: 'fabric',
       loader_version: '0.16', minecraft_version: '1.21', is_locked: false,
@@ -68,6 +68,7 @@ async function installHealthMock(page: Page, options: {
             },
             snapshot_readiness: 'ready',
             snapshot_error: null,
+            pack_gaps: [],
           });
         }
         if (command === 'check_instance_crash') return Promise.resolve(null);
@@ -104,7 +105,7 @@ async function installHealthMock(page: Page, options: {
               score: 'red',
               blockers: [{
                 kind: 'missing_required_dependency', mod_id: 'fabric-api', filename: 'example.jar',
-                message: "'example.jar' requires 'fabric-api' but no enabled artifact provides it.",
+                message: "example needs fabric-api, which isn't installed.",
                 suggested_action: "Install 'fabric-api' to resolve this dependency.",
               }],
               warnings: [],
@@ -225,11 +226,16 @@ test('periodic all-instance health scan alerts the card and reuses repair dialog
   await page.goto('/');
   await page.getByRole('button', { name: 'My Instances' }).click();
 
-  await expect(page.getByRole('alert', { name: '1 health issue detected' })).toBeVisible();
+  await expect(page.getByRole('alert', { name: '1 mod problem to fix' })).toBeVisible();
+  // Not ready: the card's main action is to see what is wrong; Launch stays reachable.
+  await expect(page.getByRole('button', { name: "See what's wrong" })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Launch anyway' })).toBeVisible();
   await page.getByRole('button', { name: 'Review & repair' }).click();
 
   await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
-  await expect(page.getByText("'example.jar' requires 'fabric-api' but no enabled artifact provides it.")).toBeVisible();
+  await expect(page.getByText("example needs fabric-api, which isn't installed.")).toBeVisible();
+  // A missing mod offers a search instead of a folder to drop a file into.
+  await expect(page.getByRole('button', { name: 'Find fabric-api' })).toBeVisible();
   // The review-only dialog is health INSPECTION only (SOL-2 §18.5): the rejected
   // direct disable repair (disable_mod_for_test) must not be reachable from a
   // review-only surface. The Standard disable repair remains in the launch path.
@@ -243,13 +249,13 @@ test('instance editor mirrors the shared health review alert', async ({ page }) 
   await installHealthMock(page, { direct: true, periodicBlocker: true });
   await page.goto('/');
   await page.getByRole('button', { name: 'My Instances' }).click();
-  await expect(page.getByRole('alert', { name: '1 health issue detected' })).toBeVisible();
+  await expect(page.getByRole('alert', { name: '1 mod problem to fix' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Edit' }).first().click();
-  await expect(page.getByRole('alert', { name: '1 health issue detected' })).toBeVisible();
+  await expect(page.getByRole('alert', { name: '1 mod problem to fix' })).toBeVisible();
   await page.getByRole('button', { name: 'Review & repair' }).click();
   await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
-  await expect(page.getByText("'example.jar' requires 'fabric-api' but no enabled artifact provides it.")).toBeVisible();
+  await expect(page.getByText("example needs fabric-api, which isn't installed.")).toBeVisible();
 });
 
 test('game-exited event clears running state in UI', async ({ page }) => {
@@ -395,11 +401,10 @@ test('loader blocker groups unresolved predicates and discloses affected mods', 
   await page.getByRole('button', { name: 'My Instances' }).click();
   await page.getByRole('button', { name: 'Launch' }).first().click();
 
-  await expect(page.getByText('Unresolved requirements (1)')).toBeVisible();
+  await expect(page.getByText('Not met (1)')).toBeVisible();
   await expect(page.getByText(/>=0.19.0/)).toBeVisible();
-  await expect(page.getByText('Current loader provides 0.16')).toBeVisible();
-  await page.getByText('1 affected mod').click();
-  await expect(page.getByText('moda')).toBeVisible();
+  await expect(page.getByText('This instance provides 0.16')).toBeVisible();
+  await expect(page.getByText(/moda needs Fabric/)).toBeVisible();
 });
 
 test('loader blocker with no compatible candidate surfaces conflicts and no switch action', async ({ page }) => {
@@ -412,7 +417,7 @@ test('loader blocker with no compatible candidate surfaces conflicts and no swit
   await expect(page.getByRole('button', { name: 'Switch and launch' })).toHaveCount(0);
   await expect(page.getByRole('combobox', { name: 'Choose compatible version' })).toHaveCount(0);
 
-  await page.getByText('View compatibility evidence · 1 conflict').click();
+  await page.getByText('Advanced details · 1 conflict').click();
   await expect(page.getByText('conflict between moda and modb: no signed loader candidate satisfies both')).toBeVisible();
 });
 

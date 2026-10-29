@@ -50,7 +50,30 @@ async function installOnboardingMock(page: Page) {
   });
 }
 
+/**
+ * A backend that answers nothing: every command rejects, so the shell tests
+ * below check that the app still renders when its backend fails outright. Only
+ * the event plugin answers, because `listen()` reaches into the bridge before
+ * it ever sends a command, and the app's listeners do not catch that.
+ */
+async function installFailingBackendMock(page: Page) {
+  await page.addInitScript(() => {
+    Object.assign(window as unknown as Record<string, unknown>, {
+      __TAURI_INTERNALS__: {
+        transformCallback() { return 1; },
+        unregisterCallback() {},
+        invoke(command: string) {
+          if (command.startsWith('plugin:event|')) return Promise.resolve(1);
+          return Promise.reject(new Error(`No backend in this test: ${command}`));
+        },
+      },
+      __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener() {} },
+    });
+  });
+}
+
 test('app shell renders with Agora branding', async ({ page }) => {
+  await installFailingBackendMock(page);
   await page.goto('/');
   // The app should load the home page (Vite app shell).
   await expect(page.locator('body')).toBeVisible();
@@ -59,6 +82,7 @@ test('app shell renders with Agora branding', async ({ page }) => {
 });
 
 test('navigation to browse works', async ({ page }) => {
+  await installFailingBackendMock(page);
   await page.goto('/');
   // Sidebar uses <button> elements (not <a> links) for navigation.
   const browseButton = page.getByRole('button', { name: 'Browse', exact: true });
@@ -69,6 +93,7 @@ test('navigation to browse works', async ({ page }) => {
 });
 
 test('sidebar navigation buttons are visible', async ({ page }) => {
+  await installFailingBackendMock(page);
   await page.goto('/');
   // All base sidebar tabs should be present as buttons.
   const tabs = ['Home', 'Browse', 'My Instances', 'Community Governance', 'Settings'];
@@ -118,7 +143,6 @@ test('persisted service choices survive Back and Continue', async ({ page }) => 
 });
 
 test('Java step checked invokes ensure_java_runtime with onboarding operationId', async ({ page }) => {
-  const ensureJavaCalls: string[] = [];
   await page.addInitScript(() => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     let callbackId = 0;
@@ -182,7 +206,6 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
 });
 
 test('Java step unchecked does not invoke ensure_java_runtime', async ({ page }) => {
-  const ensureJavaCalls: string[] = [];
   await page.addInitScript(() => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     let callbackId = 0;
@@ -243,7 +266,6 @@ test('Java step unchecked does not invoke ensure_java_runtime', async ({ page })
 });
 
 test('onboarding Java step cancel allows continue without Java', async ({ page }) => {
-  let ensureJavaReject: ((reason: unknown) => void) | null = null;
   await page.addInitScript(() => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     let callbackId = 0;

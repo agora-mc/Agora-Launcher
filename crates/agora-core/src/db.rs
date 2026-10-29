@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 16;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 18;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -82,6 +82,8 @@ pub fn init_local_state_db(db_path: &std::path::Path) -> anyhow::Result<()> {
         "network_github_oauth_enabled",
         "network_msa_enabled",
         "network_adoptium_enabled",
+        "network_server_ping_enabled",
+        "network_log_upload_enabled",
     ] {
         if get_setting(&conn, key).ok().flatten().is_none() {
             set_setting(&conn, key, &serde_json::Value::Bool(true))?;
@@ -143,6 +145,28 @@ pub fn init_local_state_db(db_path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The global AlwaysPreTouch switch from Settings, if the user set one.
+///
+/// Settings writes `always_pre_touch`. Launch code used to read
+/// `jvm_always_pre_touch`, which nothing in the app writes, so the switch had
+/// no effect; that key is still honoured as a fallback for anyone who set it
+/// by hand.
+pub fn global_always_pre_touch(conn: &Connection) -> Option<bool> {
+    ["always_pre_touch", "jvm_always_pre_touch"]
+        .iter()
+        .find_map(|key| get_setting(conn, key).ok().flatten())
+        .and_then(|value| match value {
+            serde_json::Value::Bool(b) => Some(b),
+            serde_json::Value::Number(n) => Some(n.as_i64() != Some(0)),
+            serde_json::Value::String(s) => match s.as_str() {
+                "true" | "1" => Some(true),
+                "false" | "0" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
 const BOOLEAN_SETTING_KEYS: &[&str] = &[
     "modrinth_enabled",
     "ai_mcp_enabled",
@@ -159,6 +183,8 @@ const BOOLEAN_SETTING_KEYS: &[&str] = &[
     "network_mojang_metadata_enabled",
     "network_mojang_content_enabled",
     "network_loader_enabled",
+    "network_server_ping_enabled",
+    "network_log_upload_enabled",
     "network_lockdown_enabled",
 ];
 
@@ -634,6 +660,56 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
     }
 
     if current < 16 {
+        // Pack entries the instance still lacks (failed, or waiting on a user
+        // action). Kept here so the instance page can say "not ready" after a
+        // restart, when the import report is gone. No uniqueness on purpose:
+        // the list is replaced as a whole, and an unnamed entry must not
+        // collide with another one.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS instance_pack_gaps (
+                 instance_id TEXT NOT NULL,
+                 filename TEXT NOT NULL,
+                 display_name TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 reason TEXT,
+                 FOREIGN KEY (instance_id) REFERENCES user_instances(instance_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_instance_pack_gaps_instance
+                 ON instance_pack_gaps (instance_id);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (16)",
+            [],
+        )?;
+    }
+
+    if current < 17 {
+        // Lifetime play time. `launch_history` is trimmed to its newest rows,
+        // so the total has to live with the instance. Seeded from whatever
+        // history survives, which is the best figure available.
+        let _ = conn.execute(
+            "ALTER TABLE user_instances ADD COLUMN total_play_ms INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        conn.execute(
+            "UPDATE user_instances
+                SET total_play_ms = COALESCE(
+                    (SELECT SUM(duration_ms) FROM launch_history
+                      WHERE launch_history.instance_id = user_instances.instance_id),
+                    0)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (17)",
+            [],
+        )?;
+    }
+
+    if current < 18 {
+        // Instances of games other than Minecraft (MASTER_SPEC section 26). Created here, after
+        // master's versions 16 and 17, so a database that already ran this branch's earlier
+        // version 16 still gets master's pack-gap table and play-time column; both statements are
+        // idempotent.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS game_instances (
                  instance_id TEXT PRIMARY KEY,
@@ -642,10 +718,20 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
                  base_json TEXT NOT NULL,
                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
                  last_launched_at TEXT
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS instance_pack_gaps (
+                 instance_id TEXT NOT NULL,
+                 filename TEXT NOT NULL,
+                 display_name TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 reason TEXT,
+                 FOREIGN KEY (instance_id) REFERENCES user_instances(instance_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_instance_pack_gaps_instance
+                 ON instance_pack_gaps (instance_id);",
         )?;
         conn.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (16)",
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (18)",
             [],
         )?;
     }
@@ -983,7 +1069,8 @@ pub fn list_instances(conn: &Connection) -> anyhow::Result<Vec<InstanceRow>> {
                  java_path, java_incompatible_override, icon_path, launch_mode_override,
                  jvm_memory_mode,
                  (SELECT launcher_kind FROM instance_imports
-                  WHERE instance_imports.instance_id = user_instances.instance_id LIMIT 1)
+                  WHERE instance_imports.instance_id = user_instances.instance_id LIMIT 1),
+                 total_play_ms
           FROM user_instances
          ORDER BY last_launched_at DESC NULLS LAST, created_at DESC",
     )?;
@@ -1004,7 +1091,8 @@ pub fn get_instance(conn: &Connection, instance_id: &str) -> anyhow::Result<Opti
                  java_path, java_incompatible_override, icon_path, launch_mode_override,
                  jvm_memory_mode,
                  (SELECT launcher_kind FROM instance_imports
-                  WHERE instance_imports.instance_id = user_instances.instance_id LIMIT 1)
+                  WHERE instance_imports.instance_id = user_instances.instance_id LIMIT 1),
+                 total_play_ms
           FROM user_instances
          WHERE instance_id = ?1",
     )?;
@@ -1180,6 +1268,7 @@ fn row_to_instance(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstanceRow> {
         launch_mode_override: row.get(16)?,
         jvm_memory_mode: row.get(17)?,
         import_source: row.get(18)?,
+        total_play_ms: row.get(19)?,
     })
 }
 
@@ -1421,6 +1510,65 @@ pub fn replace_instance_pack_files(
     }
     tx.commit()?;
     Ok(())
+}
+
+/// A pack entry that is still missing from an instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstancePackGap {
+    pub filename: String,
+    pub display_name: String,
+    /// `failed` or `needs_action`.
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+/// Replace the list of pack entries an instance is still missing.
+pub fn replace_instance_pack_gaps(
+    conn: &Connection,
+    instance_id: &str,
+    gaps: &[InstancePackGap],
+) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM instance_pack_gaps WHERE instance_id = ?1",
+        [instance_id],
+    )?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO instance_pack_gaps (instance_id, filename, display_name, status, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for gap in gaps {
+            stmt.execute(rusqlite::params![
+                instance_id,
+                gap.filename,
+                gap.display_name,
+                gap.status,
+                gap.reason
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn list_instance_pack_gaps(
+    conn: &Connection,
+    instance_id: &str,
+) -> anyhow::Result<Vec<InstancePackGap>> {
+    let mut stmt = conn.prepare(
+        "SELECT filename, display_name, status, reason FROM instance_pack_gaps
+         WHERE instance_id = ?1 ORDER BY rowid",
+    )?;
+    let rows = stmt.query_map([instance_id], |row| {
+        Ok(InstancePackGap {
+            filename: row.get(0)?,
+            display_name: row.get(1)?,
+            status: row.get(2)?,
+            reason: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1765,6 +1913,15 @@ mod tests {
                 "{key} should default to true"
             );
         }
+    }
+
+    #[test]
+    fn global_pre_touch_reads_the_key_settings_writes() {
+        let (conn, _path) = test_db();
+        set_setting(&conn, "always_pre_touch", &serde_json::json!(false)).unwrap();
+        assert_eq!(global_always_pre_touch(&conn), Some(false));
+        set_setting(&conn, "always_pre_touch", &serde_json::json!(true)).unwrap();
+        assert_eq!(global_always_pre_touch(&conn), Some(true));
     }
 
     #[test]
@@ -2123,6 +2280,7 @@ mod tests {
             icon_path: Some("instance-icon.png".into()),
             launch_mode_override: "delegated".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         upsert_instance(&conn, &row).unwrap();
         let now = chrono::Utc::now().to_rfc3339();
@@ -2244,6 +2402,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         upsert_instance(&conn, &row).unwrap();
 
@@ -2293,6 +2452,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         upsert_instance(&conn, &row).unwrap();
 
@@ -2354,6 +2514,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         upsert_instance(&conn, &row).unwrap();
 
@@ -2409,6 +2570,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         upsert_instance(&conn, &row).unwrap();
         let files = vec![InstancePackFile {
@@ -2447,6 +2609,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         upsert_instance(&conn, &row).unwrap();
         let files = vec![InstancePackFile {
@@ -2497,6 +2660,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         upsert_instance(&conn, &row).unwrap();
         let files = vec![InstancePackFile {

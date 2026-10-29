@@ -31,7 +31,7 @@ import {
   type TourState,
   type TourStep,
 } from './tourModel';
-import { anchorsFromNode } from './tourDom';
+import { anchorsFromNode, isTextEntry } from './tourDom';
 import { subscribeTourSignals } from './tourSignals';
 import { loadTourRecord, saveTourRecord } from './tourStorage';
 
@@ -123,11 +123,20 @@ export function TourProvider({ children, onStart, steps = TOUR_STEPS }: TourProv
       const anchors = anchorsFromNode(event.target);
       if (anchors.length > 0) dispatch({ type: 'dom-change', anchors });
     };
+    const onText = (event: Event) => {
+      if (!isTextEntry(event.target)) return;
+      const anchors = anchorsFromNode(event.target);
+      if (anchors.length > 0) dispatch({ type: 'dom-focus', anchors });
+    };
     document.addEventListener('click', onClick, true);
     document.addEventListener('change', onChange, true);
+    document.addEventListener('focusin', onText, true);
+    document.addEventListener('input', onText, true);
     return () => {
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('change', onChange, true);
+      document.removeEventListener('focusin', onText, true);
+      document.removeEventListener('input', onText, true);
     };
   }, [running]);
 

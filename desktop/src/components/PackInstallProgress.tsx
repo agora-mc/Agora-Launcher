@@ -4,9 +4,18 @@ import {
   formatError,
   importInstancePack,
   importModrinthPackByUrl,
+  discardPackReview,
   describeRestoreCoverage,
+  planPackImport,
   restoreSnapshot,
+  retryPackImportEntries,
+  setContentProviderEnabled,
+  type PackImportPlan,
+  type PackImportReport,
 } from '../lib/tauri';
+import { PackImportSummary } from './PackImportSummary';
+import { PackImportReview } from './PackImportReview';
+import { importHasIssues, importHeadline, mergeRetry, needsActionOutcomes } from '../lib/packImport';
 import { applyInstallPlan, describePlanAction, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
 
 export type PackInstallTask = {
@@ -26,8 +35,6 @@ export type PackInstallTask = {
   bytesDownloaded: number;
   bytesTotal: number;
   error: string | null;
-  /** After a pack import: mods not installed (with reasons), and unverified installs. */
-  notes?: string[];
   healthReport?: { blockers: { message: string; suggested_action: string | null; filename: string | null }[]; warnings: { message: string }[]; score: string } | null;
   snapshotId?: string | null;
   /** Completion message for plan tasks ("Removed 7 files."). */
@@ -52,9 +59,18 @@ type PackInstallProgressEvent = {
 type PackInstallContextValue = {
   revision: number;
   tasks: PackInstallTask[];
+  /** Per-mod results of Agora pack imports that still need the user's eyes, by instance id. */
+  importReports: Record<string, PackImportReport>;
+  /** Set (or with null, remove) the kept result of an import. */
+  updateImportReport: (instanceId: string, report: PackImportReport | null) => void;
   getTaskForInstance: (instanceId: string) => PackInstallTask | null;
   startPlan: (plan: ResolvedInstallPlan, label: string, instanceName?: string, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => void;
   startModrinthPack: (downloadUrl: string, label: string, packIconUrl?: string | null) => void;
+  /**
+   * Import a pack file as a new instance. Both formats are reviewed first:
+   * nothing is written until the user chooses Import, and the new instance's
+   * name can be changed there.
+   */
   startPackFile: (sourcePath: string, label: string) => void;
   /** Start a corner task that resolves an install intent in the background. */
   startResolvingPlan: (label: string, instanceName: string) => {
@@ -148,6 +164,16 @@ function phaseLabel(phase: string): string {
 export function PackInstallProvider({ children }: { children: ReactNode }) {
   const [taskMap, setTaskMap] = useState<Record<string, PackInstallTask>>({});
   const [revision, setRevision] = useState(0);
+  const [importReports, setImportReports] = useState<Record<string, PackImportReport>>({});
+  /** The pack file (.agora-pack.json or .mrpack) the user is reviewing, if any. Nothing is written until Import. */
+  const [review, setReview] = useState<{
+    sourcePath: string;
+    label: string;
+    plan: PackImportPlan | null;
+    error: string | null;
+    /** The name for the new instance; starts as the plan's free suggestion. */
+    name: string;
+  } | null>(null);
 
   useEffect(() => {
     const unlistenPlan = listen<ProgressEvent>('install:progress', (event) => {
@@ -261,19 +287,27 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     }, 8000);
   };
 
-  const completeImportedTask = (id: string, instanceId: string, label: string, notes: string[] = []) => {
+  const completeImportedTask = (
+    id: string,
+    instanceId: string,
+    label: string,
+    report: PackImportReport | null = null,
+  ) => {
+    // A pack whose mods did not all install, or could not all be checked, is
+    // not "installed successfully": say what happened and keep the details.
+    const issues = report !== null && importHasIssues(report);
+    if (report !== null && issues) {
+      setImportReports((current) => ({ ...current, [instanceId]: report }));
+    }
     setTaskMap((current) => updateTask(current, id, {
       instanceId,
       instanceName: label,
       status: 'completed',
       phase: 'done',
-      message: notes.length > 0 ? 'Pack installed, with notes.' : 'Pack installed successfully.',
+      message: report !== null && issues ? `Imported. ${importHeadline(report)}` : 'Pack installed successfully.',
       progress: 1,
-      notes,
     }));
     setRevision((value) => value + 1);
-    // A pack with notes stays until the user dismisses it, so the notes can be read.
-    if (notes.length > 0) return;
     window.setTimeout(() => {
       setTaskMap((current) => {
         if (!current[id] || current[id].status === 'running') return current;
@@ -354,18 +388,55 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       .catch((cause) => failTask(id, formatError(cause)));
   };
 
-  const startPackFile = (sourcePath: string, label: string) => {
+  /** `reviewedSha256` is the fingerprint the review recorded; `name` is the instance name chosen there. */
+  const beginPackFileImport = (
+    sourcePath: string,
+    label: string,
+    reviewedSha256?: string,
+    name?: string,
+    skipUnfetchable = false,
+  ) => {
     const id = `pack-file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setTaskMap((current) => ({
       ...current,
       [id]: initialTask(id, label, 'pack-file', null, label),
     }));
-    void importInstancePack(sourcePath)
-      .then((result) => completeImportedTask(id, result.instanceId, label, [
-        ...result.skipped.map((mod) => `Not installed: ${mod.name}. ${mod.message}`),
-        ...result.unverified,
-      ]))
+    void importInstancePack(sourcePath, reviewedSha256, name, skipUnfetchable)
+      .then((outcome) => completeImportedTask(id, outcome.instance_id, label, outcome.report))
       .catch((cause) => failTask(id, formatError(cause)));
+  };
+
+  const startPackFile = (sourcePath: string, label: string) => {
+    // Review first. The plan only reads the file and settings, so cancelling
+    // leaves nothing behind.
+    setReview({ sourcePath, label, plan: null, error: null, name: '' });
+    void planPackImport(sourcePath)
+      .then((plan) => setReview((current) => (
+        current?.sourcePath === sourcePath
+          ? { ...current, plan, name: plan.suggested_name || plan.pack_name }
+          : current
+      )))
+      .catch((cause) => setReview((current) => (
+        current?.sourcePath === sourcePath ? { ...current, error: formatError(cause) } : current
+      )));
+  };
+
+  const confirmReview = (skipUnfetchable: boolean) => {
+    if (!review?.plan) return;
+    const { sourcePath, label, plan, name } = review;
+    if (name.trim() === '') return;
+    setReview(null);
+    // The import is held to the exact bytes that were reviewed.
+    beginPackFileImport(sourcePath, label, plan.file_sha256, name.trim(), skipUnfetchable);
+  };
+
+  const updateImportReport = (instanceId: string, report: PackImportReport | null) => {
+    setImportReports((current) => {
+      const next = { ...current };
+      if (report !== null) next[instanceId] = report;
+      else delete next[instanceId];
+      return next;
+    });
   };
 
   const value = useMemo<PackInstallContextValue>(() => {
@@ -373,6 +444,8 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     return {
       revision,
       tasks,
+      importReports,
+      updateImportReport,
       getTaskForInstance: (instanceId) =>
         tasks.find((task) => task.instanceId === instanceId) ?? null,
       startPlan,
@@ -381,11 +454,26 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       startResolvingPlan,
       dismissTask,
     };
-  }, [revision, taskMap]);
+  }, [revision, taskMap, importReports]);
 
   return (
     <PackInstallContext.Provider value={value}>
       {children}
+      {review && (
+        <PackImportReview
+          label={review.label}
+          plan={review.plan}
+          error={review.error}
+          name={review.name}
+          onNameChange={(name) => setReview((current) => (current ? { ...current, name } : current))}
+          onImport={confirmReview}
+          onCancel={() => {
+            // A .mrpack review staged a copy of the file; drop it.
+            if (review.plan) void Promise.resolve(discardPackReview(review.plan.file_sha256)).catch(() => undefined);
+            setReview(null);
+          }}
+        />
+      )}
       <PackInstallIndicator tasks={value.tasks} />
     </PackInstallContext.Provider>
   );
@@ -412,13 +500,13 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
           <p className="min-w-0 truncate text-sm font-semibold text-amber-700 dark:text-amber-300">
             Health issues need attention
           </p>
-          <span className="shrink-0 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">
+          <span className="shrink-0 rounded-sm bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">
             {task.healthReport?.blockers.length ?? 0} blocker{task.healthReport?.blockers.length === 1 ? '' : 's'}
           </span>
         </div>
         <p className="text-xs text-muted-foreground" title={task.message}>{task.message}</p>
         {task.healthReport && task.healthReport.blockers.length > 0 && (
-          <div className="max-h-28 space-y-1 overflow-y-auto rounded border border-amber-500/30 bg-background p-2">
+          <div className="max-h-28 space-y-1 overflow-y-auto rounded-sm border border-amber-500/30 bg-background p-2">
             {task.healthReport.blockers.slice(0, 3).map((b, i) => (
               <p key={i} className="text-xs text-destructive">{b.message}</p>
             ))}
@@ -462,10 +550,51 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
         {detail && <span className="shrink-0">{detail}</span>}
       </div>
       {task.error && <p className="text-xs text-destructive">{task.error}</p>}
-      {task.notes?.map((note, index) => (
-        <p key={index} className="text-xs text-amber-700 dark:text-amber-300">{note}</p>
-      ))}
     </div>
+  );
+}
+
+/**
+ * Results of Agora pack imports that did not end clean, kept until dismissed.
+ * Global because imports start from more than one page; rendered in the page
+ * flow (top of the main area), not over it, so it never covers the sidebar or
+ * a page's controls. Two ways to let Modrinth entries in: one-time for this
+ * import (the setting is left alone), or the setting itself. The retry installs
+ * only the entries that were waiting, in the instance the import already made.
+ */
+export function PackImportReports() {
+  const { importReports, updateImportReport } = usePackInstall();
+  const entries = Object.values(importReports);
+  if (entries.length === 0) return null;
+  const retry = async (report: PackImportReport, allowModrinthOnce: boolean) => {
+    const waiting = needsActionOutcomes(report);
+    const retried = await retryPackImportEntries(
+      report.instance_id,
+      waiting.map((outcome) => outcome.entry),
+      allowModrinthOnce,
+    );
+    updateImportReport(report.instance_id, mergeRetry(report, retried));
+  };
+  return (
+    <aside
+      aria-label="Pack import results"
+      className="mb-4 space-y-2"
+    >
+      {entries.map((report) => (
+        <PackImportSummary
+          key={report.instance_id}
+          report={report}
+          onAllowModrinthOnce={() => retry(report, true)}
+          onTurnOnModrinth={async () => {
+            await setContentProviderEnabled('modrinth', true);
+            await retry(report, false);
+          }}
+          onRetry={() => retry(report, false)}
+          onOpenSettings={() => window.dispatchEvent(new CustomEvent('agora-navigate', { detail: 'settings' }))}
+          onDismiss={() => updateImportReport(report.instance_id, null)}
+        />
+      ))}
+    </aside>
   );
 }
 
@@ -476,13 +605,13 @@ function PackInstallIndicator({ tasks }: { tasks: PackInstallTask[] }) {
 
   if (tasks.length === 0) return null;
   return (
-    <aside className="pointer-events-none fixed bottom-4 right-4 z-[60] w-[min(26rem,calc(100vw-2rem))] space-y-2">
+    <aside className="pointer-events-none fixed bottom-4 right-4 z-60 w-[min(26rem,calc(100vw-2rem))] space-y-2">
       {tasks.map((task) => {
         const isHealthBlocked = task.status === 'health-blocked';
         return (
           <div
             key={task.id}
-            className={`pointer-events-auto rounded-xl border bg-card/95 p-4 shadow-2xl backdrop-blur ${isHealthBlocked ? 'border-amber-500/50' : 'border-border'}`}
+            className={`pointer-events-auto rounded-xl border bg-card/95 p-4 shadow-2xl backdrop-blur-sm ${isHealthBlocked ? 'border-amber-500/50' : 'border-border'}`}
           >
             <div className="mb-2 flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -493,7 +622,7 @@ function PackInstallIndicator({ tasks }: { tasks: PackInstallTask[] }) {
               </div>
               {task.status === 'running' && <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
               {task.status === 'completed' && <span className="shrink-0 text-green-600">✓</span>}
-              {isHealthBlocked && <span className="shrink-0 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">!</span>}
+              {isHealthBlocked && <span className="shrink-0 rounded-sm bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">!</span>}
             </div>
             <PackInstallProgressBar task={task} />
             <div className="mt-3 flex flex-wrap justify-end gap-2">
