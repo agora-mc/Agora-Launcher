@@ -1,10 +1,7 @@
 /**
  * FOMOD slot owned by the fomod slice: the installer wizard for archives that ask questions.
- * It has no shell slot of its own; the content slice mounts it from the instance's Content tab.
+ * It has no shell slot of its own; the content slice mounts it from the instance's Content tab,
+ * and the Library catalog mounts it when an install needs an installer.
  */
 
-import { SlotPlaceholder } from '../shared/SlotPlaceholder';
-
-export function FomodWizard({ contentId }: { contentId: string }) {
-  return <SlotPlaceholder title={`Installer options (${contentId})`} slice="fomod" />;
-}
+export { FomodWizard, type FomodWizardProps } from './FomodWizard';
