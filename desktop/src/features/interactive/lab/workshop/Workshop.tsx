@@ -1440,6 +1440,8 @@ export function Workshop({ onOpenGuide, onNavigateStandard, onAmbienceChange, re
         // Claims controller input while open. An attribute rather than an
         // import: this area may not depend on app-level modules.
         data-controller-dialog={bench ? '' : undefined}
+        // Closed, it stays mounted and fades; `inert` keeps Tab out of it.
+        {...(bench ? {} : { inert: '' })}
         onClick={(e) => { if (e.target === e.currentTarget) closeBench(); }}
       >
         {bench ? (

@@ -73,7 +73,7 @@ function BannerView({ state, status, error, actions }: BannerProps) {
         </span>
         <button
           onClick={actions.sync}
-          className="shrink-0 rounded px-2 py-0.5 font-medium text-primary hover:bg-accent disabled:opacity-50"
+          className="shrink-0 rounded-sm px-2 py-0.5 font-medium text-primary hover:bg-accent disabled:opacity-50"
         >
           Check for Updates
         </button>
@@ -86,7 +86,9 @@ function BannerView({ state, status, error, actions }: BannerProps) {
   return (
     <div className="flex items-center justify-between gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs">
       <span className="text-amber-700 dark:text-amber-300">
-        {state === 'missing'
+        {state === 'missing' && error
+          ? `${error} Browse and recommendations need the catalog; retry once you're online.`
+          : state === 'missing'
           ? 'Catalog not downloaded yet. Download it to enable updates, recommendations, and governance.'
           : error && state === 'offline'
             ? 'Using cached catalog. Updates unavailable.'
@@ -97,7 +99,7 @@ function BannerView({ state, status, error, actions }: BannerProps) {
       <button
         onClick={actions.sync}
         disabled={isSyncing}
-        className="shrink-0 rounded px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/40 disabled:opacity-50"
+        className="shrink-0 rounded-sm px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/40 disabled:opacity-50"
       >
         {isSyncing ? 'Refreshing…' : state === 'missing' ? 'Download Catalog' : 'Retry'}
       </button>
@@ -142,7 +144,7 @@ function FullscreenView({
                 onClick={onContinue}
                 className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
-                {continueLabel ?? 'Finish'}
+                {continueLabel ?? 'Continue'}
               </button>
             </div>
           )}
@@ -180,6 +182,11 @@ function FullscreenView({
         <>
           <p className="text-sm">No catalog found.</p>
           {error && <p className="text-xs text-destructive mt-1">{error}</p>}
+          <p className="text-xs text-muted-foreground mt-1">
+            {error
+              ? 'Retry downloads it again once you are online. Browse stays empty until then; your installed instances and local files are not affected.'
+              : 'Retry downloads it. The catalog needs an internet connection the first time.'}
+          </p>
           {missingWarning && (
             <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
               {missingWarning}

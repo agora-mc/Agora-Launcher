@@ -240,11 +240,15 @@ pub fn run() {
             commands::list_audit_log,
             commands::check_registry_update,
             commands::get_registry_status,
+            commands::get_connectivity_status,
             commands::extract_overrides,
             commands::list_instances,
             commands::get_instance_detail,
             commands::create_instance,
             commands::delete_instance,
+            commands::list_recently_deleted,
+            commands::restore_deleted_instance,
+            commands::purge_deleted_instance,
             commands::unlock_instance,
             commands::lock_instance,
             commands::rename_instance,
@@ -264,6 +268,7 @@ pub fn run() {
             commands::clear_cached_instance_updates,
             commands::get_lkg_marker,
             commands::export_lockfile,
+            commands::save_lockfile_export,
             commands::import_lockfile,
             commands::detect_drift,
             commands::verify_lockfile,
@@ -278,6 +283,12 @@ pub fn run() {
             commands::get_migration_report,
             commands::get_launch_history,
             commands::set_instance_wrapper_command,
+            commands::set_instance_window_size,
+            commands::set_instance_launch_hooks,
+            commands::set_instance_notes,
+            commands::set_instance_sharing,
+            commands::list_instance_groups,
+            commands::set_instance_group,
             commands::create_desktop_shortcut,
             commands::get_shared_screenshot_status,
             commands::link_shared_screenshots,
@@ -306,6 +317,9 @@ pub fn run() {
             commands::apply_instance_template,
             commands::list_loadout_profiles,
             commands::create_loadout_profile,
+            commands::list_loadout_unlisted_mods,
+            commands::preview_loadout_update,
+            commands::update_loadout_profile,
             commands::apply_loadout_profile,
             commands::delete_loadout_profile,
             commands::import_instance,
@@ -321,6 +335,7 @@ pub fn run() {
             commands::change_loader_version,
             commands::list_manifest_loaders,
             commands::list_manifest_mc_versions,
+            commands::list_snapshot_versions,
             commands::export_crash_report,
             commands::get_setting,
             commands::set_setting,
@@ -352,7 +367,11 @@ pub fn run() {
             commands::plan_launcher_imports,
             commands::execute_launcher_imports,
             commands::export_instance_pack,
+            commands::export_sourceless_mods,
             commands::import_instance_pack,
+            commands::plan_pack_import,
+            commands::discard_pack_review,
+            commands::retry_pack_import_entries,
             commands::is_modrinth_enabled,
             commands::search_modrinth,
             commands::list_modrinth_categories,
@@ -385,6 +404,35 @@ pub fn run() {
             commands::set_datapack_worlds,
             commands::sync_instance_datapacks,
             commands::list_instance_worlds,
+            commands::list_worlds,
+            commands::rename_world,
+            commands::copy_world,
+            commands::delete_world,
+            commands::export_world,
+            commands::import_world,
+            commands::list_servers,
+            commands::list_screenshots,
+            commands::list_recent_play,
+            commands::read_screenshot,
+            commands::rename_screenshot,
+            commands::delete_screenshot,
+            commands::add_server,
+            commands::update_server,
+            commands::remove_server,
+            commands::move_server,
+            commands::ping_server,
+            commands::skin_profile,
+            commands::skin_library,
+            commands::add_skin_to_library,
+            commands::remove_skin_from_library,
+            commands::wear_saved_skin,
+            commands::reset_skin,
+            commands::set_cape,
+            commands::get_proxy_setting,
+            commands::set_proxy_setting,
+            commands::list_shareable_logs,
+            commands::preview_log_share,
+            commands::share_log,
             commands::confirm_crash_fix,
             commands::report_still_crashing,
             commands::get_dependency_graph,
@@ -410,6 +458,9 @@ pub fn run() {
             commands::credential_storage_status,
             commands::msa_refresh,
             commands::msa_logout,
+            commands::msa_list_accounts,
+            commands::msa_switch_account,
+            commands::msa_remove_account,
             commands::compute_gc_args,
             commands::browse_search,
             commands::browse_load_more,
@@ -565,6 +616,26 @@ pub fn run() {
                             Ok(_) => {}
                             Err(error) => {
                                 eprintln!("[core] startup cache warmup unavailable: {error}")
+                            }
+                        }
+                    });
+                    // Recently deleted: entries past 30 days (or over the size
+                    // budget) go to the OS trash; failures leave them in place.
+                    let cleanup_ctx = ctx.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match agora_game_minecraft::maintenance::cleanup_recently_deleted(
+                            cleanup_ctx,
+                            crate::instances::trash_adapter(),
+                        )
+                        .await
+                        {
+                            Ok(summary) if summary.purged > 0 || summary.failed > 0 => eprintln!(
+                                "[core] recently deleted: {} purged, {} could not be purged (left in place)",
+                                summary.purged, summary.failed
+                            ),
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("[core] recently deleted cleanup unavailable: {error}")
                             }
                         }
                     });

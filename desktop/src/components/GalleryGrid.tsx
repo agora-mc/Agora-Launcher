@@ -20,7 +20,7 @@ export function GalleryGrid({ urls, name }: { urls: string[]; name: string }) {
             type="button"
             onClick={() => setOpen(index)}
             aria-label={`View ${label(index)} larger`}
-            className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring empty:hidden"
+            className="block rounded-lg focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring empty:hidden"
           >
             <HideOnErrorImage src={url} alt={label(index)} className="rounded-lg border border-border w-full h-48 object-cover" />
           </button>

@@ -152,6 +152,17 @@ export default async function DetailPage({ params }: DetailPageProps) {
         );
       })()}
 
+      {item.curator_warning && (
+        <div
+          role="note"
+          aria-label="Curator warning"
+          className="rounded-xl border border-amber-600/50 bg-amber-100 p-4 text-amber-900 dark:bg-amber-900/30 dark:text-amber-100"
+        >
+          <p className="font-semibold">⚠️ Curator warning</p>
+          <p className="mt-1 whitespace-pre-wrap">{item.curator_warning}</p>
+        </div>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="panel-inset p-4 text-center">
           <div className="text-2xl font-bold text-green-700 dark:text-green-400">{item.net_score}</div>

@@ -463,7 +463,9 @@ pub fn theirs_from_mrpack(mrpack_path: &Path) -> Result<MrpackTheirs, String> {
         if entry.is_dir() {
             continue;
         }
-        let entry_name = entry.name().replace('\\', "/");
+        let Ok(entry_name) = entry.name().map(|name| name.replace('\\', "/")) else {
+            continue;
+        };
         let Some(rel) = mrpack_override_relative(&entry_name, &index.overrides) else {
             continue;
         };
@@ -1949,6 +1951,47 @@ fn validate_download_url(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Apply a pack update to an instance: take the instance lock, stage the new
+/// pack, merge it, and clear the staging folder.
+///
+/// The desktop's `apply_pack_update` command and `agora pack update` both call
+/// this. It blocks on disk and network I/O (the fetcher is blocking HTTP), so
+/// async callers must run it on a blocking thread.
+pub fn apply_pack_update(
+    ctx: &agora_core::ctx::Ctx,
+    instance_id: &str,
+    instance_dir: &Path,
+    mrpack_path: &Path,
+    resolutions: &BTreeMap<String, ConflictResolution>,
+) -> Result<PackUpdateOutcome, String> {
+    let sanitized = agora_core::paths::sanitize_id(instance_id);
+    let staged_dir = ctx
+        .paths
+        .staging_dir(&format!("pack-update-{sanitized}"))
+        .map_err(|e| e.to_string())?;
+    let _lock = ctx
+        .lock_manager
+        .acquire(
+            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+            "pack-update",
+        )
+        .map_err(|e| e.to_string())?;
+    let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+        .map_err(|e| e.to_string())?;
+    let outcome = update_pack(
+        &conn,
+        &sanitized,
+        instance_dir,
+        mrpack_path,
+        &staged_dir,
+        resolutions,
+        &NetworkFetcher,
+        false,
+    );
+    let _ = std::fs::remove_dir_all(&staged_dir);
+    Ok(outcome)
+}
+
 /// Real network fetcher, using the project's allowlist and Modpack client
 /// category (large responses allowed).
 pub struct NetworkFetcher;
@@ -2003,7 +2046,9 @@ pub fn stage_pack<F: PackFileFetcher>(
         if entry.is_dir() {
             continue;
         }
-        let entry_name = entry.name().replace('\\', "/");
+        let Ok(entry_name) = entry.name().map(|name| name.replace('\\', "/")) else {
+            continue;
+        };
         let Some(rel) = mrpack_override_relative(&entry_name, &index.overrides) else {
             continue;
         };
@@ -2098,6 +2143,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         agora_core::db::upsert_instance(conn, &row).unwrap();
     }
@@ -2192,11 +2238,11 @@ mod tests {
         dependencies: Option<serde_json::Value>,
         include_files_key: bool,
     ) -> PathBuf {
-        use zip::write::FileOptions;
+        use zip::write::SimpleFileOptions;
         let path = dir.join(format!("{name}.mrpack"));
         let f = fs::File::create(&path).unwrap();
         let mut zip = zip::ZipWriter::new(f);
-        let opts = FileOptions::default();
+        let opts = SimpleFileOptions::default();
 
         let mut index_files = Vec::new();
         for (p, sha1, sha512, downloads) in files {
@@ -2297,7 +2343,7 @@ mod tests {
         let out = tmp.path().join("p2.mrpack");
         let f2 = fs::File::create(&out).unwrap();
         let mut zw = zip::ZipWriter::new(f2);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         let index = serde_json::json!({
             "formatVersion": 1, "game": "minecraft", "name": "p",
             "dependencies": { "minecraft": "1.21", "fabric-loader": "0.15.0" },

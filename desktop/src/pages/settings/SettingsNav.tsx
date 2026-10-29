@@ -27,8 +27,12 @@ function useArrowKeys(
     const index = items.findIndex((item) => item.id === activeId);
     if (index < 0) return;
     let target = -1;
-    if (event.key === prevKey) target = (index - 1 + items.length) % items.length;
-    else if (event.key === nextKey) target = (index + 1) % items.length;
+    // The rail turns into a horizontal strip in a narrow window, so it answers
+    // to both axes rather than only the one it is drawn along today.
+    const isPrev = event.key === prevKey || (orientation === 'vertical' && event.key === 'ArrowLeft');
+    const isNext = event.key === nextKey || (orientation === 'vertical' && event.key === 'ArrowRight');
+    if (isPrev) target = (index - 1 + items.length) % items.length;
+    else if (isNext) target = (index + 1) % items.length;
     else if (event.key === 'Home') target = 0;
     else if (event.key === 'End') target = items.length - 1;
     if (target < 0) return;
@@ -91,7 +95,7 @@ export function SettingsTabRail({
                 </span>
               )}
               <span className="min-w-0">
-                <span className="block truncate font-medium">{label}</span>
+                <span className="block break-words font-medium">{label}</span>
                 {hint && <span id={`settings-tab-hint-${id}`} className="settings-tab-hint">{hint}</span>}
               </span>
             </button>

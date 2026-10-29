@@ -34,6 +34,30 @@ pub struct UpdateInfo {
     pub latest_version: String,
     pub target_version: String,
     pub source: String,
+    /// Set when no installable update exists but a newer build exists for
+    /// another Minecraft version (for example `"1.21.1"`). Such a row is a
+    /// note for the update panel, never an update: it is not applied by
+    /// Update All and is never persisted or counted by the instance badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_minecraft: Option<String>,
+    /// Set when neither the source's dates nor the version labels can show
+    /// that `latest_version` is newer than what is installed. Such a row is
+    /// listed so the user can choose it by hand, but it is not an update:
+    /// never counted, never part of Update All, never persisted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub uncertain: bool,
+    /// Release date of `latest_version` as the source published it, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_released: Option<String>,
+}
+
+impl UpdateInfo {
+    /// True for a row that is an update: the one Update All may apply and the
+    /// instance badge may count. Notes (`needs_minecraft`) and `uncertain` rows
+    /// stay in the update panel for the user to read and never go in a batch.
+    pub fn is_applicable(&self) -> bool {
+        self.needs_minecraft.is_none() && !self.uncertain
+    }
 }
 
 /// How long a cached candidate list is considered fresh for read-through.
@@ -56,7 +80,13 @@ pub fn set_cached_instance_updates(
     instance_id: &str,
     updates: &[UpdateInfo],
 ) -> anyhow::Result<()> {
-    let json = serde_json::to_string(updates)?;
+    // Notes ("newer builds need Minecraft X") are not updates; the badge counts
+    // cached rows, so they must never be stored.
+    let real: Vec<&UpdateInfo> = updates
+        .iter()
+        .filter(|update| update.is_applicable())
+        .collect();
+    let json = serde_json::to_string(&real)?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO instance_update_cache (instance_id, updates_json, checked_at)
@@ -591,6 +621,9 @@ fn provider_update(
         latest_version: plan.version_number.clone(),
         target_version: plan.version_id.clone(),
         source: installed.source.clone(),
+        needs_minecraft: None,
+        uncertain: false,
+        latest_released: None,
     })
 }
 
@@ -604,11 +637,22 @@ fn raw_modrinth_update(
     installed: &InstalledMod,
     project_id: &str,
     candidate: &RawModrinthVersionCandidate,
+    installed_date: Option<&str>,
 ) -> Option<UpdateInfo> {
     let current = installed.version.as_deref().unwrap_or("");
     if (current == candidate.version_id || current == candidate.version)
         && installed.filename == candidate.filename
     {
+        return None;
+    }
+    let newness = newness(
+        installed.version.as_deref(),
+        &candidate.version,
+        candidate.is_prerelease,
+        installed_date,
+        candidate.release_date.as_deref(),
+    );
+    if newness == Newness::NotNewer {
         return None;
     }
     Some(UpdateInfo {
@@ -623,6 +667,9 @@ fn raw_modrinth_update(
         // display string.
         target_version: candidate.version_id.clone(),
         source: installed.source.clone(),
+        needs_minecraft: None,
+        uncertain: newness == Newness::Unknown,
+        latest_released: candidate.release_date.clone(),
     })
 }
 
@@ -633,21 +680,234 @@ fn raw_modrinth_update(
 /// (same Minecraft line, right loader) and `""` (wrong loader, or a different
 /// line entirely). `is_compatible` is only the first of those.
 ///
-/// Newest exact match wins; failing that, the newest same-line build, which is
-/// the tier a user would still call an update. Nothing below that is offered.
-/// This used to fall back to the newest candidate of *any* grade, which turned
-/// a badge into an invitation to install a Forge build over a Fabric instance:
-/// the badge said "update available", the UI passed the version as an exact
-/// target, and exact resolution does not re-check compatibility.
-fn pick_curated_candidate(candidates: &[ModVersionCandidate]) -> Option<&ModVersionCandidate> {
-    candidates
+/// An exact match is preferred; failing that, a same-line build. Nothing below
+/// that is offered (a badge once became an invitation to install a Forge build
+/// over a Fabric instance).
+///
+/// Within the tier the *newest* build wins by release date, not list position:
+/// the resolver sorts by tier first, so list order says which builds are named
+/// for this exact Minecraft version, not which is newest. Stable builds beat
+/// pre-releases unless the installed one is itself a pre-release. The pick must
+/// then be strictly newer than what is installed ([`newness`], dates first,
+/// the source's own dates when the installed build is in the list); otherwise
+/// there is no update, never a downgrade.
+fn pick_curated_candidate<'a>(
+    installed: &InstalledMod,
+    candidates: &'a [ModVersionCandidate],
+) -> Option<(&'a ModVersionCandidate, Newness)> {
+    let installed_is_pre = installed
+        .version
+        .as_deref()
+        .map(agora_core::models::is_prerelease_version)
+        .unwrap_or(false);
+    let newest_in = |pool: Vec<&'a ModVersionCandidate>| -> Option<&'a ModVersionCandidate> {
+        let stable: Vec<&'a ModVersionCandidate> = pool
+            .iter()
+            .copied()
+            .filter(|candidate| !candidate.is_prerelease)
+            .collect();
+        let pool = if installed_is_pre || stable.is_empty() {
+            pool
+        } else {
+            stable
+        };
+        pool.into_iter().reduce(|best, next| {
+            let next_date = next.release_date.as_deref().unwrap_or("");
+            let best_date = best.release_date.as_deref().unwrap_or("");
+            if next_date > best_date {
+                next
+            } else {
+                best
+            }
+        })
+    };
+    let exact: Vec<&ModVersionCandidate> = candidates
         .iter()
-        .find(|candidate| candidate.is_compatible)
-        .or_else(|| {
+        .filter(|candidate| candidate.is_compatible)
+        .collect();
+    let picked = if exact.is_empty() {
+        newest_in(
             candidates
                 .iter()
-                .find(|candidate| candidate.version_compat == "major_match")
+                .filter(|candidate| candidate.version_compat == "major_match")
+                .collect(),
+        )
+    } else {
+        newest_in(exact)
+    }?;
+
+    // The source's own dates beat label parsing when the installed build is in
+    // the list (same version label or same file).
+    let have_date = candidates
+        .iter()
+        .find(|candidate| {
+            installed.version.as_deref() == Some(candidate.version.as_str())
+                || installed.filename == candidate.filename
         })
+        .and_then(|current| current.release_date.as_deref());
+    let verdict = newness(
+        installed.version.as_deref(),
+        &picked.version,
+        picked.is_prerelease,
+        have_date,
+        picked.release_date.as_deref(),
+    );
+    if verdict == Newness::NotNewer {
+        return None;
+    }
+    Some((picked, verdict))
+}
+
+/// When nothing installable is newer: the Minecraft version a newer build is
+/// for. The newest build outside the exact tier that is strictly newer than
+/// what is installed, has the instance's loader (or none stated) and names a
+/// Minecraft version. `None` if there is no such build.
+fn newer_for_other_minecraft(
+    installed: &InstalledMod,
+    candidates: &[ModVersionCandidate],
+    loader: &str,
+) -> Option<String> {
+    candidates
+        .iter()
+        .filter(|candidate| !candidate.is_compatible)
+        .filter(|candidate| {
+            candidate
+                .loader
+                .as_deref()
+                .map(|l| l.eq_ignore_ascii_case(loader))
+                .unwrap_or(true)
+        })
+        .filter(|candidate| {
+            candidate
+                .mc_version
+                .as_deref()
+                .is_some_and(|v| !v.is_empty())
+        })
+        .filter(|candidate| {
+            // A note needs proof: both labels must parse and the candidate
+            // must be a higher number, not merely "not older".
+            !candidate.is_prerelease
+                && matches!(
+                    (
+                        installed.version.as_deref().and_then(version_core),
+                        version_core(&candidate.version),
+                    ),
+                    (Some(have), Some(offered))
+                        if compare_cores(&offered, &have) == std::cmp::Ordering::Greater
+                )
+        })
+        .reduce(|best, next| {
+            let newer = match (version_core(&next.version), version_core(&best.version)) {
+                (Some(n), Some(b)) => compare_cores(&n, &b) == std::cmp::Ordering::Greater,
+                _ => false,
+            };
+            if newer {
+                next
+            } else {
+                best
+            }
+        })
+        .and_then(|candidate| candidate.mc_version.clone())
+}
+
+/// The numeric core of a version label, with Minecraft-version decoration
+/// stripped, so differently styled labels of one mod compare: `mc1.21-0.13.1`
+/// and `0.15.2+mc1.21.1` give `[0, 13, 1]` and `[0, 15, 2]`; `1.7.3+1.21`
+/// gives `[1, 7, 3]`. `None` when no numeric part is found.
+pub(crate) fn version_core(label: &str) -> Option<Vec<u64>> {
+    let lower = label.trim().to_ascii_lowercase();
+    let mut numeric: Vec<Vec<u64>> = Vec::new();
+    for token in lower.split(['-', '+', '_', ' ', '/', '(', ')']) {
+        let token = token.trim_start_matches('v');
+        if token.is_empty() {
+            continue;
+        }
+        // `mc1.21`, `mc1.21.1`: a Minecraft version, not the mod's.
+        if token.starts_with("mc") && token[2..].starts_with(|c: char| c.is_ascii_digit()) {
+            continue;
+        }
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        {
+            let nums: Option<Vec<u64>> = parts.iter().map(|p| p.parse().ok()).collect();
+            if let Some(nums) = nums {
+                numeric.push(nums);
+            }
+        }
+    }
+    let first = numeric.first()?.clone();
+    let looks_like_minecraft = first.len() >= 2 && first[0] == 1 && (14..=40).contains(&first[1]);
+    if looks_like_minecraft && numeric.len() > 1 {
+        // `1.21.1-0.6.13`: the leading number is the game version.
+        return Some(numeric[1].clone());
+    }
+    // Several numbers and no marker: the most specific one is the mod's.
+    numeric
+        .into_iter()
+        .reduce(|best, next| if next.len() > best.len() { next } else { best })
+}
+
+fn compare_cores(a: &[u64], b: &[u64]) -> std::cmp::Ordering {
+    let len = a.len().max(b.len());
+    for i in 0..len {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x.cmp(&y);
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// What is known about whether a candidate is newer than the installed build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Newness {
+    /// The source's dates or the parsed version numbers show it is newer (or a
+    /// same-numbered rebuild; callers handle exact matches).
+    Newer,
+    /// Provably older, or a pre-release of the installed stable number.
+    NotNewer,
+    /// Neither dates nor labels can say. Never offered as an update.
+    Unknown,
+}
+
+/// Judge `candidate` against `installed`. The source's release dates decide
+/// when both are known and differ; otherwise the numeric cores of the labels
+/// do; if neither can, the answer is [`Newness::Unknown`], not "newer".
+pub(crate) fn newness(
+    installed: Option<&str>,
+    candidate: &str,
+    candidate_is_prerelease: bool,
+    installed_date: Option<&str>,
+    candidate_date: Option<&str>,
+) -> Newness {
+    if let (Some(have), Some(offered)) = (installed_date, candidate_date) {
+        match offered.cmp(have) {
+            std::cmp::Ordering::Greater => return Newness::Newer,
+            std::cmp::Ordering::Less => return Newness::NotNewer,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    let (Some(have), Some(offered)) = (installed.and_then(version_core), version_core(candidate))
+    else {
+        return Newness::Unknown;
+    };
+    match compare_cores(&offered, &have) {
+        std::cmp::Ordering::Less => Newness::NotNewer,
+        std::cmp::Ordering::Equal => {
+            let installed_is_pre = installed
+                .map(agora_core::models::is_prerelease_version)
+                .unwrap_or(false);
+            if candidate_is_prerelease && !installed_is_pre {
+                Newness::NotNewer
+            } else {
+                Newness::Newer
+            }
+        }
+        std::cmp::Ordering::Greater => Newness::Newer,
+    }
 }
 
 /// Decide whether a curated item has an update available.
@@ -659,6 +919,7 @@ fn curated_update(
     installed: &InstalledMod,
     registry_id: &str,
     candidate: &ModVersionCandidate,
+    newness: Newness,
 ) -> Option<UpdateInfo> {
     let same_version = installed.version.as_deref() == Some(candidate.version.as_str());
     let same_filename = installed.filename == candidate.filename;
@@ -681,6 +942,9 @@ fn curated_update(
         // Curated installs address a version by its display string.
         target_version: candidate.version.clone(),
         source: installed.source.clone(),
+        needs_minecraft: None,
+        uncertain: newness == Newness::Unknown,
+        latest_released: candidate.release_date.clone(),
     })
 }
 
@@ -757,6 +1021,26 @@ async fn curated_candidates_cached(
         let _ = set_cached_candidates(&conn, &cache_key, &candidates);
     }
     Ok(candidates)
+}
+
+/// Check one instance and store the applicable rows for the instance badge.
+///
+/// The desktop's `check_instance_updates` command and `agora instance updates`
+/// both come through here, so the update panel and the badge are written from
+/// the same result.
+pub async fn check_and_cache_instance_updates(
+    ctx: &Ctx,
+    instance_id: &str,
+    opts: UpdateCheckOptions<'_>,
+) -> LauncherResult<Vec<UpdateInfo>> {
+    let sanitized = agora_core::paths::sanitize_id(instance_id);
+    let updates = check_single_instance_updates_with(ctx, &sanitized, opts).await?;
+
+    // Persist so the result survives restart and can be read back without network.
+    if let Ok(conn) = db::local_state_connection(&ctx.paths.local_state_db()) {
+        let _ = set_cached_instance_updates(&conn, &sanitized, &updates);
+    }
+    Ok(updates)
 }
 
 /// Check a single instance for updates with the background sweep's policy.
@@ -881,7 +1165,17 @@ pub async fn check_single_instance_updates_with(
             let Some(candidate) = candidates.first() else {
                 continue;
             };
-            if let Some(info) = raw_modrinth_update(installed, project_id, candidate) {
+            let installed_date = candidates
+                .iter()
+                .find(|c| {
+                    installed.version.as_deref() == Some(c.version.as_str())
+                        || installed.version.as_deref() == Some(c.version_id.as_str())
+                        || installed.filename == c.filename
+                })
+                .and_then(|c| c.release_date.as_deref());
+            if let Some(info) =
+                raw_modrinth_update(installed, project_id, candidate, installed_date)
+            {
                 updates.push(info);
             }
             continue;
@@ -927,11 +1221,32 @@ pub async fn check_single_instance_updates_with(
             },
         };
 
-        let Some(candidate) = pick_curated_candidate(&candidates) else {
-            continue;
-        };
-        if let Some(info) = curated_update(installed, registry_id, candidate) {
-            updates.push(info);
+        if let Some((candidate, newness)) = pick_curated_candidate(installed, &candidates) {
+            if let Some(info) = curated_update(installed, registry_id, candidate, newness) {
+                updates.push(info);
+                continue;
+            }
+        }
+        // Nothing installable is newer. If a newer build exists for another
+        // Minecraft version, say so on the explicit check (the background
+        // sweep does not store notes).
+        if opts.on_item_error == ItemErrorPolicy::Fail {
+            if let Some(mc) = newer_for_other_minecraft(installed, &candidates, &instance.loader) {
+                updates.push(UpdateInfo {
+                    filename: installed.filename.clone(),
+                    mod_jar_id: registry_id.to_string(),
+                    current_version: installed
+                        .version
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into()),
+                    latest_version: String::new(),
+                    target_version: String::new(),
+                    source: installed.source.clone(),
+                    needs_minecraft: Some(mc),
+                    uncertain: false,
+                    latest_released: None,
+                });
+            }
         }
     }
 
@@ -968,6 +1283,9 @@ mod tests {
             latest_version: "0.6.0".into(),
             target_version: "0.6.0".into(),
             source: "registry".into(),
+            needs_minecraft: None,
+            uncertain: false,
+            latest_released: None,
         }]
     }
 
@@ -995,6 +1313,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         agora_core::db::upsert_instance(&conn, &row).unwrap();
 
@@ -1030,6 +1349,7 @@ mod tests {
                 icon_path: None,
                 launch_mode_override: "auto".into(),
                 import_source: None,
+                total_play_ms: 0,
             };
             agora_core::db::upsert_instance(&conn, &row).unwrap();
             set_cached_instance_updates(&conn, id, &sample_updates()).unwrap();
@@ -1257,7 +1577,7 @@ mod tests {
         let installed = installed_fixture(Some("abc123"), "sodium-0.5.0.jar", "deadbeef");
         let candidate = raw_fixture("0.5.0", "abc123", "sodium-0.5.0.jar");
         assert_eq!(
-            raw_modrinth_update(&installed, "AANobbMI", &candidate),
+            raw_modrinth_update(&installed, "AANobbMI", &candidate, None),
             None
         );
     }
@@ -1268,7 +1588,7 @@ mod tests {
         let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "deadbeef");
         let candidate = raw_fixture("0.5.0", "abc123", "sodium-0.5.0.jar");
         assert_eq!(
-            raw_modrinth_update(&installed, "AANobbMI", &candidate),
+            raw_modrinth_update(&installed, "AANobbMI", &candidate, None),
             None
         );
     }
@@ -1278,7 +1598,7 @@ mod tests {
         // A matching version with a different file is still a change on disk.
         let installed = installed_fixture(Some("abc123"), "sodium-0.5.0.jar", "deadbeef");
         let candidate = raw_fixture("0.5.0", "abc123", "sodium-0.5.0+fix.jar");
-        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate).expect("update");
+        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate, None).expect("update");
         assert_eq!(info.latest_version, "0.5.0");
         // Raw installs address a version by its opaque id.
         assert_eq!(info.target_version, "abc123");
@@ -1321,7 +1641,7 @@ mod tests {
     fn raw_modrinth_update_reports_ids_and_versions() {
         let installed = installed_fixture(Some("abc123"), "sodium-0.5.0.jar", "deadbeef");
         let candidate = raw_fixture("0.6.0", "xyz789", "sodium-0.6.0.jar");
-        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate).expect("update");
+        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate, None).expect("update");
         assert_eq!(info.filename, "sodium-0.5.0.jar");
         assert_eq!(info.mod_jar_id, "AANobbMI");
         assert_eq!(info.current_version, "abc123");
@@ -1334,7 +1654,7 @@ mod tests {
     fn raw_modrinth_unknown_current_version_when_manifest_has_none() {
         let installed = installed_fixture(None, "sodium-0.5.0.jar", "deadbeef");
         let candidate = raw_fixture("0.6.0", "xyz789", "sodium-0.6.0.jar");
-        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate).expect("update");
+        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate, None).expect("update");
         assert_eq!(info.current_version, "unknown");
     }
 
@@ -1343,7 +1663,10 @@ mod tests {
         let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "DEADBEEF");
         // Hash comparison is case-insensitive.
         let candidate = curated_fixture("0.5.0", "sodium-0.5.0.jar", Some("deadbeef"), true);
-        assert_eq!(curated_update(&installed, "sodium", &candidate), None);
+        assert_eq!(
+            curated_update(&installed, "sodium", &candidate, Newness::Newer),
+            None
+        );
     }
 
     #[test]
@@ -1351,7 +1674,8 @@ mod tests {
         // Same version and filename, repacked artifact: still an update.
         let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "deadbeef");
         let candidate = curated_fixture("0.5.0", "sodium-0.5.0.jar", Some("cafebabe"), true);
-        let info = curated_update(&installed, "sodium", &candidate).expect("update");
+        let info =
+            curated_update(&installed, "sodium", &candidate, Newness::Newer).expect("update");
         // Curated installs address a version by its display string.
         assert_eq!(info.target_version, "0.5.0");
         assert_eq!(info.latest_version, "0.5.0");
@@ -1363,14 +1687,18 @@ mod tests {
         // update on every check.
         let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "deadbeef");
         let candidate = curated_fixture("0.5.0", "sodium-0.5.0.jar", None, true);
-        assert_eq!(curated_update(&installed, "sodium", &candidate), None);
+        assert_eq!(
+            curated_update(&installed, "sodium", &candidate, Newness::Newer),
+            None
+        );
     }
 
     #[test]
     fn curated_update_reports_ids_and_versions() {
         let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "deadbeef");
         let candidate = curated_fixture("0.6.0", "sodium-0.6.0.jar", Some("cafebabe"), true);
-        let info = curated_update(&installed, "sodium", &candidate).expect("update");
+        let info =
+            curated_update(&installed, "sodium", &candidate, Newness::Newer).expect("update");
         assert_eq!(info.filename, "sodium-0.5.0.jar");
         assert_eq!(info.mod_jar_id, "sodium");
         assert_eq!(info.current_version, "0.5.0");
@@ -1386,8 +1714,12 @@ mod tests {
             curated_fixture("0.6.0", "sodium-0.6.0.jar", None, true),
             curated_fixture("0.5.0", "sodium-0.5.0.jar", None, true),
         ];
-        let picked = pick_curated_candidate(&candidates).expect("candidate");
-        assert_eq!(picked.version, "0.6.0");
+        let picked = pick_curated_candidate(
+            &installed_fixture(Some("0.1.0"), "old.jar", "x"),
+            &candidates,
+        )
+        .expect("candidate");
+        assert_eq!(picked.0.version, "0.6.0");
     }
 
     #[test]
@@ -1408,8 +1740,12 @@ mod tests {
             graded_fixture("0.7.0", "sodium-0.7.0.jar", None, ""),
             graded_fixture("0.6.0", "sodium-0.6.0.jar", None, "major_match"),
         ];
-        let picked = pick_curated_candidate(&candidates).expect("candidate");
-        assert_eq!(picked.version, "0.6.0");
+        let picked = pick_curated_candidate(
+            &installed_fixture(Some("0.1.0"), "old.jar", "x"),
+            &candidates,
+        )
+        .expect("candidate");
+        assert_eq!(picked.0.version, "0.6.0");
     }
 
     #[test]
@@ -1421,12 +1757,398 @@ mod tests {
             graded_fixture("0.7.0", "sodium-0.7.0.jar", None, ""),
             graded_fixture("0.6.0", "sodium-0.6.0.jar", None, ""),
         ];
-        assert!(pick_curated_candidate(&candidates).is_none());
+        assert!(pick_curated_candidate(
+            &installed_fixture(Some("0.1.0"), "old.jar", "x"),
+            &candidates
+        )
+        .is_none());
     }
 
     #[test]
     fn curated_candidate_none_for_empty_list() {
-        assert!(pick_curated_candidate(&[]).is_none());
+        assert!(
+            pick_curated_candidate(&installed_fixture(Some("0.1.0"), "old.jar", "x"), &[])
+                .is_none()
+        );
+    }
+
+    fn dated(
+        version: &str,
+        filename: &str,
+        mc: &str,
+        compat: &str,
+        date: Option<&str>,
+    ) -> ModVersionCandidate {
+        let mut c = graded_fixture(version, filename, None, compat);
+        c.mc_version = Some(mc.into());
+        c.release_date = date.map(str::to_string);
+        c
+    }
+
+    fn pick<'a>(
+        installed_version: &str,
+        candidates: &'a [ModVersionCandidate],
+    ) -> Option<&'a ModVersionCandidate> {
+        pick_judged(installed_version, candidates).map(|(c, _)| c)
+    }
+
+    fn pick_judged<'a>(
+        installed_version: &str,
+        candidates: &'a [ModVersionCandidate],
+    ) -> Option<(&'a ModVersionCandidate, Newness)> {
+        pick_curated_candidate(
+            &installed_fixture(Some(installed_version), "installed.jar", "x"),
+            candidates,
+        )
+    }
+
+    #[test]
+    fn version_core_reads_the_mods_number_through_minecraft_decoration() {
+        assert_eq!(version_core("mc1.21-0.13.1"), Some(vec![0, 13, 1]));
+        assert_eq!(version_core("0.15.2+mc1.21.1"), Some(vec![0, 15, 2]));
+        assert_eq!(version_core("mc1.21.1-0.15.2-fabric"), Some(vec![0, 15, 2]));
+        assert_eq!(version_core("1.7.3+1.21"), Some(vec![1, 7, 3]));
+        assert_eq!(version_core("1.21.1-0.6.13"), Some(vec![0, 6, 13]));
+        assert_eq!(version_core("v2.0"), Some(vec![2, 0]));
+        assert_eq!(version_core("snapshot"), None);
+        assert_eq!(version_core(""), None);
+    }
+
+    #[test]
+    fn mixed_version_schemes_never_turn_into_a_downgrade() {
+        // The reported bug: 0.15.2 installed, "mc1.21-0.13.1" offered.
+        let candidates = vec![
+            dated(
+                "mc1.21-0.13.1",
+                "lithium-fabric-mc1.21-0.13.1.jar",
+                "1.21",
+                "compatible",
+                Some("2024-06-01"),
+            ),
+            dated(
+                "mc1.21-0.12.0",
+                "lithium-fabric-mc1.21-0.12.0.jar",
+                "1.21",
+                "compatible",
+                Some("2024-05-01"),
+            ),
+        ];
+        assert!(pick("0.15.2+mc1.21.1", &candidates).is_none());
+        assert!(pick("mc1.21.1-0.15.2", &candidates).is_none());
+        // Sodium and Iris shapes from the same report.
+        let sodium = vec![dated(
+            "mc1.21-0.5.11",
+            "sodium-fabric-0.5.11+mc1.21.jar",
+            "1.21",
+            "compatible",
+            Some("2024-06-01"),
+        )];
+        assert!(pick("0.6.13", &sodium).is_none());
+        let iris = vec![dated(
+            "1.7.3+1.21",
+            "iris-1.7.3+1.21.jar",
+            "1.21",
+            "compatible",
+            Some("2024-06-01"),
+        )];
+        assert!(pick("1.8.8+1.21", &iris).is_none());
+    }
+
+    #[test]
+    fn a_genuinely_newer_build_is_still_offered() {
+        let candidates = vec![
+            dated(
+                "mc1.21-0.13.1",
+                "a.jar",
+                "1.21",
+                "compatible",
+                Some("2024-06-01"),
+            ),
+            dated(
+                "mc1.21-0.14.0",
+                "b.jar",
+                "1.21",
+                "compatible",
+                Some("2024-07-01"),
+            ),
+        ];
+        assert_eq!(
+            pick("0.13.1", &candidates).unwrap().version,
+            "mc1.21-0.14.0"
+        );
+    }
+
+    #[test]
+    fn the_newest_build_wins_by_date_not_list_position() {
+        let candidates = vec![
+            dated("0.1.0", "a.jar", "1.21", "compatible", Some("2024-01-01")),
+            dated("0.3.0", "c.jar", "1.21", "compatible", Some("2024-03-01")),
+            dated("0.2.0", "b.jar", "1.21", "compatible", Some("2024-02-01")),
+        ];
+        assert_eq!(pick("0.0.9", &candidates).unwrap().version, "0.3.0");
+    }
+
+    #[test]
+    fn equal_version_and_missing_dates_are_not_updates_or_downgrades() {
+        // Same number as installed: the caller's exact-match rule decides.
+        let same = vec![dated("0.5.0", "a.jar", "1.21", "compatible", None)];
+        assert_eq!(pick("0.5.0", &same).unwrap().version, "0.5.0");
+        // No dates anywhere: label comparison alone still refuses a downgrade.
+        let older = vec![dated("0.4.0", "a.jar", "1.21", "compatible", None)];
+        assert!(pick("0.5.0", &older).is_none());
+        // An unparseable label with no dates cannot show it is newer.
+        let odd = vec![dated("nightly", "a.jar", "1.21", "compatible", None)];
+        assert_eq!(pick_judged("0.5.0", &odd).unwrap().1, Newness::Unknown);
+    }
+
+    #[test]
+    fn prereleases_do_not_replace_a_stable_install() {
+        let mut beta = dated(
+            "0.6.0-beta.1",
+            "b.jar",
+            "1.21",
+            "compatible",
+            Some("2024-08-01"),
+        );
+        beta.is_prerelease = true;
+        let stable = dated("0.5.0", "a.jar", "1.21", "compatible", Some("2024-07-01"));
+        let candidates = vec![beta.clone(), stable];
+        // Stable pool wins over the newer beta.
+        assert_eq!(pick("0.4.0", &candidates).unwrap().version, "0.5.0");
+        // Only a pre-release of the same number: not an update over stable.
+        let mut same_number = dated("0.5.0-rc.1", "r.jar", "1.21", "compatible", None);
+        same_number.is_prerelease = true;
+        assert!(pick("0.5.0", &[same_number]).is_none());
+        // A pre-release install may move to a newer pre-release.
+        assert!(pick("0.5.0-beta.1", &[beta]).is_some());
+    }
+
+    #[test]
+    fn a_downgrade_only_list_offers_nothing() {
+        let candidates = vec![
+            dated("0.3.0", "c.jar", "1.21", "compatible", Some("2024-03-01")),
+            dated("0.2.0", "b.jar", "1.21", "compatible", Some("2024-02-01")),
+            dated("0.1.0", "a.jar", "1.21", "compatible", Some("2024-01-01")),
+        ];
+        assert!(pick("0.9.0", &candidates).is_none());
+    }
+
+    #[test]
+    fn installed_build_in_the_list_is_compared_by_the_sources_dates() {
+        // The label gives no order, but the list shows the installed build is
+        // newer than the stable build that would otherwise be picked.
+        let old = dated(
+            "build-old",
+            "old.jar",
+            "1.21",
+            "compatible",
+            Some("2024-01-01"),
+        );
+        let mut newer = dated(
+            "build-new",
+            "installed.jar",
+            "1.21",
+            "compatible",
+            Some("2024-06-01"),
+        );
+        newer.is_prerelease = true;
+        let candidates = vec![old, newer];
+        assert!(pick("build-new", &candidates).is_none());
+    }
+
+    #[test]
+    fn newer_builds_for_another_minecraft_are_reported_not_offered() {
+        let installed = installed_fixture(Some("mc1.21.1-0.15.2"), "lithium.jar", "x");
+        let candidates = vec![
+            dated(
+                "mc1.21-0.13.1",
+                "a.jar",
+                "1.21",
+                "compatible",
+                Some("2024-06-01"),
+            ),
+            dated(
+                "mc1.21.1-0.15.3",
+                "b.jar",
+                "1.21.1",
+                "major_match",
+                Some("2024-09-01"),
+            ),
+            dated(
+                "mc1.21.1-0.15.2",
+                "lithium.jar",
+                "1.21.1",
+                "major_match",
+                Some("2024-08-01"),
+            ),
+        ];
+        assert!(pick_curated_candidate(&installed, &candidates).is_none());
+        assert_eq!(
+            newer_for_other_minecraft(&installed, &candidates, "fabric").as_deref(),
+            Some("1.21.1")
+        );
+        // Nothing newer anywhere: no note.
+        let current = installed_fixture(Some("mc1.21.1-0.15.3"), "lithium.jar", "x");
+        assert_eq!(
+            newer_for_other_minecraft(&current, &candidates, "fabric"),
+            None
+        );
+    }
+
+    #[test]
+    fn needs_minecraft_notes_are_never_cached() {
+        let (conn, _dir) = test_conn();
+        let row = agora_core::models::InstanceRow {
+            instance_id: "inst".into(),
+            name: "Test".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "auto".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+            total_play_ms: 0,
+        };
+        agora_core::db::upsert_instance(&conn, &row).unwrap();
+        let mut updates = sample_updates();
+        updates.push(UpdateInfo {
+            needs_minecraft: Some("1.21.1".into()),
+            ..updates[0].clone()
+        });
+        set_cached_instance_updates(&conn, "inst", &updates).unwrap();
+        let (stored, _) = get_cached_instance_updates(&conn, "inst").unwrap().unwrap();
+        assert!(stored.iter().all(|u| u.needs_minecraft.is_none()));
+        assert_eq!(stored.len(), updates.len() - 1);
+    }
+
+    #[test]
+    fn raw_modrinth_refuses_an_older_first_candidate() {
+        let installed = installed_fixture(Some("1.8.8+1.21"), "iris-1.8.8.jar", "x");
+        let older = raw_fixture("1.7.3+1.21", "id173", "iris-1.7.3.jar");
+        assert_eq!(raw_modrinth_update(&installed, "iris", &older, None), None);
+        let newer = raw_fixture("1.9.0+1.21", "id190", "iris-1.9.0.jar");
+        assert!(raw_modrinth_update(&installed, "iris", &newer, None).is_some());
+    }
+
+    #[test]
+    fn unknowable_newness_is_listed_as_uncertain_not_as_an_update() {
+        let installed = installed_fixture(Some("0.5.0"), "installed.jar", "x");
+        let odd = dated("nightly", "a.jar", "1.21", "compatible", Some("2024-06-01"));
+        let list = [odd];
+        let (picked, verdict) = pick_curated_candidate(&installed, &list).unwrap();
+        assert_eq!(verdict, Newness::Unknown);
+        let info = curated_update(&installed, "sodium", picked, verdict).unwrap();
+        assert!(info.uncertain);
+        assert_eq!(info.latest_version, "nightly");
+        assert_eq!(info.latest_released.as_deref(), Some("2024-06-01"));
+    }
+
+    #[test]
+    fn an_unparseable_label_with_a_newer_date_is_an_update() {
+        // The installed build is in the list, so the source's dates decide.
+        let installed = installed_fixture(Some("build-a"), "installed.jar", "x");
+        let candidates = vec![
+            dated(
+                "build-a",
+                "installed.jar",
+                "1.21",
+                "compatible",
+                Some("2024-01-01"),
+            ),
+            dated("build-b", "b.jar", "1.21", "compatible", Some("2024-06-01")),
+        ];
+        let (picked, verdict) = pick_curated_candidate(&installed, &candidates).unwrap();
+        assert_eq!(picked.version, "build-b");
+        assert_eq!(verdict, Newness::Newer);
+        assert!(
+            !curated_update(&installed, "sodium", picked, verdict)
+                .unwrap()
+                .uncertain
+        );
+    }
+
+    #[test]
+    fn uncertain_rows_are_never_cached_or_counted() {
+        let (conn, _dir) = test_conn();
+        let row = agora_core::models::InstanceRow {
+            instance_id: "inst".into(),
+            name: "Test".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "auto".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+            total_play_ms: 0,
+        };
+        agora_core::db::upsert_instance(&conn, &row).unwrap();
+        let mut updates = sample_updates();
+        updates.push(UpdateInfo {
+            uncertain: true,
+            ..updates[0].clone()
+        });
+        set_cached_instance_updates(&conn, "inst", &updates).unwrap();
+        let (stored, _) = get_cached_instance_updates(&conn, "inst").unwrap().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(!stored[0].uncertain);
+    }
+
+    #[test]
+    fn raw_modrinth_unparseable_label_is_uncertain_unless_dates_show_newer() {
+        let installed = installed_fixture(Some("build-a"), "a.jar", "x");
+        let cand = raw_fixture("build-b", "idb", "b.jar");
+        assert!(
+            raw_modrinth_update(&installed, "p", &cand, None)
+                .unwrap()
+                .uncertain
+        );
+        let mut dated_cand = cand.clone();
+        dated_cand.release_date = Some("2024-06-01".into());
+        let info = raw_modrinth_update(&installed, "p", &dated_cand, Some("2024-01-01")).unwrap();
+        assert!(!info.uncertain);
+        assert_eq!(
+            raw_modrinth_update(&installed, "p", &dated_cand, Some("2025-01-01")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_mods_own_1_20_4_version_is_not_split_off_as_a_minecraft_version() {
+        // Mod version 1.20.4 with no Minecraft number: its own number stands.
+        assert_eq!(version_core("1.20.4-fabric"), Some(vec![1, 20, 4]));
+        assert_eq!(version_core("1.20.4"), Some(vec![1, 20, 4]));
+        // So 1.20.5 is newer than 1.20.4-fabric, and 1.20.3 is not.
+        let installed = Some("1.20.4-fabric");
+        assert_eq!(
+            newness(installed, "1.20.5-fabric", false, None, None),
+            Newness::Newer
+        );
+        assert_eq!(
+            newness(installed, "1.20.3-fabric", false, None, None),
+            Newness::NotNewer
+        );
     }
 
     #[test]

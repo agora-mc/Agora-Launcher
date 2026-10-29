@@ -402,6 +402,34 @@ pub fn find_dependents_with_aliases(
     find_dependents_for_ids(installed, &target_ids, aliases)
 }
 
+/// Filenames of the enabled mod jars that are actually in `<instance>/mods/`.
+///
+/// A disabled jar is renamed `*.jar.disabled`, so it never appears here.
+/// Unreadable folders yield an empty set, which fails closed: nothing counts
+/// as present.
+pub fn mod_jars_on_disk(instance_dir: &std::path::Path) -> HashSet<String> {
+    let Ok(entries) = std::fs::read_dir(instance_dir.join("mods")) else {
+        return HashSet::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jar"))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The one answer to "can this installed entry satisfy another mod's
+/// dependency?". It can when the manifest has it enabled and, for a mod, its
+/// jar is in `mods/` (`on_disk` from [`mod_jars_on_disk`]).
+///
+/// A tracked file that is gone, and a disabled entry, both satisfy nothing. The
+/// health check, the install planner and "Why is this here?" all ask this
+/// question, so they cannot disagree about it.
+pub fn satisfies_dependency(item: &InstalledMod, on_disk: &HashSet<String>) -> bool {
+    item.enabled && (item.content_type != "mod" || on_disk.contains(&item.filename))
+}
+
 /// Return every loader-visible ID supplied by an installed physical JAR.
 fn installed_mod_ids(mod_entry: &InstalledMod, aliases: &AliasMap) -> HashSet<String> {
     mod_entry
@@ -458,6 +486,71 @@ fn find_dependents_for_ids(
     result
 }
 
+/// Mod ids a loader ships inside itself, as `(loader, mod id, first loader
+/// version that ships it)`. A dependency on one of these is met by the loader,
+/// so no jar has to be found for it.
+///
+/// Sources: the MixinExtras README (https://github.com/LlamaLad7/MixinExtras)
+/// says "FabricLoader 0.15.0+ includes MixinExtras already" and "NeoForge
+/// 20.2.84+ includes MixinExtras already". Fabric Loader's release PR is
+/// FabricMC/fabric-loader#854 ("Include MixinExtras"). The same README tells
+/// Forge mods to depend on MixinExtras, so Forge is not listed. Quilt is not
+/// stated anywhere we checked, so it is not listed either.
+///
+/// Not verified: the exact mod id each loader exposes for the bundled library
+/// (the README gives none), and the MixinExtras version it bundles. A
+/// dependency's version range is not checked against that bundled version.
+const LOADER_BUNDLED_MODS: &[(&str, &str, &str)] = &[
+    ("fabric", "mixinextras", "0.15.0"),
+    ("neoforge", "mixinextras", "20.2.84"),
+];
+
+/// True when `dependency` is a platform id that needs no jar: the game, Java,
+/// the loader's own identity, or a library `loader` ships at `loader_version`.
+/// Every place that judges a dependency should ask this one question.
+pub fn is_platform_dependency(dependency: &str, loader: &str, loader_version: &str) -> bool {
+    matches!(
+        dependency,
+        "minecraft" | "java" | "fabricloader" | "fabric_loader" | "quilt_loader" | "quilt-loader"
+    ) || dependency.eq_ignore_ascii_case(loader)
+        || (loader == "neoforge" && dependency == "forge")
+        || is_loader_bundled_mod(dependency, loader, loader_version)
+}
+
+fn is_loader_bundled_mod(dependency: &str, loader: &str, loader_version: &str) -> bool {
+    LOADER_BUNDLED_MODS.iter().any(|(bundler, id, since)| {
+        bundler.eq_ignore_ascii_case(loader)
+            && id.eq_ignore_ascii_case(dependency)
+            && loader_version_at_least(release_part_of(loader, loader_version), since)
+    })
+}
+
+/// The release number a loader version is a build of. NeoForge publishes its
+/// betas as `<release>-beta` (e.g. `21.3.20-beta`), and a beta of a release
+/// ships what that release ships, so the suffix is dropped for NeoForge only.
+/// Fabric's published versions carry no such suffix (checked against
+/// https://maven.fabricmc.net/net/fabricmc/fabric-loader/maven-metadata.xml),
+/// so for any other loader the version is left alone and refused as before.
+fn release_part_of<'a>(loader: &str, version: &'a str) -> &'a str {
+    match version.strip_suffix("-beta") {
+        Some(release) if loader.eq_ignore_ascii_case("neoforge") => release,
+        _ => version,
+    }
+}
+
+/// Whether `version` is a plain dotted-number release at or after `since`.
+/// Anything else (empty, pre-release like `0.20.1-alpha`, build metadata,
+/// surrounding spaces) is not trusted, so the dependency stays a normal jar
+/// requirement and is reported as missing if no jar provides it.
+fn loader_version_at_least(version: &str, since: &str) -> bool {
+    let is_plain_release = !version.is_empty()
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+    is_plain_release
+        && crate::version_match::compare_versions(version, since) != std::cmp::Ordering::Less
+}
+
 /// Alias-aware `resolve_install_deps`: normalize all mod_jar_ids on both
 /// sides (candidate deps and installed ids) via `aliases` before comparing.
 pub fn resolve_install_deps_with_aliases(
@@ -465,10 +558,15 @@ pub fn resolve_install_deps_with_aliases(
     target_jar_deps: &JarDeps,
     installed: &[InstalledMod],
     aliases: &AliasMap,
+    loader: &str,
+    loader_version: &str,
+    on_disk: &HashSet<String>,
 ) -> ResolvedInstallDeps {
-    // Build installed set with alias resolution.
+    // Only entries that can satisfy a dependency count as already installed. A
+    // disabled or missing one is planned again rather than reported as present.
     let installed_ids: HashSet<String> = installed
         .iter()
+        .filter(|m| satisfies_dependency(m, on_disk))
         .flat_map(|m| installed_mod_ids(m, aliases))
         .collect();
 
@@ -515,10 +613,13 @@ pub fn resolve_install_deps_with_aliases(
     }
 
     // Helper: filter out already-installed candidates.
+    // Also drops ids the loader itself provides (see `is_platform_dependency`):
+    // those are never a missing dependency to install.
     let filter_installed = |cands: Vec<DepCandidate>| -> Vec<DepCandidate> {
         cands
             .into_iter()
             .filter(|c| !installed_ids.contains(&c.mod_jar_id.to_lowercase()))
+            .filter(|c| !is_platform_dependency(&c.mod_jar_id, loader, loader_version))
             .collect()
     };
 
@@ -672,8 +773,19 @@ pub fn build_install_plan_with_aliases(
     target_jar_deps: &JarDeps,
     installed: &[InstalledMod],
     aliases: &AliasMap,
+    loader: &str,
+    loader_version: &str,
+    on_disk: &HashSet<String>,
 ) -> InstallPlan {
-    resolve_install_deps_with_aliases(target_manifest_deps, target_jar_deps, installed, aliases)
+    resolve_install_deps_with_aliases(
+        target_manifest_deps,
+        target_jar_deps,
+        installed,
+        aliases,
+        loader,
+        loader_version,
+        on_disk,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -844,12 +956,18 @@ pub fn resolve_install_deps(
     target_manifest_deps: Option<ManifestDeps>,
     target_jar_deps: &JarDeps,
     installed: &[InstalledMod],
+    loader: &str,
+    loader_version: &str,
+    on_disk: &HashSet<String>,
 ) -> ResolvedInstallDeps {
     resolve_install_deps_with_aliases(
         target_manifest_deps,
         target_jar_deps,
         installed,
         &AliasMap::from_pairs(&[]),
+        loader,
+        loader_version,
+        on_disk,
     )
 }
 
@@ -874,12 +992,18 @@ pub fn build_install_plan(
     target_manifest_deps: Option<ManifestDeps>,
     target_jar_deps: &JarDeps,
     installed: &[InstalledMod],
+    loader: &str,
+    loader_version: &str,
+    on_disk: &HashSet<String>,
 ) -> InstallPlan {
     build_install_plan_with_aliases(
         target_manifest_deps,
         target_jar_deps,
         installed,
         &AliasMap::from_pairs(&[]),
+        loader,
+        loader_version,
+        on_disk,
     )
 }
 
@@ -1010,25 +1134,34 @@ pub fn explain_presence_with_aliases(
     installed: &[InstalledMod],
     filename: &str,
     aliases: &AliasMap,
+    on_disk: &HashSet<String>,
 ) -> Option<PresenceExplanation> {
     let target = installed.iter().find(|m| m.filename == filename)?;
 
-    let dependents = target
-        .mod_jar_id
-        .as_deref()
-        .map(|id| find_dependents_with_aliases(installed, id, aliases))
-        .unwrap_or_default();
+    // Only mods that are enabled and on disk currently need anything, and only
+    // they can be the reason something is here. A disabled or missing mod is
+    // neither a dependent nor a root.
+    let usable: Vec<InstalledMod> = installed
+        .iter()
+        .filter(|m| satisfies_dependency(m, on_disk))
+        .cloned()
+        .collect();
+
+    // Match every ID this jar supplies, not only its primary one: a mod that
+    // declares a module Fabric API provides (`fabric-api-base`) depends on
+    // Fabric API. The removal and disable plans already work this way.
+    let dependents = find_dependents_for_ids(&usable, &installed_mod_ids(target, aliases), aliases);
 
     // Reverse adjacency over the same edges the graph view draws, so the two
     // features can never disagree about what depends on what.
     let mut incoming: HashMap<String, Vec<String>> = HashMap::new();
-    for edge in build_dependency_graph_with_aliases(installed, aliases) {
+    for edge in build_dependency_graph_with_aliases(&usable, aliases) {
         incoming
             .entry(edge.to_filename)
             .or_default()
             .push(edge.from_filename);
     }
-    let is_root: HashMap<&str, bool> = installed
+    let is_root: HashMap<&str, bool> = usable
         .iter()
         .map(|m| (m.filename.as_str(), !m.installed_as_dependency))
         .collect();
@@ -1072,8 +1205,12 @@ pub fn explain_presence_with_aliases(
 }
 
 /// Alias-free convenience wrapper for [`explain_presence_with_aliases`].
-pub fn explain_presence(installed: &[InstalledMod], filename: &str) -> Option<PresenceExplanation> {
-    explain_presence_with_aliases(installed, filename, &AliasMap::from_pairs(&[]))
+pub fn explain_presence(
+    installed: &[InstalledMod],
+    filename: &str,
+    on_disk: &HashSet<String>,
+) -> Option<PresenceExplanation> {
+    explain_presence_with_aliases(installed, filename, &AliasMap::from_pairs(&[]), on_disk)
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,6 +1225,15 @@ mod tests {
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    /// Files that count as on disk for a test: every enabled entry's jar.
+    fn present(installed: &[InstalledMod]) -> HashSet<String> {
+        installed
+            .iter()
+            .filter(|m| m.enabled)
+            .map(|m| m.filename.clone())
+            .collect()
+    }
 
     /// Construct a minimal `InstalledMod` for tests.
     ///
@@ -1455,7 +1601,14 @@ mod tests {
         let jar_meta = jar_deps(Some("target"), &["missing"], &[], &[]);
         let installed: Vec<InstalledMod> = vec![];
 
-        let plan = resolve_install_deps(None, &jar_meta, &installed);
+        let plan = resolve_install_deps(
+            None,
+            &jar_meta,
+            &installed,
+            "fabric",
+            "0.20.1",
+            &present(&installed),
+        );
 
         assert_eq!(plan.missing_required.len(), 1);
         assert_eq!(plan.missing_required[0].mod_jar_id, "missing");
@@ -1465,12 +1618,40 @@ mod tests {
     }
 
     #[test]
+    fn a_dependency_the_loader_bundles_is_not_a_missing_install() {
+        // Shaped like a Fabric mod that depends on MixinExtras, with no jar.
+        let jar_meta = jar_deps(Some("lithium"), &["mixinextras", "fabric-api"], &[], &[]);
+        let plan = resolve_install_deps(None, &jar_meta, &[], "fabric", "0.20.1", &present(&[]));
+        let missing: Vec<&str> = plan
+            .missing_required
+            .iter()
+            .map(|c| c.mod_jar_id.as_str())
+            .collect();
+        assert_eq!(missing, vec!["fabric-api"]);
+    }
+
+    #[test]
+    fn a_dependency_an_old_loader_does_not_bundle_is_still_missing() {
+        let jar_meta = jar_deps(Some("lithium"), &["mixinextras"], &[], &[]);
+        let plan = resolve_install_deps(None, &jar_meta, &[], "fabric", "0.14.22", &present(&[]));
+        assert_eq!(plan.missing_required.len(), 1);
+        assert_eq!(plan.missing_required[0].mod_jar_id, "mixinextras");
+    }
+
+    #[test]
     fn test_install_plan_already_installed_skipped() {
         let m = installed("m.jar", Some("m"), &[], &[]);
         let installed = vec![m];
         let jar_meta = jar_deps(Some("target"), &["m"], &[], &[]);
 
-        let plan = resolve_install_deps(None, &jar_meta, &installed);
+        let plan = resolve_install_deps(
+            None,
+            &jar_meta,
+            &installed,
+            "fabric",
+            "0.20.1",
+            &present(&installed),
+        );
 
         assert!(plan.missing_required.is_empty());
     }
@@ -1480,7 +1661,14 @@ mod tests {
         let jar_meta = jar_deps(Some("target"), &["req"], &["opt"], &[]);
         let installed: Vec<InstalledMod> = vec![];
 
-        let plan = resolve_install_deps(None, &jar_meta, &installed);
+        let plan = resolve_install_deps(
+            None,
+            &jar_meta,
+            &installed,
+            "fabric",
+            "0.20.1",
+            &present(&installed),
+        );
 
         assert_eq!(plan.missing_required.len(), 1);
         assert_eq!(plan.missing_required[0].mod_jar_id, "req");
@@ -1497,7 +1685,14 @@ mod tests {
         let manifest = manifest_deps(&["x"], &[], &[]);
         let installed: Vec<InstalledMod> = vec![];
 
-        let plan = resolve_install_deps(Some(manifest), &jar_meta, &installed);
+        let plan = resolve_install_deps(
+            Some(manifest),
+            &jar_meta,
+            &installed,
+            "fabric",
+            "0.20.1",
+            &present(&installed),
+        );
 
         assert_eq!(plan.missing_required.len(), 1);
         assert_eq!(plan.missing_required[0].mod_jar_id, "x");
@@ -1510,7 +1705,14 @@ mod tests {
         let manifest = manifest_deps(&[], &["x"], &[]);
         let installed: Vec<InstalledMod> = vec![];
 
-        let plan = resolve_install_deps(Some(manifest), &jar_meta, &installed);
+        let plan = resolve_install_deps(
+            Some(manifest),
+            &jar_meta,
+            &installed,
+            "fabric",
+            "0.20.1",
+            &present(&installed),
+        );
 
         // "x" should NOT appear in missing_required or missing_optional
         let in_missing_req = plan.missing_required.iter().any(|c| c.mod_jar_id == "x");
@@ -1672,7 +1874,8 @@ mod tests {
             &[],
         );
 
-        let plan = build_install_plan(None, &target, &[fabric_api]);
+        let on_disk = present(&[fabric_api.clone()]);
+        let plan = build_install_plan(None, &target, &[fabric_api], "fabric", "0.20.1", &on_disk);
         assert!(plan.missing_required.is_empty());
     }
 
@@ -1888,7 +2091,8 @@ mod tests {
     #[test]
     fn presence_of_a_user_installed_mod_reports_no_chain() {
         let mods = vec![installed("sodium.jar", Some("sodium"), &[], &[])];
-        let why = explain_presence(&mods, "sodium.jar").expect("target is installed");
+        let why =
+            explain_presence(&mods, "sodium.jar", &present(&mods)).expect("target is installed");
         assert!(!why.installed_as_dependency);
         assert!(!why.orphaned);
         assert!(why.root_paths.is_empty());
@@ -1902,7 +2106,8 @@ mod tests {
             installed_dep("corelib.jar", Some("corelib"), &["base"], &[]),
             installed_dep("base.jar", Some("base"), &[], &[]),
         ];
-        let why = explain_presence(&mods, "base.jar").expect("target is installed");
+        let why =
+            explain_presence(&mods, "base.jar", &present(&mods)).expect("target is installed");
         assert!(why.installed_as_dependency);
         assert!(!why.orphaned);
         assert_eq!(
@@ -1921,7 +2126,8 @@ mod tests {
     #[test]
     fn presence_of_an_unreachable_dependency_reports_it_as_orphaned() {
         let mods = vec![installed_dep("corelib.jar", Some("corelib"), &[], &[])];
-        let why = explain_presence(&mods, "corelib.jar").expect("target is installed");
+        let why =
+            explain_presence(&mods, "corelib.jar", &present(&mods)).expect("target is installed");
         assert!(why.orphaned);
         assert!(why.root_paths.is_empty());
     }
@@ -1937,14 +2143,151 @@ mod tests {
                 &[],
             ));
         }
-        let why = explain_presence(&mods, "corelib.jar").expect("target is installed");
+        let why =
+            explain_presence(&mods, "corelib.jar", &present(&mods)).expect("target is installed");
         assert_eq!(why.root_paths.len(), MAX_ROOT_PATHS);
     }
 
     #[test]
     fn presence_of_an_unknown_filename_is_none_rather_than_an_empty_answer() {
         let mods = vec![installed("sodium.jar", Some("sodium"), &[], &[])];
-        assert!(explain_presence(&mods, "ghost.jar").is_none());
+        assert!(explain_presence(&mods, "ghost.jar", &present(&mods)).is_none());
+    }
+
+    #[test]
+    fn presence_counts_a_dependency_on_a_module_the_jar_provides() {
+        // Fabric API's jar supplies module ids such as `fabric-api-base`, and
+        // Sodium declares that id. Sodium needs Fabric API even though no
+        // declaration names `fabric-api` itself.
+        let mut fabric_api = installed("fabric-api.jar", Some("fabric-api"), &[], &[]);
+        fabric_api.provided_mod_ids = vec!["fabric-api-base".to_string()];
+        let mods = vec![
+            installed("sodium.jar", Some("sodium"), &["fabric-api-base"], &[]),
+            fabric_api,
+        ];
+        let why = explain_presence(&mods, "fabric-api.jar", &present(&mods))
+            .expect("target is installed");
+        assert_eq!(why.dependents.len(), 1);
+        assert_eq!(why.dependents[0].filename, "sodium.jar");
+    }
+
+    #[test]
+    fn presence_provided_module_dependency_counts_for_optional_too() {
+        let mut fabric_api = installed("fabric-api.jar", Some("fabric-api"), &[], &[]);
+        fabric_api.provided_mod_ids = vec!["fabric-rendering-data-attachment-v1".to_string()];
+        let mods = vec![
+            installed(
+                "iris.jar",
+                Some("iris"),
+                &[],
+                &["fabric-rendering-data-attachment-v1"],
+            ),
+            fabric_api,
+        ];
+        let why = explain_presence(&mods, "fabric-api.jar", &present(&mods))
+            .expect("target is installed");
+        assert_eq!(why.dependents.len(), 1);
+        assert_eq!(why.dependents[0].filename, "iris.jar");
+        assert_eq!(why.dependents[0].requirement, Requirement::Optional);
+    }
+
+    /// Real-shaped: Fabric API is tracked with the module ids its jar provides,
+    /// but its file is gone. Sodium needs one of those modules.
+    fn fabric_api_tracked_but_missing() -> (Vec<InstalledMod>, HashSet<String>) {
+        let mut fabric_api = installed("fabric-api-0.97.3.jar", Some("fabric-api"), &[], &[]);
+        fabric_api.provided_mod_ids = vec!["fabric-rendering-data-attachment-v1".to_string()];
+        let mods = vec![
+            installed(
+                "sodium.jar",
+                Some("sodium"),
+                &["fabric-rendering-data-attachment-v1"],
+                &[],
+            ),
+            fabric_api,
+        ];
+        // Everything except the Fabric API jar is in mods/.
+        let on_disk = HashSet::from(["sodium.jar".to_string()]);
+        (mods, on_disk)
+    }
+
+    #[test]
+    fn a_missing_file_satisfies_no_one() {
+        let (mods, on_disk) = fabric_api_tracked_but_missing();
+        assert!(!satisfies_dependency(&mods[1], &on_disk));
+        assert!(satisfies_dependency(&mods[0], &on_disk));
+    }
+
+    #[test]
+    fn a_disabled_entry_satisfies_no_one_even_with_its_jar_present() {
+        let mut fabric_api = installed("fabric-api.jar", Some("fabric-api"), &[], &[]);
+        fabric_api.enabled = false;
+        let on_disk = HashSet::from(["fabric-api.jar".to_string()]);
+        assert!(!satisfies_dependency(&fabric_api, &on_disk));
+    }
+
+    #[test]
+    fn an_empty_or_unreadable_mods_folder_satisfies_nothing() {
+        let mods = [installed("sodium.jar", Some("sodium"), &[], &[])];
+        let missing_dir = std::env::temp_dir().join("agora_deps_no_such_instance_dir");
+        let _ = std::fs::remove_dir_all(&missing_dir);
+        assert!(mod_jars_on_disk(&missing_dir).is_empty());
+        assert!(!satisfies_dependency(
+            &mods[0],
+            &mod_jars_on_disk(&missing_dir)
+        ));
+    }
+
+    #[test]
+    fn install_plan_asks_again_for_a_dependency_whose_file_is_missing() {
+        // Sodium's module is only "provided" by Fabric API's manifest entry. The
+        // file is gone, so the planner must not say the dependency is satisfied.
+        let (mods, on_disk) = fabric_api_tracked_but_missing();
+        let target = jar_deps(
+            Some("iris"),
+            &["fabric-rendering-data-attachment-v1"],
+            &[],
+            &[],
+        );
+        let plan = build_install_plan(None, &target, &mods, "fabric", "0.20.1", &on_disk);
+        assert_eq!(plan.missing_required.len(), 1, "{plan:?}");
+        assert_eq!(
+            plan.missing_required[0].mod_jar_id,
+            "fabric-rendering-data-attachment-v1"
+        );
+    }
+
+    #[test]
+    fn install_plan_asks_again_for_a_disabled_dependency() {
+        let mut fabric_api = installed("fabric-api.jar", Some("fabric-api"), &[], &[]);
+        fabric_api.enabled = false;
+        let on_disk = HashSet::from(["fabric-api.jar".to_string()]);
+        let target = jar_deps(Some("sodium"), &["fabric-api"], &[], &[]);
+        let plan = build_install_plan(None, &target, &[fabric_api], "fabric", "0.20.1", &on_disk);
+        assert_eq!(plan.missing_required.len(), 1, "{plan:?}");
+    }
+
+    #[test]
+    fn explain_presence_does_not_count_a_disabled_dependent() {
+        // Iris is switched off, so it no longer needs Sodium: Sodium's reason is
+        // not "Iris needs it", and Iris is not listed as a dependent.
+        let mut iris = installed("iris.jar", Some("iris"), &["sodium"], &[]);
+        iris.enabled = false;
+        let mods = vec![installed("sodium.jar", Some("sodium"), &[], &[]), iris];
+        let on_disk = HashSet::from(["sodium.jar".to_string(), "iris.jar".to_string()]);
+        let why = explain_presence(&mods, "sodium.jar", &on_disk).expect("target is installed");
+        assert!(why.dependents.is_empty(), "{:?}", why.dependents);
+        assert!(why.root_paths.is_empty());
+    }
+
+    #[test]
+    fn explain_presence_of_a_missing_dependency_still_names_who_needs_it() {
+        let (mods, on_disk) = fabric_api_tracked_but_missing();
+        let why =
+            explain_presence(&mods, "fabric-api-0.97.3.jar", &on_disk).expect("target is tracked");
+        assert_eq!(why.dependents.len(), 1);
+        assert_eq!(why.dependents[0].filename, "sodium.jar");
+        // A missing file cannot be the root of a reason.
+        assert!(why.root_paths.is_empty());
     }
 
     #[test]

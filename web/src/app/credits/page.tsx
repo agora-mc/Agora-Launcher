@@ -5,7 +5,7 @@ const CREDITS = [
     url: 'https://joshuapfeil.github.io/',
     body: [
       'I am a programmer, game developer, and gamer. I made Agora because I saw a lot of growing distrust and concerns about the major launchers, while from what I can tell alternatives lack in terms of user friendliness.',
-      'I may have built Agora using AI, but personally I made sure every bit is as useful, friendly, and comfortable to use as possible.',
+      'AI was used in the construction of Agora, but I personally made sure every bit is as useful, friendly, and comfortable to use as possible.',
     ],
   },
   {

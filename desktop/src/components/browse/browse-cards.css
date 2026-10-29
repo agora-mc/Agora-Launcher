@@ -102,14 +102,16 @@
 }
 
 .browse-card-title {
+  display: -webkit-box;
   min-width: 0;
   overflow: hidden;
   color: hsl(var(--card-foreground));
   font-size: calc(1rem * var(--font-scale));
   font-weight: 650;
   line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Two lines rather than one cut to "Mod numb…" when the text is large. */
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .browse-curated-badge {
@@ -134,7 +136,7 @@
 .browse-recommendation {
   color: hsl(var(--muted-foreground));
   font-size: calc(0.75rem * var(--font-scale));
-  line-height: 1.25rem;
+  line-height: calc(1.25rem * var(--font-scale));
 }
 
 .browse-stats {
@@ -162,7 +164,7 @@
   margin-top: 0.25rem;
   color: hsl(var(--card-foreground) / 0.78);
   font-size: calc(0.8125rem * var(--font-scale));
-  line-height: 1.25rem;
+  line-height: calc(1.25rem * var(--font-scale));
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
 }
@@ -182,7 +184,7 @@
   padding: 0.125rem 0.45rem;
   color: hsl(var(--muted-foreground));
   font-size: calc(0.625rem * var(--font-scale));
-  line-height: 1rem;
+  line-height: calc(1rem * var(--font-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -213,7 +215,7 @@
   padding: 0.4rem 0.75rem;
   font-size: calc(0.8125rem * var(--font-scale));
   font-weight: 600;
-  line-height: 1.25rem;
+  line-height: calc(1.25rem * var(--font-scale));
   transition: opacity 150ms ease;
 }
 
@@ -339,7 +341,7 @@
   overflow: hidden;
   color: hsl(var(--muted-foreground));
   font-size: calc(0.8125rem * var(--font-scale));
-  line-height: 1.25rem;
+  line-height: calc(1.25rem * var(--font-scale));
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -348,9 +350,9 @@
 
 .browse-category-list {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   gap: 0.25rem;
-  overflow: hidden;
 }
 
 .browse-category-list span {
@@ -360,9 +362,8 @@
   padding: 0.125rem 0.45rem;
   color: hsl(var(--secondary-foreground));
   font-size: calc(0.625rem * var(--font-scale));
-  text-overflow: ellipsis;
+  line-height: calc(1rem * var(--font-scale));
   text-transform: capitalize;
-  white-space: nowrap;
 }
 
 .browse-tile-card__actions {

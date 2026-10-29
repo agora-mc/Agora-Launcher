@@ -62,7 +62,7 @@ export function PhaseMark({ phase }: { phase: ScenePhase | ProposalPhase }) {
 export function ProposedMark() {
   return (
     <span
-      className="inline-flex items-center gap-1 rounded border border-dashed border-indigo-500/70 bg-indigo-500/5 px-1.5 py-0.5 text-[0.7rem] font-semibold text-foreground"
+      className="inline-flex items-center gap-1 rounded-sm border border-dashed border-indigo-500/70 bg-indigo-500/5 px-1.5 py-0.5 text-[0.7rem] font-semibold text-foreground"
       data-phase="proposed"
     >
       <span aria-hidden="true">◌</span> Proposed
