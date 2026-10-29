@@ -81,6 +81,7 @@ async function installMock(page: Page, options: { variant: 'invalid-mod' | 'inva
           if (options.variant === 'invalid-instance') return Promise.resolve(null);
           return Promise.resolve({
             row: instances[0],
+            pack_gaps: [],
             manifest: {
               instance_id: instances[0].instance_id,
               name: instances[0].name,

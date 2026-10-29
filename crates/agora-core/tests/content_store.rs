@@ -21,7 +21,7 @@ fn create_zip(path: &Path, entries: &[(&str, &[u8])]) {
     let file = File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
     let options =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     for (name, content) in entries {
         zip.start_file(*name, options).unwrap();
         zip.write_all(content).unwrap();
@@ -33,7 +33,7 @@ fn create_zip_with_symlink(path: &Path) {
     let mut buf = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        zip.start_file("symlink_entry", zip::write::FileOptions::default())
+        zip.start_file("symlink_entry", zip::write::SimpleFileOptions::default())
             .unwrap();
         zip.write_all(b"target").unwrap();
         zip.finish().unwrap();
@@ -58,7 +58,7 @@ fn create_zip_with_oversized_entry(path: &Path) {
     let file = File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
     let options =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("overflow.txt", options).unwrap();
     zip.write_all(b"0123456789").unwrap();
     zip.finish().unwrap();
@@ -237,7 +237,7 @@ fn test_refusal_trailing_slash_file() {
     let file = File::create(&zip_path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
     let options =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     // Explicit start_file without is_dir
     zip.start_file("a/b/", options).unwrap();
     zip.write_all(b"not a dir").unwrap();

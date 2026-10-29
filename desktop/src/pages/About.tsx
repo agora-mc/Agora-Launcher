@@ -12,6 +12,8 @@ import {
   GitBranch,
   MessagesSquare,
   Gamepad2,
+  Bot,
+  Bug,
 } from 'lucide-react';
 import { agoraRepositoryUrl, agoraDiscordUrl, agoraSponsorsUrl } from '../lib/brandConfig';
 
@@ -44,7 +46,7 @@ const PILLARS = [
   {
     icon: HeartHandshake,
     title: 'Donations, not for-profit',
-    body: 'Agora is funded by the people who use it — through donations that keep the lights on — not by selling your attention or your data. If you enjoy Agora, please consider sponsoring to keep it free and to help fund awesome new projects in the future.',
+    body: 'Agora is funded by the people who use it — through donations that keep the lights on — not by selling your attention or your data. If Agora has made your modding easier or more enjoyable, please consider sponsoring to keep it free and to support awesome new projects in the future.',
   },
   {
     icon: ShieldCheck,
@@ -54,8 +56,18 @@ const PILLARS = [
   {
     icon: Gamepad2,
     title: 'Controller support',
-    body: 'Unlike other launchers, Agora is designed to be fully navigable with a controller. Browse, vote, launch Minecraft,and install mods without ever touching a keyboard or mouse.',
-  }
+    body: 'Unlike other launchers, Agora is designed to be fully navigable with a controller. Browse, vote, launch Minecraft, and install mods without ever touching a keyboard or mouse.',
+  },
+  {
+    icon: Bot,
+    title: 'AI support',
+    body: 'We offer Agora CLI on its own or bundled in the desktop app so that AI agents can easily run Agora and help you build packs or diagnose issues. Agora also offers an MCP server if needed.',
+  },
+  {
+    icon: Bug,
+    title: 'Debug tools',
+    body: 'Agora has quality crash recovery and debug tools so you are never left testing file by file.',
+  },
 ];
 
 export function About() {
@@ -160,6 +172,21 @@ export function About() {
           conversation, or support the project with a donation so it can stay free and ad-free for
           everyone.
         </p>
+        <div className="mb-4 rounded-lg border border-pink-500/30 bg-pink-500/10 p-5">
+          <h4 className="font-semibold text-pink-800 dark:text-pink-200">Support Agora’s future</h4>
+          <p className="mt-1 text-sm leading-6 text-pink-700 dark:text-pink-300">
+            Agora is built and maintained by a solo developer who cares deeply about the Minecraft community. If Agora saves you time, helps you discover great mods, or just makes modding more fun — please consider sponsoring. Your donation keeps Agora free, ad-free, and improving, and it helps fund awesome new projects down the road. Every contribution, big or small, means a lot — thank you!
+          </p>
+          <a
+            href={agoraSponsorsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 inline-flex items-center gap-2 rounded-lg bg-pink-600 px-4 py-2 text-sm font-semibold text-white hover:bg-pink-700"
+          >
+            <HeartHandshake className="h-4 w-4" aria-hidden="true" />
+            Sponsor on GitHub
+          </a>
+        </div>
         <div className="flex flex-wrap gap-3">
           {agoraRepositoryUrl && (
             <a
@@ -183,15 +210,6 @@ export function About() {
               Join the Discord
             </a>
           )}
-          <a
-            href={agoraSponsorsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-lg bg-pink-600 px-4 py-2 text-sm font-semibold text-white hover:bg-pink-700"
-          >
-            <HeartHandshake className="h-4 w-4" aria-hidden="true" />
-            Donate
-          </a>
         </div>
       </section>
     </div>

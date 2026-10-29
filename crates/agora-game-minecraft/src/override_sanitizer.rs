@@ -227,7 +227,13 @@ pub fn extract_overrides_with(
             message: "Could not read zip entry during extraction.".to_string(),
         })?;
 
-        let raw_name = entry.name().to_string();
+        let raw_name = entry
+            .name()
+            .map_err(|_| LauncherError::Generic {
+                code: "ERR_OVERRIDE_FAILED".to_string(),
+                message: "Could not read zip entry during extraction.".to_string(),
+            })?
+            .into_owned();
 
         // Sanitize the path: reject absolute paths and parent traversal.
         let safe_name = match sanitize_path(&raw_name) {
@@ -478,7 +484,7 @@ mod tests {
         let write_zip = |entries: &[&str]| {
             let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
             for name in entries {
-                zip.start_file(*name, zip::write::FileOptions::default())
+                zip.start_file(*name, zip::write::SimpleFileOptions::default())
                     .unwrap();
                 zip.write_all(b"x").unwrap();
             }

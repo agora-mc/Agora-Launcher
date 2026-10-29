@@ -6,6 +6,7 @@ import {
   TOUR_STEPS,
   tourReducer,
   watchedAnchors,
+  type TourState,
   type TourStep,
 } from './tourModel';
 
@@ -120,6 +121,42 @@ describe('tourReducer', () => {
     expect(tourReducer(manual(1), { type: 'end' }, steps)).toEqual({ status: 'idle', index: 0, manual: false });
   });
 
+  it('advances a focus step when the user types in its field, and only then', () => {
+    const typed: TourStep = {
+      id: 'name-it',
+      title: '',
+      body: '',
+      anchors: ['create-instance-form'],
+      advance: { kind: 'focus' },
+    };
+    const only = [typed, steps[0]];
+    // A click inside the form is not "working in a text field".
+    expect(tourReducer(running(0), { type: 'dom-click', anchors: ['create-instance-form'] }, only))
+      .toEqual(running(0));
+    expect(tourReducer(running(0), { type: 'dom-focus', anchors: ['nav-home'] }, only))
+      .toEqual(running(0));
+    expect(tourReducer(running(0), { type: 'dom-focus', anchors: ['create-instance-form'] }, only))
+      .toEqual(running(1));
+  });
+
+  it('skips to the step named by skipTo, and otherwise to the next one', () => {
+    const withSkip: TourStep[] = [
+      { id: 'a', title: '', body: '', advance: { kind: 'next' }, skipTo: 'c' },
+      { id: 'b', title: '', body: '', advance: { kind: 'next' } },
+      { id: 'c', title: '', body: '', advance: { kind: 'next' } },
+    ];
+    expect(tourReducer(running(0), { type: 'skip' }, withSkip)).toEqual(running(2));
+    expect(tourReducer(running(1), { type: 'skip' }, withSkip)).toEqual(running(2));
+  });
+
+  it('falls back to the next step when skipTo names no step', () => {
+    const broken: TourStep[] = [
+      { id: 'a', title: '', body: '', advance: { kind: 'next' }, skipTo: 'missing' },
+      { id: 'b', title: '', body: '', advance: { kind: 'next' } },
+    ];
+    expect(tourReducer(running(0), { type: 'skip' }, broken)).toEqual(running(1));
+  });
+
   it('treats a composite condition as satisfied by any of its parts', () => {
     const composite: TourStep = {
       id: 'either',
@@ -192,13 +229,58 @@ describe('the shipped script', () => {
     }
   });
 
-  it('does not stall the destination step when the instance is already chosen', () => {
+  it('waits on the picker when the instance is already chosen, and Continue moves on', () => {
     const index = TOUR_STEPS.findIndex((step) => step.id === 'install-pick-instance');
     expect(index).toBeGreaterThan(-1);
     const state = { status: 'running' as const, index, manual: false };
     // The picker preselects the instance; no change event ever fires for it.
+    // Its card must stay up so the step is shown, not skipped.
     expect(tourReducer(state, { type: 'anchor-present', anchor: 'install-instance-chosen' }))
+      .toEqual(state);
+    expect(tourReducer(state, { type: 'next' }))
       .toEqual({ status: 'running', index: index + 1, manual: false });
+  });
+
+  it('points every skipTo at a real step further along the script', () => {
+    TOUR_STEPS.forEach((step, index) => {
+      if (step.skipTo === undefined) return;
+      const target = TOUR_STEPS.findIndex((candidate) => candidate.id === step.skipTo);
+      expect(target, `step "${step.id}" skips to unknown step "${step.skipTo}"`).toBeGreaterThan(index);
+    });
+  });
+
+  it('moves the create-instance form on by typing in it or by pressing Create', () => {
+    const index = TOUR_STEPS.findIndex((step) => step.id === 'create-instance-form');
+    expect(index).toBeGreaterThan(-1);
+    const state = { status: 'running' as const, index, manual: false };
+    expect(tourReducer(state, { type: 'dom-focus', anchors: ['create-instance-form'] }).index)
+      .toBe(index + 1);
+    expect(tourReducer(state, { type: 'dom-click', anchors: ['create-instance-submit'] }).index)
+      .toBe(index + 1);
+    // Still needs the user: a click elsewhere in the dialog does nothing.
+    expect(tourReducer(state, { type: 'dom-click', anchors: ['create-instance-form'] }))
+      .toEqual(state);
+  });
+
+  it('does not ask for a vote click, and says votes are public', () => {
+    const step = TOUR_STEPS.find((candidate) => candidate.id === 'mod-detail-upvote');
+    expect(step).toBeDefined();
+    expect(step?.advance).toEqual({ kind: 'next' });
+    expect(step?.body).toMatch(/public/i);
+  });
+
+  it('one user action advances exactly one step, even when the next step is already satisfied', () => {
+    // Clicking "Install to Instance" opens the panel: one advance. The picker
+    // then sees the preselected instance on the next frame. That must not
+    // advance a second time, or the card counter jumps (11 -> 13) and the
+    // picker is never shown.
+    const index = TOUR_STEPS.findIndex((step) => step.id === 'mod-detail-install');
+    expect(index).toBeGreaterThan(-1);
+    let state: TourState = { status: 'running', index, manual: false };
+    state = tourReducer(state, { type: 'anchor-present', anchor: 'install-panel' });
+    expect(TOUR_STEPS[state.index].id).toBe('install-pick-instance');
+    state = tourReducer(state, { type: 'anchor-present', anchor: 'install-instance-chosen' });
+    expect(TOUR_STEPS[state.index].id).toBe('install-pick-instance');
   });
 
   it('reaches the end by performing every step in order', () => {
@@ -229,6 +311,8 @@ function eventFor(step: TourStep): Parameters<typeof tourReducer>[1] {
       return { type: 'dom-click', anchors: advance.anchors ?? step.anchors ?? [] };
     case 'change':
       return { type: 'dom-change', anchors: advance.anchors ?? step.anchors ?? [] };
+    case 'focus':
+      return { type: 'dom-focus', anchors: advance.anchors ?? step.anchors ?? [] };
     case 'any':
       throw new Error('nested composite conditions are not part of the model');
   }

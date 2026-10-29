@@ -170,7 +170,7 @@ test('boolean settings are sent to Tauri as JSON booleans', async ({ page }) => 
           return Promise.resolve(null);
         }
         if (command === 'set_setting') {
-          writes.push({ key: args.key, value: args.value });
+          writes.push({ key: args.key as string, value: args.value });
           return Promise.resolve(null);
         }
         if (command === 'get_windows_accent_color') return Promise.resolve(null);

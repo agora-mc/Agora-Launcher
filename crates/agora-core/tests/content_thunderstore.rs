@@ -82,7 +82,7 @@ fn create_zip(path: &Path, entries: &[(&str, &[u8])]) {
     let file = File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
     let options =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     for (name, content) in entries {
         zip.start_file(*name, options).unwrap();
         zip.write_all(content).unwrap();

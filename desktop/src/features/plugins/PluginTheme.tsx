@@ -51,7 +51,7 @@ export function PluginThemeSelect() {
     if (mounted) setSelected(typeof value === 'string' ? value : '');
   }).catch(() => {}); return () => { mounted = false; }; }, []);
   return <label className="block space-y-2 text-sm">Plugin theme
-    <select aria-label="Plugin theme" className="ml-3 rounded border border-border bg-background p-2"
+    <select aria-label="Plugin theme" className="ml-3 rounded-sm border border-border bg-background p-2"
       value={selected} onChange={(event) => {
         const next = event.target.value;
         void setSetting('plugin_theme', next).then(() => {

@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 import typography from '@tailwindcss/typography';
+import tw3Palette from './tailwind.palette.js';
 
 export default {
   content: [
@@ -10,6 +11,9 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Tailwind 3's default hues, so Tailwind 4 does not repaint them (see
+        // tailwind.palette.js).
+        ...tw3Palette,
         midnight: "hsl(var(--midnight))",
         aegean: "hsl(var(--aegean))",
         "sea-blue": "hsl(var(--sea-blue))",

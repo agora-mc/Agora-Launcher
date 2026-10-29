@@ -23,6 +23,7 @@ use crate::state::LauncherState;
 use crate::version_cache::{self, ModVersionPage, SharedVersionCache};
 use agora_game_minecraft::browse_cache::{self, BrowsePage};
 use agora_game_minecraft::installed_content::{InstalledContentMetadata, InstalledContentRow};
+pub use agora_game_minecraft::instance_service::InstanceHealthScanResult;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -340,7 +341,7 @@ pub async fn create_instance(
     instances::create_instance(app, request).await
 }
 
-/// Delete an instance, moving its directory to the OS trash.
+/// Delete an instance, moving it to Recently deleted (restorable for 30 days).
 #[tauri::command]
 pub async fn delete_instance(
     app: tauri::AppHandle,
@@ -348,6 +349,35 @@ pub async fn delete_instance(
     instance_id: String,
 ) -> LauncherResult<()> {
     tokio::task::spawn_blocking(move || instances::delete_instance(&app, &instance_id))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Instances deleted within the last 30 days, newest first.
+#[tauri::command]
+pub async fn list_recently_deleted(
+    app: tauri::AppHandle,
+) -> LauncherResult<Vec<agora_game_minecraft::recently_deleted::RecentlyDeletedEntry>> {
+    tokio::task::spawn_blocking(move || instances::list_recently_deleted(&app))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Put a deleted instance back (under a free name if its id was reused).
+#[tauri::command]
+pub async fn restore_deleted_instance(
+    app: tauri::AppHandle,
+    entry_id: String,
+) -> LauncherResult<agora_game_minecraft::recently_deleted::RestoreOutcome> {
+    tokio::task::spawn_blocking(move || instances::restore_deleted_instance(&app, &entry_id))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// "Delete now": send a deleted instance to the OS trash.
+#[tauri::command]
+pub async fn purge_deleted_instance(app: tauri::AppHandle, entry_id: String) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || instances::purge_deleted_instance(&app, &entry_id))
         .await
         .map_err(|_| LauncherError::LocalStateFailed)?
 }
@@ -469,6 +499,7 @@ pub async fn launch_instance(
         mode: agora_game_minecraft::launch_service::LaunchMode::Delegated,
         health_policy: health_policy_for_approval(allow_health_blockers),
         health_scan_token,
+        quick_play: None,
     };
     let state_for_monitor = state.inner().clone();
     let launch_result = agora_game_minecraft::launch_service::LaunchService::new(ctx.clone())
@@ -587,6 +618,7 @@ impl agora_game_minecraft::launch_service::LaunchProgress for DelegatedLaunchPro
         let instance_id = self.instance_id.clone();
         let started = started.clone();
         tokio::spawn(async move {
+            apply_window_on_game_start(&app, true);
             let _ = app.emit(
                 "game-started",
                 serde_json::json!({
@@ -692,6 +724,7 @@ pub async fn launch_instance_with_recovery(
         mode: agora_game_minecraft::launch_service::LaunchMode::Direct,
         health_policy: health_policy_for_approval(allow_health_blockers),
         health_scan_token,
+        quick_play: None,
     };
     let task = tokio::spawn(async move {
         agora_game_minecraft::launch_service::LaunchService::new(ctx)
@@ -730,6 +763,7 @@ pub async fn launch_instance_direct(
     instance_id: String,
     allow_health_blockers: Option<bool>,
     health_scan_token: Option<String>,
+    quick_play: Option<agora_game_minecraft::launch_planner::QuickPlay>,
 ) -> LauncherResult<u32> {
     use tokio::sync::oneshot;
 
@@ -790,6 +824,7 @@ pub async fn launch_instance_direct(
         mode: agora_game_minecraft::launch_service::LaunchMode::Direct,
         health_policy: health_policy_for_approval(allow_health_blockers),
         health_scan_token,
+        quick_play,
     };
     let task = tokio::spawn(async move {
         agora_game_minecraft::launch_service::LaunchService::new(ctx)
@@ -1062,6 +1097,7 @@ impl agora_game_minecraft::launch_service::LaunchProgress for TauriLaunchProgres
                     },
                 );
             }
+            apply_window_on_game_start(&app, false);
             let _ = app.emit(
                 "game-started",
                 serde_json::json!({
@@ -1124,6 +1160,9 @@ impl agora_game_minecraft::launch_service::LaunchProgress for TauriLaunchProgres
         tokio::spawn(async move {
             let mut shared = state.lock().await;
             shared.running_processes.remove(&result.session_id);
+            if shared.running_processes.is_empty() {
+                restore_window_after_game(&app);
+            }
             let _ = app.emit(
                 "game-exited",
                 serde_json::json!({
@@ -1288,19 +1327,9 @@ pub async fn check_instance_health(
         .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
-/// Health status for one entry in a background all-instance scan. Individual
-/// failures are returned in-band so an unreadable instance never prevents the
-/// rest of the library from reporting its health state.
-#[derive(Debug, serde::Serialize)]
-pub struct InstanceHealthScanResult {
-    pub instance_id: String,
-    pub report: Option<agora_game_minecraft::health::HealthReport>,
-    pub error: Option<String>,
-}
-
 /// Scan every local instance at background priority. The desktop shell calls
 /// this periodically to keep instance-card alerts current; pre-launch checks
-/// remain user-initiated and authoritative.
+/// remain user-initiated and authoritative. The scan itself lives in core.
 #[tauri::command]
 pub async fn check_all_instance_health(
     app: tauri::AppHandle,
@@ -1308,55 +1337,12 @@ pub async fn check_all_instance_health(
 ) -> LauncherResult<Vec<InstanceHealthScanResult>> {
     let ctx = crate::core_context(&app)?;
     let worker_ctx = ctx.clone();
-    let app_for_scan = app.clone();
-    let registry_db_path = paths::registry_db_path(&app).ok();
     ctx.task_scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::Background,
             move || {
-                let rows = agora_game_minecraft::instance_service::InstanceService::new(
-                    worker_ctx.clone(),
-                )
-                .list()?;
-                let mut results = Vec::with_capacity(rows.len());
-                for row in rows {
-                    let instance_id = row.instance_id;
-                    let result =
-                        (|| -> LauncherResult<agora_game_minecraft::health::HealthReport> {
-                            let sanitized = paths::sanitize_id(&instance_id);
-                            if sanitized.is_empty() || sanitized != instance_id {
-                                return Err(LauncherError::Generic {
-                                    code: "ERR_INVALID_INSTANCE".into(),
-                                    message: "Stored instance ID is invalid.".into(),
-                                });
-                            }
-                            let instance_dir = paths::instance_dir(&app_for_scan, &sanitized)
-                                .map_err(|error| LauncherError::Generic {
-                                    code: "ERR_INSTANCE_PATH".into(),
-                                    message: error.to_string(),
-                                })?;
-                            let manifest = load_manifest(&app_for_scan, &sanitized)?;
-                            Ok(agora_game_minecraft::health::cached_health(
-                                &instance_dir,
-                                &manifest,
-                                registry_db_path.as_deref(),
-                                None,
-                            ))
-                        })();
-                    match result {
-                        Ok(report) => results.push(InstanceHealthScanResult {
-                            instance_id,
-                            report: Some(report),
-                            error: None,
-                        }),
-                        Err(error) => results.push(InstanceHealthScanResult {
-                            instance_id,
-                            report: None,
-                            error: Some(error.to_string()),
-                        }),
-                    }
-                }
-                Ok(results)
+                agora_game_minecraft::instance_service::InstanceService::new(worker_ctx)
+                    .health_scan_all()
             },
         )
         .await
@@ -1465,6 +1451,423 @@ pub async fn list_manifest_mc_versions(
     Ok(loader_manifests::list_mc_versions(loader.as_deref()))
 }
 
+/// Run a blocking world/server operation off the async runtime.
+async fn with_worlds<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    op: impl FnOnce(agora_game_minecraft::worlds::WorldService) -> LauncherResult<T> + Send + 'static,
+) -> LauncherResult<T> {
+    let ctx = crate::core_context(app)?;
+    tokio::task::spawn_blocking(move || op(agora_game_minecraft::worlds::WorldService::new(ctx)))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Worlds in an instance with name, mode, size and icon, most recent first.
+#[tauri::command]
+pub async fn list_worlds(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_game_minecraft::worlds::WorldInfo>> {
+    with_worlds(&app, move |worlds| worlds.list(&instance_id)).await
+}
+
+/// Change the name a world shows in game; its folder is kept.
+#[tauri::command]
+pub async fn rename_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+    folder: String,
+    name: String,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.rename(&instance_id, &folder, &name)
+    })
+    .await
+}
+
+/// Copy a world next to itself; returns the new folder name.
+#[tauri::command]
+pub async fn copy_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+    folder: String,
+) -> LauncherResult<String> {
+    with_worlds(&app, move |worlds| worlds.copy(&instance_id, &folder)).await
+}
+
+/// Move a world to the system recycle bin.
+#[tauri::command]
+pub async fn delete_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+    folder: String,
+) -> LauncherResult<()> {
+    let trash = crate::instances::trash_adapter();
+    with_worlds(&app, move |worlds| {
+        worlds.delete(&instance_id, &folder, &trash)
+    })
+    .await
+}
+
+/// Save a world as a zip the user places with a save dialog. `None` when the
+/// dialog was cancelled.
+#[tauri::command]
+pub async fn export_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+    folder: String,
+) -> LauncherResult<Option<String>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Export world")
+        .set_directory(exports_folder(&app)?)
+        .set_file_name(format!("{folder}.zip"))
+        .add_filter("Zip archive", &["zip"])
+        .save_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let destination = handle.path().to_path_buf();
+    let shown = destination.to_string_lossy().to_string();
+    with_worlds(&app, move |worlds| {
+        worlds.export(&instance_id, &folder, &destination)
+    })
+    .await?;
+    Ok(Some(shown))
+}
+
+/// Add a world from a zip the user picks. `None` when the dialog was cancelled.
+#[tauri::command]
+pub async fn import_world(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Option<String>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Import world")
+        .add_filter("Zip archive", &["zip"])
+        .pick_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let archive = handle.path().to_path_buf();
+    with_worlds(&app, move |worlds| worlds.import(&instance_id, &archive))
+        .await
+        .map(Some)
+}
+
+/// Worlds and servers played most recently, for Home.
+#[tauri::command]
+pub async fn list_recent_play(
+    app: tauri::AppHandle,
+    limit: usize,
+) -> LauncherResult<Vec<agora_game_minecraft::worlds::RecentPlay>> {
+    with_worlds(&app, move |worlds| worlds.recent(limit.min(50))).await
+}
+
+/// The instance's screenshots, newest first.
+#[tauri::command]
+pub async fn list_screenshots(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_game_minecraft::worlds::ScreenshotInfo>> {
+    with_worlds(&app, move |worlds| worlds.list_screenshots(&instance_id)).await
+}
+
+/// One screenshot as a `data:` URL.
+#[tauri::command]
+pub async fn read_screenshot(
+    app: tauri::AppHandle,
+    instance_id: String,
+    file: String,
+) -> LauncherResult<String> {
+    with_worlds(&app, move |worlds| {
+        worlds.screenshot_data_url(&instance_id, &file)
+    })
+    .await
+}
+
+/// Rename a screenshot, keeping its extension; returns the new name.
+#[tauri::command]
+pub async fn rename_screenshot(
+    app: tauri::AppHandle,
+    instance_id: String,
+    file: String,
+    name: String,
+) -> LauncherResult<String> {
+    with_worlds(&app, move |worlds| {
+        worlds.rename_screenshot(&instance_id, &file, &name)
+    })
+    .await
+}
+
+/// Move a screenshot to the system recycle bin.
+#[tauri::command]
+pub async fn delete_screenshot(
+    app: tauri::AppHandle,
+    instance_id: String,
+    file: String,
+) -> LauncherResult<()> {
+    let trash = crate::instances::trash_adapter();
+    with_worlds(&app, move |worlds| {
+        worlds.delete_screenshot(&instance_id, &file, &trash)
+    })
+    .await
+}
+
+/// The instance's in-game multiplayer server list.
+#[tauri::command]
+pub async fn list_servers(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_game_minecraft::worlds::ServerEntry>> {
+    with_worlds(&app, move |worlds| worlds.list_servers(&instance_id)).await
+}
+
+#[tauri::command]
+pub async fn add_server(
+    app: tauri::AppHandle,
+    instance_id: String,
+    name: String,
+    address: String,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.add_server(&instance_id, &name, &address)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn update_server(
+    app: tauri::AppHandle,
+    instance_id: String,
+    index: usize,
+    name: String,
+    address: String,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.update_server(&instance_id, index, &name, &address)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_server(
+    app: tauri::AppHandle,
+    instance_id: String,
+    index: usize,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.remove_server(&instance_id, index)
+    })
+    .await
+}
+
+#[derive(serde::Serialize)]
+pub struct ProxyView {
+    pub setting: agora_core::http_client::ProxySetting,
+    /// Whether a password is stored; the password itself never leaves core.
+    pub password_stored: bool,
+}
+
+/// The saved proxy choice. It is in effect only after a restart.
+#[tauri::command]
+pub async fn get_proxy_setting(app: tauri::AppHandle) -> LauncherResult<ProxyView> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let conn =
+            agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
+                    message: e.to_string(),
+                }
+            })?;
+        Ok(ProxyView {
+            setting: agora_core::http_client::saved_proxy(&conn),
+            password_stored: agora_core::http_client::proxy_password_stored(),
+        })
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Save the proxy choice. `password`: `None` keeps the stored one, `""` removes it.
+#[tauri::command]
+pub async fn set_proxy_setting(
+    app: tauri::AppHandle,
+    setting: agora_core::http_client::ProxySetting,
+    password: Option<String>,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let conn =
+            agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
+                    message: e.to_string(),
+                }
+            })?;
+        agora_core::http_client::save_proxy(&conn, &setting, password.as_deref())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// The instance's latest log and newest crash reports, which can be shared.
+#[tauri::command]
+pub async fn list_shareable_logs(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_game_minecraft::log_share::ShareableLog>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::log_share::shareable_logs(&ctx, &instance_id)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Exactly the text sharing a log would upload.
+#[tauri::command]
+pub async fn preview_log_share(
+    app: tauri::AppHandle,
+    instance_id: String,
+    path: String,
+) -> LauncherResult<agora_game_minecraft::log_share::LogPreview> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::log_share::preview(&ctx, &instance_id, &path)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Upload a log to mclo.gs and return its link.
+#[tauri::command]
+pub async fn share_log(
+    app: tauri::AppHandle,
+    instance_id: String,
+    path: String,
+) -> LauncherResult<agora_game_minecraft::log_share::SharedLog> {
+    let ctx = crate::core_context(&app)?;
+    agora_game_minecraft::log_share::upload(&ctx, &instance_id, &path).await
+}
+
+/// The active account's skin and capes.
+#[tauri::command]
+pub async fn skin_profile(
+    app: tauri::AppHandle,
+) -> LauncherResult<agora_game_minecraft::skins::SkinProfile> {
+    let ctx = crate::core_context(&app)?;
+    agora_game_minecraft::skins::profile(&ctx).await
+}
+
+/// Skins saved on this computer.
+#[tauri::command]
+pub async fn skin_library(
+    app: tauri::AppHandle,
+) -> LauncherResult<Vec<agora_game_minecraft::skins::SavedSkin>> {
+    let ctx = crate::core_context(&app)?;
+    Ok(agora_game_minecraft::skins::library(&ctx))
+}
+
+/// Pick a skin PNG and save it to the library. `None` when cancelled.
+#[tauri::command]
+pub async fn add_skin_to_library(
+    app: tauri::AppHandle,
+    name: String,
+    variant: agora_game_minecraft::skins::SkinVariant,
+) -> LauncherResult<Option<agora_game_minecraft::skins::SavedSkin>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Choose a skin")
+        .add_filter("Skin image", &["png"])
+        .pick_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(|e| LauncherError::Generic {
+            code: "ERR_SKIN_FILE".into(),
+            message: format!("Could not read the file: {e}"),
+        })?;
+        let name = if name.trim().is_empty() {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Skin")
+                .to_string()
+        } else {
+            name
+        };
+        agora_game_minecraft::skins::save_to_library(&ctx, &name, variant, &bytes).map(Some)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+#[tauri::command]
+pub async fn remove_skin_from_library(app: tauri::AppHandle, id: String) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    agora_game_minecraft::skins::remove_from_library(&ctx, &id)
+}
+
+/// Upload a saved skin and make it active.
+#[tauri::command]
+pub async fn wear_saved_skin(app: tauri::AppHandle, id: String) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    agora_game_minecraft::skins::use_saved(&ctx, &id).await
+}
+
+/// Go back to the default skin.
+#[tauri::command]
+pub async fn reset_skin(app: tauri::AppHandle) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    agora_game_minecraft::skins::reset_skin(&ctx).await
+}
+
+/// Show a cape the account owns, or hide capes with `None`.
+#[tauri::command]
+pub async fn set_cape(app: tauri::AppHandle, cape_id: Option<String>) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    agora_game_minecraft::skins::set_cape(&ctx, cape_id.as_deref()).await
+}
+
+/// Ask a server for its status (online, players, version, latency).
+#[tauri::command]
+pub async fn ping_server(
+    address: String,
+) -> LauncherResult<agora_game_minecraft::server_ping::ServerStatus> {
+    agora_game_minecraft::server_ping::ping(&address).await
+}
+
+/// Move a server one place up (`-1`) or down (`1`).
+#[tauri::command]
+pub async fn move_server(
+    app: tauri::AppHandle,
+    instance_id: String,
+    index: usize,
+    offset: i32,
+) -> LauncherResult<()> {
+    with_worlds(&app, move |worlds| {
+        worlds.move_server(&instance_id, index, offset)
+    })
+    .await
+}
+
+/// Minecraft snapshot and pre-release versions for vanilla instances, newest first.
+#[tauri::command]
+pub async fn list_snapshot_versions(app: tauri::AppHandle) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
+    let policy = agora_core::network::NetworkPolicy::from_ctx(&ctx)?;
+    agora_game_minecraft::minecraft_metadata::list_snapshot_versions(
+        &ctx.paths.minecraft_runtime_root(),
+        &policy,
+    )
+    .await
+}
+
 /// Read a JSON-encoded setting from `local_state.db`.
 #[tauri::command]
 pub async fn get_setting(
@@ -1517,6 +1920,16 @@ pub async fn get_registry_status(
     Ok(crate::registry_sync::get_status(&app))
 }
 
+/// What the most recent outbound requests reported: reachable, unreachable, or
+/// nothing tried yet. The Privacy page and offline banner show this instead of
+/// the browser's `navigator.onLine`, which says nothing about whether requests
+/// actually get through.
+#[tauri::command]
+pub async fn get_connectivity_status(
+) -> LauncherResult<agora_core::connectivity::ConnectivitySnapshot> {
+    Ok(agora_core::connectivity::snapshot())
+}
+
 /// Extract a pack override zip into an instance directory with full sanitization.
 ///
 /// Implements Â§7.2: directory whitelist, zip-bomb limits, banned extensions,
@@ -1556,6 +1969,51 @@ pub async fn focus_main_window(app: tauri::AppHandle) -> LauncherResult<()> {
         let _ = window.set_focus();
     }
     Ok(())
+}
+
+/// Set when Agora minimized or hid its window for a game, so only a window
+/// Agora moved is put back.
+static WINDOW_STASHED_FOR_GAME: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Minimize or hide the launcher when a game starts, per the
+/// `launcher_on_game_start` setting (`keep`, `minimize`, `hide`). A delegated
+/// launch never reports its exit back, so it is only ever minimized: a hidden
+/// window would have nothing to bring it back.
+fn apply_window_on_game_start(app: &tauri::AppHandle, delegated: bool) {
+    let mode = crate::core_context(app)
+        .ok()
+        .and_then(|ctx| agora_core::db::local_state_connection(&ctx.paths.local_state_db()).ok())
+        .and_then(|conn| {
+            agora_core::db::get_setting(&conn, "launcher_on_game_start")
+                .ok()
+                .flatten()
+        })
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let moved = match mode.as_str() {
+        "hide" if !delegated => window.hide().is_ok(),
+        "hide" | "minimize" => window.minimize().is_ok(),
+        _ => false,
+    };
+    if moved && !delegated {
+        WINDOW_STASHED_FOR_GAME.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Bring the launcher back after the last directly launched game exits, if
+/// Agora put it away.
+fn restore_window_after_game(app: &tauri::AppHandle) {
+    if WINDOW_STASHED_FOR_GAME.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
 }
 
 /// Begin the GitHub OAuth Device Flow and return the code the user must enter.
@@ -2191,31 +2649,128 @@ pub async fn execute_launcher_imports(
     app: tauri::AppHandle,
     plan: agora_game_minecraft::launcher_import_service::LauncherImportPlan,
 ) -> LauncherResult<agora_game_minecraft::launcher_import_service::LauncherImportBatchResult> {
-    let ctx = crate::core_context(&app)?;
+    // The wizard listens for "operation-progress"; without a sink the copy runs
+    // silently for minutes behind one spinner.
+    let ctx =
+        crate::core_context(&app)?.with_progress_sink(std::sync::Arc::new(TauriCoreProgressSink {
+            app,
+            event_name: "operation-progress",
+        }));
     agora_game_minecraft::launcher_import_service::LauncherImportService::new(ctx)
         .execute(plan)
         .await
 }
 
-/// Export an instance as a shareable pack file (Â§6.5c).
+/// Export an instance as a shareable pack file (Â§6.5c). The user picks where the
+/// file goes in a save dialog; `None` means they cancelled.
 #[tauri::command]
 pub async fn export_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     format: String,
-) -> LauncherResult<String> {
-    mod_install::export_instance_pack(&app, &instance_id, &format).await
+) -> LauncherResult<Option<String>> {
+    let file_name =
+        agora_game_minecraft::export_service::default_export_file_name(&instance_id, &format)?;
+    let (filter_name, extension) = if format == "json" {
+        ("Agora pack", "json")
+    } else {
+        ("Modrinth pack", "mrpack")
+    };
+    let exports_dir = exports_folder(&app)?;
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Export pack")
+        .set_directory(&exports_dir)
+        .set_file_name(&file_name)
+        .add_filter(filter_name, &[extension])
+        .save_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    mod_install::export_instance_pack(&app, &instance_id, &format, handle.path())
+        .await
+        .map(Some)
+}
+
+/// Mods an export in `format` could not carry to a friend (no catalog or
+/// Modrinth source, and the format does not bundle files). The UI names them
+/// before the save dialog opens.
+#[tauri::command]
+pub async fn export_sourceless_mods(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    format: String,
+) -> LauncherResult<Vec<String>> {
+    mod_install::export_sourceless_mods(&app, &instance_id, &format).await
+}
+
+/// The folder exports are offered in by default. Created first so the save dialog can open there.
+fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> {
+    let dir = crate::core_context(app)?.paths.root().join("exports");
+    std::fs::create_dir_all(&dir).map_err(|_| LauncherError::InstanceCreateFailed)?;
+    Ok(dir)
 }
 
 /// Import an instance from a pack file (.mrpack or .agora-pack.json).
+/// `reviewed_sha256` is the fingerprint the review step recorded; a pack file
+/// whose bytes no longer match it is refused. `name` is the instance name the
+/// user chose in the review. `skip_unfetchable` is the user's "Import anyway":
+/// files with no way to be fetched are left out instead of stopping the import.
 #[tauri::command]
 pub async fn import_instance_pack(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     source_path: String,
-) -> LauncherResult<mod_install::PackImportResult> {
-    mod_install::import_instance_pack(&app, &source_path).await
+    reviewed_sha256: Option<String>,
+    name: Option<String>,
+    skip_unfetchable: bool,
+) -> LauncherResult<mod_install::PackImportOutcome> {
+    mod_install::import_instance_pack(
+        &app,
+        &source_path,
+        reviewed_sha256.as_deref(),
+        name.as_deref(),
+        skip_unfetchable,
+    )
+    .await
+}
+
+/// What importing a pack file (`.agora-pack.json` or `.mrpack`) would do,
+/// shown before anything is written. Reads the file and settings only.
+#[tauri::command]
+pub async fn plan_pack_import(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    source_path: String,
+) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportPlan> {
+    mod_install::plan_pack_import(&app, &source_path)
+}
+
+/// Remove the copy a `.mrpack` review staged, when the user cancels it.
+#[tauri::command]
+pub async fn discard_pack_review(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    sha256: String,
+) -> LauncherResult<()> {
+    mod_install::discard_pack_review(&app, &sha256)
+}
+
+/// Retry the entries of an Agora pack import that needed an action (Modrinth
+/// off, say) on the instance it created. Entries already installed are skipped.
+/// `allow_modrinth_once` lets just these entries use Modrinth without turning
+/// the Modrinth setting on.
+#[tauri::command]
+pub async fn retry_pack_import_entries(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    entries: Vec<agora_game_minecraft::agora_pack_import::AgoraPackEntry>,
+    allow_modrinth_once: bool,
+) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportReport> {
+    mod_install::retry_pack_import_entries(&app, &instance_id, entries, allow_modrinth_once).await
 }
 
 /// Whether the Modrinth integration is currently enabled (Â§6.3 toggle).
@@ -2551,13 +3106,16 @@ pub async fn enrich_instance_content(
             let cache_key = row.key.clone();
             InstalledContentMetadata {
                 key: cache_key.clone(),
-                display_name: row.modrinth_id.as_ref().and_then(|id| {
-                    cached
-                        .get(&cache_key)
-                        .filter(|entry| entry.project_id == *id)
-                        .map(|entry| entry.title.clone())
-                        .or_else(|| fetched.get(id).map(|item| item.title.clone()))
-                }),
+                display_name: agora_game_minecraft::installed_content::enriched_display_name(
+                    &row.metadata_status,
+                    row.modrinth_id.as_ref().and_then(|id| {
+                        cached
+                            .get(&cache_key)
+                            .filter(|entry| entry.project_id == *id)
+                            .map(|entry| entry.title.clone())
+                            .or_else(|| fetched.get(id).map(|item| item.title.clone()))
+                    }),
+                ),
                 icon_url: row.modrinth_id.as_ref().and_then(|id| {
                     cached
                         .get(&cache_key)
@@ -2791,10 +3349,9 @@ pub async fn get_dependency_graph(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
 ) -> LauncherResult<Vec<dependency_ops::DependencyEdge>> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        Ok(dependency_ops::build_dependency_graph(&manifest.mods))
+        agora_game_minecraft::dependency_service::DependencyService::new(ctx).graph(&instance_id)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2810,12 +3367,9 @@ pub async fn get_orphaned_dependencies(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
 ) -> LauncherResult<Vec<agora_core::dependency_ops::OrphanedDependency>> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        Ok(agora_core::dependency_ops::find_orphaned_dependencies(
-            &manifest.mods,
-        ))
+        agora_game_minecraft::dependency_service::DependencyService::new(ctx).orphans(&instance_id)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2830,13 +3384,10 @@ pub async fn explain_mod_presence(
     instance_id: String,
     filename: String,
 ) -> LauncherResult<Option<agora_core::dependency_ops::PresenceExplanation>> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        Ok(agora_core::dependency_ops::explain_presence(
-            &manifest.mods,
-            &filename,
-        ))
+        agora_game_minecraft::dependency_service::DependencyService::new(ctx)
+            .presence(&instance_id, &filename)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2851,19 +3402,10 @@ pub async fn get_disable_plan(
     instance_id: String,
     filename: String,
 ) -> LauncherResult<dependency_ops::DisablePlan> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-        let target = manifest
-            .mods
-            .iter()
-            .find(|m| m.filename == filename)
-            .ok_or_else(|| LauncherError::Generic {
-                code: "ERR_MOD_NOT_FOUND".to_string(),
-                message: format!("Mod '{}' not found in instance manifest.", filename),
-            })?
-            .clone();
-        Ok(dependency_ops::build_disable_plan(&manifest.mods, &target))
+        agora_game_minecraft::dependency_service::DependencyService::new(ctx)
+            .disable_plan(&instance_id, &filename)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2928,11 +3470,17 @@ pub async fn get_install_plan(
         dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
 
         let aliases = svc.get_all_mod_aliases()?;
+        let instance_dir = paths::instance_dir(&app, &instance_id)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let on_disk = agora_core::dependency_ops::mod_jars_on_disk(&instance_dir);
         Ok(dependency_ops::build_install_plan_with_aliases(
             manifest_deps,
             &jar_metadata,
             &manifest.mods,
             &dependency_ops::AliasMap::from_pairs(&aliases),
+            &manifest.loader,
+            &manifest.loader_version,
+            &on_disk,
         ))
     })
     .await
@@ -2952,83 +3500,23 @@ pub async fn enable_mod_with_auto_deps(
     instance_id: String,
     filename: String,
 ) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let mut manifest = load_manifest(&app, &instance_id)?;
-        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
-
-        let target = manifest
-            .mods
-            .iter()
-            .find(|m| m.filename == filename)
-            .ok_or_else(|| LauncherError::Generic {
-                code: "ERR_MOD_NOT_FOUND".to_string(),
-                message: format!("Mod '{}' not found in instance manifest.", filename),
-            })?;
-
-        let mut auto_enabled: Vec<String> = Vec::new();
-
-        // Resolve the target mod's required deps from jar metadata.
-        let depends_on = match &target.mod_jar_id {
-            Some(_) => &target.depends_on,
-            None => &Vec::new(),
-        };
-
-        // For each required dep, find the corresponding installed mod and check
-        // if it's disabled (`.disabled` file exists). If so, enable it.
-        for dep_jar_id in depends_on {
-            let dep_lower = dep_jar_id.to_lowercase();
-
-            // Find the physical JAR whose primary or dynamically provided ID
-            // matches this dependency.
-            let dep_mod = manifest.mods.iter().find(|m| {
-                m.mod_jar_id
-                    .iter()
-                    .chain(m.provided_mod_ids.iter())
-                    .any(|jid| jid.to_lowercase() == dep_lower)
-            });
-
-            let dep_mod = match dep_mod {
-                Some(m) => m,
-                None => continue, // Missing entirely â€” skip silently (can't auto-install).
-            };
-
-            // Check if the dep's jar file is disabled.
-            let mods_dir = paths::instance_dir(&app, &instance_id)
-                .map_err(|_| LauncherError::InstanceCreateFailed)?
-                .join("mods");
-            let disabled_path = mods_dir.join(format!("{}.disabled", dep_mod.filename));
-
-            if !disabled_path.exists() {
-                continue; // Already enabled.
-            }
-
-            // Best-effort enable: continue past individual failures.
-            if let Err(e) = crash_investigator::enable_mod(&app, &instance_id, &dep_mod.filename) {
+        let outcome = agora_game_minecraft::dependency_service::DependencyService::new(ctx)
+            .enable_with_auto_deps(&instance_id, &filename)
+            .inspect_err(|error| {
                 crate::auth::log_line(&format!(
-                    "enable_mod_with_auto_deps: failed to enable dep '{}': {}",
-                    dep_mod.filename, e
+                    "enable_mod_with_auto_deps: failed to enable target '{}': {}",
+                    filename, error
                 ));
-                continue;
-            }
-
-            auto_enabled.push(dep_mod.filename.clone());
-        }
-
-        // Now enable the target mod itself.
-        if let Err(e) = crash_investigator::enable_mod(&app, &instance_id, &filename) {
+            })?;
+        for failure in &outcome.failed_dependencies {
             crate::auth::log_line(&format!(
-                "enable_mod_with_auto_deps: failed to enable target '{}': {}",
-                filename, e
+                "enable_mod_with_auto_deps: failed to enable dep '{}': {}",
+                failure.filename, failure.message
             ));
-            // Still return the auto-enabled deps we managed; the target failure
-            // is surfaced via the Err path below.
-            return Err(LauncherError::Generic {
-                code: "ERR_ENABLE_FAILED".to_string(),
-                message: format!("Failed to enable '{}': {}", filename, e),
-            });
         }
-
-        Ok(auto_enabled)
+        Ok(outcome.enabled_dependencies)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -3391,13 +3879,41 @@ pub async fn msa_refresh(
     Ok(MsaAccountStatus::from(&refreshed))
 }
 
-/// Sign out and clear stored MSA credentials.
+/// Sign the active account out. Another signed-in account, if any, becomes
+/// active in its place.
 #[tauri::command]
 pub async fn msa_logout(
     _app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
 ) -> LauncherResult<()> {
-    agora_game_minecraft::msa::clear_credentials()
+    agora_game_minecraft::msa::sign_out_active().map(|_| ())
+}
+
+/// Every Microsoft account signed in to Agora, the active one first.
+#[tauri::command]
+pub async fn msa_list_accounts() -> LauncherResult<Vec<agora_game_minecraft::msa::MsaAccountSummary>>
+{
+    tokio::task::spawn_blocking(agora_game_minecraft::msa::list_accounts)
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Make another signed-in account the one direct launch uses.
+#[tauri::command]
+pub async fn msa_switch_account(
+    uuid: String,
+) -> LauncherResult<agora_game_minecraft::msa::MsaAccountSummary> {
+    tokio::task::spawn_blocking(move || agora_game_minecraft::msa::switch_account(&uuid))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Forget one signed-in account.
+#[tauri::command]
+pub async fn msa_remove_account(uuid: String) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || agora_game_minecraft::msa::remove_account(&uuid))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 /// Compute the JVM preview using the same GC and pre-touch rules as launch.
@@ -3600,35 +4116,115 @@ pub async fn set_instance_wrapper_command(
     instance_id: String,
     wrapper: String,
 ) -> LauncherResult<()> {
-    let sanitized = paths::sanitize_id(&instance_id);
-    let trimmed = wrapper.trim().to_string();
-    if !trimmed.is_empty() {
-        agora_game_minecraft::launch_planner::parse_argument_string(&trimmed)?;
-    }
     let ctx = crate::core_context(&app)?;
-    let manifest_path = ctx.paths.instance_manifest(&sanitized)?;
-    let lock_manager = ctx.lock_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let _lock = lock_manager.acquire(
-            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-            "wrapper-command",
-        )?;
-        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
-        if !manifest.user_preferences.is_object() {
-            manifest.user_preferences = serde_json::json!({});
-        }
-        if let Some(preferences) = manifest.user_preferences.as_object_mut() {
-            if trimmed.is_empty() {
-                preferences.remove("agora_wrapper_command");
-            } else {
-                preferences.insert(
-                    "agora_wrapper_command".into(),
-                    serde_json::Value::String(trimmed),
-                );
-            }
-        }
-        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
-        Ok::<_, LauncherError>(())
+        agora_game_minecraft::instance_service::InstanceService::new(ctx)
+            .set_wrapper_command(&instance_id, &wrapper)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Set the commands run around a direct launch and the game's extra
+/// environment variables. Blank values clear them.
+#[tauri::command]
+pub async fn set_instance_launch_hooks(
+    app: tauri::AppHandle,
+    instance_id: String,
+    pre_launch: String,
+    post_exit: String,
+    env: std::collections::BTreeMap<String, String>,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::instance_service::InstanceService::new(ctx).set_launch_hooks(
+            &instance_id,
+            &pre_launch,
+            &post_exit,
+            env,
+        )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Share this instance's game settings and/or server list with other instances.
+#[tauri::command]
+pub async fn set_instance_sharing(
+    app: tauri::AppHandle,
+    instance_id: String,
+    options: bool,
+    servers: bool,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::instance_service::InstanceService::new(ctx).set_sharing(
+            &instance_id,
+            options,
+            servers,
+        )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Save this instance's notes; blank clears them.
+#[tauri::command]
+pub async fn set_instance_notes(
+    app: tauri::AppHandle,
+    instance_id: String,
+    notes: String,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::instance_service::InstanceService::new(ctx)
+            .set_notes(&instance_id, &notes)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Instance id to group name, for laying out My Instances.
+#[tauri::command]
+pub async fn list_instance_groups(
+    app: tauri::AppHandle,
+) -> LauncherResult<std::collections::BTreeMap<String, String>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::instance_service::InstanceService::new(ctx).groups()
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// File an instance under a group, or ungroup it with `None`.
+#[tauri::command]
+pub async fn set_instance_group(
+    app: tauri::AppHandle,
+    instance_id: String,
+    group: Option<String>,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::instance_service::InstanceService::new(ctx)
+            .set_group(&instance_id, group.as_deref())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Set or clear (both `None`) this instance's fixed game window size.
+#[tauri::command]
+pub async fn set_instance_window_size(
+    app: tauri::AppHandle,
+    instance_id: String,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::instance_service::InstanceService::new(ctx)
+            .set_window_size(&instance_id, width.zip(height))
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -3978,33 +4574,18 @@ pub async fn apply_pack_update(
             message: e.to_string(),
         })?;
     let ctx = crate::core_context(&app)?;
-    let staged_dir = ctx.paths.staging_dir(&format!("pack-update-{sanitized}"))?;
-    let lock_manager = ctx.lock_manager.clone();
-    let paths_for_db = ctx.paths.clone();
+    let task_ctx = ctx.clone();
     ctx.task_scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::UserInitiated,
             move || {
-                let _lock = lock_manager
-                    .acquire(
-                        agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-                        "pack-update",
-                    )
-                    .map_err(|e| e.to_string())?;
-                let conn = agora_core::db::local_state_connection(&paths_for_db.local_state_db())
-                    .map_err(|e| e.to_string())?;
-                let outcome = agora_game_minecraft::pack_update::update_pack(
-                    &conn,
+                agora_game_minecraft::pack_update::apply_pack_update(
+                    &task_ctx,
                     &sanitized,
                     &instance_dir,
                     std::path::Path::new(&mrpack_path),
-                    &staged_dir,
                     &resolutions,
-                    &agora_game_minecraft::pack_update::NetworkFetcher,
-                    false,
-                );
-                let _ = std::fs::remove_dir_all(&staged_dir);
-                Ok::<_, String>(outcome)
+                )
             },
         )
         .await
@@ -4067,53 +4648,26 @@ pub async fn run_version_migration(
 
 // ---------------------------------------------------------------------------
 // Guided mod bisect
+//
+// The bisect itself (start, trials, answers, step back, cancel, and the locks
+// around the JAR renames) lives in `agora_game_minecraft::bisect_service`. These commands
+// only resolve the core context and run the call off the async runtime.
 // ---------------------------------------------------------------------------
 
-fn bisect_error(message: String) -> LauncherError {
-    LauncherError::Generic {
-        code: "ERR_BISECT".into(),
-        message,
-    }
-}
-
-/// A session plus the trial it currently wants, in one read.
-#[derive(serde::Serialize)]
-pub struct BisectView {
-    pub session: Option<agora_core::bisect::BisectSession>,
-    pub trial: Option<agora_core::bisect::BisectTrial>,
-}
-
-fn load_bisect_view(app: &tauri::AppHandle, instance_id: &str) -> LauncherResult<BisectView> {
-    let instance_dir =
-        paths::instance_dir(app, instance_id).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
-    let Some(session) = agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
-    else {
-        return Ok(BisectView {
-            session: None,
-            trial: None,
-        });
-    };
-    let manifest = load_manifest(app, instance_id)?;
-    let trial = agora_core::bisect::next_trial(&session, &manifest.mods);
-    Ok(BisectView {
-        session: Some(session),
-        trial: Some(trial),
-    })
-}
-
+/// Read the session and its next trial. Nothing is changed.
 #[tauri::command]
 pub async fn get_bisect_session(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_game_minecraft::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
-    tokio::task::spawn_blocking(move || load_bisect_view(&app, &sanitized))
-        .await
-        .map_err(|_| LauncherError::LocalStateFailed)?
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::bisect_service::BisectService::new(ctx).view(&sanitized)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 /// Begin a bisect over the currently enabled mods.
@@ -4127,31 +4681,12 @@ pub async fn start_bisect(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     prime_suspects: Vec<String>,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_game_minecraft::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        if agora_core::bisect::read_session(&instance_dir)
-            .map_err(bisect_error)?
-            .is_some()
-        {
-            return Err(bisect_error(
-                "A bisect is already in progress for this instance.".into(),
-            ));
-        }
-        let manifest = load_manifest(&app, &sanitized)?;
-        let session = agora_core::bisect::start_session(
-            &manifest.mods,
-            &prime_suspects,
-            &chrono::Utc::now().to_rfc3339(),
-        )
-        .map_err(bisect_error)?;
-        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
-        load_bisect_view(&app, &sanitized)
+        agora_game_minecraft::bisect_service::BisectService::new(ctx)
+            .start(&sanitized, &prime_suspects)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4166,30 +4701,11 @@ pub async fn apply_bisect_trial(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_game_minecraft::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
     let ctx = crate::core_context(&app)?;
-    let lock_manager = ctx.lock_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let _lock = lock_manager.acquire(
-            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-            "bisect-trial",
-        )?;
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        let view = load_bisect_view(&app, &sanitized)?;
-        let Some(trial) = view.trial.as_ref() else {
-            return Err(bisect_error("No bisect is in progress.".into()));
-        };
-        if trial.status != agora_core::bisect::BisectStatus::AwaitingTrial {
-            return Err(bisect_error("This bisect has already finished.".into()));
-        }
-        agora_core::bisect::apply_enabled_set(&instance_dir, &trial.enable)
-            .map_err(bisect_error)?;
-        load_bisect_view(&app, &sanitized)
+        agora_game_minecraft::bisect_service::BisectService::new(ctx).apply_trial(&sanitized)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4202,29 +4718,12 @@ pub async fn record_bisect_outcome(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     reproduced: bool,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_game_minecraft::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        let Some(mut session) =
-            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
-        else {
-            return Err(bisect_error("No bisect is in progress.".into()));
-        };
-        let manifest = load_manifest(&app, &sanitized)?;
-        let outcome = if reproduced {
-            agora_core::bisect::TrialOutcome::Reproduced
-        } else {
-            agora_core::bisect::TrialOutcome::Clean
-        };
-        agora_core::bisect::record_outcome(&mut session, &manifest.mods, outcome)
-            .map_err(bisect_error)?;
-        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
-        load_bisect_view(&app, &sanitized)
+        agora_game_minecraft::bisect_service::BisectService::new(ctx)
+            .record_outcome(&sanitized, reproduced)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4236,22 +4735,11 @@ pub async fn step_back_bisect(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
-) -> LauncherResult<BisectView> {
+) -> LauncherResult<agora_game_minecraft::bisect_service::BisectView> {
     let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
     tokio::task::spawn_blocking(move || {
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        let Some(mut session) =
-            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
-        else {
-            return Err(bisect_error("No bisect is in progress.".into()));
-        };
-        agora_core::bisect::step_back(&mut session).map_err(bisect_error)?;
-        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
-        load_bisect_view(&app, &sanitized)
+        agora_game_minecraft::bisect_service::BisectService::new(ctx).step_back(&sanitized)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4261,7 +4749,7 @@ pub async fn step_back_bisect(
 ///
 /// Restoring the baseline before clearing the session is the whole safety
 /// story: a bisect must be fully revertible at any point, and the baseline is
-/// the only record of what was on when it started.
+/// the only record of what was on when it started. The core service does that.
 #[tauri::command]
 pub async fn cancel_bisect(
     app: tauri::AppHandle,
@@ -4270,25 +4758,8 @@ pub async fn cancel_bisect(
 ) -> LauncherResult<()> {
     let sanitized = paths::sanitize_id(&instance_id);
     let ctx = crate::core_context(&app)?;
-    let lock_manager = ctx.lock_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let _lock = lock_manager.acquire(
-            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-            "bisect-cancel",
-        )?;
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_PATH".into(),
-                message: e.to_string(),
-            })?;
-        if let Some(session) =
-            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
-        {
-            agora_core::bisect::apply_enabled_set(&instance_dir, &session.baseline_enabled)
-                .map_err(bisect_error)?;
-        }
-        agora_core::bisect::clear_session(&instance_dir).map_err(bisect_error)?;
-        Ok(())
+        agora_game_minecraft::bisect_service::BisectService::new(ctx).cancel(&sanitized)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -4297,13 +4768,6 @@ pub async fn cancel_bisect(
 // ---------------------------------------------------------------------------
 // Backup export / import
 // ---------------------------------------------------------------------------
-
-fn backup_error(message: String) -> LauncherError {
-    LauncherError::Generic {
-        code: "ERR_BACKUP".into(),
-        message,
-    }
-}
 
 /// Write a snapshot out to a directory the user chose.
 ///
@@ -4318,28 +4782,14 @@ pub async fn export_backup(
     snapshot_id: String,
     export_dir: String,
 ) -> LauncherResult<String> {
-    let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     let ctx = crate::core_context(&app)?;
-    ctx.task_scheduler
-        .run_blocking(
-            agora_core::task_scheduler::BlockingPriority::UserInitiated,
-            move || {
-                agora_core::backup::export_snapshot(
-                    &instance_dir,
-                    &snapshot_id,
-                    std::path::Path::new(&export_dir),
-                )
-                .map(|path| path.to_string_lossy().into_owned())
-            },
-        )
-        .await
-        .map_err(|e| backup_error(format!("Backup export task failed: {e}")))?
-        .map_err(backup_error)
+    agora_core::backup::export_instance_backup(
+        &ctx,
+        &instance_id,
+        &snapshot_id,
+        std::path::Path::new(&export_dir),
+    )
+    .await
 }
 
 /// Read a backup artifact back into an instance.
@@ -4354,33 +4804,13 @@ pub async fn import_backup(
     instance_id: String,
     artifact_path: String,
 ) -> LauncherResult<agora_core::snapshot::Snapshot> {
-    let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     let ctx = crate::core_context(&app)?;
-    let lock_manager = ctx.lock_manager.clone();
-    ctx.task_scheduler
-        .run_blocking(
-            agora_core::task_scheduler::BlockingPriority::UserInitiated,
-            move || {
-                let _lock = lock_manager
-                    .acquire(
-                        agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
-                        "import-backup",
-                    )
-                    .map_err(|e| e.to_string())?;
-                agora_core::backup::import_backup(
-                    &instance_dir,
-                    std::path::Path::new(&artifact_path),
-                )
-            },
-        )
-        .await
-        .map_err(|e| backup_error(format!("Backup import task failed: {e}")))?
-        .map_err(backup_error)
+    agora_core::backup::import_instance_backup(
+        &ctx,
+        &instance_id,
+        std::path::Path::new(&artifact_path),
+    )
+    .await
 }
 
 /// Apply a retention policy, returning the snapshot ids that were removed.
@@ -4392,25 +4822,12 @@ pub async fn apply_backup_retention(
     keep_last: Option<u32>,
     keep_days: Option<u32>,
 ) -> LauncherResult<Vec<String>> {
-    let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     let policy = agora_core::backup::BackupRetentionPolicy {
         keep_last,
         keep_days,
     };
     let ctx = crate::core_context(&app)?;
-    ctx.task_scheduler
-        .run_blocking(
-            agora_core::task_scheduler::BlockingPriority::Background,
-            move || agora_core::backup::run_backup_retention(&instance_dir, &policy),
-        )
-        .await
-        .map_err(|e| backup_error(format!("Backup retention task failed: {e}")))?
-        .map_err(backup_error)
+    agora_core::backup::apply_instance_retention(&ctx, &instance_id, policy).await
 }
 
 // ---------------------------------------------------------------------------
@@ -4639,51 +5056,19 @@ pub async fn create_instance_template(
     source_instance_id: Option<String>,
     selected_paths: Vec<String>,
 ) -> LauncherResult<agora_game_minecraft::template_service::InstanceTemplate> {
-    let root = templates_root(&app)?;
-    // The id is generated rather than derived from the name: two templates may
-    // legitimately share a display name, and a name is renameable while the id
-    // is what the default-template setting and instance rows point at. The name
-    // slug is appended only so the directory is recognizable on disk.
-    let slug: String = paths::sanitize_id(&name).chars().take(24).collect();
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let id = if slug.is_empty() {
-        format!("tpl-{stamp}")
-    } else {
-        format!("tpl-{stamp}-{slug}")
+    let ctx = crate::core_context(&app)?;
+    let request = agora_game_minecraft::instance_service::CaptureTemplateRequest {
+        name,
+        description,
+        jvm: jvm.unwrap_or_default(),
+        source_instance_id,
+        selected_paths,
     };
-    let source_dir = match source_instance_id {
-        Some(instance_id) => {
-            let sanitized = paths::sanitize_id(&instance_id);
-            Some(
-                paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                    code: "ERR_PATH".into(),
-                    message: e.to_string(),
-                })?,
-            )
-        }
-        None => None,
-    };
-    let now = chrono::Utc::now().to_rfc3339();
     tokio::task::spawn_blocking(move || {
-        agora_game_minecraft::template_service::create_template(
-            &root,
-            agora_game_minecraft::template_service::CreateTemplateRequest {
-                id: &id,
-                name: &name,
-                description,
-                jvm: jvm.unwrap_or_default(),
-                source_instance_dir: source_dir.as_deref(),
-                selected_paths: &selected_paths,
-                now: &now,
-            },
-        )
+        agora_game_minecraft::instance_service::InstanceService::new(ctx).capture_template(request)
     })
     .await
     .map_err(|e| template_error(format!("Template capture task failed: {e}")))?
-    .map_err(template_error)
 }
 
 #[tauri::command]
@@ -4718,39 +5103,13 @@ pub async fn delete_instance_template(
     _state: tauri::State<'_, LauncherState>,
     template_id: String,
 ) -> LauncherResult<()> {
-    let root = templates_root(&app)?;
-    // Clearing the default alongside the delete keeps the setting from pointing
-    // at a template that no longer exists.
     let ctx = crate::core_context(&app)?;
-    let conn =
-        agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
-            LauncherError::Generic {
-                code: "ERR_LOCAL_STATE_FAILED".into(),
-                message: e.to_string(),
-            }
-        })?;
-    let is_default = agora_core::db::get_setting(
-        &conn,
-        agora_game_minecraft::instance_service::DEFAULT_TEMPLATE_SETTING_KEY,
-    )
-    .ok()
-    .flatten()
-    .and_then(|value| value.as_str().map(str::to_string))
-    .is_some_and(|current| current == template_id);
-    if is_default {
-        let _ = agora_core::db::set_setting(
-            &conn,
-            agora_game_minecraft::instance_service::DEFAULT_TEMPLATE_SETTING_KEY,
-            &serde_json::Value::String(String::new()),
-        );
-    }
-    drop(conn);
     tokio::task::spawn_blocking(move || {
-        agora_game_minecraft::template_service::delete_template(&root, &template_id)
+        agora_game_minecraft::instance_service::InstanceService::new(ctx)
+            .delete_template(&template_id)
     })
     .await
     .map_err(|e| template_error(format!("Template delete task failed: {e}")))?
-    .map_err(template_error)
 }
 
 /// Apply a template's captured files onto an existing instance.
@@ -4844,42 +5203,81 @@ pub async fn create_loadout_profile(
     })
 }
 
+/// What saving a profile again would change. Writes nothing; the Update flow
+/// shows this and asks before it calls `update_loadout_profile`.
+#[tauri::command]
+pub async fn preview_loadout_update(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<agora_core::loadout::LoadoutUpdate> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::loadout_service::LoadoutService::new(ctx)
+            .update_preview(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Save a profile so it records the instance's current setup. Returns the
+/// changes it made.
+#[tauri::command]
+pub async fn update_loadout_profile(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<agora_core::loadout::LoadoutUpdate> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::loadout_service::LoadoutService::new(ctx)
+            .update(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Mods that are on but that the profile does not list. The Apply flow asks the
+/// user what to do with them before it calls `apply_loadout_profile`.
+#[tauri::command]
+pub async fn list_loadout_unlisted_mods(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    profile_name: String,
+) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        agora_game_minecraft::loadout_service::LoadoutService::new(ctx)
+            .unlisted_mods(&sanitized, &profile_name)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 #[tauri::command]
 pub async fn apply_loadout_profile(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     profile_name: String,
+    unlisted_mods: agora_core::loadout::UnlistedMods,
 ) -> LauncherResult<()> {
-    check_not_locked(&app, &instance_id)?;
+    // Core checks the lock and the running game, takes the undo point, and
+    // rolls back on failure. The desktop only hands over the request.
+    let ctx = crate::core_context(&app)?;
     let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
     tokio::task::spawn_blocking(move || {
-        let snapshot = agora_core::snapshot::create_snapshot(&instance_dir, Some("before-loadout"))
-            .map_err(|error| LauncherError::Generic {
-                code: "ERR_SNAPSHOT_REQUIRED".into(),
-                message: format!("Could not create the required recovery snapshot: {error}"),
-            })?;
-        if let Err(error) = agora_core::loadout::apply_profile(&instance_dir, &profile_name) {
-            let restored = agora_core::snapshot::restore_snapshot(&instance_dir, &snapshot.id);
-            return Err(LauncherError::Generic {
-                code: "ERR_LOADOUT".into(),
-                message: match restored {
-                    Ok(_) => format!("Loadout application failed and was rolled back: {error}"),
-                    Err(restore_error) => format!(
-                        "Loadout application failed and rollback also failed: {error}; {restore_error}"
-                    ),
-                },
-            });
-        }
-        agora_core::lkg::run_retention(&instance_dir).map_err(|error| LauncherError::Generic {
-            code: "ERR_RETENTION".into(),
-            message: error,
-        })
+        agora_game_minecraft::loadout_service::LoadoutService::new(ctx).apply(
+            &sanitized,
+            &profile_name,
+            unlisted_mods,
+        )
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -5854,6 +6252,87 @@ pub async fn export_lockfile(
         .map_err(|error| lockfile_error("ERR_LOCKFILE_TASK", error.to_string()))?
 }
 
+/// Save the lockfile text the user is looking at to a file they pick. `None` means they cancelled.
+#[tauri::command]
+pub async fn save_lockfile_export(
+    app: tauri::AppHandle,
+    instance_id: String,
+    contents: String,
+) -> LauncherResult<Option<String>> {
+    let sanitized = crate::paths::sanitize_id(&instance_id);
+    if sanitized.is_empty() || sanitized != instance_id {
+        return Err(lockfile_error(
+            "ERR_INVALID_INSTANCE",
+            "The instance ID is invalid.",
+        ));
+    }
+    validate_lockfile_text(&contents)?;
+    let exports_dir = exports_folder(&app)?;
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Save lockfile")
+        .set_directory(&exports_dir)
+        .set_file_name(format!("{sanitized}.lockfile.json"))
+        .add_filter("Lockfile", &["json"])
+        .save_file()
+        .await;
+    let Some(handle) = picked else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    // Write beside the target and rename into place, so a failed save never
+    // truncates a file the user agreed to replace.
+    let tmp_path = agora_game_minecraft::export_service::tmp_sibling_path(&path);
+    let written = std::fs::write(&tmp_path, contents.as_bytes()).map_err(|error| {
+        lockfile_error(
+            "ERR_LOCKFILE_SAVE",
+            format!("Could not save the lockfile: {error}"),
+        )
+    });
+    agora_game_minecraft::export_service::commit_tmp_file(&tmp_path, &path, written)?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// The text must parse as a JSON object before it reaches disk, so an edit that
+/// broke the lockfile cannot be saved as one.
+fn validate_lockfile_text(contents: &str) -> LauncherResult<()> {
+    match serde_json::from_str::<serde_json::Value>(contents) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        _ => Err(lockfile_error(
+            "ERR_LOCKFILE_INVALID",
+            "The lockfile text is not valid. Fix it or export it again, then save.",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod lockfile_save_tests {
+    use super::validate_lockfile_text;
+
+    #[test]
+    fn accepts_a_json_object() {
+        assert!(validate_lockfile_text(r#"{"formatVersion":1}"#).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_whitespace_and_non_object_json() {
+        for hostile in [
+            "",
+            "   \n",
+            "[]",
+            "null",
+            "\"text\"",
+            "42",
+            "{",
+            "{\"a\":1} trailing",
+        ] {
+            assert!(
+                validate_lockfile_text(hostile).is_err(),
+                "accepted {hostile:?}"
+            );
+        }
+    }
+}
+
 fn export_lockfile_sync(
     app: &tauri::AppHandle,
     instance_id: &str,
@@ -6534,29 +7013,19 @@ pub async fn check_instance_updates(
     instance_id: String,
 ) -> LauncherResult<Vec<UpdateInfo>> {
     let ctx = crate::core_context(&app)?;
-    let sanitized = crate::paths::sanitize_id(&instance_id);
     let shared_state = state.inner().clone();
 
     let providers = crate::providers::registry(&app)?;
-    let updates = agora_game_minecraft::update_cache::check_single_instance_updates_with(
+    agora_game_minecraft::update_cache::check_and_cache_instance_updates(
         &ctx,
-        &sanitized,
+        &instance_id,
         agora_game_minecraft::update_cache::UpdateCheckOptions {
             memory_cache: Some(&shared_state),
             on_item_error: agora_game_minecraft::update_cache::ItemErrorPolicy::Fail,
             providers: Some(&providers),
         },
     )
-    .await?;
-
-    // Persist so the result survives restart and can be read back without network.
-    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
-        let _ = agora_game_minecraft::update_cache::set_cached_instance_updates(
-            &conn, &sanitized, &updates,
-        );
-    }
-
-    Ok(updates)
+    .await
 }
 
 /// Read cached update results for a single instance without network.

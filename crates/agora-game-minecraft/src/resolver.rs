@@ -18,6 +18,7 @@ use crate::install_pipeline::{
     PreparedPlan, ResolvedArtifact, ResolvedDep, ResolvedDownload, ResolvedLocal,
     ResolvedOperation, SourceType,
 };
+use crate::jar_metadata::is_platform_dependency;
 use agora_core::artifact_hash::{ConfirmableHash, HashOrigin};
 use agora_core::ctx::Ctx;
 use agora_core::dependency_ops::{AliasMap, DepSource, Requirement};
@@ -573,7 +574,7 @@ impl Resolver {
             .resolve_curated_artifact(manifest, item_id, requested_version, allow_closest_version)
             .await?;
         let (dependencies, conflicts) = self
-            .resolve_curated_dependencies(manifest, item_id, None)
+            .resolve_curated_dependencies(manifest, item_id, None, Some(&artifact))
             .await?;
 
         let operation = if update {
@@ -602,12 +603,35 @@ impl Resolver {
         })
     }
 
+    /// `root_artifact` is the curated file being installed. Its own jar is
+    /// read for the mods it requires, so a requirement the registry does not
+    /// declare still shows up in the review.
+    /// The manifest as dependency resolution judges it: a mod that cannot
+    /// satisfy a dependency (disabled, or its jar is not in `mods/`) is dropped,
+    /// so its requirement is planned again instead of reported as installed.
+    /// The install planner still sees the real manifest and handles the file.
+    ///
+    /// When the instance folder cannot be read, nothing counts as present. That
+    /// plans more installs, and the planner then checks each one against the disk.
+    fn dependency_view(&self, manifest: &InstanceManifest) -> InstanceManifest {
+        let on_disk = match self.ctx.paths.instance_dir(&manifest.instance_id) {
+            Ok(dir) => agora_core::dependency_ops::mod_jars_on_disk(&dir),
+            Err(_) => std::collections::HashSet::new(),
+        };
+        let mut view = manifest.clone();
+        view.mods
+            .retain(|item| agora_core::dependency_ops::satisfies_dependency(item, &on_disk));
+        view
+    }
+
     async fn resolve_curated_dependencies(
         &self,
         manifest: &InstanceManifest,
         root_item_id: &str,
         batch: Option<&BatchContext>,
+        root_artifact: Option<&ResolvedArtifact>,
     ) -> LauncherResult<(Vec<ResolvedDep>, Vec<DepConflict>)> {
+        let dependency_view = self.dependency_view(manifest);
         let (dependency_map, aliases, known_conflicts, dep_display) = {
             let conn = open_registry_db(&self.ctx.paths.registry_db())?;
             let dependency_map = registry::get_all_manifest_dependencies(&conn)?;
@@ -639,7 +663,7 @@ impl Resolver {
             )
         };
 
-        let installed: Vec<&InstalledMod> = all_installed(manifest).collect();
+        let installed: Vec<&InstalledMod> = all_installed(&dependency_view).collect();
         let installed_ids: BTreeMap<String, &&InstalledMod> = installed
             .iter()
             .flat_map(|item| {
@@ -697,7 +721,7 @@ impl Resolver {
                 );
                 continue;
             }
-            if is_platform_dependency(&key, &manifest.loader) {
+            if is_platform_dependency(&key, &manifest.loader, &manifest.loader_version) {
                 resolved.insert(
                     key,
                     ResolvedDep {
@@ -761,6 +785,112 @@ impl Resolver {
             }
         }
 
+        // The root's own jar is authoritative for its loader. Read it before
+        // review so a required mod the registry never declared is still shown
+        // (and offered), instead of surfacing only after the install.
+        if let Some(artifact) = root_artifact {
+            // Named by its display name: the review says "needed by Xaero's Minimap".
+            let root_name = dep_display
+                .get(&root_item_id.to_ascii_lowercase())
+                .map(|(name, _)| name.clone())
+                .unwrap_or_else(|| root_item_id.to_string());
+            let declared = match self.declared_jar_requirements(manifest, artifact).await? {
+                JarRequirements::Declared(ids) => ids,
+                JarRequirements::Unreadable(reason) => {
+                    resolved.insert(
+                        format!("unchecked:{}", root_item_id.to_ascii_lowercase()),
+                        ResolvedDep {
+                            requested_by: vec![root_name.clone()],
+                            pinned_version: None,
+                            mod_jar_id: root_item_id.to_string(),
+                            requirement: Requirement::Required,
+                            source: DepSource::Jar,
+                            display_name: Some(root_name.clone()),
+                            page_url: None,
+                            disposition: DepDisposition::Unchecked { reason },
+                        },
+                    );
+                    Vec::new()
+                }
+            };
+            let installed_lookup = installed_by_identity(&installed, &aliases);
+            for jar_id in declared {
+                let key = aliases.resolve_or_self(&jar_id).to_ascii_lowercase();
+                let batch_target = batch
+                    .and_then(|batch| batch.target_filename_for(&key))
+                    .map(str::to_string);
+                let installed_item = installed_lookup.get(&key).copied();
+                match classify_jar_requirement(
+                    resolved.contains_key(&key),
+                    installed_item,
+                    batch_target.as_deref(),
+                ) {
+                    JarRequirementAction::AlreadyPlanned => {
+                        // Already on the list (a registry dependency): the jar
+                        // makes it required.
+                        if let Some(existing) = resolved.get_mut(&key) {
+                            existing.requirement = Requirement::Required;
+                        }
+                    }
+                    JarRequirementAction::AlreadyInstalled(installed_item) => {
+                        resolved.insert(
+                            key.clone(),
+                            ResolvedDep {
+                                requested_by: vec![root_name.clone()],
+                                pinned_version: None,
+                                mod_jar_id: key.clone(),
+                                requirement: Requirement::Required,
+                                source: DepSource::Jar,
+                                display_name: None,
+                                page_url: None,
+                                disposition: DepDisposition::ReuseExisting {
+                                    mod_jar_id: installed_item
+                                        .mod_jar_id
+                                        .clone()
+                                        .unwrap_or_else(|| key.clone()),
+                                    installed_filename: effective_installed_filename(
+                                        installed_item,
+                                    ),
+                                },
+                            },
+                        );
+                    }
+                    JarRequirementAction::IncludedInBatch(target_filename) => {
+                        resolved.insert(
+                            key.clone(),
+                            ResolvedDep {
+                                requested_by: vec![root_name.clone()],
+                                pinned_version: None,
+                                mod_jar_id: key.clone(),
+                                requirement: Requirement::Required,
+                                source: DepSource::Jar,
+                                display_name: None,
+                                page_url: None,
+                                disposition: DepDisposition::IncludedInBatch { target_filename },
+                            },
+                        );
+                    }
+                    JarRequirementAction::Resolve => {
+                        let (disposition, display_name) =
+                            self.resolve_jar_requirement(manifest, &key).await?;
+                        resolved.insert(
+                            key.clone(),
+                            ResolvedDep {
+                                requested_by: vec![root_name.clone()],
+                                pinned_version: None,
+                                mod_jar_id: key.clone(),
+                                requirement: Requirement::Required,
+                                source: DepSource::Jar,
+                                display_name,
+                                page_url: None,
+                                disposition,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
         let incoming: HashSet<String> = std::iter::once(root_item_id.to_ascii_lowercase())
             .chain(resolved.keys().cloned())
             .collect();
@@ -818,9 +948,125 @@ impl Resolver {
                 },
             },
             Err(e) => DepDisposition::Unresolved {
-                reason: e.to_string(),
+                reason: dependency_version_reason(e, manifest),
             },
         }
+    }
+
+    /// Required mod ids the root artifact's own jar declares, read after the
+    /// bytes are fetched and checked against the artifact's published hashes.
+    /// A download or hash failure is an error. A jar whose metadata cannot be
+    /// read is `Unreadable`: the plan flags it for an explicit override, and
+    /// it is never treated as "no requirements".
+    async fn declared_jar_requirements(
+        &self,
+        manifest: &InstanceManifest,
+        artifact: &ResolvedArtifact,
+    ) -> LauncherResult<JarRequirements> {
+        let ResolvedArtifact::Download(download) = artifact else {
+            return Err(LauncherError::Generic {
+                code: "ERR_DEPENDENCY_CHECK_SOURCE".into(),
+                message: "Agora cannot read the requirements of a local file here.".into(),
+            });
+        };
+        let ArtifactSource::Download { url } = &download.source else {
+            return Err(LauncherError::Generic {
+                code: "ERR_DEPENDENCY_CHECK_SOURCE".into(),
+                message: format!(
+                    "Agora cannot read the requirements of {} from its source.",
+                    download.item_id
+                ),
+            });
+        };
+        // Kept for staging: the install reads the same bytes from the cache
+        // instead of downloading the jar a second time.
+        let cache = crate::download_cache::DownloadCache::new(self.ctx.paths.download_cache_dir());
+        let bytes =
+            crate::install_pipeline::fetch_download_bytes_cached(Some(&cache), download, url)
+                .await
+                .map_err(|message| LauncherError::Generic {
+                    code: "ERR_DEPENDENCY_CHECK_DOWNLOAD".into(),
+                    message: format!(
+                        "Could not download {} to check the mods it needs: {message}",
+                        download.item_id
+                    ),
+                })?;
+        crate::install_pipeline::verify_bytes(&bytes, &download.hashes).map_err(|message| {
+            LauncherError::Generic {
+                code: "ERR_DEPENDENCY_CHECK_HASH".into(),
+                message: format!(
+                    "{} did not match its published hash, so the mods it needs were not read: {message}",
+                    download.item_id
+                ),
+            }
+        })?;
+        Ok(jar_requirements_from_bytes(
+            &bytes,
+            &manifest.loader,
+            &manifest.loader_version,
+        ))
+    }
+
+    /// Find a jar-declared requirement the registry did not list: the Agora
+    /// catalog first, then Modrinth when it is turned on. Returns why it could
+    /// not be found, so the review can say so.
+    async fn resolve_jar_requirement(
+        &self,
+        manifest: &InstanceManifest,
+        key: &str,
+    ) -> LauncherResult<(DepDisposition, Option<String>)> {
+        let mut reasons = Vec::new();
+        let registry_item = {
+            let conn = open_registry_db(&self.ctx.paths.registry_db())?;
+            registry::get_item_by_id(&conn, key)?
+        };
+        match registry_item {
+            Some(item) => match self.load_curated_dep(&item.id, manifest).await {
+                DepDisposition::InstallCandidate { artifact } => {
+                    return Ok((
+                        DepDisposition::InstallCandidate { artifact },
+                        Some(item.name),
+                    ));
+                }
+                DepDisposition::Unresolved { reason } => {
+                    reasons.push(format!("the Agora catalog has no build for it ({reason})"));
+                }
+                other => return Ok((other, None)),
+            },
+            None => reasons.push("it is not in the Agora catalog".to_string()),
+        }
+        if crate::modrinth::ModrinthService::new(self.ctx.clone()).is_modrinth_enabled() {
+            match self.lookup_modrinth_project_for_loader(key).await {
+                Some(project_id) => match self
+                    .list_raw_modrinth_versions(manifest, &project_id, "mod")
+                    .await
+                {
+                    Ok(candidates) => match select_raw_modrinth_candidate(&candidates, None)
+                        .and_then(|candidate| raw_modrinth_artifact(&project_id, "mod", candidate))
+                    {
+                        Ok(artifact) => {
+                            return Ok((
+                                DepDisposition::InstallCandidate {
+                                    artifact: Box::new(artifact),
+                                },
+                                None,
+                            ));
+                        }
+                        Err(error) => reasons.push(format!("Modrinth: {error}")),
+                    },
+                    Err(error) => reasons.push(format!("Modrinth could not be checked: {error}")),
+                },
+                None => reasons.push("no Modrinth project matched it".to_string()),
+            }
+        } else {
+            reasons.push("Modrinth search is turned off".to_string());
+        }
+        Ok((
+            DepDisposition::Unresolved {
+                reason: reasons.join("; "),
+            },
+            None,
+        ))
     }
 
     // ------------------------------------------------------------------
@@ -1516,11 +1762,12 @@ impl Resolver {
         batch: Option<&BatchContext>,
         allow_closest_version: bool,
     ) -> Vec<ResolvedDep> {
-        let installed_ids: HashSet<String> = all_installed(manifest)
+        let dependency_view = self.dependency_view(manifest);
+        let installed_ids: HashSet<String> = all_installed(&dependency_view)
             .filter_map(|item| item.modrinth_id.as_ref())
             .map(|id| id.to_ascii_lowercase())
             .collect();
-        let installed_loader_ids: HashSet<String> = all_installed(manifest)
+        let installed_loader_ids: HashSet<String> = all_installed(&dependency_view)
             .flat_map(|item| {
                 item.mod_jar_id
                     .iter()
@@ -1567,7 +1814,7 @@ impl Resolver {
                 if let Some(loader_id) = identity.strip_prefix("loader-id:") {
                     let loader_key = loader_id.to_ascii_lowercase();
                     if installed_loader_ids.contains(&loader_key) {
-                        let installed = all_installed(manifest).find(|item| {
+                        let installed = all_installed(&dependency_view).find(|item| {
                             item.mod_jar_id
                                 .iter()
                                 .chain(item.provided_mod_ids.iter())
@@ -1685,7 +1932,7 @@ pinned_version: None,
             expanded.insert(key.clone(), requirement);
 
             if installed_ids.contains(&key) {
-                let installed = all_installed(manifest).find(|item| {
+                let installed = all_installed(&dependency_view).find(|item| {
                     item.modrinth_id
                         .as_deref()
                         .map(str::to_ascii_lowercase)
@@ -1813,7 +2060,7 @@ pinned_version: None,
                         }
                         Err(e) => (
                             DepDisposition::Unresolved {
-                                reason: e.to_string(),
+                                reason: dependency_version_reason(e, manifest),
                             },
                             Vec::new(),
                         ),
@@ -2131,8 +2378,13 @@ pinned_version: None,
         for (item, artifact, candidate, native_metadata) in roots {
             let (dependencies, conflicts) = match item.source_type {
                 SourceType::Curated => {
-                    self.resolve_curated_dependencies(manifest, &item.item_id, Some(&batch_ctx))
-                        .await?
+                    self.resolve_curated_dependencies(
+                        manifest,
+                        &item.item_id,
+                        Some(&batch_ctx),
+                        Some(&artifact),
+                    )
+                    .await?
                 }
                 SourceType::Modrinth => {
                     let candidate = candidate.expect("modrinth roots always carry a candidate");
@@ -2154,7 +2406,7 @@ pinned_version: None,
             let dependencies = dependencies
                 .into_iter()
                 .map(|mut dependency| {
-                    dependency.requested_by = vec![item.item_id.clone()];
+                    credit_requester(&mut dependency, &item.item_id);
                     dependency
                 })
                 .collect();
@@ -3116,6 +3368,20 @@ pub fn select_raw_modrinth_candidate<'a>(
     candidates.first().ok_or(LauncherError::VersionNotFound)
 }
 
+/// Why a dependency has no usable version. A dependency is resolved without a
+/// requested version, so "not found" here means nothing is published for this
+/// instance's Minecraft version and loader. The generic message asks "Install
+/// the closest compatible version?", which the review has no answer to.
+fn dependency_version_reason(error: LauncherError, manifest: &InstanceManifest) -> String {
+    match error {
+        LauncherError::VersionNotFound => format!(
+            "no version is published for Minecraft {} on {}",
+            manifest.minecraft_version, manifest.loader
+        ),
+        other => other.to_string(),
+    }
+}
+
 fn select_closest_raw_modrinth_candidate<'a>(
     candidates: &'a [RawModrinthVersionCandidate],
     target_minecraft_version: &str,
@@ -3601,12 +3867,110 @@ pub fn valid_hash(value: Option<&str>, length: usize) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-fn is_platform_dependency(dependency: &str, loader: &str) -> bool {
-    matches!(
-        dependency,
-        "minecraft" | "java" | "fabricloader" | "fabric_loader" | "quilt_loader" | "quilt-loader"
-    ) || dependency.eq_ignore_ascii_case(loader)
-        || (loader == "neoforge" && dependency == "forge")
+/// Required mod ids a jar declares for `loader`, with the platform entries
+/// the loader provides at `loader_version` removed. Fails closed: a jar whose
+/// metadata could not be read completely is an error, never an empty list. A
+/// jar with no metadata for this loader declares nothing for it.
+pub(crate) fn declared_required_jar_ids(
+    bytes: &[u8],
+    loader: &str,
+    loader_version: &str,
+) -> Result<Vec<String>, String> {
+    let parsed = crate::jar_metadata::parse_jar_metadata_bytes_for_loader(bytes, loader);
+    if parsed.status != crate::jar_metadata::ParseStatus::Complete {
+        let detail = parsed
+            .diagnostics
+            .first()
+            .map(|diagnostic| diagnostic.message.clone())
+            .unwrap_or_else(|| "its metadata is incomplete".into());
+        return Err(detail);
+    }
+    if !parsed.has_native_metadata {
+        return Ok(Vec::new());
+    }
+    Ok(parsed
+        .metadata
+        .depends_on
+        .into_iter()
+        .filter(|id| !is_platform_dependency(id, loader, loader_version))
+        .collect())
+}
+
+/// What the root jar says it requires, or why it could not say.
+enum JarRequirements {
+    Declared(Vec<String>),
+    Unreadable(String),
+}
+
+/// What a jar declares for `loader`, or why it could not be read.
+fn jar_requirements_from_bytes(
+    bytes: &[u8],
+    loader: &str,
+    loader_version: &str,
+) -> JarRequirements {
+    match declared_required_jar_ids(bytes, loader, loader_version) {
+        Ok(ids) => JarRequirements::Declared(ids),
+        Err(reason) => JarRequirements::Unreadable(reason),
+    }
+}
+
+/// Name the batch item that pulled a dependency in, unless it already names
+/// who needs it (a jar-declared requirement does).
+fn credit_requester(dependency: &mut ResolvedDep, item_id: &str) {
+    if dependency.requested_by.is_empty() {
+        dependency.requested_by = vec![item_id.to_string()];
+    }
+}
+
+/// What the plan does with one requirement a jar declares.
+#[derive(Debug)]
+enum JarRequirementAction<'a> {
+    /// Already on the plan (a registry dependency); it only becomes required.
+    AlreadyPlanned,
+    /// Already in the instance; nothing to add and nothing to warn about.
+    AlreadyInstalled(&'a InstalledMod),
+    /// A sibling of the same batch installs it.
+    IncludedInBatch(String),
+    /// Missing: look it up in the catalog or on Modrinth.
+    Resolve,
+}
+
+fn classify_jar_requirement<'a>(
+    planned: bool,
+    installed: Option<&'a InstalledMod>,
+    batch_target: Option<&str>,
+) -> JarRequirementAction<'a> {
+    if planned {
+        JarRequirementAction::AlreadyPlanned
+    } else if let Some(installed) = installed {
+        JarRequirementAction::AlreadyInstalled(installed)
+    } else if let Some(target) = batch_target {
+        JarRequirementAction::IncludedInBatch(target.to_string())
+    } else {
+        JarRequirementAction::Resolve
+    }
+}
+
+/// Installed mods keyed by every identity they answer to (alias-resolved, lowercase).
+fn installed_by_identity<'a>(
+    installed: &[&'a InstalledMod],
+    aliases: &AliasMap,
+) -> HashMap<String, &'a InstalledMod> {
+    let mut lookup = HashMap::new();
+    for item in installed {
+        let ids = item
+            .registry_id
+            .iter()
+            .chain(item.modrinth_id.iter())
+            .chain(item.mod_jar_id.iter())
+            .chain(item.provided_mod_ids.iter());
+        for id in ids {
+            lookup
+                .entry(aliases.resolve_or_self(id).to_ascii_lowercase())
+                .or_insert(*item);
+        }
+    }
+    lookup
 }
 
 fn find_installed_by_identity<'a>(
@@ -3659,10 +4023,20 @@ fn merge_deps(target: &mut BTreeMap<String, ResolvedDep>, incoming: Vec<Resolved
         // Different versions of one project chosen by different parents are
         // kept apart so the install pipeline can pick one every parent accepts.
         let mut key = dependency.mod_jar_id.to_ascii_lowercase();
-        if let DepDisposition::InstallCandidate { artifact } = &dependency.disposition {
-            if let ResolvedArtifact::Download(download) = artifact.as_ref() {
-                key = format!("{key}#{}", download.version_id);
+        match &dependency.disposition {
+            DepDisposition::InstallCandidate { artifact } => {
+                if let ResolvedArtifact::Download(download) = artifact.as_ref() {
+                    key = format!("{key}#{}", download.version_id);
+                }
             }
+            // A batch sibling is reached under every identity its parents know
+            // it by (a registry id from one parent, a Modrinth project id from
+            // another). They all point at the same batch file, so they are one
+            // entry, not one per spelling.
+            DepDisposition::IncludedInBatch { target_filename } => {
+                key = format!("batch#{}", target_filename.to_ascii_lowercase());
+            }
+            _ => {}
         }
         target
             .entry(key)
@@ -3924,11 +4298,11 @@ mod tests {
 
     #[test]
     fn test_is_platform_dependency() {
-        assert!(is_platform_dependency("minecraft", "fabric"));
-        assert!(is_platform_dependency("fabricloader", "fabric"));
-        assert!(is_platform_dependency("quilt_loader", "quilt"));
-        assert!(is_platform_dependency("neoforge", "neoforge"));
-        assert!(!is_platform_dependency("some-mod", "fabric"));
+        assert!(is_platform_dependency("minecraft", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("fabricloader", "fabric", "0.20.1"));
+        assert!(is_platform_dependency("quilt_loader", "quilt", "0.27.0"));
+        assert!(is_platform_dependency("neoforge", "neoforge", "21.1.77"));
+        assert!(!is_platform_dependency("some-mod", "fabric", "0.20.1"));
     }
 
     #[test]
@@ -5468,5 +5842,397 @@ mod tests {
         assert_eq!(hashes.values[0].value, "d".repeat(64));
         assert!(!hashes.unpublished);
         assert!(hashes.confirmable.is_empty());
+    }
+
+    fn batch_sibling(mod_jar_id: &str, target_filename: &str) -> ResolvedDep {
+        ResolvedDep {
+            requested_by: Vec::new(),
+            pinned_version: None,
+            mod_jar_id: mod_jar_id.into(),
+            requirement: Requirement::Required,
+            source: DepSource::Manifest,
+            display_name: Some("Fabric API".into()),
+            page_url: None,
+            disposition: DepDisposition::IncludedInBatch {
+                target_filename: target_filename.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn two_spellings_of_one_batch_sibling_merge_into_one_entry() {
+        // The curated Fabric API (registry id) and Xaero's Modrinth dependency
+        // (project id) both resolve to the batch's own Fabric API file.
+        let mut merged = BTreeMap::new();
+        merge_deps(
+            &mut merged,
+            vec![
+                batch_sibling("fabric-api", "fabric-api-0.102.0+1.21.jar"),
+                batch_sibling("P7dR8mSH", "Fabric-API-0.102.0+1.21.jar"),
+            ],
+        );
+        assert_eq!(merged.len(), 1, "one Fabric API, not one per spelling");
+    }
+
+    #[test]
+    fn batch_siblings_with_different_files_stay_apart() {
+        let mut merged = BTreeMap::new();
+        merge_deps(
+            &mut merged,
+            vec![
+                batch_sibling("fabric-api", "fabric-api-0.102.0+1.21.jar"),
+                batch_sibling("lithium", "lithium-0.15.2.jar"),
+            ],
+        );
+        assert_eq!(merged.len(), 2);
+    }
+
+    fn jar_with_entries(entries: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            for (name, content) in entries {
+                zip.start_file(*name, options).expect("start_file");
+                zip.write_all(content.as_bytes()).expect("write_all");
+            }
+            zip.finish().expect("finish zip");
+        }
+        buf.into_inner()
+    }
+
+    const XAERO_FABRIC_JSON: &str = r#"{
+        "schemaVersion": 1,
+        "id": "xaerominimap",
+        "version": "25.3.2",
+        "depends": {"fabricloader": ">=0.15", "minecraft": "1.21", "java": ">=21", "fabric-api": "*"}
+    }"#;
+
+    /// Shaped like a Fabric mod that needs MixinExtras (Lithium-style): the
+    /// loader bundles it from 0.15.0, so it must not be looked up as a jar.
+    const MIXINEXTRAS_FABRIC_JSON: &str = r#"{
+        "schemaVersion": 1,
+        "id": "lithium",
+        "version": "0.26.1",
+        "depends": {"fabricloader": ">=0.15.0", "minecraft": "1.21.1", "java": ">=21", "mixinextras": ">=0.2.0", "fabric-api": "*"}
+    }"#;
+
+    #[test]
+    fn a_fabric_jar_declares_its_required_mods_minus_the_platform() {
+        let jar = jar_with_entries(&[("fabric.mod.json", XAERO_FABRIC_JSON)]);
+        assert_eq!(
+            declared_required_jar_ids(&jar, "fabric", "0.20.1").unwrap(),
+            vec!["fabric-api".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_modern_fabric_loader_meets_a_mixinextras_requirement_without_a_jar() {
+        let jar = jar_with_entries(&[("fabric.mod.json", MIXINEXTRAS_FABRIC_JSON)]);
+        assert_eq!(
+            declared_required_jar_ids(&jar, "fabric", "0.20.1").unwrap(),
+            vec!["fabric-api".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_old_fabric_loader_still_declares_mixinextras_as_a_jar_requirement() {
+        let jar = jar_with_entries(&[("fabric.mod.json", MIXINEXTRAS_FABRIC_JSON)]);
+        let mut ids = declared_required_jar_ids(&jar, "fabric", "0.14.22").unwrap();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["fabric-api".to_string(), "mixinextras".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_jar_with_no_metadata_for_this_loader_declares_nothing() {
+        let jar = jar_with_entries(&[(
+            "META-INF/MANIFEST.MF",
+            "Manifest-Version: 1.0
+",
+        )]);
+        assert!(declared_required_jar_ids(&jar, "fabric", "0.20.1")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_jar_is_an_error_not_an_empty_requirement_list() {
+        assert!(declared_required_jar_ids(b"not a zip archive", "fabric", "0.20.1").is_err());
+    }
+
+    #[test]
+    fn a_forge_jar_declares_nothing_for_fabric() {
+        let jar = jar_with_entries(&[(
+            "META-INF/mods.toml",
+            "modLoader=\"javafml\"
+[[mods]]
+modId=\"xaerominimap\"
+",
+        )]);
+        assert!(declared_required_jar_ids(&jar, "fabric", "0.20.1")
+            .unwrap()
+            .is_empty());
+    }
+
+    fn installed_named(registry_id: &str) -> InstalledMod {
+        InstalledMod {
+            provider: None,
+            update_pinned: false,
+            pack_managed: false,
+            filename: format!("{registry_id}.jar"),
+            registry_id: Some(registry_id.to_string()),
+            modrinth_id: None,
+            source: String::new(),
+            source_url: None,
+            version: None,
+            sha256: String::new(),
+            installed_at: String::new(),
+            java_packages: Vec::new(),
+            mod_jar_id: None,
+            depends_on: Vec::new(),
+            optional_deps: Vec::new(),
+            incompatible_deps: Vec::new(),
+            provided_mod_ids: Vec::new(),
+            enabled: true,
+            content_type: "mod".to_string(),
+            installed_as_dependency: false,
+            hash_verified: true,
+        }
+    }
+
+    #[test]
+    fn a_jar_requirement_already_in_the_instance_needs_nothing_added() {
+        let present = installed_named("fabric-api");
+        assert!(matches!(
+            classify_jar_requirement(false, Some(&present), None),
+            JarRequirementAction::AlreadyInstalled(_)
+        ));
+    }
+
+    #[test]
+    fn a_missing_jar_requirement_is_looked_up() {
+        assert!(matches!(
+            classify_jar_requirement(false, None, None),
+            JarRequirementAction::Resolve
+        ));
+    }
+
+    #[test]
+    fn a_jar_requirement_a_batch_sibling_installs_is_not_fetched_twice() {
+        assert!(matches!(
+            classify_jar_requirement(false, None, Some("fabric-api-0.102.0.jar")),
+            JarRequirementAction::IncludedInBatch(ref file) if file == "fabric-api-0.102.0.jar"
+        ));
+    }
+
+    #[test]
+    fn a_jar_requirement_already_on_the_list_is_not_added_again() {
+        let present = installed_named("fabric-api");
+        assert!(matches!(
+            classify_jar_requirement(true, Some(&present), Some("x.jar")),
+            JarRequirementAction::AlreadyPlanned
+        ));
+    }
+
+    #[test]
+    fn installed_identity_lookup_resolves_jar_aliases() {
+        // The jar calls Fabric API "fabric"; the registry calls it "fabric-api".
+        let mut present = installed_named("fabric-api");
+        present.mod_jar_id = Some("fabric".to_string());
+        let installed = vec![&present];
+        let aliases = AliasMap::from_pairs(&[("fabric-api".to_string(), "fabric".to_string())]);
+        let lookup = installed_by_identity(&installed, &aliases);
+        assert!(lookup.contains_key("fabric-api"));
+    }
+
+    #[test]
+    fn a_jar_that_cannot_be_read_is_unreadable_not_requirement_free() {
+        assert!(matches!(
+            jar_requirements_from_bytes(b"not a zip archive", "fabric", "0.20.1"),
+            JarRequirements::Unreadable(_)
+        ));
+    }
+
+    #[test]
+    fn a_readable_jar_reports_its_requirements() {
+        let jar = jar_with_entries(&[("fabric.mod.json", XAERO_FABRIC_JSON)]);
+        assert!(matches!(
+            jar_requirements_from_bytes(&jar, "fabric", "0.20.1"),
+            JarRequirements::Declared(ids) if ids == ["fabric-api".to_string()]
+        ));
+    }
+
+    #[test]
+    fn a_jar_requirement_keeps_the_name_it_was_given_when_it_is_batched() {
+        let mut dependency = batch_sibling("fabric-api", "fabric-api.jar");
+        dependency.requested_by = vec!["Xaero's Minimap".into()];
+        credit_requester(&mut dependency, "xaeros-minimap");
+        assert_eq!(dependency.requested_by, vec!["Xaero's Minimap".to_string()]);
+    }
+
+    #[test]
+    fn a_dependency_with_no_requester_is_credited_to_its_batch_item() {
+        let mut dependency = batch_sibling("lithium", "lithium.jar");
+        credit_requester(&mut dependency, "lithium");
+        assert_eq!(dependency.requested_by, vec!["lithium".to_string()]);
+    }
+
+    #[test]
+    fn a_missing_dependency_version_says_what_is_missing_not_a_question() {
+        let manifest = InstanceManifest {
+            manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "test".into(),
+            name: "Test".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            created_from_pack: None,
+            user_preferences: serde_json::json!({}),
+            game_data: Default::default(),
+        };
+        let reason = dependency_version_reason(LauncherError::VersionNotFound, &manifest);
+        assert_eq!(
+            reason,
+            "no version is published for Minecraft 1.21 on fabric"
+        );
+        assert!(!reason.contains("closest"), "{reason}");
+        assert!(!reason.contains('?'), "{reason}");
+    }
+
+    #[test]
+    fn other_dependency_errors_keep_their_own_wording() {
+        let manifest = InstanceManifest {
+            manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "test".into(),
+            name: "Test".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            created_from_pack: None,
+            user_preferences: serde_json::json!({}),
+            game_data: Default::default(),
+        };
+        let error = LauncherError::Generic {
+            code: "ERR_X".into(),
+            message: "the registry is offline".into(),
+        };
+        assert_eq!(
+            dependency_version_reason(error, &manifest),
+            "the registry is offline"
+        );
+    }
+
+    fn view_entry(filename: &str, enabled: bool) -> agora_core::models::InstalledMod {
+        agora_core::models::InstalledMod {
+            provider: None,
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            filename: filename.to_string(),
+            registry_id: Some(filename.trim_end_matches(".jar").to_string()),
+            modrinth_id: None,
+            source: "registry".into(),
+            source_url: None,
+            version: Some("1.0".into()),
+            sha256: String::new(),
+            installed_at: String::new(),
+            java_packages: vec![],
+            mod_jar_id: Some(filename.trim_end_matches(".jar").to_string()),
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+            provided_mod_ids: vec![],
+            enabled,
+            content_type: "mod".into(),
+            hash_verified: true,
+        }
+    }
+
+    #[test]
+    fn dependency_view_keeps_only_mods_that_can_satisfy_a_dependency() {
+        // Real folder shapes: a present jar, a disabled one (`.jar.disabled`),
+        // and a tracked enabled entry whose jar is gone. Only the first may
+        // count as already installed when a dependency is resolved.
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = agora_core::ctx::Ctx::for_testing(tmp.path().to_path_buf());
+        let instance_dir = ctx.paths.instance_dir("inst").unwrap();
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        std::fs::write(instance_dir.join("mods").join("present.jar"), b"jar").unwrap();
+        std::fs::write(instance_dir.join("mods").join("off.jar.disabled"), b"jar").unwrap();
+        let resolver = Resolver::new(ctx);
+        let manifest = agora_core::models::InstanceManifest {
+            manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "inst".into(),
+            name: "Test".into(),
+            created_from_pack: None,
+            minecraft_version: "1.20.4".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.11".into(),
+            is_locked: false,
+            mods: vec![
+                view_entry("present.jar", true),
+                view_entry("off.jar", false),
+                view_entry("gone.jar", true),
+            ],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+            game_data: Default::default(),
+        };
+        let view = resolver.dependency_view(&manifest);
+        let kept: Vec<&str> = view.mods.iter().map(|m| m.filename.as_str()).collect();
+        assert_eq!(kept, vec!["present.jar"]);
+        // The planner still gets the real manifest; the view is only a copy.
+        assert_eq!(manifest.mods.len(), 3);
+    }
+
+    #[test]
+    fn dependency_view_of_an_unknown_instance_keeps_nothing() {
+        // An instance folder that cannot be resolved counts as empty, so every
+        // dependency is planned again rather than assumed present.
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = agora_core::ctx::Ctx::for_testing(tmp.path().to_path_buf());
+        let resolver = Resolver::new(ctx);
+        let manifest = agora_core::models::InstanceManifest {
+            manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "../escape".into(),
+            name: "Test".into(),
+            created_from_pack: None,
+            minecraft_version: "1.20.4".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.11".into(),
+            is_locked: false,
+            mods: vec![view_entry("present.jar", true)],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+            game_data: Default::default(),
+        };
+        let view = resolver.dependency_view(&manifest);
+        assert!(view.mods.is_empty());
     }
 }

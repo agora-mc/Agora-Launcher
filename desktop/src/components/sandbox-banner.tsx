@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { getGovernanceConfig, type GovernanceConfig } from '../lib/tauri';
+import { useConnectivity } from '@/hooks/use-connectivity';
 
 export function SandboxBanner() {
   const [config, setConfig] = useState<GovernanceConfig | null>(null);
+  const { state: connectivity } = useConnectivity();
 
   useEffect(() => {
     let cancelled = false;
@@ -33,8 +35,8 @@ export function SandboxBanner() {
     }
   }
 
-  // Offset below OfflineBanner when user is offline
-  const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+  // Offset below OfflineBanner while the app cannot reach the internet.
+  const isOffline = connectivity === 'unreachable';
 
   return (
     <div

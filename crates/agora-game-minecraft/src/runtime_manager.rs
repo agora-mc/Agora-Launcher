@@ -1062,7 +1062,13 @@ fn extract_zip(
             message: format!("Failed to read entry {i}: {e}"),
         })?;
 
-        let raw_name = entry_zip.name().to_string();
+        let raw_name = entry_zip
+            .name()
+            .map_err(|e| LauncherError::Generic {
+                code: "ERR_ARCHIVE_ENTRY".into(),
+                message: format!("Failed to read entry {i}: {e}"),
+            })?
+            .into_owned();
 
         // Check for NUL bytes.
         if raw_name.contains('\0') {
@@ -2264,7 +2270,7 @@ mod tests {
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
 
-        let opts = zip::write::FileOptions::default()
+        let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)
             .unix_permissions(0o755);
 
@@ -2626,8 +2632,8 @@ mod tests {
         // Create a ZIP with a traversal entry.
         let buf = std::io::Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let opts =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         zip.start_file("../../etc/passwd", opts).unwrap();
         zip.write_all(b"evil").unwrap();
         let mut buf = zip.finish().unwrap();
@@ -2653,7 +2659,7 @@ mod tests {
         use std::io::{Cursor, Read};
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let opts = zip::write::FileOptions::default()
+        let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)
             .unix_permissions(0o120777);
         zip.start_file("jdk/link", opts).unwrap();
@@ -2679,8 +2685,8 @@ mod tests {
         use std::io::{Cursor, Read, Write};
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let opts =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
 
         // Add "A/B" then "a/b" → case collision
         zip.add_directory("A", opts).unwrap();
