@@ -353,12 +353,7 @@ fn create_instance(
     let ctx = crate::core_context(app)?;
 
     // The same discovery and identification the Setup page and `agora games list` use.
-    let report = agora_core::game_discovery::discover_all();
-    let inventory = agora_core::game_registry::identify_installs(
-        &ctx.games,
-        &report,
-        &agora_core::game_discovery::file_version::read_file_version,
-    );
+    let inventory = agora_core::game_registry::installed_games(&ctx);
     let install = inventory
         .installs
         .iter()
@@ -518,7 +513,7 @@ fn launch_instance(
         instance_id,
         definition,
         options,
-        &agora_core::game_discovery::discover_all,
+        &|| agora_core::game_discovery::discover_with_folders(&ctx.paths),
         &agora_core::game_launch::SystemLauncher,
     ) {
         Ok(launched) => launched,

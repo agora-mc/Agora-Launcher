@@ -19,12 +19,7 @@ use super::error::{GamesError, TASK_FAILED};
 pub async fn games_list(app: tauri::AppHandle) -> Result<GamesList, GamesError> {
     tokio::task::spawn_blocking(move || -> Result<GamesList, GamesError> {
         let ctx = crate::core_context(&app)?;
-        let report = agora_core::game_discovery::discover_with_folders(&ctx.paths);
-        let inventory = agora_core::game_registry::identify_installs(
-            &ctx.games,
-            &report,
-            &agora_core::game_discovery::file_version::read_file_version,
-        );
+        let inventory = agora_core::game_registry::installed_games(&ctx);
         Ok(group_by_game(&ctx.games, &inventory))
     })
     .await

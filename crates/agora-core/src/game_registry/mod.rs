@@ -558,6 +558,19 @@ pub fn fnv1a_32(s: &str) -> u32 {
     hash
 }
 
+/// What is installed on this machine: the stores' installs and the folders the user added by hand
+/// (MASTER_SPEC §26.3), identified against the registry. Every adapter asks this one function, so a
+/// custom-folder game appears in the Installs list, the instance and base dialogs, import and the
+/// CLI alike.
+pub fn installed_games(ctx: &Ctx) -> GameInventory {
+    let report = crate::game_discovery::discover_with_folders(&ctx.paths);
+    identify_installs(
+        &ctx.games,
+        &report,
+        &crate::game_discovery::file_version::read_file_version,
+    )
+}
+
 pub fn identify_installs(
     registry: &GameRegistry,
     report: &DiscoveryReport,

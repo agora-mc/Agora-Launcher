@@ -287,12 +287,7 @@ pub async fn games_base_build(
 /// Look the install up the same way `games list` does, so an id from the Installs section
 /// always resolves to the same install the CLI would build from.
 fn find_install(ctx: &Ctx, install_id: &str) -> Result<IdentifiedInstall, GamesError> {
-    let report = agora_core::game_discovery::discover_all();
-    let inventory = agora_core::game_registry::identify_installs(
-        &ctx.games,
-        &report,
-        &agora_core::game_discovery::file_version::read_file_version,
-    );
+    let inventory = agora_core::game_registry::installed_games(ctx);
     inventory
         .installs
         .into_iter()

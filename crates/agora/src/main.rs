@@ -5681,12 +5681,7 @@ async fn run_command(
                 }
             }
             GamesCmd::List => {
-                let report = agora_core::game_discovery::discover_with_folders(&ctx.paths);
-                let inventory = agora_core::game_registry::identify_installs(
-                    &ctx.games,
-                    &report,
-                    &agora_core::game_discovery::file_version::read_file_version,
-                );
+                let inventory = agora_core::game_registry::installed_games(ctx);
                 if json {
                     let out = serde_json::json!({
                         "games": ctx.games.games().collect::<Vec<_>>(),
@@ -5704,12 +5699,7 @@ async fn run_command(
                     mode,
                     include_excluded,
                 } => {
-                    let report = agora_core::game_discovery::discover_with_folders(&ctx.paths);
-                    let inventory = agora_core::game_registry::identify_installs(
-                        &ctx.games,
-                        &report,
-                        &agora_core::game_discovery::file_version::read_file_version,
-                    );
+                    let inventory = agora_core::game_registry::installed_games(ctx);
                     let install = inventory
                         .installs
                         .iter()
@@ -6321,12 +6311,7 @@ async fn run_command(
                     mode,
                     include_excluded,
                 } => {
-                    let report = agora_core::game_discovery::discover_all();
-                    let inventory = agora_core::game_registry::identify_installs(
-                        &ctx.games,
-                        &report,
-                        &agora_core::game_discovery::file_version::read_file_version,
-                    );
+                    let inventory = agora_core::game_registry::installed_games(ctx);
                     let install = inventory
                         .installs
                         .iter()
@@ -8759,12 +8744,7 @@ fn run_games_import(
                 name,
                 copy_saves,
             };
-            let discovered = agora_core::game_discovery::discover_with_folders(&ctx.paths);
-            let inventory = agora_core::game_registry::identify_installs(
-                &ctx.games,
-                &discovered,
-                &agora_core::game_discovery::file_version::read_file_version,
-            );
+            let inventory = agora_core::game_registry::installed_games(ctx);
             if dry_run {
                 let plan = game_import::plan(ctx, &inventory, &request)?;
                 if json {

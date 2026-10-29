@@ -785,7 +785,7 @@ pub fn prepare_launch(
         id,
         definition,
         launch_anyway,
-        &crate::game_discovery::discover_all,
+        &|| crate::game_discovery::discover_with_folders(&ctx.paths),
     )
 }
 
@@ -1168,7 +1168,7 @@ pub fn launch(
         id,
         definition,
         launch_anyway,
-        &crate::game_discovery::discover_all,
+        &|| crate::game_discovery::discover_with_folders(&ctx.paths),
     )
 }
 

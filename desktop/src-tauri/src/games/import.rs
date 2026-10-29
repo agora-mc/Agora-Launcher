@@ -5,12 +5,11 @@
 use std::path::{Path, PathBuf};
 
 use agora_core::content_store::Mo2Provenance;
-use agora_core::ctx::Ctx;
-use agora_core::game_discovery::file_version;
+
 use agora_core::game_import::{
     self, ImportProgress, Mo2Plan, Mo2Request, Mo2RunReport, RunOptions, ScanReport, SetupFound,
 };
-use agora_core::game_registry::{identify_installs, GameInventory};
+use agora_core::game_registry::installed_games;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
@@ -215,13 +214,6 @@ pub async fn games_import_mo2(
     })
     .await
     .map_err(|_| GamesError::new(TASK_FAILED, "Importing the setup did not finish."))?
-}
-
-/// The installs discovery finds, identified the same way `games_list` and the CLI identify them,
-/// so an import matches the install the Installs list shows.
-fn installed_games(ctx: &Ctx) -> GameInventory {
-    let report = agora_core::game_discovery::discover_all();
-    identify_installs(&ctx.games, &report, &file_version::read_file_version)
 }
 
 fn core_failed(error: impl std::fmt::Display) -> GamesError {
