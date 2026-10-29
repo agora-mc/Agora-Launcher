@@ -828,10 +828,11 @@ impl PackBackend for CoreBackend {
         let Ok(manifest) = agora_core::helpers::read_manifest(&manifest_path) else {
             return true;
         };
-        all_entries(&manifest)
+        let verified = all_entries(&manifest)
             .find(|e| e.filename == filename)
             .map(|e| e.hash_verified)
-            .unwrap_or(true)
+            .unwrap_or(true);
+        verified
     }
 
     fn display_name(&self, registry_id: &str) -> Option<String> {

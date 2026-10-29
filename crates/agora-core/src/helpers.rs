@@ -186,11 +186,34 @@ fn synced_manifest_temp(manifest_path: &Path, bytes: &[u8]) -> LauncherResult<st
     Ok(tmp_path)
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_MANIFEST_WRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test seam: until the returned guard drops, every manifest write on this thread fails. The write
+/// path names its temporary file uniquely, so a test cannot block it by occupying a fixed path.
+#[cfg(test)]
+pub(crate) fn fail_manifest_writes_on_this_thread() -> impl Drop {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FAIL_MANIFEST_WRITES.with(|flag| flag.set(false));
+        }
+    }
+    FAIL_MANIFEST_WRITES.with(|flag| flag.set(true));
+    Restore
+}
+
 fn write_manifest_with_hook(
     manifest_path: &Path,
     manifest: &InstanceManifest,
     mut checkpoint: impl FnMut(ManifestWriteStage) -> LauncherResult<()>,
 ) -> LauncherResult<()> {
+    #[cfg(test)]
+    if FAIL_MANIFEST_WRITES.with(|flag| flag.get()) {
+        return Err(LauncherError::InstanceCreateFailed);
+    }
     if manifest.is_read_only() {
         return Err(manifest_read_only_error());
     }

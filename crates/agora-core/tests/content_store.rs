@@ -344,10 +344,19 @@ fn test_refusal_entry_exceeds_declared_size() {
     create_zip_with_oversized_entry(&zip_path);
 
     let res = add_archive(&ctx, &zip_path, None);
-    assert!(matches!(
-        res,
-        Err(ContentError::EntryExceedsDeclaredSize { .. })
-    ));
+    // The zip reader itself (zip 9) refuses a stored entry that is larger than its header says,
+    // before Agora's own size check runs; either way the archive is refused and nothing is stored.
+    assert!(
+        matches!(
+            &res,
+            Err(ContentError::EntryExceedsDeclaredSize { .. })
+                | Err(ContentError::CorruptArchive(_))
+        ),
+        "{res:?}"
+    );
+    if let Err(ContentError::CorruptArchive(message)) = &res {
+        assert!(message.contains("larger than its declared"), "{message}");
+    }
     assert_store_empty(&ctx);
 }
 

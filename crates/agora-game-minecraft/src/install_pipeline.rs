@@ -4656,6 +4656,15 @@ mod tests {
 
     /// Stages the planned file and runs the same manifest-prepare and apply
     /// steps the pipeline runs, so the test sees what is left on disk.
+    /// The manifest an apply left on disk, as the flat JSON the planner's tests inspect. The disk
+    /// layout is the package's own, so it is read through the manifest loader.
+    fn manifest_as_json(instance_dir: &Path) -> serde_json::Value {
+        let manifest =
+            agora_core::helpers::read_manifest(&instance_dir.join("instance_manifest.json"))
+                .unwrap();
+        serde_json::to_value(&manifest).unwrap()
+    }
+
     fn apply_planned_file(instance_dir: &Path, plan: &ResolvedInstallPlan, bytes: &[u8]) {
         let staging = instance_dir.parent().unwrap().join("staging");
         std::fs::create_dir_all(staging.join("artifacts")).unwrap();
@@ -4683,10 +4692,7 @@ mod tests {
         apply_planned_file(&instance_dir, &plan, REINSTALL_BYTES);
         assert!(mods.join("fabric-api.jar").is_file());
         assert!(!mods.join("fabric-api.jar.disabled").exists());
-        let next: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let next = manifest_as_json(&instance_dir);
         let entries = next["mods"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["filename"], "fabric-api.jar");
@@ -4759,10 +4765,7 @@ mod tests {
             "the copy stays off"
         );
         assert!(!mods.join("fabric-api.jar").exists());
-        let next: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let next = manifest_as_json(&instance_dir);
         assert_eq!(next["mods"][0]["enabled"], false);
     }
 
@@ -4871,10 +4874,7 @@ mod tests {
             "the copy is on again"
         );
         assert!(!mods.join("fabric-api.jar.disabled").exists());
-        let next: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let next = manifest_as_json(&instance_dir);
         let fabric = next["mods"]
             .as_array()
             .unwrap()
@@ -4992,10 +4992,7 @@ mod tests {
         apply_planned_file(&instance_dir, &plan, REINSTALL_BYTES);
         assert!(mods.join("fabric-api.jar.disabled").is_file());
         assert!(!mods.join("fabric-api.jar").exists());
-        let next: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let next = manifest_as_json(&instance_dir);
         let entries = next["mods"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["filename"], "fabric-api.jar");

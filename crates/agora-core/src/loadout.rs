@@ -1545,9 +1545,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = setup_instance(&tmp, &["a.jar", "b.jar", "c.jar", "d.jar"]);
         let manifest_before = fs::read(dir.join("instance_manifest.json")).unwrap();
-        // Every rename succeeds; then the manifest's temporary file cannot be
-        // written, so the write fails after the renames are done.
-        fs::create_dir_all(dir.join("instance_manifest.json.tmp")).unwrap();
+        // Every rename succeeds; then the manifest cannot be written, so the
+        // write fails after the renames are done.
+        let _fail = crate::helpers::fail_manifest_writes_on_this_thread();
 
         assert!(apply_enabled_set(&dir, &["a.jar".to_string(), "c.jar".to_string()]).is_err());
         for name in ["a.jar", "b.jar", "c.jar", "d.jar"] {

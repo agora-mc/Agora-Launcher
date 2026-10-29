@@ -3794,6 +3794,9 @@ $#
             let mut reviewed: Vec<&str> = vec![
                 "crash_events",
                 "crash_survivals",
+                // Other games' instances. Ids are unique across games, so a Minecraft delete finds
+                // no row here; the generic capture still carries one if it ever did.
+                "game_instances",
                 "instance_import_files",
                 "instance_import_jobs",
                 "instance_imports",

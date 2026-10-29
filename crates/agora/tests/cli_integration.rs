@@ -5038,8 +5038,14 @@ fn manifest_entry(data_dir: &Path, instance: &str, file: &str) -> serde_json::Va
         .join("instance_manifest.json");
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    manifest["mods"]
-        .as_array()
+    // A manifest Agora has written keeps the Minecraft fields under "minecraft"; one a test wrote
+    // by hand keeps them at the top.
+    let mods = if manifest["minecraft"]["mods"].is_array() {
+        &manifest["minecraft"]["mods"]
+    } else {
+        &manifest["mods"]
+    };
+    mods.as_array()
         .unwrap()
         .iter()
         .find(|entry| entry["filename"] == file)
