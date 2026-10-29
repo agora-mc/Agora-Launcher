@@ -92,7 +92,10 @@ pub struct BaseUser {
 /// The bases built for one game. A base whose manifest cannot be read is not listed (core does
 /// not report it), so a missing base here is not proof that none exists.
 #[tauri::command]
-pub async fn games_base_list(app: tauri::AppHandle, game_id: String) -> Result<BasesList, GamesError> {
+pub async fn games_base_list(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<BasesList, GamesError> {
     tokio::task::spawn_blocking(move || -> Result<BasesList, GamesError> {
         let ctx = crate::core_context(&app)?;
         let names = instance_names(&ctx)?;
@@ -164,7 +167,11 @@ fn summarize(manifest: &BaseManifest, present: bool, used_by: Vec<BaseUser>) -> 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum BuildReply {
     /// The base was made now.
     Built {
@@ -265,7 +272,10 @@ fn find_install(ctx: &Ctx, install_id: &str) -> Result<IdentifiedInstall, GamesE
 
 /// A progress callback that emits Tauri events. Hashing emits per file, so it is throttled to
 /// one event every 250 ms, plus the last file always.
-fn progress_emitter(app: tauri::AppHandle, install_id: String) -> impl Fn(BuildProgress) + Send + Sync {
+fn progress_emitter(
+    app: tauri::AppHandle,
+    install_id: String,
+) -> impl Fn(BuildProgress) + Send + Sync {
     let started = Instant::now();
     let last_emit_ms = AtomicU64::new(0);
     move |progress: BuildProgress| {
@@ -273,7 +283,11 @@ fn progress_emitter(app: tauri::AppHandle, install_id: String) -> impl Fn(BuildP
         let last = last_emit_ms.load(Ordering::Relaxed);
         let finished = progress.files_done >= progress.files_total;
         let due = finished || now_ms.saturating_sub(last) >= 250;
-        if due && last_emit_ms.compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+        if due
+            && last_emit_ms
+                .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
             // A missed progress event costs nothing; the build's result is what matters.
             let _ = app.emit(
                 BUILD_PROGRESS_EVENT,
@@ -370,7 +384,11 @@ pub async fn games_base_verify(
                 "Agora does not have this game's definition loaded, so it cannot check the base.",
             )
         })?;
-        let depth = if full { VerifyDepth::Full } else { VerifyDepth::Quick };
+        let depth = if full {
+            VerifyDepth::Full
+        } else {
+            VerifyDepth::Quick
+        };
         let verification = game_base::verify_base(
             &manifest,
             depth,
@@ -395,14 +413,20 @@ fn verify_reply(base_id: &str, depth: VerifyDepth, verification: BaseVerificatio
         hashed: verification.hashed,
         clean,
         game_writes: verification.game_writes,
-        problems: verification.problems.into_iter().map(file_problem).collect(),
+        problems: verification
+            .problems
+            .into_iter()
+            .map(file_problem)
+            .collect(),
     }
 }
 
 fn file_problem(problem: BaseProblem) -> BaseFileProblem {
     let (kind, expected_bytes, actual_bytes) = match problem.kind {
         ProblemKind::Missing => ("missing", None, None),
-        ProblemKind::SizeChanged { expected, actual } => ("size_changed", Some(expected), Some(actual)),
+        ProblemKind::SizeChanged { expected, actual } => {
+            ("size_changed", Some(expected), Some(actual))
+        }
         ProblemKind::ContentChanged => ("content_changed", None, None),
         ProblemKind::Unexpected => ("unexpected", None, None),
     };
@@ -429,7 +453,10 @@ pub struct RemoveReply {
 /// Delete a base no instance uses. Core refuses while any instance is pinned to it and names
 /// them; the UI asks before calling this.
 #[tauri::command]
-pub async fn games_base_remove(app: tauri::AppHandle, base_id: String) -> Result<RemoveReply, GamesError> {
+pub async fn games_base_remove(
+    app: tauri::AppHandle,
+    base_id: String,
+) -> Result<RemoveReply, GamesError> {
     validate_base_id(&base_id)?;
     tokio::task::spawn_blocking(move || -> Result<RemoveReply, GamesError> {
         let ctx = crate::core_context(&app)?;
@@ -448,13 +475,22 @@ pub async fn games_base_remove(app: tauri::AppHandle, base_id: String) -> Result
 // ---------------------------------------------------------------------------
 
 /// A base id names a manifest file and a folder, so it must be a plain name. Core's ids are
-/// lowercase letters, digits, `.`, `-` and `_`; anything else is refused before it touches a path.
+/// lowercase letters, digits, `.`, `-` and `_`, and start with the game id; anything else is
+/// refused before it touches a path. `.` and `..` pass the character test, so the first and last
+/// characters are checked too: a leading dot is a relative path, and Windows drops a trailing dot
+/// from a folder name, which would point the id at a different folder.
 pub fn validate_base_id(base_id: &str) -> Result<(), GamesError> {
-    let plain = !base_id.is_empty()
-        && base_id.len() <= 200
-        && base_id
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'));
+    let chars_ok = base_id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'));
+    let starts_ok = base_id
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let ends_ok = base_id.chars().last().is_some_and(|c| c != '.');
+    let stem = base_id.split('.').next().unwrap_or_default();
+    let plain =
+        base_id.len() <= 200 && chars_ok && starts_ok && ends_ok && !is_windows_device_name(stem);
     if plain {
         Ok(())
     } else {
@@ -465,11 +501,44 @@ pub fn validate_base_id(base_id: &str) -> Result<(), GamesError> {
     }
 }
 
+/// Names Windows gives a device whatever folder they sit in (`nul`, `con.txt`, `com1`). A base
+/// folder with one of these names would not be a folder at all.
+fn is_windows_device_name(stem: &str) -> bool {
+    matches!(
+        stem,
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    )
+}
+
 fn read_manifest(ctx: &Ctx, base_id: &str) -> Result<BaseManifest, GamesError> {
     let path = ctx.paths.base_manifest_path(base_id);
     let text = std::fs::read_to_string(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            GamesError::new(BASE_NOT_FOUND, format!("Base {base_id} was not found. Refresh the list."))
+            GamesError::new(
+                BASE_NOT_FOUND,
+                format!("Base {base_id} was not found. Refresh the list."),
+            )
         } else {
             GamesError::new(
                 BASE_FAILED,
@@ -608,7 +677,11 @@ mod tests {
         let users = named_users(&["nordic-run".to_string(), "gone".to_string()], &names);
         assert_eq!(users[0].name, "Nordic Run");
         assert_eq!(users[1].name, "gone");
-        assert_eq!(users.len(), 2, "an instance missing from the table is still a user");
+        assert_eq!(
+            users.len(),
+            2,
+            "an instance missing from the table is still a user"
+        );
     }
 
     #[test]
@@ -622,7 +695,10 @@ mod tests {
             "last_launched_at": null,
         }))
         .expect("the fixture is a valid record");
-        assert_eq!(name_map(&[record]).get("nordic-run").map(String::as_str), Some("Nordic Run"));
+        assert_eq!(
+            name_map(&[record]).get("nordic-run").map(String::as_str),
+            Some("Nordic Run")
+        );
     }
 
     #[test]
@@ -631,15 +707,25 @@ mod tests {
             instances: vec!["Nordic Run".to_string(), "Vanilla Plus".to_string()],
         });
         assert_eq!(error.code, BASE_IN_USE);
-        assert!(error.message.contains("Nordic Run, Vanilla Plus"), "{}", error.message);
+        assert!(
+            error.message.contains("Nordic Run, Vanilla Plus"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
     fn not_found_runtime_unknown_and_declared_write_map_to_their_own_codes() {
-        assert_eq!(base_error(BaseError::NotFound("x".into())).code, BASE_NOT_FOUND);
+        assert_eq!(
+            base_error(BaseError::NotFound("x".into())).code,
+            BASE_NOT_FOUND
+        );
         assert_eq!(base_error(BaseError::RuntimeUnknown).code, RUNTIME_UNKNOWN);
         assert_eq!(
-            base_error(BaseError::DeclaredWriteLinked { path: "Data/a.bsa".into() }).code,
+            base_error(BaseError::DeclaredWriteLinked {
+                path: "Data/a.bsa".into()
+            })
+            .code,
             DECLARED_WRITE_LINKED
         );
     }
@@ -672,7 +758,10 @@ mod tests {
 
     #[test]
     fn a_built_base_maps_its_byte_counts() {
-        let manifest = manifest_json(serde_json::json!([file("Data/a.bsa", 10, true), file("b.exe", 4, false)]));
+        let manifest = manifest_json(serde_json::json!([
+            file("Data/a.bsa", 10, true),
+            file("b.exe", 4, false)
+        ]));
         let reply = build_reply(Ok(BuildOutcome::Built {
             manifest,
             linked_bytes: 10,
@@ -680,7 +769,12 @@ mod tests {
         }))
         .expect("a built base is a reply");
         match reply {
-            BuildReply::Built { linked_bytes, copied_bytes, file_count, .. } => {
+            BuildReply::Built {
+                linked_bytes,
+                copied_bytes,
+                file_count,
+                ..
+            } => {
                 assert_eq!((linked_bytes, copied_bytes, file_count), (10, 4, 2));
             }
             other => panic!("expected a built reply, got {other:?}"),
@@ -694,22 +788,44 @@ mod tests {
             hashed: 1,
             game_writes: vec!["Data/Saves.ini".into()],
             problems: vec![
-                BaseProblem { path: "a".into(), kind: ProblemKind::Missing, linked_to_store: true },
+                BaseProblem {
+                    path: "a".into(),
+                    kind: ProblemKind::Missing,
+                    linked_to_store: true,
+                },
                 BaseProblem {
                     path: "b".into(),
-                    kind: ProblemKind::SizeChanged { expected: 10, actual: 7 },
+                    kind: ProblemKind::SizeChanged {
+                        expected: 10,
+                        actual: 7,
+                    },
                     linked_to_store: false,
                 },
-                BaseProblem { path: "c".into(), kind: ProblemKind::ContentChanged, linked_to_store: false },
-                BaseProblem { path: "d".into(), kind: ProblemKind::Unexpected, linked_to_store: false },
+                BaseProblem {
+                    path: "c".into(),
+                    kind: ProblemKind::ContentChanged,
+                    linked_to_store: false,
+                },
+                BaseProblem {
+                    path: "d".into(),
+                    kind: ProblemKind::Unexpected,
+                    linked_to_store: false,
+                },
             ],
         };
-        let reply = verify_reply("skyrim-se_steam_1.6.1170_nobuild", VerifyDepth::Full, verification);
+        let reply = verify_reply(
+            "skyrim-se_steam_1.6.1170_nobuild",
+            VerifyDepth::Full,
+            verification,
+        );
         assert!(!reply.clean);
         assert_eq!(reply.depth, "full");
         assert_eq!(reply.game_writes, vec!["Data/Saves.ini".to_string()]);
         let kinds: Vec<&str> = reply.problems.iter().map(|p| p.kind.as_str()).collect();
-        assert_eq!(kinds, ["missing", "size_changed", "content_changed", "unexpected"]);
+        assert_eq!(
+            kinds,
+            ["missing", "size_changed", "content_changed", "unexpected"]
+        );
         assert_eq!(reply.problems[1].expected_bytes, Some(10));
         assert_eq!(reply.problems[1].actual_bytes, Some(7));
         assert!(reply.problems[0].linked_to_store);
@@ -720,7 +836,12 @@ mod tests {
         let reply = verify_reply(
             "x",
             VerifyDepth::Quick,
-            BaseVerification { checked: 2, hashed: 0, game_writes: vec![], problems: vec![] },
+            BaseVerification {
+                checked: 2,
+                hashed: 0,
+                game_writes: vec![],
+                problems: vec![],
+            },
         );
         assert!(reply.clean);
         assert_eq!(reply.depth, "quick");
@@ -731,8 +852,47 @@ mod tests {
         assert!(validate_base_id("skyrim-se_steam_1.6.1170.0_24914197").is_ok());
         assert!(validate_base_id("skyrim-se_gog_1.6.1179_nobuild_copied").is_ok());
         for bad in ["", "../x", "a/b", "a\\b", "Upper", "with space", "a:b"] {
-            assert_eq!(validate_base_id(bad).map_err(|e| e.code), Err(INVALID_INPUT.to_string()), "{bad:?}");
+            assert_eq!(
+                validate_base_id(bad).map_err(|e| e.code),
+                Err(INVALID_INPUT.to_string()),
+                "{bad:?}"
+            );
         }
+    }
+
+    #[test]
+    fn dot_names_and_device_names_are_not_base_ids() {
+        // `.` and `..` are made of allowed characters, but name the bases folder itself or its
+        // parent. A trailing dot is stripped by Windows, so `skyrim-se.` would name `skyrim-se`.
+        let too_long = "a".repeat(201);
+        let hostile = [
+            ".",
+            "..",
+            "...",
+            ".hidden",
+            "-leading",
+            "_leading",
+            "skyrim-se.",
+            "skyrim-se..",
+            "nul",
+            "con.txt",
+            "com1",
+            "lpt9.bak",
+            "a\u{0}b",
+            "caf\u{e9}",
+            too_long.as_str(),
+        ];
+        for bad in hostile {
+            assert_eq!(
+                validate_base_id(bad).map_err(|e| e.code),
+                Err(INVALID_INPUT.to_string()),
+                "{bad:?} must not be a base id"
+            );
+        }
+        // Names that merely contain a device name are fine.
+        assert!(validate_base_id("nullish_steam_1.0_nobuild").is_ok());
+        assert!(validate_base_id("console-se_gog_1.0_nobuild").is_ok());
+        assert!(validate_base_id(&"a".repeat(200)).is_ok());
     }
 
     /// Reads the real bases in the bench data root. Read-only: it lists and quick-verifies, and
@@ -755,10 +915,18 @@ mod tests {
 
         let listings = game_base::list_bases(&paths);
         assert!(!listings.is_empty(), "the bench root has base manifests");
+        let mut checked = 0usize;
         for listing in listings {
-            let definition = games
-                .game(&listing.manifest.runtime.game)
-                .expect("the bench bases are for a registered game");
+            // This test registers only the Creation Engine package. A base for another game (the
+            // bench root has a Valheim one) has no definition here, so it is named and skipped.
+            let Some(definition) = games.game(&listing.manifest.runtime.game) else {
+                eprintln!(
+                    "{}: skipped, no game package registered for {}",
+                    listing.manifest.base_id, listing.manifest.runtime.game
+                );
+                continue;
+            };
+            checked += 1;
             let verification = game_base::verify_base(
                 &listing.manifest,
                 VerifyDepth::Quick,
@@ -775,5 +943,9 @@ mod tests {
                 reply.problems.len()
             );
         }
+        assert!(
+            checked > 0,
+            "at least one bench base has its game registered, so something was checked"
+        );
     }
 }
