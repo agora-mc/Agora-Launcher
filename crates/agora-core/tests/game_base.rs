@@ -3,10 +3,9 @@ use std::time::SystemTime;
 
 use agora_core::app_paths::AppPaths;
 use agora_core::game_base::{
-    build_base, evaluate_link_support, get_file_identity, is_plain_base_id, list_bases, make_base_id,
-    remove_base, BaseEntry,
-    sanitize_base_id_part, verify_base, BaseError, BaseMode, BuildOptions, BuildOutcome,
-    ProblemKind, VerifyDepth,
+    build_base, evaluate_link_support, get_file_identity, is_plain_base_id, list_bases,
+    make_base_id, remove_base, sanitize_base_id_part, verify_base, BaseEntry, BaseError, BaseMode,
+    BuildOptions, BuildOutcome, ProblemKind, VerifyDepth,
 };
 use agora_core::game_discovery::{DiscoveredInstall, InstallKind};
 use agora_core::game_registry::{IdentifiedInstall, RuntimeResolution};
@@ -1403,7 +1402,11 @@ fn list_returns_damaged_records_with_their_path_and_reason_and_never_drops_them(
     std::fs::write(paths.base_manifests_dir().join("notes.txt"), "hello").unwrap();
 
     let entries = list_bases(&paths).expect("the folder can be read");
-    assert_eq!(entries.len(), 3, "every record is listed, damaged or not: {entries:?}");
+    assert_eq!(
+        entries.len(),
+        3,
+        "every record is listed, damaged or not: {entries:?}"
+    );
 
     let by_id = |id: &str| {
         entries
@@ -1418,16 +1421,34 @@ fn list_returns_damaged_records_with_their_path_and_reason_and_never_drops_them(
     match by_id(corrupt_id) {
         BaseEntry::Damaged(damaged) => {
             assert_eq!(damaged.manifest_path, corrupt_path);
-            assert!(damaged.error.contains("is not a valid base record"), "{}", damaged.error);
-            assert!(damaged.error.contains(&corrupt_path.display().to_string()), "{}", damaged.error);
+            assert!(
+                damaged.error.contains("is not a valid base record"),
+                "{}",
+                damaged.error
+            );
+            assert!(
+                damaged.error.contains(&corrupt_path.display().to_string()),
+                "{}",
+                damaged.error
+            );
         }
         other => panic!("a corrupt record is damaged, got {other:?}"),
     }
     match by_id(unreadable_id) {
         BaseEntry::Damaged(damaged) => {
             assert_eq!(damaged.manifest_path, unreadable_path);
-            assert!(damaged.error.contains("cannot be read"), "{}", damaged.error);
-            assert!(damaged.error.contains(&unreadable_path.display().to_string()), "{}", damaged.error);
+            assert!(
+                damaged.error.contains("cannot be read"),
+                "{}",
+                damaged.error
+            );
+            assert!(
+                damaged
+                    .error
+                    .contains(&unreadable_path.display().to_string()),
+                "{}",
+                damaged.error
+            );
         }
         other => panic!("an unreadable record is damaged, got {other:?}"),
     }
@@ -1454,7 +1475,10 @@ fn removing_a_damaged_record_removes_its_folder_and_the_record() {
     remove_base(&paths, base_id).expect("a damaged base can be removed");
 
     assert!(!folder.exists(), "its folder is removed");
-    assert!(!paths.base_manifest_path(base_id).exists(), "its record is removed");
+    assert!(
+        !paths.base_manifest_path(base_id).exists(),
+        "its record is removed"
+    );
     assert!(list_bases(&paths).unwrap().is_empty());
 }
 
@@ -1468,8 +1492,37 @@ fn removing_a_damaged_record_refuses_a_folder_that_is_not_a_plain_folder() {
     std::fs::create_dir_all(paths.bases_dir()).unwrap();
     std::fs::write(paths.bases_dir().join(base_id), b"a file, not a folder").unwrap();
 
-    assert!(matches!(remove_base(&paths, base_id), Err(BaseError::Other(_))));
-    assert!(paths.base_manifest_path(base_id).exists(), "the record is kept when the folder is refused");
+    assert!(matches!(
+        remove_base(&paths, base_id),
+        Err(BaseError::Other(_))
+    ));
+    assert!(
+        paths.base_manifest_path(base_id).exists(),
+        "the record is kept when the folder is refused"
+    );
+}
+
+#[test]
+fn removing_a_record_that_cannot_be_read_is_refused_and_deletes_nothing() {
+    // A record that cannot be read is not a damaged record: the removal must not take the read
+    // failure as permission to delete the folder under the bases folder.
+    let tmp = TempDir::new().unwrap();
+    let paths = AppPaths::from_root(tmp.path().join("data"));
+    let base_id = "skyrim-se_steam_2.0.0_nobuild";
+    std::fs::create_dir_all(paths.base_manifests_dir()).unwrap();
+    // A folder at the record's path makes reading the record fail.
+    let record = paths.base_manifest_path(base_id);
+    std::fs::create_dir(&record).unwrap();
+    let folder = paths.bases_dir().join(base_id);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("SkyrimSE.exe"), b"exe").unwrap();
+
+    assert!(matches!(
+        remove_base(&paths, base_id),
+        Err(BaseError::Io(_))
+    ));
+    assert!(folder.join("SkyrimSE.exe").exists(), "the folder is kept");
+    assert!(record.exists(), "the record is kept");
 }
 
 #[test]
@@ -1491,7 +1544,10 @@ fn remove_refuses_ids_that_could_name_the_data_folder_and_deletes_nothing() {
             "{bad:?} must be refused as an id"
         );
     }
-    assert!(sentinel.exists(), "nothing outside the bases folder was removed");
+    assert!(
+        sentinel.exists(),
+        "nothing outside the bases folder was removed"
+    );
     assert!(data.exists());
 }
 
@@ -1500,7 +1556,10 @@ fn is_plain_base_id_accepts_real_ids_and_refuses_hostile_ones() {
     assert!(is_plain_base_id("skyrim-se_steam_1.6.1170.0_24914197"));
     assert!(is_plain_base_id("skyrim-se_gog_1.6.1179_nobuild_copied"));
     assert!(is_plain_base_id("nullish_steam_1.0_nobuild"));
-    for bad in ["", ".", "..", "...", ".x", "-x", "x.", "x..", "nul", "con.txt", "com1", "a/b", "a\\b", "Upper", "a b", "a\u{0}b"] {
+    for bad in [
+        "", ".", "..", "...", ".x", "-x", "x.", "x..", "nul", "con.txt", "com1", "a/b", "a\\b",
+        "Upper", "a b", "a\u{0}b",
+    ] {
         assert!(!is_plain_base_id(bad), "{bad:?} must not be a base id");
     }
 }

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { BaseFileProblem, BaseSummary, BuildProgressEvent, VerifyReply } from './api';
 import {
   canRemove,
+  DAMAGED_EXPLANATION,
+  DAMAGED_REMOVE_BODY,
   describeProblem,
   describeUsers,
   diskText,
@@ -161,5 +163,24 @@ describe('build progress', () => {
   it('says how far the hashing has got', () => {
     expect(progressText(progress({ filesDone: 3, filesTotal: 10, bytesHashed: 1024, bytesTotal: 2048 })))
       .toBe('Hashed 3 of 10 files, 1.0 KB of 2.0 KB.');
+  });
+});
+
+describe('damaged records', () => {
+  it('says the record cannot be checked, and that removing it is the way forward', () => {
+    expect(DAMAGED_EXPLANATION).toContain('cannot read this base');
+    expect(DAMAGED_EXPLANATION).toContain('Agora cannot check the base');
+    expect(DAMAGED_EXPLANATION).toContain('build the base again');
+  });
+
+  it('warns that a base on another drive keeps its folder, and where to look', () => {
+    expect(DAMAGED_REMOVE_BODY).toContain('keeps its folder there');
+    expect(DAMAGED_REMOVE_BODY).toContain('AgoraBases');
+    expect(DAMAGED_REMOVE_BODY).toContain('not touched');
+  });
+
+  it('refuses removal of a damaged record that an instance uses, and allows it when none does', () => {
+    expect(canRemove({ usedBy: [] })).toBe(true);
+    expect(canRemove({ usedBy: [{ instanceId: 'a', name: 'Nordic Run' }] })).toBe(false);
   });
 });

@@ -33,9 +33,21 @@ export function describeUsers(usedBy: BaseUser[]): string {
 }
 
 /** Remove is refused while any instance uses the base; the button says so before the click. */
-export function canRemove(base: BaseSummary): boolean {
+export function canRemove(base: { usedBy: BaseUser[] }): boolean {
   return base.usedBy.length === 0;
 }
+
+export const DAMAGED_TITLE = 'Damaged base record';
+
+/** What a damaged record means for the user, in plain words. Shown on its card. */
+export const DAMAGED_EXPLANATION = 'Agora cannot read this base\'s record file, so it does not know which game or version '
+  + 'the base is for, or where its folder is. Agora cannot check the base. Removing it deletes the record, and you can build '
+  + 'the base again afterwards if you still need it.';
+
+/** What removing a damaged record deletes. Only the folder inside Agora's bases folder can be found. */
+export const DAMAGED_REMOVE_BODY = 'Its record file is deleted, and its folder too if it is inside the Agora bases folder. '
+  + 'A base built on another drive keeps its folder there: look for an AgoraBases folder on that drive and delete it yourself. '
+  + 'The game in your store is not touched.';
 
 export function diskText(base: BaseSummary): string {
   if (base.mode === 'copied') {

@@ -40,8 +40,24 @@ export interface BaseSummary {
   usedBy: BaseUser[];
 }
 
+/**
+ * A base record the backend cannot read. Its game, version and folder are unknown, so it cannot be
+ * checked; it can be listed, and removed once no instance uses it.
+ */
+export interface DamagedBaseSummary {
+  baseId: string;
+  /** The record's file, so the user can see what Agora could not read. */
+  manifestPath: string;
+  /** Why the record cannot be used: the file and the cause. */
+  error: string;
+  /** The instances pinned to this base. Removing the base is refused while this is not empty. */
+  usedBy: BaseUser[];
+}
+
 export interface BasesList {
   bases: BaseSummary[];
+  /** Records that cannot be read. Listed for every game, because a damaged record does not say which game it is for. */
+  damaged: DamagedBaseSummary[];
 }
 
 export type BuildReply =
@@ -122,6 +138,15 @@ function isBaseSummary(value: unknown): value is BaseSummary {
     && value.usedBy.every(isBaseUser);
 }
 
+function isDamagedBaseSummary(value: unknown): value is DamagedBaseSummary {
+  return isObj(value)
+    && isStr(value.baseId)
+    && isStr(value.manifestPath)
+    && isStr(value.error)
+    && Array.isArray(value.usedBy)
+    && value.usedBy.every(isBaseUser);
+}
+
 function isBuildReply(value: unknown): value is BuildReply {
   if (!isObj(value)) return false;
   if (value.status === 'built') {
@@ -171,10 +196,14 @@ function reject(command: string): never {
 // Commands
 // ---------------------------------------------------------------------------
 
-/** The bases built for one game. Rejects if the reply is not a list of bases. */
+/** The bases built for one game, and the records that cannot be read. Rejects if the reply is not that shape. */
 export async function listBases(gameId: string): Promise<BasesList> {
   const reply: unknown = await invoke<unknown>('games_base_list', { gameId });
-  if (!isObj(reply) || !Array.isArray(reply.bases) || !reply.bases.every(isBaseSummary)) {
+  if (
+    !isObj(reply)
+    || !Array.isArray(reply.bases) || !reply.bases.every(isBaseSummary)
+    || !Array.isArray(reply.damaged) || !reply.damaged.every(isDamagedBaseSummary)
+  ) {
     reject('games_base_list');
   }
   return reply as unknown as BasesList;
