@@ -134,6 +134,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "agora-core",
+ "agora-game-api",
  "agora-game-creation",
  "agora-game-minecraft",
  "agora-plugin-api",

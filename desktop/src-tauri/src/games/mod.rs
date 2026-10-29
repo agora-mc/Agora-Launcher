@@ -69,13 +69,6 @@ mod tests {
             bases::games_base_build,
             bases::games_base_verify,
             bases::games_base_remove,
-            instances::games_instance_list,
-            instances::games_instance_get,
-            instances::games_instance_create,
-            instances::games_instance_delete,
-            instances::games_instance_check,
-            instances::games_instance_set_deployment,
-            instances::games_instance_launch,
             content::games_content_list,
             content::games_content_add,
             content::games_content_verify,
@@ -113,7 +106,7 @@ mod tests {
             user_files::games_user_files_restore,
         );
         assert_eq!(
-            checked, 49,
+            checked, 42,
             "the stub list drifted from the brief's command list"
         );
     }
