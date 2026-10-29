@@ -291,6 +291,19 @@ test.describe('Import tab', () => {
     await expect(page.getByRole('button', { name: 'Look again' })).toBeEnabled();
   });
 
+  test('a folder picker that fails says so instead of looking like a cancelled pick', async ({ page }) => {
+    await boot(
+      page,
+      [{ command: 'pick_directory', error: { code: 'picker_failed', message: 'The folder picker could not open.' } }],
+      { games_import_mo2_scan: { setups: [], warnings: [] } },
+    );
+
+    await sidebarNav(page).getByRole('button', { name: 'Import' }).click();
+    await expect(page.getByTestId('import-empty')).toBeVisible();
+    await page.getByRole('button', { name: 'Choose a setup folder…' }).click();
+    await expect(page.getByRole('alert')).toContainText('The folder picker could not open.');
+  });
+
   test('a profile from another game is previewed but cannot be imported here', async ({ page }) => {
     const fallout = {
       ...plan,
@@ -328,7 +341,7 @@ test.describe('Library curated items', () => {
             ...catalogPlan,
             contentItemId: 'content-1',
             mountPath: 'Data',
-            size: 2097152,
+            storedSize: 2097152,
             hash: verifiedHash,
           },
         },
@@ -361,7 +374,7 @@ test.describe('Library curated items', () => {
             ...catalogPlan,
             contentItemId: 'content-2',
             mountPath: 'Data',
-            size: 2097152,
+            storedSize: 2097152,
             hash: unverifiedHash,
           },
         },
@@ -375,7 +388,7 @@ test.describe('Library curated items', () => {
     await expect(page.getByTestId('catalog-hash')).not.toContainText('Verified:');
   });
 
-  test('an archive with an installer opens the FOMOD wizard from its own folder', async ({ page }) => {
+  test('an archive with an installer opens the FOMOD wizard for that archive', async ({ page }) => {
     await boot(
       page,
       [
@@ -386,22 +399,38 @@ test.describe('Library curated items', () => {
             state: 'needs_installer',
             ...catalogPlan,
             contentItemId: 'content-3',
-            size: 2097152,
+            storedSize: 2097152,
             hash: verifiedHash,
             reason: 'The archive has a FOMOD installer.',
             topLevel: ['fomod', 'Data'],
           },
         },
       ],
-      { games_catalog_list: catalogListing },
+      {
+        games_catalog_list: catalogListing,
+        // The wizard reads its installer when it opens; an empty step list is enough to mount it.
+        games_fomod_show: {
+          installer: {
+            itemId: 'content-3',
+            title: 'SKSE64',
+            author: null,
+            version: null,
+            description: null,
+            requires: null,
+            alwaysInstalledCount: 0,
+            conditionalInstallCount: 0,
+            steps: [],
+          },
+          suggestedChoices: null,
+        },
+      },
     );
 
     await sidebarNav(page).getByRole('button', { name: 'Library' }).click();
     await page.getByTestId('catalog-entry').getByRole('button', { name: 'Install', exact: true }).click();
     await expect(page.getByTestId('catalog-needs-installer')).toContainText('has an installer with questions');
-    // The content slice's wizard placeholder is mounted in place: data-slice is "fomod".
-    await expect(page.getByTestId('game-slot-placeholder').filter({ hasText: 'Installer options (content-3)' }))
-      .toHaveAttribute('data-slice', 'fomod');
+    // The content slice's real wizard is mounted in place, in its own dialog.
+    await expect(page.getByTestId('fomod-wizard')).toBeVisible();
   });
 
   test('an empty catalog and an instance-less game each say what to do next', async ({ page }) => {

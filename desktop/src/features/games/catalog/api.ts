@@ -73,11 +73,11 @@ export interface CatalogPlan {
 export type CatalogInstallReply =
   | ({ state: 'dry_run' } & CatalogPlan)
   | ({ state: 'already_installed'; installedRelease: string | null; sameRelease: boolean } & CatalogPlan)
-  | ({ state: 'placed'; contentItemId: string; mountPath: string; size: number; hash: CatalogHash } & CatalogPlan)
+  | ({ state: 'placed'; contentItemId: string; mountPath: string; storedSize: number; hash: CatalogHash } & CatalogPlan)
   | ({
       state: 'needs_installer';
       contentItemId: string;
-      size: number;
+      storedSize: number;
       hash: CatalogHash;
       reason: string;
       topLevel: string[];

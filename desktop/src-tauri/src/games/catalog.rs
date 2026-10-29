@@ -222,7 +222,9 @@ pub struct PlacedDto {
     pub plan: PlanDto,
     pub content_item_id: String,
     pub mount_path: String,
-    pub size: u64,
+    /// The stored archive's size. Named apart from the plan's download `size`: both are flattened
+    /// into one JSON object, and a repeated key would silently replace the plan's value.
+    pub stored_size: u64,
     pub hash: HashDto,
 }
 
@@ -234,7 +236,8 @@ pub struct NeedsInstallerDto {
     #[serde(flatten)]
     pub plan: PlanDto,
     pub content_item_id: String,
-    pub size: u64,
+    /// The stored archive's size (see `PlacedDto::stored_size`).
+    pub stored_size: u64,
     pub hash: HashDto,
     pub reason: String,
     pub top_level: Vec<String>,
@@ -316,7 +319,7 @@ impl From<&InstallReport> for CatalogInstallReply {
                 plan,
                 content_item_id: content_item_id.clone(),
                 mount_path: mount_path.clone(),
-                size: *size,
+                stored_size: *size,
                 hash: HashDto::from(hash),
             }),
             InstallState::NeedsInstaller {
@@ -329,7 +332,7 @@ impl From<&InstallReport> for CatalogInstallReply {
             } => CatalogInstallReply::NeedsInstaller(NeedsInstallerDto {
                 plan,
                 content_item_id: content_item_id.clone(),
-                size: *size,
+                stored_size: *size,
                 hash: HashDto::from(hash),
                 reason: reason.clone(),
                 top_level: top_level.clone(),
@@ -478,12 +481,18 @@ mod tests {
             },
             content_item_id: "c-1".into(),
             mount_path: "Data".into(),
-            size: 10,
+            stored_size: 20,
             hash,
         }))
         .unwrap();
         assert_eq!(value["state"], "placed");
         assert_eq!(value["itemName"], "SKSE");
+        // The download size and the stored size are different numbers and both survive.
+        assert_eq!(
+            value["size"], 10,
+            "the plan's download size is not replaced"
+        );
+        assert_eq!(value["storedSize"], 20);
         assert_eq!(value["hash"]["verified"], false);
         assert_eq!(
             value["hash"]["basis"],

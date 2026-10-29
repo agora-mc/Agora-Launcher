@@ -155,7 +155,7 @@ pub struct Mo2ImportRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Mo2ImportReply {
     Plan(Box<PlanDto>),
-    Run(RunDto),
+    Run(Box<RunDto>),
 }
 
 /// Progress of a long import, sent as the `games-import-progress` event.
@@ -211,7 +211,7 @@ pub async fn games_import_mo2(
             },
         )
         .map_err(core_failed)?;
-        Ok(Mo2ImportReply::Run(RunDto::from(&report)))
+        Ok(Mo2ImportReply::Run(Box::new(RunDto::from(&report))))
     })
     .await
     .map_err(|_| GamesError::new(TASK_FAILED, "Importing the setup did not finish."))?

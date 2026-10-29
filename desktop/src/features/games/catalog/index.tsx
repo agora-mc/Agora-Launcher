@@ -140,6 +140,7 @@ export function LibraryCatalogSection({ gameId }: { gameId: string }) {
                   key={entry.id}
                   entry={entry}
                   canInstall={instanceId !== ''}
+                  instanceId={instanceId}
                   result={results[entry.id]}
                   onPreview={() => act(entry, true)}
                   onInstall={() => act(entry, false)}
@@ -156,12 +157,14 @@ export function LibraryCatalogSection({ gameId }: { gameId: string }) {
 interface CatalogRowProps {
   entry: CatalogEntry;
   canInstall: boolean;
+  /** The instance the entry installs into; a FOMOD install adds its result to the same one. */
+  instanceId: string;
   result: EntryState | undefined;
   onPreview: () => void;
   onInstall: () => void;
 }
 
-function CatalogRow({ entry, canInstall, result, onPreview, onInstall }: CatalogRowProps) {
+function CatalogRow({ entry, canInstall, instanceId, result, onPreview, onInstall }: CatalogRowProps) {
   const busy = result?.status === 'busy';
   const previewing = result?.status === 'busy' && result.dryRun;
   const installing = result?.status === 'busy' && !result.dryRun;
@@ -208,12 +211,15 @@ function CatalogRow({ entry, canInstall, result, onPreview, onInstall }: Catalog
         </p>
       )}
 
-      {result?.status === 'done' && <CatalogResult reply={result.reply} />}
+      {result?.status === 'done' && <CatalogResult reply={result.reply} instanceId={instanceId} />}
     </li>
   );
 }
 
-function CatalogResult({ reply }: { reply: CatalogInstallReply }) {
+function CatalogResult({ reply, instanceId }: { reply: CatalogInstallReply; instanceId: string }) {
+  // The wizard's state. This component only renders once the install is done, and a new install
+  // unmounts it first, so each run starts with the wizard open.
+  const [wizard, setWizard] = useState<'open' | 'closed' | 'installed'>('open');
   const size = reply.size !== null ? ` (${formatBytes(reply.size)})` : '';
   const frameworkNotes = reply.frameworks.map((framework) =>
     framework.foundVersion
@@ -270,7 +276,23 @@ function CatalogResult({ reply }: { reply: CatalogInstallReply }) {
           <p>
             {reply.itemName} has an installer with questions. Answer them to finish the install. {reply.reason}
           </p>
-          <FomodWizard contentId={reply.contentItemId} />
+          {wizard === 'open' && (
+            <FomodWizard
+              contentId={reply.contentItemId}
+              instanceId={instanceId}
+              onClose={() => setWizard('closed')}
+              onInstalled={() => setWizard('installed')}
+            />
+          )}
+          {wizard === 'closed' && (
+            <p data-testid="catalog-installer-closed">
+              The installer was closed. The archive stays in your content library, and nothing has been added to the
+              instance yet.
+            </p>
+          )}
+          {wizard === 'installed' && (
+            <p data-testid="catalog-installer-done">The installer finished. The wizard reports what was added.</p>
+          )}
         </div>
       );
   }

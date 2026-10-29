@@ -88,9 +88,10 @@ export function GameImportPage({ gameId }: { gameId: string }) {
 
   const pickFolder = async () => {
     setPickError(null);
-    const folder = await pickDirectory('Choose the folder that holds ModOrganizer.ini').catch(() => null);
-    if (!folder) return;
     try {
+      // The picker answers null only when the user cancels; a failed picker rejects and is shown.
+      const folder = await pickDirectory('Choose the folder that holds ModOrganizer.ini');
+      if (!folder) return;
       const reply = await scanMo2Setups(folder);
       const [only] = reply.setups;
       if (!only) {
