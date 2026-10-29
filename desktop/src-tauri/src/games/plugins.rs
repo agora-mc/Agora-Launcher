@@ -1,54 +1,59 @@
-//! Plugins: an instance's plugin list, its load order, locks and checks (MASTER_SPEC §26.6), and
-//! the instance's INI files and save choice (§26.7). Owned by the `plugins` slice.
+//! Plugins: an instance's plugin list, its load order, locks and checks (MASTER_SPEC §26.6). Owned
+//! by the `plugins` slice. The INI and saves commands (§26.7) are in `ini_saves.rs`.
 //!
-//! Each command is an adapter over `agora_core::game_load_order`, `game_plugins`, `game_ini` and
-//! `game_saves`: the same functions `agora games instance plugins|ini|saves` calls, so the desktop
-//! and the CLI cannot disagree about a plugin's place or a key's value.
+//! Each command is an adapter over `agora_core::game_load_order` and `game_plugins`: the same
+//! functions `agora games instance plugins` calls, so the desktop and the CLI cannot disagree about
+//! a plugin's place.
 //!
 //! A core error reaches the user as its message, which core writes for people already.
 
 use agora_core::ctx::Ctx;
-use agora_core::game_instance::{self, SavesChoice};
-use agora_core::game_ini::{self, IniEntry, IniSource};
 use agora_core::game_load_order::{
     self as load_order, Finding, LoadOrder, LoadOrderEntry, MoveReport, MoveTarget, SortReport,
 };
 use agora_core::game_plugins;
-use agora_core::game_saves::{self, SaveFolder, SavesChange, SettingChange};
 use serde::Serialize;
 
 use super::error::{GamesError, CORE_FAILED, TASK_FAILED};
 
-/// The request cannot be done as asked: a save choice that is neither `own` nor `shared`. It is
-/// not a core code, so it is named here rather than added to `error.rs`.
-const INVALID_REQUEST: &str = "invalid_request";
-
-fn core_failed(error: impl std::fmt::Display) -> GamesError {
+pub(super) fn core_failed(error: impl std::fmt::Display) -> GamesError {
     GamesError::new(CORE_FAILED, error.to_string())
 }
 
 /// Binds the instance's game definition to `$def`, or returns the reason there is none. A macro
 /// because the definition's type lives in `agora_game_api`, which this crate does not depend on:
-/// each command binds it here and passes the binding on to core.
+/// each command binds it here and passes the binding on to core. `ini_saves` uses it too, so every
+/// path here is absolute: a macro's items resolve where it is used, not where it is written.
 macro_rules! game_definition {
     ($ctx:expr, $instance_id:expr, $def:ident) => {
-        let record = game_instance::get($ctx, $instance_id)
-            .map_err(core_failed)?
+        let record = agora_core::game_instance::get($ctx, $instance_id)
+            .map_err(crate::games::plugins::core_failed)?
             .ok_or_else(|| {
-                GamesError::new(CORE_FAILED, format!("Instance '{}' was not found.", $instance_id))
+                crate::games::error::GamesError::new(
+                    crate::games::error::CORE_FAILED,
+                    format!("Instance '{}' was not found.", $instance_id),
+                )
             })?;
         let $def = $ctx.games.game(&record.game).ok_or_else(|| {
-            GamesError::new(
-                CORE_FAILED,
-                format!("Agora does not know the game for instance '{}'.", $instance_id),
+            crate::games::error::GamesError::new(
+                crate::games::error::CORE_FAILED,
+                format!(
+                    "Agora does not know the game for instance '{}'.",
+                    $instance_id
+                ),
             )
         })?;
     };
 }
+pub(super) use game_definition;
 
 /// Runs `work` on a blocking thread with the core context. Every command here reads or writes
 /// files, so none of them runs on the async thread.
-async fn run_blocking<T, F>(app: tauri::AppHandle, what: &'static str, work: F) -> Result<T, GamesError>
+pub(super) async fn run_blocking<T, F>(
+    app: tauri::AppHandle,
+    what: &'static str,
+    work: F,
+) -> Result<T, GamesError>
 where
     T: Send + 'static,
     F: FnOnce(Ctx) -> Result<T, GamesError> + Send + 'static,
@@ -221,7 +226,10 @@ pub struct SortChange {
 
 /// The instance's plugins in load order, with the findings the game's rules give.
 #[tauri::command]
-pub async fn games_plugins_list(app: tauri::AppHandle, instance_id: String) -> Result<PluginsView, GamesError> {
+pub async fn games_plugins_list(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> Result<PluginsView, GamesError> {
     run_blocking(app, "Reading the plugin list", move |ctx| {
         game_definition!(&ctx, &instance_id, definition);
         if definition.plugin_list.is_none() {
@@ -243,7 +251,8 @@ pub async fn games_plugins_set_active(
 ) -> Result<PluginChange, GamesError> {
     run_blocking(app, "Changing the plugin", move |ctx| {
         game_definition!(&ctx, &instance_id, definition);
-        let changed = game_plugins::set_active(&ctx, &instance_id, definition, &plugin, active).map_err(core_failed)?;
+        let changed = game_plugins::set_active(&ctx, &instance_id, definition, &plugin, active)
+            .map_err(core_failed)?;
         let order = load_order::order(&ctx, &instance_id, definition).map_err(core_failed)?;
         Ok(PluginChange {
             changed,
@@ -263,7 +272,8 @@ pub async fn games_plugins_set_locked(
 ) -> Result<PluginChange, GamesError> {
     run_blocking(app, "Changing the lock", move |ctx| {
         game_definition!(&ctx, &instance_id, definition);
-        let changed = game_plugins::set_locked(&ctx, &instance_id, definition, &plugin, locked).map_err(core_failed)?;
+        let changed = game_plugins::set_locked(&ctx, &instance_id, definition, &plugin, locked)
+            .map_err(core_failed)?;
         let order = load_order::order(&ctx, &instance_id, definition).map_err(core_failed)?;
         Ok(PluginChange {
             changed,
@@ -283,8 +293,14 @@ pub async fn games_plugins_move(
 ) -> Result<MoveChange, GamesError> {
     run_blocking(app, "Moving the plugin", move |ctx| {
         game_definition!(&ctx, &instance_id, definition);
-        let report = load_order::move_plugin(&ctx, &instance_id, definition, &plugin, &MoveTarget::Position(to))
-            .map_err(core_failed)?;
+        let report = load_order::move_plugin(
+            &ctx,
+            &instance_id,
+            definition,
+            &plugin,
+            &MoveTarget::Position(to),
+        )
+        .map_err(core_failed)?;
         let order = load_order::order(&ctx, &instance_id, definition).map_err(core_failed)?;
         Ok(MoveChange {
             report,
@@ -304,7 +320,8 @@ pub async fn games_plugins_sort(
 ) -> Result<SortChange, GamesError> {
     run_blocking(app, "Sorting the plugins", move |ctx| {
         game_definition!(&ctx, &instance_id, definition);
-        let report = load_order::sort(&ctx, &instance_id, definition, dry_run).map_err(core_failed)?;
+        let report =
+            load_order::sort(&ctx, &instance_id, definition, dry_run).map_err(core_failed)?;
         let order = load_order::order(&ctx, &instance_id, definition).map_err(core_failed)?;
         Ok(SortChange {
             report,
@@ -316,7 +333,10 @@ pub async fn games_plugins_sort(
 
 /// Check the load order again and report its findings. Read only.
 #[tauri::command]
-pub async fn games_plugins_check(app: tauri::AppHandle, instance_id: String) -> Result<CheckView, GamesError> {
+pub async fn games_plugins_check(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> Result<CheckView, GamesError> {
     run_blocking(app, "Checking the plugins", move |ctx| {
         game_definition!(&ctx, &instance_id, definition);
         if definition.plugin_list.is_none() {
@@ -343,7 +363,6 @@ mod tests {
     use super::*;
     use agora_core::game_load_order::MasterProblem;
     use agora_core::game_plugins::PluginListError;
-    use std::path::PathBuf;
 
     fn entry(name: &str) -> LoadOrderEntry {
         LoadOrderEntry {
@@ -376,11 +395,21 @@ mod tests {
         skyrim.master = true;
         let mut implicit = entry("Update.esm");
         implicit.implicit = true;
-        let view = PluginsView::from_order(&order(vec![implicit, skyrim, entry("SkyUI.esp")], Vec::new()));
+        let view = PluginsView::from_order(&order(
+            vec![implicit, skyrim, entry("SkyUI.esp")],
+            Vec::new(),
+        ));
 
         assert!(view.supported && view.rules_apply && view.list_exists);
-        let numbered: Vec<(usize, &str)> = view.rows.iter().map(|r| (r.position, r.name.as_str())).collect();
-        assert_eq!(numbered, vec![(1, "Update.esm"), (2, "Skyrim.esm"), (3, "SkyUI.esp")]);
+        let numbered: Vec<(usize, &str)> = view
+            .rows
+            .iter()
+            .map(|r| (r.position, r.name.as_str()))
+            .collect();
+        assert_eq!(
+            numbered,
+            vec![(1, "Update.esm"), (2, "Skyrim.esm"), (3, "SkyUI.esp")]
+        );
         assert!(view.rows[0].implicit);
         assert!(view.rows[1].master);
     }
@@ -397,7 +426,9 @@ mod tests {
         assert_eq!(view.findings.len(), 1);
         assert!(!view.findings[0].refuses_launch);
         assert_eq!(view.findings[0].plugins, vec!["SkyUI.esp".to_string()]);
-        assert!(view.findings[0].message.contains("loads before its master 'Skyrim.esm'"));
+        assert!(view.findings[0]
+            .message
+            .contains("loads before its master 'Skyrim.esm'"));
         assert_eq!(check_status(&view.findings), "warnings");
     }
 
@@ -408,7 +439,10 @@ mod tests {
             master: "Skyrim.esm".to_string(),
             problem: MasterProblem::Missing,
         };
-        let limit = Finding::TooManyFullPlugins { active: 300, limit: 254 };
+        let limit = Finding::TooManyFullPlugins {
+            active: 300,
+            limit: 254,
+        };
         let view = PluginsView::from_order(&order(Vec::new(), vec![missing, limit]));
 
         assert!(view.findings[0].refuses_launch);
@@ -423,7 +457,10 @@ mod tests {
             plugins: vec!["A.esp".to_string(), "B.esp".to_string()],
         };
         let finding = finding_view(&cycle);
-        assert_eq!(finding.plugins, vec!["A.esp".to_string(), "B.esp".to_string()]);
+        assert_eq!(
+            finding.plugins,
+            vec!["A.esp".to_string(), "B.esp".to_string()]
+        );
         assert!(finding.refuses_launch);
     }
 
@@ -453,7 +490,9 @@ mod tests {
     fn a_core_error_reaches_the_user_as_its_message() {
         let error = core_failed(PluginListError::NotInList("SkyUI.esp".to_string()));
         assert_eq!(error.code, CORE_FAILED);
-        assert!(error.message.contains("'SkyUI.esp' is not in the instance's plugin list"));
+        assert!(error
+            .message
+            .contains("'SkyUI.esp' is not in the instance's plugin list"));
         assert_eq!(error.core_code, None);
     }
 
