@@ -125,6 +125,35 @@ pub struct BaseListing {
     pub present: bool,
 }
 
+/// A base the listing found, either readable or damaged. A damaged record is listed rather than
+/// dropped: the user can see it, read why it cannot be used, and remove it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum BaseEntry {
+    Readable(BaseListing),
+    Damaged(DamagedBase),
+}
+
+impl BaseEntry {
+    /// The base's id: from the manifest when it reads, otherwise from the file name.
+    pub fn base_id(&self) -> &str {
+        match self {
+            BaseEntry::Readable(listing) => &listing.manifest.base_id,
+            BaseEntry::Damaged(damaged) => &damaged.base_id,
+        }
+    }
+}
+
+/// A manifest file in the bases folder that cannot be read as a base record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DamagedBase {
+    /// The file name without `.json`. Not checked here; removal checks it.
+    pub base_id: String,
+    pub manifest_path: PathBuf,
+    /// Why the record cannot be used, naming the file and the cause.
+    pub error: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BaseError {
     #[error("install runtime is unknown or unidentified")]
@@ -958,25 +987,77 @@ pub fn verify_base(
 // Listing and removing
 // ---------------------------------------------------------------------------
 
-pub fn list_bases(paths: &AppPaths) -> Vec<BaseListing> {
+/// Every base record in the bases folder. A record that cannot be read is returned as
+/// `BaseEntry::Damaged` with its path and the reason, never dropped. A folder that does not exist
+/// yet has no bases. Any other failure to read the folder is an error: a list that skipped
+/// records silently would hide bases the user needs to repair or remove.
+pub fn list_bases(paths: &AppPaths) -> Result<Vec<BaseEntry>, BaseError> {
     let manifests_dir = paths.base_manifests_dir();
-    let Ok(entries) = std::fs::read_dir(manifests_dir) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(&manifests_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(BaseError::Io(error)),
     };
-    let mut listings = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map(|e| e == "json").unwrap_or(false) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(manifest) = serde_json::from_str::<BaseManifest>(&content) {
-                    let present = manifest.location.exists() && manifest.location.is_dir();
-                    listings.push(BaseListing { manifest, present });
-                }
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension() != Some(std::ffi::OsStr::new("json")) {
+            continue;
+        }
+        let base_id = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match read_manifest_file(&path) {
+            Ok(manifest) => {
+                let present = manifest.location.exists() && manifest.location.is_dir();
+                found.push(BaseEntry::Readable(BaseListing { manifest, present }));
             }
+            Err(error) => found.push(BaseEntry::Damaged(DamagedBase {
+                base_id,
+                manifest_path: path,
+                error,
+            })),
         }
     }
-    listings.sort_by(|a, b| a.manifest.base_id.cmp(&b.manifest.base_id));
-    listings
+    found.sort_by(|a, b| a.base_id().cmp(b.base_id()));
+    Ok(found)
+}
+
+/// Read a manifest file. The error names the file and whether it could not be read or is not a
+/// base record.
+fn read_manifest_file(path: &Path) -> Result<BaseManifest, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("{} cannot be read: {error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("{} is not a valid base record: {error}", path.display()))
+}
+
+/// Whether `base_id` can name a manifest file and a folder directly inside a bases root. Core's
+/// ids are lowercase letters, digits, `.`, `-` and `_`, and start with the game id. `.` and `..`
+/// pass the character test, so the first and last characters are checked too: a leading dot is a
+/// relative path, and Windows drops a trailing dot from a folder name. Windows device names
+/// (`nul`, `con.txt`) are not folders at all.
+pub fn is_plain_base_id(base_id: &str) -> bool {
+    let chars_ok = base_id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'));
+    let starts_ok = base_id
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let ends_ok = base_id.chars().last().is_some_and(|c| c != '.');
+    let stem = base_id.split('.').next().unwrap_or_default();
+    base_id.len() <= 200 && chars_ok && starts_ok && ends_ok && !is_windows_device_name(stem)
+}
+
+fn is_windows_device_name(stem: &str) -> bool {
+    matches!(
+        stem,
+        "con" | "prn" | "aux" | "nul"
+            | "com1" | "com2" | "com3" | "com4" | "com5" | "com6" | "com7" | "com8" | "com9"
+            | "lpt1" | "lpt2" | "lpt3" | "lpt4" | "lpt5" | "lpt6" | "lpt7" | "lpt8" | "lpt9"
+    )
 }
 
 /// Whether `location` can only be a base folder Agora made for `base_id`: a
@@ -1035,6 +1116,11 @@ pub fn instances_pinning_base(paths: &AppPaths, base_id: &str) -> Result<Vec<Str
 }
 
 pub fn remove_base(paths: &AppPaths, base_id: &str) -> Result<(), BaseError> {
+    if !is_plain_base_id(base_id) {
+        return Err(BaseError::Other(format!(
+            "'{base_id}' is not a base id, so nothing was removed."
+        )));
+    }
     let pinning = instances_pinning_base(paths, base_id)?;
     if !pinning.is_empty() {
         return Err(BaseError::InUse { instances: pinning });
@@ -1044,17 +1130,48 @@ pub fn remove_base(paths: &AppPaths, base_id: &str) -> Result<(), BaseError> {
     if !manifest_path.exists() {
         return Err(BaseError::NotFound(base_id.to_string()));
     }
-    let content = std::fs::read_to_string(&manifest_path)?;
-    let manifest: BaseManifest = serde_json::from_str(&content)?;
-    if !is_own_base_folder(paths, &manifest, base_id) {
-        return Err(BaseError::Other(format!(
-            "refusing to remove {}: the manifest for base {base_id} does not point at a base folder Agora made",
-            manifest.location.display()
-        )));
+    match read_manifest_file(&manifest_path) {
+        Ok(manifest) => {
+            if !is_own_base_folder(paths, &manifest, base_id) {
+                return Err(BaseError::Other(format!(
+                    "refusing to remove {}: the manifest for base {base_id} does not point at a base folder Agora made",
+                    manifest.location.display()
+                )));
+            }
+            if manifest.location.exists() {
+                std::fs::remove_dir_all(&manifest.location)?;
+            }
+            let _ = std::fs::remove_file(&manifest_path);
+            Ok(())
+        }
+        // The record is damaged, so there is no recorded location to check. Only the folder the
+        // id names in the data folder's bases folder is removed, and only if it is a plain folder.
+        Err(_) => remove_damaged_base(paths, base_id, &manifest_path),
     }
-    if manifest.location.exists() {
-        std::fs::remove_dir_all(&manifest.location)?;
+}
+
+/// Remove a base whose record cannot be read: the folder the id names in the data folder's bases
+/// folder (if there is one), then the record. A base on another drive keeps its folder under that
+/// drive's `AgoraBases` folder, because a damaged record does not say where that is.
+fn remove_damaged_base(
+    paths: &AppPaths,
+    base_id: &str,
+    manifest_path: &Path,
+) -> Result<(), BaseError> {
+    let folder = paths.bases_dir().join(base_id);
+    match std::fs::symlink_metadata(&folder) {
+        Ok(metadata) => {
+            if is_reparse_point_or_symlink(&metadata) || !metadata.is_dir() {
+                return Err(BaseError::Other(format!(
+                    "refusing to remove {}: it is not a plain folder",
+                    folder.display()
+                )));
+            }
+            std::fs::remove_dir_all(&folder)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(BaseError::Io(error)),
     }
-    let _ = std::fs::remove_file(&manifest_path);
+    std::fs::remove_file(manifest_path)?;
     Ok(())
 }

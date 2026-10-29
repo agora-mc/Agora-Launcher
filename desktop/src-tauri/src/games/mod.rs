@@ -62,10 +62,6 @@ mod tests {
     #[test]
     fn every_stub_fails_loudly_with_not_implemented() {
         let checked = assert_every_stub_fails!(
-            bases::games_base_list,
-            bases::games_base_build,
-            bases::games_base_verify,
-            bases::games_base_remove,
             instances::games_instance_list,
             instances::games_instance_get,
             instances::games_instance_create,
@@ -110,7 +106,7 @@ mod tests {
             user_files::games_user_files_restore,
         );
         assert_eq!(
-            checked, 46,
+            checked, 42,
             "the stub list drifted from the brief's command list"
         );
     }

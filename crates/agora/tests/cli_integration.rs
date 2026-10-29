@@ -3689,6 +3689,29 @@ fn games_base_cli_list_verify_remove() {
 }
 
 #[test]
+fn games_base_cli_lists_damaged_records_with_their_reason() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let manifests = data_dir.join("bases").join("manifests");
+    std::fs::create_dir_all(&manifests).unwrap();
+    let base_id = "skyrim-se_steam_2.0.0_nobuild";
+    std::fs::write(manifests.join(format!("{base_id}.json")), "{ not json").unwrap();
+
+    let output = run_agora(&data_dir, &["games", "base", "list"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(base_id), "the damaged base is listed: {stdout}");
+    assert!(stdout.contains("damaged"), "and says it is damaged: {stdout}");
+    assert!(stdout.contains("is not a valid base record"), "with the reason: {stdout}");
+
+    let json = run_agora_json(&data_dir, &["games", "base", "list"]);
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).expect("valid json array");
+    assert_eq!(value[0]["state"], "damaged");
+    assert_eq!(value[0]["base_id"], base_id);
+    assert!(value[0]["error"].as_str().unwrap().contains("is not a valid base record"));
+}
+
+#[test]
 fn games_content_cli_lifecycle() {
     let (_tmp, data_dir) = temp_data_dir();
 

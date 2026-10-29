@@ -1,9 +1,9 @@
 /**
- * Bases slot owned by the bases slice: the Setup tab's pinned bases.
+ * Bases slot owned by the bases slice: the Setup tab's pinned bases (MASTER_SPEC §26.4).
  */
 
-import { SlotPlaceholder } from '../shared/SlotPlaceholder';
+import { BasesSection } from './BasesSection';
 
 export function SetupBasesSection({ gameId }: { gameId: string }) {
-  return <SlotPlaceholder title={`Pinned bases (${gameId})`} slice="bases" />;
+  return <BasesSection gameId={gameId} />;
 }
