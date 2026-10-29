@@ -863,14 +863,23 @@ mod tests {
             manifest_path: "D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json".into(),
             error: "D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json is not a valid base record: EOF".into(),
         };
-        let summary = summarize_damaged(&record, vec![BaseUser {
-            instance_id: "nordic-run".into(),
-            name: "Nordic Run".into(),
-        }]);
+        let summary = summarize_damaged(
+            &record,
+            vec![BaseUser {
+                instance_id: "nordic-run".into(),
+                name: "Nordic Run".into(),
+            }],
+        );
         let json = serde_json::to_value(&summary).expect("the summary serializes");
         assert_eq!(json["baseId"], "skyrim-se_steam_2.0.0_nobuild");
-        assert_eq!(json["manifestPath"], "D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json");
-        assert!(json["error"].as_str().unwrap().contains("is not a valid base record"));
+        assert_eq!(
+            json["manifestPath"],
+            "D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json"
+        );
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("is not a valid base record"));
         assert_eq!(json["usedBy"][0]["name"], "Nordic Run");
     }
 
