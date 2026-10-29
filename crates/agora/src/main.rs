@@ -5840,22 +5840,34 @@ async fn run_command(
                     }
                 }
                 BaseCmd::List => {
-                    let listings = agora_core::game_base::list_bases(&ctx.paths);
+                    // A damaged record is listed with the reason, not skipped: the user needs to see
+                    // it to remove it. JSON entries carry a `state` of `readable` or `damaged`.
+                    let entries = agora_core::game_base::list_bases(&ctx.paths)?;
                     if json {
-                        println!("{}", serde_json::to_string_pretty(&listings)?);
-                    } else if listings.is_empty() {
+                        println!("{}", serde_json::to_string_pretty(&entries)?);
+                    } else if entries.is_empty() {
                         println!("No pinned bases found.");
                     } else {
-                        for b in listings {
-                            let status = if b.present { "present" } else { "missing" };
-                            println!(
-                                "{} ({}, {}, {} files, {})",
-                                b.manifest.base_id,
-                                b.manifest.mode,
-                                b.manifest.location.display(),
-                                b.manifest.files.len(),
-                                status
-                            );
+                        for entry in entries {
+                            match entry {
+                                agora_core::game_base::BaseEntry::Readable(b) => {
+                                    let status = if b.present { "present" } else { "missing" };
+                                    println!(
+                                        "{} ({}, {}, {} files, {})",
+                                        b.manifest.base_id,
+                                        b.manifest.mode,
+                                        b.manifest.location.display(),
+                                        b.manifest.files.len(),
+                                        status
+                                    );
+                                }
+                                agora_core::game_base::BaseEntry::Damaged(d) => {
+                                    println!(
+                                        "{} (damaged: {}; remove it with `agora games base remove {}`)",
+                                        d.base_id, d.error, d.base_id
+                                    );
+                                }
+                            }
                         }
                     }
                 }

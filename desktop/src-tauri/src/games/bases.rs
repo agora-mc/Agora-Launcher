@@ -13,8 +13,8 @@ use std::time::Instant;
 
 use agora_core::ctx::Ctx;
 use agora_core::game_base::{
-    self, BaseError, BaseManifest, BaseMode, BaseProblem, BaseVerification, BuildOptions,
-    BuildOutcome, BuildProgress, ProblemKind, VerifyDepth,
+    self, BaseEntry, BaseError, BaseManifest, BaseMode, BaseProblem, BaseVerification,
+    BuildOptions, BuildOutcome, BuildProgress, DamagedBase, ProblemKind, VerifyDepth,
 };
 use agora_core::game_instance::{GameInstanceRecord, InstanceError};
 use agora_core::game_registry::IdentifiedInstall;
@@ -54,6 +54,21 @@ pub const BASE_FAILED: &str = "base_failed";
 #[serde(rename_all = "camelCase")]
 pub struct BasesList {
     pub bases: Vec<BaseSummary>,
+    /// Records that cannot be read. They are shown in every game's Setup, because a damaged
+    /// record does not say which game it is for, and they can be removed from any of them.
+    pub damaged: Vec<DamagedBaseSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DamagedBaseSummary {
+    pub base_id: String,
+    /// The record's file, so the user can see what Agora could not read.
+    pub manifest_path: String,
+    /// Why the record cannot be used: the file and the cause.
+    pub error: String,
+    /// The instances pinned to this base. Removing the base is refused while this is not empty.
+    pub used_by: Vec<BaseUser>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -89,8 +104,9 @@ pub struct BaseUser {
     pub name: String,
 }
 
-/// The bases built for one game. A base whose manifest cannot be read is not listed (core does
-/// not report it), so a missing base here is not proof that none exists.
+/// The bases built for one game, and the records that cannot be read. A record that cannot be read
+/// is listed as damaged, never dropped, so every base on disk is either shown or the whole list
+/// fails.
 #[tauri::command]
 pub async fn games_base_list(
     app: tauri::AppHandle,
@@ -100,19 +116,40 @@ pub async fn games_base_list(
         let ctx = crate::core_context(&app)?;
         let names = instance_names(&ctx)?;
         let mut bases = Vec::new();
-        for listing in game_base::list_bases(&ctx.paths) {
-            if listing.manifest.runtime.game.as_str() != game_id {
-                continue;
+        let mut damaged = Vec::new();
+        for entry in game_base::list_bases(&ctx.paths).map_err(base_error)? {
+            match entry {
+                BaseEntry::Readable(listing) => {
+                    if listing.manifest.runtime.game.as_str() != game_id {
+                        continue;
+                    }
+                    let pinning =
+                        game_base::instances_pinning_base(&ctx.paths, &listing.manifest.base_id)
+                            .map_err(base_error)?;
+                    let used_by = named_users(&pinning, &names);
+                    bases.push(summarize(&listing.manifest, listing.present, used_by));
+                }
+                BaseEntry::Damaged(record) => {
+                    let pinning = game_base::instances_pinning_base(&ctx.paths, &record.base_id)
+                        .map_err(base_error)?;
+                    let used_by = named_users(&pinning, &names);
+                    damaged.push(summarize_damaged(&record, used_by));
+                }
             }
-            let pinning = game_base::instances_pinning_base(&ctx.paths, &listing.manifest.base_id)
-                .map_err(base_error)?;
-            let used_by = named_users(&pinning, &names);
-            bases.push(summarize(&listing.manifest, listing.present, used_by));
         }
-        Ok(BasesList { bases })
+        Ok(BasesList { bases, damaged })
     })
     .await
     .map_err(task_failed)?
+}
+
+fn summarize_damaged(record: &DamagedBase, used_by: Vec<BaseUser>) -> DamagedBaseSummary {
+    DamagedBaseSummary {
+        base_id: record.base_id.clone(),
+        manifest_path: record.manifest_path.to_string_lossy().into_owned(),
+        error: record.error.clone(),
+        used_by,
+    }
 }
 
 /// Name every instance in the table once. A table that cannot be read is an error, not "no
@@ -480,18 +517,7 @@ pub async fn games_base_remove(
 /// characters are checked too: a leading dot is a relative path, and Windows drops a trailing dot
 /// from a folder name, which would point the id at a different folder.
 pub fn validate_base_id(base_id: &str) -> Result<(), GamesError> {
-    let chars_ok = base_id
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'));
-    let starts_ok = base_id
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-    let ends_ok = base_id.chars().last().is_some_and(|c| c != '.');
-    let stem = base_id.split('.').next().unwrap_or_default();
-    let plain =
-        base_id.len() <= 200 && chars_ok && starts_ok && ends_ok && !is_windows_device_name(stem);
-    if plain {
+    if game_base::is_plain_base_id(base_id) {
         Ok(())
     } else {
         Err(GamesError::new(
@@ -499,36 +525,6 @@ pub fn validate_base_id(base_id: &str) -> Result<(), GamesError> {
             format!("'{base_id}' is not a base id. Refresh the list and pick a base from it."),
         ))
     }
-}
-
-/// Names Windows gives a device whatever folder they sit in (`nul`, `con.txt`, `com1`). A base
-/// folder with one of these names would not be a folder at all.
-fn is_windows_device_name(stem: &str) -> bool {
-    matches!(
-        stem,
-        "con"
-            | "prn"
-            | "aux"
-            | "nul"
-            | "com1"
-            | "com2"
-            | "com3"
-            | "com4"
-            | "com5"
-            | "com6"
-            | "com7"
-            | "com8"
-            | "com9"
-            | "lpt1"
-            | "lpt2"
-            | "lpt3"
-            | "lpt4"
-            | "lpt5"
-            | "lpt6"
-            | "lpt7"
-            | "lpt8"
-            | "lpt9"
-    )
 }
 
 fn read_manifest(ctx: &Ctx, base_id: &str) -> Result<BaseManifest, GamesError> {
@@ -861,6 +857,24 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_record_keeps_its_path_and_reason_in_the_camel_case_the_ui_reads() {
+        let record = DamagedBase {
+            base_id: "skyrim-se_steam_2.0.0_nobuild".into(),
+            manifest_path: "D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json".into(),
+            error: "D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json is not a valid base record: EOF".into(),
+        };
+        let summary = summarize_damaged(&record, vec![BaseUser {
+            instance_id: "nordic-run".into(),
+            name: "Nordic Run".into(),
+        }]);
+        let json = serde_json::to_value(&summary).expect("the summary serializes");
+        assert_eq!(json["baseId"], "skyrim-se_steam_2.0.0_nobuild");
+        assert_eq!(json["manifestPath"], "D:/Data/bases/manifests/skyrim-se_steam_2.0.0_nobuild.json");
+        assert!(json["error"].as_str().unwrap().contains("is not a valid base record"));
+        assert_eq!(json["usedBy"][0]["name"], "Nordic Run");
+    }
+
+    #[test]
     fn dot_names_and_device_names_are_not_base_ids() {
         // `.` and `..` are made of allowed characters, but name the bases folder itself or its
         // parent. A trailing dot is stripped by Windows, so `skyrim-se.` would name `skyrim-se`.
@@ -913,10 +927,16 @@ mod tests {
             .expect("the Creation Engine package registers");
         let games = builder.build();
 
-        let listings = game_base::list_bases(&paths);
-        assert!(!listings.is_empty(), "the bench root has base manifests");
+        let entries = game_base::list_bases(&paths).expect("the bench root can be listed");
+        assert!(!entries.is_empty(), "the bench root has base manifests");
         let mut checked = 0usize;
-        for listing in listings {
+        for entry in entries {
+            let listing = match entry {
+                BaseEntry::Readable(listing) => listing,
+                BaseEntry::Damaged(record) => {
+                    panic!("a bench base record is damaged: {}", record.error)
+                }
+            };
             // This test registers only the Creation Engine package. A base for another game (the
             // bench root has a Valheim one) has no definition here, so it is named and skipped.
             let Some(definition) = games.game(&listing.manifest.runtime.game) else {
