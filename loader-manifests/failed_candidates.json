@@ -649,6 +649,12 @@
       "first_failed": "2026-10-19T21:07:49Z",
       "last_failed": "2026-10-20T06:25:12Z",
       "status": "retired"
+    },
+    "quilt/1.15/0.31.0-beta.4": {
+      "strikes": 1,
+      "first_failed": "2026-10-29T07:26:29Z",
+      "last_failed": "2026-10-29T07:26:29Z",
+      "status": "failing"
     }
   }
 }
