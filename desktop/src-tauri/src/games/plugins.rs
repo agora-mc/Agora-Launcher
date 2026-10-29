@@ -501,4 +501,104 @@ mod tests {
         let error = core_failed(PluginListError::InstanceRunning("abc".to_string()));
         assert!(error.message.contains("close the game"));
     }
+
+    /// Read-only check against a real MO2 import. Run by hand:
+    /// `cargo test -p agora-desktop --lib real_profile_read_only -- --ignored --nocapture`.
+    ///
+    /// Runs the same core calls as `games_plugins_list` and `games_plugins_check`, and writes no
+    /// plugin, list or state file: no sort, move, lock or set. The data root is opened with
+    /// `CoreContext::for_testing` rather than `initialize`, because `initialize` creates the
+    /// required folders and migrates `local_state.db`. Opening `local_state.db` (already in WAL
+    /// mode) can still create and remove its `-wal` and `-shm` sidecars, which changes the data
+    /// root's folder timestamp but no file in it.
+    #[test]
+    #[ignore = "reads the p3-done data root; run by hand, read only"]
+    fn real_profile_read_only() {
+        let root = std::path::PathBuf::from(r"D:\Agora-bench\p3-done");
+        let instance_id = "grounded-apocalypse-mo2-import-6d97f2";
+        let ctx = agora_core::ctx::CoreContext::for_testing(root)
+            .with_games(std::sync::Arc::new(crate::build_game_registry().build()));
+        let record = agora_core::game_instance::get(&ctx, instance_id)
+            .expect("the instance record reads")
+            .expect("the instance exists");
+        let definition = ctx.games.game(&record.game).expect("the game is known");
+
+        let started = std::time::Instant::now();
+        agora_core::game_deploy::plan(
+            &ctx,
+            instance_id,
+            definition,
+            agora_core::game_deploy::DeployMode::Links,
+        )
+        .expect("the deployment plan reads");
+        let plan_time = started.elapsed();
+
+        let started = std::time::Instant::now();
+        let order = load_order::order(&ctx, instance_id, definition).expect("the load order reads");
+        let view = PluginsView::from_order(&order);
+        let order_time = started.elapsed();
+
+        let started = std::time::Instant::now();
+        let findings: Vec<PluginFinding> = load_order::check(&ctx, instance_id, definition)
+            .expect("the check reads")
+            .iter()
+            .map(finding_view)
+            .collect();
+        let check_time = started.elapsed();
+
+        let rows = &view.rows;
+        let count = |f: fn(&PluginRow) -> bool| rows.iter().filter(|r| f(r)).count();
+        println!(
+            "supported={} rules_apply={} list_exists={}",
+            view.supported, view.rules_apply, view.list_exists
+        );
+        println!(
+            "rows={} implicit={} active={} present={} managed={} locked={} masters={} lights={} header_read={} header_error={}",
+            rows.len(),
+            count(|r| r.implicit),
+            count(|r| r.active),
+            count(|r| r.present),
+            count(|r| r.managed),
+            count(|r| r.locked),
+            count(|r| r.master),
+            count(|r| r.light),
+            count(|r| r.header_read),
+            count(|r| r.header_error.is_some()),
+        );
+        println!(
+            "plan: {:?}  order: {:?}  check: {:?}",
+            plan_time, order_time, check_time
+        );
+        println!("check status: {}", check_status(&findings));
+        let refusing = findings.iter().filter(|f| f.refuses_launch).count();
+        println!(
+            "findings: {} total, {} refuse launch",
+            findings.len(),
+            refusing
+        );
+        for finding in findings.iter().take(15) {
+            println!(
+                "  [{}] {} {:?}",
+                if finding.refuses_launch {
+                    "refuses"
+                } else {
+                    "warns"
+                },
+                finding.message,
+                finding.plugins
+            );
+        }
+        for row in rows.iter().filter(|r| r.header_error.is_some()).take(10) {
+            println!(
+                "  header error {}: {}",
+                row.name,
+                row.header_error.as_deref().unwrap_or("")
+            );
+        }
+        assert!(
+            view.supported && view.list_exists,
+            "the real profile has a plugin list"
+        );
+        assert!(!rows.is_empty(), "the real profile lists plugins");
+    }
 }
