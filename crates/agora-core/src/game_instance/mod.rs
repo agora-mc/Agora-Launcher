@@ -780,13 +780,9 @@ pub fn prepare_launch(
     definition: &GameDefinition,
     launch_anyway: bool,
 ) -> Result<PreparedLaunch, InstanceError> {
-    prepare_launch_with_discovery(
-        ctx,
-        id,
-        definition,
-        launch_anyway,
-        &|| crate::game_discovery::discover_with_folders(&ctx.paths),
-    )
+    prepare_launch_with_discovery(ctx, id, definition, launch_anyway, &|| {
+        crate::game_discovery::discover_with_folders(&ctx.paths)
+    })
 }
 
 /// Prepare launch with a custom discovery function (used for testing unpinned launches).
@@ -1163,13 +1159,9 @@ pub fn launch(
     definition: &GameDefinition,
     launch_anyway: bool,
 ) -> Result<LaunchedInstance, InstanceError> {
-    launch_with_discovery(
-        ctx,
-        id,
-        definition,
-        launch_anyway,
-        &|| crate::game_discovery::discover_with_folders(&ctx.paths),
-    )
+    launch_with_discovery(ctx, id, definition, launch_anyway, &|| {
+        crate::game_discovery::discover_with_folders(&ctx.paths)
+    })
 }
 
 /// Launch with a custom discovery function.
