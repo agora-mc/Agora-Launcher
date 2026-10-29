@@ -337,7 +337,10 @@ pub fn read_package_manifest(archive: &Path) -> LauncherResult<PackageContents> 
         let mut entry = zip
             .by_index(index)
             .map_err(|e| invalid_package(format!("unreadable entry in the package: {e}")))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| invalid_package(format!("unreadable entry in the package: {e}")))?
+            .into_owned();
         if entry.is_dir() {
             continue;
         }
@@ -388,7 +391,11 @@ pub fn read_package_manifest(archive: &Path) -> LauncherResult<PackageContents> 
     if let Some(entrypoint) = &manifest.entrypoint {
         let present = (0..zip.len()).any(|index| {
             zip.by_index(index)
-                .map(|entry| entry.name().replace('\\', "/") == *entrypoint)
+                .map(|entry| {
+                    entry
+                        .name()
+                        .is_ok_and(|name| name.replace('\\', "/") == *entrypoint)
+                })
                 .unwrap_or(false)
         });
         if !present {
@@ -529,7 +536,10 @@ fn extract_into(archive: &Path, staging: &Path) -> LauncherResult<()> {
         let mut entry = zip
             .by_index(index)
             .map_err(|e| invalid_package(format!("unreadable entry in the package: {e}")))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| invalid_package(format!("unreadable entry in the package: {e}")))?
+            .into_owned();
         if entry.is_dir() {
             continue;
         }
@@ -699,8 +709,8 @@ mod tests {
         let mut zip = zip::ZipWriter::new(file);
         // Stored rather than deflated so the expansion-ratio guard does not
         // trip on tiny highly-compressible fixtures.
-        let options =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         for (name, bytes) in files {
             zip.start_file(*name, options).unwrap();
             zip.write_all(bytes).unwrap();

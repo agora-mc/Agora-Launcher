@@ -16,7 +16,7 @@ const CALLOUT_STYLES: Record<GuideCallout['tone'], { box: string; label: string 
   },
 };
 
-function Callout({ callout }: { callout: GuideCallout }) {
+export function Callout({ callout }: { callout: GuideCallout }) {
   const style = CALLOUT_STYLES[callout.tone];
   return (
     <aside className={`mt-4 rounded-lg border p-4 text-sm leading-6 ${style.box}`}>

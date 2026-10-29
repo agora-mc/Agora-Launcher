@@ -137,6 +137,17 @@ pub fn finish_launch(
     outcome: LaunchResult,
     peak_memory_mb: Option<i64>,
 ) -> anyhow::Result<()> {
+    // Add to the lifetime total before closing the row, and only while it is
+    // still open, so finishing the same launch twice cannot count it twice.
+    if let Some(played) = duration_ms.filter(|ms| *ms > 0) {
+        conn.execute(
+            "UPDATE user_instances
+                SET total_play_ms = total_play_ms + ?2
+              WHERE instance_id = (SELECT instance_id FROM launch_history
+                                    WHERE id = ?1 AND outcome IS NULL)",
+            params![id, played],
+        )?;
+    }
     conn.execute(
         "UPDATE launch_history
             SET prep_ms = ?2, duration_ms = ?3, outcome = ?4, peak_memory_mb = ?5
@@ -144,6 +155,18 @@ pub fn finish_launch(
         params![id, prep_ms, duration_ms, outcome.as_str(), peak_memory_mb],
     )?;
     Ok(())
+}
+
+/// Lifetime play time for one instance, in milliseconds. Unlike the history
+/// rows this is never trimmed.
+pub fn total_play_ms(conn: &Connection, instance_id: &str) -> anyhow::Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT total_play_ms FROM user_instances WHERE instance_id = ?1",
+            params![instance_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0))
 }
 
 /// Most recent launches first.
@@ -313,6 +336,27 @@ mod tests {
         let rows = list_history(&conn, "inst", 10).unwrap();
         assert_eq!(rows.len(), 2, "the other instance's run must not appear");
         assert_eq!(rows[0].started_at, "2026-03-01T00:00:00Z");
+    }
+
+    #[test]
+    fn play_time_accumulates_once_per_launch_and_survives_pruning() {
+        let conn = conn();
+        let id = record(&conn, "2026-01-01T00:00:00Z", 1000, 5, LaunchResult::Ok);
+        record(
+            &conn,
+            "2026-01-02T00:00:00Z",
+            1000,
+            5,
+            LaunchResult::Crashed,
+        );
+        assert_eq!(total_play_ms(&conn, "inst").unwrap(), 120_000);
+
+        // A second close of the same launch must not count it again.
+        finish_launch(&conn, id, None, Some(60_000), LaunchResult::Ok, None).unwrap();
+        assert_eq!(total_play_ms(&conn, "inst").unwrap(), 120_000);
+
+        conn.execute("DELETE FROM launch_history", []).unwrap();
+        assert_eq!(total_play_ms(&conn, "inst").unwrap(), 120_000);
     }
 
     #[test]

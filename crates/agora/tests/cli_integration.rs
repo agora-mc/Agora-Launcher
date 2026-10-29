@@ -199,6 +199,16 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "plugin",
     "provider",
     "games",
+    "template",
+    "bisect",
+    "governance",
+    "technic",
+    "backup",
+    "world",
+    "server",
+    "log",
+    "proxy",
+    "skin",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
@@ -210,6 +220,23 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["instance", "repair-loader"],
     &["instance", "recommend-memory"],
     &["instance", "delete"],
+    &["instance", "deleted"],
+    &["instance", "restore"],
+    &["instance", "purge"],
+    &["instance", "health"],
+    &["instance", "revert"],
+    &["instance", "loader-version"],
+    &["instance", "java"],
+    &["instance", "wrapper"],
+    &["instance", "window"],
+    &["mod", "graph"],
+    &["mod", "orphans"],
+    &["mod", "why"],
+    &["mod", "disable-plan"],
+    &["template", "list"],
+    &["template", "create"],
+    &["template", "delete"],
+    &["template", "apply"],
     &["mod", "list"],
     &["mod", "search"],
     &["mod", "install"],
@@ -227,6 +254,28 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["auth", "login"],
     &["auth", "status"],
     &["auth", "logout"],
+    &["auth", "list"],
+    &["auth", "switch"],
+    &["world", "list"],
+    &["world", "rename"],
+    &["world", "copy"],
+    &["world", "delete"],
+    &["world", "export"],
+    &["world", "import"],
+    &["server", "list"],
+    &["server", "add"],
+    &["server", "remove"],
+    &["log", "list"],
+    &["log", "share"],
+    &["proxy", "show"],
+    &["proxy", "set"],
+    &["skin", "show"],
+    &["skin", "wear"],
+    &["skin", "cape"],
+    &["instance", "hooks"],
+    &["instance", "notes"],
+    &["instance", "group"],
+    &["instance", "share"],
     &["runtime", "list"],
     &["runtime", "ensure"],
     &["runtime", "remove-unused"],
@@ -241,14 +290,38 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["crash", "inspect"],
     &["crash", "investigate"],
     &["pack", "install"],
+    &["pack", "export"],
+    &["pack", "review"],
+    &["pack", "import"],
+    &["import", "launchers"],
+    &["import", "plan"],
+    &["import", "run"],
+    &["backup", "export"],
+    &["backup", "import"],
+    &["backup", "prune"],
     &["loadout", "create"],
     &["loadout", "list"],
     &["loadout", "apply"],
+    &["loadout", "update"],
     &["loadout", "delete"],
+    &["bisect", "start"],
+    &["bisect", "status"],
+    &["bisect", "apply"],
+    &["bisect", "good"],
+    &["bisect", "bad"],
+    &["bisect", "back"],
+    &["bisect", "cancel"],
+    &["bisect", "run"],
     &["lockfile", "export"],
     &["lockfile", "verify"],
     &["lockfile", "repair"],
     &["lockfile", "import"],
+    &["instance", "updates"],
+    &["mod", "pin"],
+    &["mod", "unpin"],
+    &["mod", "changelog"],
+    &["pack", "update-preview"],
+    &["pack", "update"],
     &["plugin", "list"],
     &["plugin", "preview"],
     &["plugin", "install"],
@@ -324,6 +397,18 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "import"],
     &["games", "import", "mo2"],
     &["games", "import", "mo2", "scan"],
+    &["plugin", "settings"],
+    &["plugin", "set"],
+    &["governance", "summary"],
+    &["governance", "events"],
+    &["governance", "config"],
+    &["governance", "diagnostics"],
+    &["registry", "under-review"],
+    &["registry", "reviews"],
+    &["registry", "audit-log"],
+    &["registry", "resolutions"],
+    &["technic", "search"],
+    &["technic", "install"],
 ];
 
 // ---------------------------------------------------------------------------
@@ -432,6 +517,7 @@ fn critical_command_flags_remain_in_help() {
             &["mod", "remove"][..],
             &["--remove-anyway", "--abort-conflicts"][..],
         ),
+        (&["mod", "enable"][..], &["--with-deps"][..]),
         (&["mcp", "serve"][..], &["--stdio"][..]),
     ] {
         let mut args = command.to_vec();
@@ -1004,6 +1090,146 @@ fn instance_delete_json_output() {
 }
 
 // ---------------------------------------------------------------------------
+// Recently deleted: list, restore, purge
+// ---------------------------------------------------------------------------
+
+/// Import a small instance, delete it, and return its Recently deleted entry ID.
+fn import_and_delete(data_dir: &Path, name: &str) -> String {
+    let src = tempdir();
+    let instance_src = src.path().join(name);
+    std::fs::create_dir_all(instance_src.join("mods")).unwrap();
+    std::fs::write(instance_src.join("mods").join("a.jar"), b"mod").unwrap();
+    let import = run_agora(data_dir, &["import", &instance_src.to_string_lossy()]);
+    assert!(import.status.success(), "import should succeed");
+    let delete = run_agora(data_dir, &["instance", "delete", name]);
+    assert!(delete.status.success(), "delete should succeed");
+    let listed = assert_json_stdout(&run_agora_json(data_dir, &["instance", "deleted"]));
+    listed
+        .as_array()
+        .expect("instance deleted --json is an array")
+        .iter()
+        .find(|entry| entry["instance_id"] == name)
+        .unwrap_or_else(|| panic!("{name} is not in Recently deleted: {listed}"))["entry_id"]
+        .as_str()
+        .expect("entry_id is a string")
+        .to_string()
+}
+
+#[test]
+fn instance_deleted_lists_nothing_on_a_fresh_data_root() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let json = run_agora_json(&data_dir, &["instance", "deleted"]);
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    assert_eq!(assert_json_stdout(&json), serde_json::json!([]));
+    let human = run_agora(&data_dir, &["instance", "deleted"]);
+    assert!(human.status.success());
+    assert!(String::from_utf8_lossy(&human.stdout).contains("empty"));
+}
+
+#[test]
+fn deleted_instance_is_listed_with_id_name_time_and_size() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "listed-pack");
+
+    let parsed = assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"]));
+    let entry = &parsed[0];
+    assert_eq!(entry["entry_id"], entry_id.as_str());
+    assert_eq!(entry["name"], "listed-pack");
+    assert!(entry["deleted_at"].is_string(), "{entry}");
+    assert!(entry["size_bytes"].as_u64().unwrap_or(0) >= 3, "{entry}");
+
+    let human = run_agora(&data_dir, &["instance", "deleted"]);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains(&entry_id), "{stdout}");
+    assert!(stdout.contains("listed-pack"), "{stdout}");
+    let row = stdout
+        .lines()
+        .find(|line| line.contains("listed-pack"))
+        .unwrap_or_else(|| panic!("no row for listed-pack:\n{stdout}"));
+    assert!(
+        row.trim_end().ends_with(" B") || row.trim_end().ends_with(" KiB"),
+        "a small instance should show its size in B or KiB: {row}"
+    );
+}
+
+#[test]
+fn restore_brings_a_deleted_instance_back_and_empties_the_list() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "restore-me");
+    assert!(!run_agora(&data_dir, &["get-instance", "restore-me"])
+        .status
+        .success());
+
+    let restore = run_agora_json(&data_dir, &["instance", "restore", &entry_id]);
+    assert!(
+        restore.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restore.stderr)
+    );
+    let parsed = assert_json_stdout(&restore);
+    assert_eq!(parsed["status"], "restored");
+    assert_eq!(parsed["entryId"], entry_id.as_str());
+    assert_eq!(parsed["instanceId"], "restore-me");
+    assert_eq!(parsed["renamed"], false);
+
+    assert!(run_agora(&data_dir, &["get-instance", "restore-me"])
+        .status
+        .success());
+    let paths = assert_json_stdout(&run_agora_json(&data_dir, &["paths"]));
+    let mod_file = Path::new(paths["instances"].as_str().unwrap())
+        .join("restore-me")
+        .join("mods")
+        .join("a.jar");
+    assert!(
+        mod_file.is_file(),
+        "the mod file came back with the instance"
+    );
+    assert_eq!(
+        assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"])),
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn restore_refuses_unknown_and_traversal_entry_ids() {
+    let (_tmp, data_dir) = temp_data_dir();
+    for entry in ["no-such-entry", "../../outside", "..\\..\\outside"] {
+        let output = run_agora(&data_dir, &["instance", "restore", entry]);
+        assert!(!output.status.success(), "restore {entry} should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("no longer available"), "{stderr}");
+    }
+}
+
+#[test]
+fn purge_without_yes_refuses_without_a_terminal_and_keeps_the_entry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let entry_id = import_and_delete(&data_dir, "keep-me");
+
+    // The test harness gives the child no terminal, so the prompt cannot run.
+    let output = run_agora(&data_dir, &["instance", "purge", &entry_id]);
+    assert!(!output.status.success(), "purge must not run unconfirmed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--yes"), "{stderr}");
+
+    let listed = assert_json_stdout(&run_agora_json(&data_dir, &["instance", "deleted"]));
+    assert_eq!(listed[0]["entry_id"], entry_id.as_str());
+}
+
+#[test]
+fn purge_unknown_entry_fails_even_with_yes() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["instance", "purge", "no-such-entry", "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No deleted instance"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------
 // Instance rename
 // ---------------------------------------------------------------------------
 
@@ -1411,6 +1637,7 @@ fn create_vanilla_instance(data_dir: &Path, instance_id: &str, version: &str) {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         },
     )
     .unwrap();
@@ -2223,6 +2450,270 @@ fn loadout_apply_json_output() {
 }
 
 #[test]
+fn loadout_apply_saves_an_undo_point_the_snapshot_list_shows() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_minimal_instance(&data_dir, "loadout-undo");
+    run_agora(&data_dir, &["loadout", "create", "loadout-undo", "full"]);
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-undo", "full"]);
+    assert!(
+        output.status.success(),
+        "loadout apply should succeed:
+{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("before-loadout"),
+        "stdout should name the undo point:
+{stdout}"
+    );
+
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-undo"]);
+    let parsed = assert_json_stdout(&list);
+    let snapshots: Vec<serde_json::Value> = serde_json::from_value(parsed).unwrap();
+    assert!(
+        snapshots.iter().any(|s| s["label"] == "before-loadout"),
+        "apply from the CLI must save an undo point: {snapshots:?}"
+    );
+}
+
+#[test]
+fn loadout_apply_refuses_a_locked_instance_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_minimal_instance(&data_dir, "loadout-locked");
+    run_agora(&data_dir, &["loadout", "create", "loadout-locked", "all"]);
+
+    // After the profile was saved, lithium was switched off and the instance locked.
+    let instance_dir = data_dir.join("instances").join("loadout-locked");
+    std::fs::rename(
+        instance_dir.join("mods").join("lithium.jar"),
+        instance_dir.join("mods").join("lithium.jar.disabled"),
+    )
+    .unwrap();
+    let path = instance_dir.join("instance_manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    manifest["is_locked"] = serde_json::json!(true);
+    for entry in manifest["mods"].as_array_mut().unwrap() {
+        if entry["filename"] == "lithium.jar" {
+            entry["enabled"] = serde_json::json!(false);
+        }
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    let manifest_before = std::fs::read_to_string(&path).unwrap();
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-locked", "all"]);
+    assert!(
+        !output.status.success(),
+        "apply to a locked instance must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("This instance is locked"),
+        "stderr should carry the core lock message:
+{stderr}"
+    );
+
+    assert!(
+        instance_dir
+            .join("mods")
+            .join("lithium.jar.disabled")
+            .exists(),
+        "lithium must stay off"
+    );
+    assert!(!instance_dir.join("mods").join("lithium.jar").exists());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        manifest_before,
+        "the manifest must not change"
+    );
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-locked"]);
+    let snapshots: Vec<serde_json::Value> =
+        serde_json::from_value(assert_json_stdout(&list)).unwrap();
+    assert!(snapshots.is_empty(), "a refused apply takes no undo point");
+}
+
+/// An instance whose profile was saved with sodium and lithium, then gained
+/// `newer.jar` (on) after the save, so the profile does not list it.
+fn loadout_instance_with_an_unlisted_mod(data_dir: &std::path::Path, id: &str) {
+    create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar"]);
+    run_agora(data_dir, &["loadout", "create", id, "both"]);
+    create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar", "newer.jar"]);
+}
+
+#[test]
+fn loadout_update_refuses_without_a_terminal_unless_yes_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-update-refused");
+    let profile = data_dir
+        .join("instances")
+        .join("loadout-update-refused")
+        .join(".agora_loadouts")
+        .join("both.json");
+    let before = std::fs::read_to_string(&profile).unwrap();
+
+    // Tests have no terminal, so nobody can be asked: the changes are named and
+    // the command refuses.
+    let output = run_agora(
+        &data_dir,
+        &["loadout", "update", "loadout-update-refused", "both"],
+    );
+    assert!(!output.status.success(), "update without --yes must refuse");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("add newer.jar (on)"), "stderr: {stderr}");
+    assert!(stderr.contains("--yes"), "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&profile).unwrap(),
+        before,
+        "a refused update leaves the profile as it was"
+    );
+}
+
+#[test]
+fn loadout_update_with_yes_records_the_setup_so_apply_stops_asking() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-update-yes");
+
+    let output = run_agora_json(
+        &data_dir,
+        &["loadout", "update", "loadout-update-yes", "both", "--yes"],
+    );
+    let parsed = assert_json_stdout(&output);
+    assert_eq!(parsed["status"], "updated", "{parsed}");
+    assert_eq!(parsed["changes"][0]["filename"], "newer.jar", "{parsed}");
+
+    // Apply no longer needs --others: the profile now lists newer.jar.
+    let apply = run_agora(
+        &data_dir,
+        &["loadout", "apply", "loadout-update-yes", "both"],
+    );
+    assert!(
+        apply.status.success(),
+        "apply after an update should not ask: {}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+
+    // And a second update with nothing new says so and writes nothing.
+    let again = run_agora(
+        &data_dir,
+        &["loadout", "update", "loadout-update-yes", "both", "--yes"],
+    );
+    assert!(again.status.success());
+    assert!(String::from_utf8_lossy(&again.stdout).contains("Nothing to save"));
+}
+
+#[test]
+fn loadout_apply_refuses_unlisted_mods_without_a_choice_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-unlisted");
+    let mods = data_dir
+        .join("instances")
+        .join("loadout-unlisted")
+        .join("mods");
+
+    let output = run_agora(&data_dir, &["loadout", "apply", "loadout-unlisted", "both"]);
+    assert!(
+        !output.status.success(),
+        "apply must not choose for the user when mods are unlisted"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("newer.jar"),
+        "stderr should name the mod:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--others"),
+        "stderr should name the flag:\n{stderr}"
+    );
+    assert!(
+        mods.join("newer.jar").exists(),
+        "a refused apply changes nothing"
+    );
+
+    let list = run_agora_json(&data_dir, &["snapshots", "list", "loadout-unlisted"]);
+    let snapshots: Vec<serde_json::Value> =
+        serde_json::from_value(assert_json_stdout(&list)).unwrap();
+    assert!(snapshots.is_empty(), "a refused apply takes no undo point");
+}
+
+#[test]
+fn loadout_apply_others_off_switches_the_unlisted_mod_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-off");
+    let mods = data_dir.join("instances").join("loadout-off").join("mods");
+
+    let output = run_agora(
+        &data_dir,
+        &["loadout", "apply", "loadout-off", "both", "--others", "off"],
+    );
+    assert!(
+        output.status.success(),
+        "apply --others off should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        mods.join("newer.jar.disabled").exists(),
+        "off switches it off"
+    );
+    assert!(mods.join("sodium.jar").exists());
+    assert!(mods.join("lithium.jar").exists());
+}
+
+#[test]
+fn loadout_apply_others_keep_leaves_the_unlisted_mod_on() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-keep");
+    let mods = data_dir.join("instances").join("loadout-keep").join("mods");
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "loadout",
+            "apply",
+            "loadout-keep",
+            "both",
+            "--others",
+            "keep",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "apply --others keep should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(mods.join("newer.jar").exists(), "keep leaves it on");
+    assert!(!mods.join("newer.jar.disabled").exists());
+}
+
+#[test]
+fn loadout_apply_rejects_an_unknown_others_value() {
+    let (_tmp, data_dir) = temp_data_dir();
+    loadout_instance_with_an_unlisted_mod(&data_dir, "loadout-bad-choice");
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "loadout",
+            "apply",
+            "loadout-bad-choice",
+            "both",
+            "--others",
+            "maybe",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "a value that is not keep or off is refused"
+    );
+    let mods = data_dir
+        .join("instances")
+        .join("loadout-bad-choice")
+        .join("mods");
+    assert!(mods.join("newer.jar").exists());
+}
+
+#[test]
 fn loadout_delete_succeeds() {
     let (_tmp, data_dir) = temp_data_dir();
     create_minimal_instance(&data_dir, "loadout-del");
@@ -2345,6 +2836,7 @@ fn create_loader_instance(data_dir: &std::path::Path, id: &str, mod_names: &[&st
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         },
     )
     .unwrap();
@@ -4532,4 +5024,1536 @@ fn games_catalog_install_refuses_an_unknown_entry_or_instance_before_any_downloa
         !String::from_utf8_lossy(&unknown_instance.stdout).contains("Downloading"),
         "nothing is announced for a download that cannot start"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Updates, pins, changelogs and pack updates
+// ---------------------------------------------------------------------------
+
+/// The manifest entry for one installed file, as the instance records it.
+fn manifest_entry(data_dir: &Path, instance: &str, file: &str) -> serde_json::Value {
+    let path = data_dir
+        .join("instances")
+        .join(instance)
+        .join("instance_manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    // A manifest Agora has written keeps the Minecraft fields under "minecraft"; one a test wrote
+    // by hand keeps them at the top.
+    let mods = if manifest["minecraft"]["mods"].is_array() {
+        &manifest["minecraft"]["mods"]
+    } else {
+        &manifest["mods"]
+    };
+    mods.as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["filename"] == file)
+        .cloned()
+        .unwrap_or_else(|| panic!("{file} is not in the manifest"))
+}
+
+/// A minimal .mrpack for a 1.21 Fabric instance: one config override, no jars.
+fn write_test_mrpack(path: &Path, config_body: &str) {
+    use zip::write::SimpleFileOptions;
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = SimpleFileOptions::default();
+    let index = serde_json::json!({
+        "formatVersion": 1,
+        "game": "minecraft",
+        "versionId": "2.0.0",
+        "name": "Updates Test Pack",
+        "dependencies": { "minecraft": "1.21", "fabric-loader": "0.16.0" },
+        "files": [],
+    });
+    zip.start_file("modrinth.index.json", options).unwrap();
+    zip.write_all(index.to_string().as_bytes()).unwrap();
+    zip.start_file("overrides/config/updates-test.toml", options)
+        .unwrap();
+    zip.write_all(config_body.as_bytes()).unwrap();
+    zip.finish().unwrap();
+}
+
+#[test]
+fn instance_updates_reports_nothing_for_hand_installed_mods() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "upd-none", &["manual.jar"]);
+
+    let output = run_agora(&data_dir, &["instance", "updates", "upd-none"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("No updates are available for 'upd-none'"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn instance_updates_json_is_an_empty_list_when_nothing_is_newer() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "upd-json", &["manual.jar"]);
+
+    let output = run_agora_json(&data_dir, &["instance", "updates", "upd-json"]);
+    assert!(output.status.success());
+    assert_eq!(assert_json_stdout(&output), serde_json::json!([]));
+}
+
+#[test]
+fn instance_updates_apply_with_nothing_to_apply_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "upd-apply-none", &["manual.jar"]);
+
+    let output = run_agora(
+        &data_dir,
+        &["instance", "updates", "upd-apply-none", "--apply"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("No updates to apply"), "{stdout}");
+}
+
+#[test]
+fn instance_updates_refuses_an_unknown_instance() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    let output = run_agora(&data_dir, &["instance", "updates", "no-such-instance"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("'no-such-instance' not found"),
+        "stderr should name the instance:\n{stderr}"
+    );
+}
+
+#[test]
+fn instance_updates_yes_without_apply_is_refused_by_the_parser() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "upd-yes", &["manual.jar"]);
+
+    let output = run_agora(&data_dir, &["instance", "updates", "upd-yes", "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--apply"), "{stderr}");
+}
+
+#[test]
+fn mod_pin_and_unpin_record_the_choice_in_the_manifest() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pin-round", &["sodium.jar"]);
+
+    let pin = run_agora(&data_dir, &["mod", "pin", "pin-round", "sodium.jar"]);
+    assert!(
+        pin.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pin.stderr)
+    );
+    assert_eq!(
+        manifest_entry(&data_dir, "pin-round", "sodium.jar")["update_pinned"],
+        true
+    );
+
+    let unpin = run_agora(&data_dir, &["mod", "unpin", "pin-round", "sodium.jar"]);
+    assert!(unpin.status.success());
+    assert_eq!(
+        manifest_entry(&data_dir, "pin-round", "sodium.jar")["update_pinned"],
+        false
+    );
+}
+
+#[test]
+fn mod_pin_unknown_file_fails_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pin-ghost", &["sodium.jar"]);
+
+    let output = run_agora(&data_dir, &["mod", "pin", "pin-ghost", "ghost.jar"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ghost.jar") && stderr.contains("not installed"),
+        "stderr should name the missing file:\n{stderr}"
+    );
+    // An unpinned entry leaves `update_pinned` out of the manifest, so "not pinned" is the check.
+    assert!(manifest_entry(&data_dir, "pin-ghost", "sodium.jar")["update_pinned"] != true);
+}
+
+#[test]
+fn mod_changelog_has_nothing_to_show_for_a_hand_installed_mod() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "log-none", &["manual.jar"]);
+
+    let output = run_agora(&data_dir, &["mod", "changelog", "log-none", "manual.jar"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("has no newer version"), "{stdout}");
+}
+
+#[test]
+fn mod_changelog_unknown_file_fails() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "log-ghost", &["sodium.jar"]);
+
+    let output = run_agora(&data_dir, &["mod", "changelog", "log-ghost", "ghost.jar"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not installed"), "{stderr}");
+}
+
+#[test]
+fn pack_update_preview_lists_the_change_and_writes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-preview", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update-preview",
+            "pack-preview",
+            mrpack_arg.as_str(),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("Updates Test Pack"), "{stdout}");
+    assert!(stdout.contains("add: 1"), "{stdout}");
+    assert!(
+        !data_dir
+            .join("instances/pack-preview/config/updates-test.toml")
+            .exists(),
+        "a preview must not write the pack's file"
+    );
+}
+
+#[test]
+fn pack_update_with_yes_applies_the_new_config() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-apply", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &["pack", "update", "pack-apply", mrpack_arg.as_str(), "--yes"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("Updated 'pack-apply'"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(data_dir.join("instances/pack-apply/config/updates-test.toml"))
+            .unwrap(),
+        "pack = true\n"
+    );
+}
+
+#[test]
+fn pack_update_without_yes_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-noyes", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &["pack", "update", "pack-noyes", mrpack_arg.as_str()],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert!(!data_dir
+        .join("instances/pack-noyes/config/updates-test.toml")
+        .exists());
+}
+
+#[test]
+fn pack_update_refuses_an_unanswered_conflict_and_keeps_the_users_file() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-conflict", &["sodium.jar"]);
+    let config = data_dir.join("instances/pack-conflict/config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("updates-test.toml"), "user edit\n").unwrap();
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update",
+            "pack-conflict",
+            mrpack_arg.as_str(),
+            "--yes",
+        ],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("need an answer"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(config.join("updates-test.toml")).unwrap(),
+        "user edit\n"
+    );
+}
+
+#[test]
+fn pack_update_refuses_an_empty_or_repeated_answer() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-hostile", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let empty = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update",
+            "pack-hostile",
+            mrpack_arg.as_str(),
+            "--keep-ours",
+            "  ",
+            "--yes",
+        ],
+    );
+    assert!(!empty.status.success());
+    assert!(
+        String::from_utf8_lossy(&empty.stderr).contains("cannot be empty"),
+        "a blank key must be refused"
+    );
+
+    let repeated = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update",
+            "pack-hostile",
+            mrpack_arg.as_str(),
+            "--keep-ours",
+            "config/a.toml",
+            "--take-theirs",
+            "config/a.toml",
+            "--yes",
+        ],
+    );
+    assert!(!repeated.status.success());
+    assert!(
+        String::from_utf8_lossy(&repeated.stderr).contains("answered more than once"),
+        "one key answered both ways must be refused"
+    );
+}
+
+#[test]
+fn pack_update_refuses_an_answer_for_a_key_that_is_not_a_conflict() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pack-typo", &["sodium.jar"]);
+    let mrpack = data_dir.join("updates-test-pack.mrpack");
+    write_test_mrpack(&mrpack, "pack = true\n");
+    let mrpack_arg = mrpack.to_string_lossy().to_string();
+
+    let output = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "update",
+            "pack-typo",
+            mrpack_arg.as_str(),
+            "--take-theirs",
+            "config/nonsense.toml",
+            "--yes",
+        ],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is not a conflict"), "{stderr}");
+    assert!(!data_dir
+        .join("instances/pack-typo/config/updates-test.toml")
+        .exists());
+}
+
+// ---------------------------------------------------------------------------
+// Guided mod bisect (`agora bisect`)
+// ---------------------------------------------------------------------------
+
+const BISECT_MODS: &[&str] = &["alpha.jar", "bravo.jar", "charlie.jar", "delta.jar"];
+
+/// `(enabled, disabled)` mod file names in an instance's `mods` folder, with
+/// the `.disabled` suffix removed from the second list. Both sorted.
+fn bisect_mod_state(data_dir: &std::path::Path, id: &str) -> (Vec<String>, Vec<String>) {
+    let mods = data_dir.join("instances").join(id).join("mods");
+    let mut on = Vec::new();
+    let mut off = Vec::new();
+    for entry in std::fs::read_dir(&mods).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        match name.strip_suffix(".disabled") {
+            Some(base) => off.push(base.to_string()),
+            None => on.push(name),
+        }
+    }
+    on.sort();
+    off.sort();
+    (on, off)
+}
+
+fn bisect_session_file(data_dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    data_dir
+        .join("instances")
+        .join(id)
+        .join(".agora_bisect.json")
+}
+
+fn sorted_strings(value: &serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = value
+        .as_array()
+        .expect("expected a JSON array")
+        .iter()
+        .map(|v| v.as_str().expect("expected a string").to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+fn bisect_instance(data_dir: &std::path::Path, id: &str) {
+    create_loader_instance(data_dir, id, BISECT_MODS);
+}
+
+#[test]
+fn bisect_start_plans_a_session_over_every_enabled_mod_and_moves_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-start");
+
+    let output = run_agora_json(
+        &data_dir,
+        &[
+            "bisect",
+            "start",
+            "bisect-start",
+            "--suspect",
+            "charlie.jar",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "bisect start should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    let suspects = value["session"]["suspects"].as_array().unwrap();
+    assert_eq!(suspects.len(), 4);
+    assert_eq!(
+        suspects[0], "charlie.jar",
+        "a crash-named mod is tested first"
+    );
+    assert_eq!(value["trial"]["status"]["type"], "awaiting_trial");
+    assert!(bisect_session_file(&data_dir, "bisect-start").is_file());
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-start");
+    assert_eq!(on.len(), 4);
+    assert!(off.is_empty(), "starting must not turn any mod off");
+}
+
+#[test]
+fn bisect_start_refuses_a_second_bisect_and_keeps_the_first() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-twice");
+    let first = run_agora(&data_dir, &["bisect", "start", "bisect-twice"]);
+    assert!(first.status.success());
+    let session = std::fs::read_to_string(bisect_session_file(&data_dir, "bisect-twice")).unwrap();
+
+    let second = run_agora(&data_dir, &["bisect", "start", "bisect-twice"]);
+    assert!(!second.status.success(), "a second start must refuse");
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("already in progress"),
+        "stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(bisect_session_file(&data_dir, "bisect-twice")).unwrap(),
+        session,
+        "a refused start must leave the session as it was"
+    );
+}
+
+#[test]
+fn bisect_start_needs_at_least_two_enabled_mods() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "bisect-solo", &["solo.jar"]);
+    let output = run_agora(&data_dir, &["bisect", "start", "bisect-solo"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("at least two"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!bisect_session_file(&data_dir, "bisect-solo").exists());
+}
+
+#[test]
+fn bisect_status_with_no_bisect_says_so_and_reports_null_in_json() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-idle");
+
+    let human = run_agora(&data_dir, &["bisect", "status", "bisect-idle"]);
+    assert!(human.status.success());
+    assert!(String::from_utf8_lossy(&human.stdout).contains("No bisect is running"));
+
+    let json = run_agora_json(&data_dir, &["bisect", "status", "bisect-idle"]);
+    assert!(json.status.success());
+    let value = assert_json_stdout(&json);
+    assert!(value["session"].is_null());
+    assert!(value["trial"].is_null());
+}
+
+#[test]
+fn bisect_status_refuses_an_instance_that_does_not_exist() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["bisect", "status", "no-such-instance"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not found"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn bisect_apply_turns_off_exactly_the_mods_the_trial_holds_out() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-apply");
+    run_agora(&data_dir, &["bisect", "start", "bisect-apply"]);
+
+    let output = run_agora_json(&data_dir, &["bisect", "apply", "bisect-apply"]);
+    assert!(
+        output.status.success(),
+        "bisect apply should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    let held_out = sorted_strings(&value["trial"]["disable"]);
+    assert_eq!(held_out.len(), 2);
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-apply");
+    assert_eq!(off, held_out, "exactly the held-out mods are off");
+    assert_eq!(on.len(), 2);
+}
+
+#[test]
+fn bisect_apply_without_a_session_is_refused_and_moves_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-apply-idle");
+    let output = run_agora(&data_dir, &["bisect", "apply", "bisect-apply-idle"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No bisect is in progress"));
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-apply-idle");
+    assert_eq!(on.len(), 4);
+    assert!(off.is_empty());
+}
+
+#[test]
+fn bisect_good_keeps_the_held_out_half_as_the_suspects() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-good");
+    run_agora(&data_dir, &["bisect", "start", "bisect-good"]);
+    let applied = assert_json_stdout(&run_agora_json(
+        &data_dir,
+        &["bisect", "apply", "bisect-good"],
+    ));
+    let held_out = sorted_strings(&applied["trial"]["disable"]);
+
+    let output = run_agora_json(&data_dir, &["bisect", "good", "bisect-good"]);
+    assert!(
+        output.status.success(),
+        "bisect good should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    assert_eq!(sorted_strings(&value["session"]["suspects"]), held_out);
+    assert_eq!(value["session"]["history"][0]["outcome"], "clean");
+}
+
+#[test]
+fn bisect_good_without_a_session_is_refused() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-good-idle");
+    let output = run_agora(&data_dir, &["bisect", "good", "bisect-good-idle"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No bisect is in progress"));
+}
+
+#[test]
+fn bisect_bad_keeps_the_mods_that_were_left_on_as_the_suspects() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-bad");
+    run_agora(&data_dir, &["bisect", "start", "bisect-bad"]);
+    run_agora(&data_dir, &["bisect", "apply", "bisect-bad"]);
+    let (left_on, _) = bisect_mod_state(&data_dir, "bisect-bad");
+
+    let output = run_agora_json(&data_dir, &["bisect", "bad", "bisect-bad"]);
+    assert!(
+        output.status.success(),
+        "bisect bad should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    assert_eq!(sorted_strings(&value["session"]["suspects"]), left_on);
+    assert_eq!(value["session"]["history"][0]["outcome"], "reproduced");
+}
+
+#[test]
+fn bisect_bad_without_a_session_is_refused() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-bad-idle");
+    let output = run_agora(&data_dir, &["bisect", "bad", "bisect-bad-idle"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No bisect is in progress"));
+}
+
+#[test]
+fn bisect_back_takes_the_other_half_on_the_next_trial() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-back");
+    let started = assert_json_stdout(&run_agora_json(
+        &data_dir,
+        &["bisect", "start", "bisect-back"],
+    ));
+    let first_held_out = sorted_strings(&started["trial"]["disable"]);
+    run_agora(&data_dir, &["bisect", "bad", "bisect-back"]);
+
+    let output = run_agora_json(&data_dir, &["bisect", "back", "bisect-back"]);
+    assert!(
+        output.status.success(),
+        "bisect back should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    assert_eq!(value["session"]["suspects"].as_array().unwrap().len(), 4);
+    assert_ne!(sorted_strings(&value["trial"]["disable"]), first_held_out);
+}
+
+#[test]
+fn bisect_back_with_nothing_to_undo_is_refused() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-back-fresh");
+    run_agora(&data_dir, &["bisect", "start", "bisect-back-fresh"]);
+    let output = run_agora(&data_dir, &["bisect", "back", "bisect-back-fresh"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("nothing to step back"));
+}
+
+#[test]
+fn bisect_cancel_puts_every_mod_back_and_ends_the_session() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-cancel");
+    run_agora(&data_dir, &["bisect", "start", "bisect-cancel"]);
+    run_agora(&data_dir, &["bisect", "apply", "bisect-cancel"]);
+    let (_, off_before) = bisect_mod_state(&data_dir, "bisect-cancel");
+    assert_eq!(off_before.len(), 2, "the trial turned two mods off");
+
+    let output = run_agora_json(&data_dir, &["bisect", "cancel", "bisect-cancel"]);
+    assert!(
+        output.status.success(),
+        "bisect cancel should succeed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = assert_json_stdout(&output);
+    assert_eq!(value["status"], "cancelled");
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-cancel");
+    assert_eq!(on, BISECT_MODS.to_vec(), "every mod is back on");
+    assert!(off.is_empty());
+    assert!(!bisect_session_file(&data_dir, "bisect-cancel").exists());
+}
+
+#[test]
+fn bisect_cancel_with_nothing_running_is_a_quiet_no_op() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-cancel-idle");
+    let output = run_agora_json(&data_dir, &["bisect", "cancel", "bisect-cancel-idle"]);
+    assert!(output.status.success());
+    assert_eq!(assert_json_stdout(&output)["status"], "not_running");
+    let (on, _) = bisect_mod_state(&data_dir, "bisect-cancel-idle");
+    assert_eq!(on.len(), 4);
+}
+
+#[test]
+fn bisect_run_needs_a_terminal_and_changes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-run");
+    // Tests run with no terminal on stdin, so the interactive loop must refuse
+    // before it starts a session or turns any mod off.
+    let output = run_agora(&data_dir, &["bisect", "run", "bisect-run"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    assert!(!bisect_session_file(&data_dir, "bisect-run").exists());
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-run");
+    assert_eq!(on.len(), 4);
+    assert!(off.is_empty());
+}
+
+#[test]
+fn bisect_run_refuses_json_because_it_prompts() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-run-json");
+    let output = run_agora_json(&data_dir, &["bisect", "run", "bisect-run-json"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not print JSON"));
+    assert!(!bisect_session_file(&data_dir, "bisect-run-json").exists());
+}
+
+#[test]
+fn bisect_start_refuses_a_locked_instance_and_writes_nothing() {
+    let (_tmp, data_dir) = temp_data_dir();
+    bisect_instance(&data_dir, "bisect-locked");
+    let manifest_path = data_dir
+        .join("instances")
+        .join("bisect-locked")
+        .join("instance_manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["is_locked"] = serde_json::Value::Bool(true);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let output = run_agora(&data_dir, &["bisect", "start", "bisect-locked"]);
+    assert!(
+        !output.status.success(),
+        "a locked instance must refuse a bisect"
+    );
+    assert!(!bisect_session_file(&data_dir, "bisect-locked").exists());
+    let (on, off) = bisect_mod_state(&data_dir, "bisect-locked");
+    assert_eq!(on.len(), 4);
+    assert!(off.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Governance, registry review queries, Technic, provider packs, plugin settings
+// ---------------------------------------------------------------------------
+
+/// The seeded registry lives beside the data root, not as `registry.db`: a
+/// plain `registry.db` there is quarantined at startup for lacking a signature.
+/// It is read only through `AGORA_DEV_REGISTRY_DB`, which debug builds honour.
+fn dev_registry_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("dev-registry.db")
+}
+
+/// Run the CLI with the seeded dev registry active (debug builds only).
+fn run_seeded(data_dir: &Path, args: &[&str]) -> std::process::Output {
+    let mut cmd = agora_command(data_dir, args);
+    cmd.env("AGORA_DEV_REGISTRY_DB", dev_registry_path(data_dir));
+    run_command(cmd, args)
+}
+
+/// A schema-7 registry with one item under review, a governance summary and
+/// events for `test-mod`, a curator review, an audit log, and a triage
+/// resolution. Only the tables the read paths query are created.
+fn seed_governance_registry(data_dir: &Path) {
+    let conn = rusqlite::Connection::open(dev_registry_path(data_dir)).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version (version) VALUES (7);
+
+         CREATE TABLE registry_items (
+             id TEXT PRIMARY KEY, name TEXT, content_type TEXT, icon_url TEXT,
+             net_score INTEGER DEFAULT 0, status TEXT DEFAULT 'active'
+         );
+         INSERT INTO registry_items (id, name, content_type, net_score, status)
+         VALUES ('test-mod', 'Test Mod', 'mod', 5, 'active'),
+                ('flagged-mod', 'Flagged Mod', 'mod', -3, 'under_review');
+
+         CREATE TABLE governance_summary (
+             item_id TEXT PRIMARY KEY, vote_issue_number INTEGER, vote_issue_url TEXT,
+             raw_upvotes INTEGER NOT NULL DEFAULT 0, raw_downvotes INTEGER NOT NULL DEFAULT 0,
+             counted_upvotes INTEGER NOT NULL DEFAULT 0, counted_downvotes INTEGER NOT NULL DEFAULT 0,
+             quarantined_upvotes INTEGER NOT NULL DEFAULT 0, quarantined_downvotes INTEGER NOT NULL DEFAULT 0,
+             conflicted_users INTEGER NOT NULL DEFAULT 0, status_reason TEXT,
+             compiled_at TEXT NOT NULL
+         );
+         INSERT INTO governance_summary VALUES
+             ('test-mod', 42, 'https://github.com/example/repo/issues/42',
+              10, 3, 8, 2, 2, 1, 0, NULL, '2026-10-01T00:00:00Z');
+
+         CREATE TABLE governance_events (
+             event_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, event_type TEXT NOT NULL,
+             status TEXT NOT NULL, detected_at TEXT NOT NULL,
+             affected_reactions INTEGER NOT NULL DEFAULT 0, details_json TEXT
+         );
+         INSERT INTO governance_events VALUES
+             ('evt-001', 'test-mod', 'vote_quarantine', 'active', '2026-10-02T00:00:00Z', 3, NULL),
+             ('evt-002', 'test-mod', 'status_change', 'under_review', '2026-10-03T00:00:00Z', 0, NULL);
+
+         CREATE TABLE curator_reviews (item_id TEXT PRIMARY KEY, top_reviews_json TEXT);
+         INSERT INTO curator_reviews VALUES
+             ('flagged-mod', '[{\"author\":\"curator\",\"text\":\"Crashes on load\",\"issue_number\":77,\"created_at\":\"2026-10-01\"}]');
+
+         CREATE TABLE audit_log (
+             id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, action TEXT NOT NULL, details TEXT
+         );
+         INSERT INTO audit_log VALUES (1, '2026-10-04T00:00:00Z', 'triage_keep', 'flagged-mod kept');",
+    )
+    .unwrap();
+}
+
+/// Assert the command succeeded and return its stdout as JSON.
+fn json_of(output: &std::process::Output) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "command failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_json_stdout(output)
+}
+
+#[test]
+fn governance_config_reports_the_repository_as_json() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let value = json_of(&run_agora(&data_dir, &["governance", "config", "--json"]));
+    let repository = value["repository"].as_str().unwrap_or_default();
+    assert!(
+        repository.contains('/'),
+        "repository should be owner/repo: {value}"
+    );
+}
+
+#[test]
+fn governance_summary_and_events_read_the_compiled_registry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+
+    let summary = json_of(&run_seeded(
+        &data_dir,
+        &["governance", "summary", "test-mod", "--json"],
+    ));
+    assert_eq!(summary["raw_upvotes"], 10);
+    assert_eq!(summary["vote_issue_number"], 42);
+
+    let events = json_of(&run_seeded(
+        &data_dir,
+        &["governance", "events", "--item", "test-mod", "--json"],
+    ));
+    assert_eq!(events.as_array().map(Vec::len), Some(2));
+
+    let limited = json_of(&run_seeded(
+        &data_dir,
+        &["governance", "events", "--limit", "1", "--json"],
+    ));
+    assert_eq!(limited.as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn governance_summary_for_an_unknown_item_is_null_not_an_error() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+    let value = json_of(&run_seeded(
+        &data_dir,
+        &["governance", "summary", "no-such-mod", "--json"],
+    ));
+    assert!(value.is_null(), "expected null, got {value}");
+}
+
+#[test]
+fn governance_events_refuses_an_out_of_range_limit() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+    // 0 would reach SQLite as LIMIT 0, and a negative value as "no limit".
+    for limit in ["0", "-1", "100000"] {
+        let output = run_seeded(&data_dir, &["governance", "events", "--limit", limit]);
+        assert!(
+            !output.status.success(),
+            "--limit {limit} should be refused"
+        );
+    }
+}
+
+#[test]
+fn governance_diagnostics_lists_its_checks_with_github_turned_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+    // Turn GitHub requests off so the network checks cannot reach the network
+    // from a test. They then report their own failure, which is still a check.
+    let set = run_seeded(
+        &data_dir,
+        &["settings", "set", "network_github_oauth_enabled", "false"],
+    );
+    assert!(set.status.success());
+
+    // Exit status depends on the machine's sign-in and build config, so only
+    // the shape of the output is asserted here.
+    let output = run_seeded(&data_dir, &["governance", "diagnostics", "--json"]);
+    let value = assert_json_stdout(&output);
+    let ids: Vec<&str> = value
+        .as_array()
+        .expect("diagnostics is a JSON array")
+        .iter()
+        .filter_map(|check| check["id"].as_str())
+        .collect();
+    for expected in ["governance_repo_resolved", "repository_metadata_readable"] {
+        assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
+    }
+}
+
+#[test]
+fn registry_review_queries_read_the_seeded_registry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    seed_governance_registry(&data_dir);
+
+    let under_review = json_of(&run_seeded(
+        &data_dir,
+        &["registry", "under-review", "--json"],
+    ));
+    let ids: Vec<&str> = under_review
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["flagged-mod"]);
+
+    let reviews = json_of(&run_seeded(
+        &data_dir,
+        &["registry", "reviews", "flagged-mod", "--json"],
+    ));
+    assert_eq!(reviews[0]["text"], "Crashes on load");
+    assert_eq!(reviews[0]["issue_number"], 77);
+
+    let audit = json_of(&run_seeded(&data_dir, &["registry", "audit-log", "--json"]));
+    assert_eq!(audit.as_array().map(Vec::len), Some(1));
+
+    let resolutions = json_of(&run_seeded(
+        &data_dir,
+        &["registry", "resolutions", "--json"],
+    ));
+    assert_eq!(resolutions[0]["action"], "triage_keep");
+
+    let zero = run_seeded(&data_dir, &["registry", "audit-log", "--limit", "0"]);
+    assert!(!zero.status.success(), "--limit 0 should be refused");
+}
+
+#[test]
+fn registry_review_queries_fail_without_a_registry() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["registry", "under-review"]);
+    assert!(
+        !output.status.success(),
+        "no registry.db should be an error, not an empty list"
+    );
+}
+
+#[test]
+fn technic_search_is_refused_while_technic_consent_is_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["technic", "search", "tekkit"]);
+    assert!(
+        !output.status.success(),
+        "technic search must not run with consent off"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panic"), "must not panic: {stderr}");
+}
+
+#[test]
+fn technic_install_is_refused_while_technic_consent_is_off() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["technic", "install", "tekkit"]);
+    assert!(!output.status.success());
+    let listed = run_agora(&data_dir, &["list-instances", "--json"]);
+    assert_eq!(assert_json_stdout(&listed), serde_json::json!([]));
+}
+
+#[test]
+fn technic_search_rejects_a_zero_limit() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["technic", "search", "x", "--limit", "0"]);
+    assert!(!output.status.success());
+}
+
+/// A pin that cannot match a SHA-256 digest is refused before any install
+/// starts, rather than installing with a hash that looks like protection.
+#[test]
+fn technic_install_refuses_a_malformed_sha256_pin() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let non_hex = "g".repeat(64);
+    for bad in ["abc", non_hex.as_str(), ""] {
+        let output = run_agora(
+            &data_dir,
+            &["technic", "install", "tekkit", "--sha256", bad],
+        );
+        assert!(
+            !output.status.success(),
+            "--sha256 {bad:?} should be refused"
+        );
+    }
+    let listed = run_agora(&data_dir, &["list-instances", "--json"]);
+    assert_eq!(assert_json_stdout(&listed), serde_json::json!([]));
+}
+
+#[test]
+fn pack_install_provider_needs_a_project_and_excludes_a_manifest() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let no_project = run_agora(&data_dir, &["pack", "install", "--provider", "modrinth"]);
+    assert!(!no_project.status.success(), "--provider needs --project");
+
+    let mixed = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "install",
+            "--provider",
+            "modrinth",
+            "--project",
+            "abc",
+            "some.json",
+            "inst",
+        ],
+    );
+    assert!(
+        !mixed.status.success(),
+        "a manifest and --provider conflict"
+    );
+
+    let neither = run_agora(&data_dir, &["pack", "install"]);
+    assert!(!neither.status.success(), "pack install needs an input");
+}
+
+#[test]
+fn pack_install_with_an_unknown_provider_is_refused() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(
+        &data_dir,
+        &[
+            "pack",
+            "install",
+            "--provider",
+            "no-such-provider",
+            "--project",
+            "abc",
+        ],
+    );
+    assert!(!output.status.success());
+}
+
+/// Write a development plugin with one boolean setting and no capabilities,
+/// so it installs without a consent prompt. Returns its folder.
+fn write_settings_plugin(root: &Path) -> PathBuf {
+    let dir = root.join("settings-probe");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("agora-plugin.json"),
+        r#"{
+  "manifest": 1,
+  "id": "agora.settings-probe",
+  "name": "Settings probe",
+  "version": "0.1.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "activation": [],
+  "capabilities": { "required": [] },
+  "contributions": {
+    "settings": [{ "key": "notify", "title": "Notify", "type": "boolean", "default": false }]
+  }
+}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.js"), "export function noop() {}\n").unwrap();
+    dir
+}
+
+#[test]
+fn plugin_settings_show_set_and_refuse_bad_values() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let plugin_root = tempdir();
+    let plugin_src = write_settings_plugin(plugin_root.path());
+    let plugin_src = plugin_src.to_string_lossy().to_string();
+    let installed = run_agora(
+        &data_dir,
+        &[
+            "plugin",
+            "install",
+            "--yes",
+            "development",
+            plugin_src.as_str(),
+        ],
+    );
+    assert!(
+        installed.status.success(),
+        "install failed: {}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+
+    let before = json_of(&run_agora(
+        &data_dir,
+        &["plugin", "settings", "agora.settings-probe", "--json"],
+    ));
+    assert_eq!(before["values"]["notify"], false);
+    assert_eq!(before["definitions"].as_array().map(Vec::len), Some(1));
+
+    let set = run_agora(
+        &data_dir,
+        &["plugin", "set", "agora.settings-probe", "notify", "true"],
+    );
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let after = json_of(&run_agora(
+        &data_dir,
+        &["plugin", "settings", "agora.settings-probe", "--json"],
+    ));
+    assert_eq!(after["values"]["notify"], true);
+
+    // Wrong type: a quoted string where a boolean is declared.
+    let wrong_type = run_agora(
+        &data_dir,
+        &["plugin", "set", "agora.settings-probe", "notify", "\"yes\""],
+    );
+    assert!(
+        !wrong_type.status.success(),
+        "a wrong-typed value must be refused"
+    );
+
+    // Undeclared key.
+    let unknown_key = run_agora(
+        &data_dir,
+        &["plugin", "set", "agora.settings-probe", "nope", "true"],
+    );
+    assert!(
+        !unknown_key.status.success(),
+        "an undeclared key must be refused"
+    );
+
+    // The stored value did not change after the refusals.
+    let still = json_of(&run_agora(
+        &data_dir,
+        &["plugin", "settings", "agora.settings-probe", "--json"],
+    ));
+    assert_eq!(still["values"]["notify"], true);
+}
+
+#[test]
+fn plugin_settings_for_a_missing_plugin_fail() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let read = run_agora(&data_dir, &["plugin", "settings", "agora.nothing-here"]);
+    assert!(!read.status.success());
+    let write = run_agora(
+        &data_dir,
+        &["plugin", "set", "agora.nothing-here", "k", "true"],
+    );
+    assert!(!write.status.success());
+}
+
+// ---------------------------------------------------------------------------
+// pack export / review / import, backups, launcher import
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pack_export_mrpack_writes_a_pack_file() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "px-mr", &["sodium.jar"]);
+    let out = data_dir.join("px-mr.mrpack");
+    let out_arg = out.to_string_lossy().to_string();
+
+    let output = run_agora_json(
+        &data_dir,
+        &[
+            "pack", "export", "px-mr", "--format", "mrpack", "--out", &out_arg,
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed = assert_json_stdout(&output);
+    assert_eq!(parsed["status"], "exported");
+    assert!(out.is_file(), "the .mrpack should exist");
+}
+
+#[test]
+fn pack_export_agora_refuses_sourceless_mods_without_yes() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "px-agora", &["sodium.jar"]);
+    let out = data_dir.join("px.agora-pack.json");
+    let out_arg = out.to_string_lossy().to_string();
+    let args = [
+        "pack", "export", "px-agora", "--format", "agora", "--out", &out_arg,
+    ];
+
+    let refused = run_agora(&data_dir, &args);
+    assert!(!refused.status.success(), "must refuse without --yes");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("sodium.jar"), "names the mod: {stderr}");
+    assert!(!out.exists(), "nothing is written on refusal");
+
+    let mut with_yes = args.to_vec();
+    with_yes.push("--yes");
+    let done = run_agora_json(&data_dir, &with_yes);
+    assert!(
+        done.status.success(),
+        "{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    let parsed = assert_json_stdout(&done);
+    assert_eq!(parsed["modsWithoutSource"][0], "sodium.jar");
+    assert!(out.is_file());
+}
+
+#[test]
+fn pack_export_lockfile_and_missing_instance() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "px-lock", &["sodium.jar"]);
+    let out = data_dir.join("px.lock.json");
+    let out_arg = out.to_string_lossy().to_string();
+    let ok = run_agora(
+        &data_dir,
+        &[
+            "pack", "export", "px-lock", "--format", "lockfile", "--out", &out_arg,
+        ],
+    );
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(out.is_file());
+
+    let missing = run_agora(
+        &data_dir,
+        &[
+            "pack", "export", "nope", "--format", "lockfile", "--out", &out_arg,
+        ],
+    );
+    assert!(!missing.status.success());
+}
+
+#[test]
+fn pack_review_stages_a_copy_and_import_refuses_unknown_or_unfetchable() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "pr-src", &["sodium.jar"]);
+    let pack = data_dir.join("pr-src.agora-pack.json");
+    let pack_arg = pack.to_string_lossy().to_string();
+    let exported = run_agora(
+        &data_dir,
+        &[
+            "pack", "export", "pr-src", "--format", "agora", "--out", &pack_arg, "--yes",
+        ],
+    );
+    assert!(exported.status.success());
+
+    let review = run_agora_json(&data_dir, &["pack", "review", &pack_arg]);
+    assert!(
+        review.status.success(),
+        "{}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+    let parsed = assert_json_stdout(&review);
+    let id = parsed["reviewId"].as_str().expect("review id").to_string();
+    assert_eq!(id.len(), 64);
+    assert!(parsed["entries"].as_array().is_some());
+
+    // A review id nobody reviewed is refused.
+    let unknown = run_agora(&data_dir, &["pack", "import", &"0".repeat(64)]);
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("Review"));
+
+    // The sourceless mod cannot be fetched: the import is refused.
+    let refused = run_agora(&data_dir, &["pack", "import", &id]);
+    assert!(!refused.status.success());
+    assert!(
+        !data_dir.join("instances").join("pr-src-2").exists(),
+        "a refused import creates nothing"
+    );
+}
+
+#[test]
+fn pack_review_rejects_unknown_file_types() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let file = data_dir.join("notes.txt");
+    std::fs::write(&file, "hi").unwrap();
+    let output = run_agora(&data_dir, &["pack", "review", &file.to_string_lossy()]);
+    assert!(!output.status.success());
+}
+
+#[test]
+fn backup_export_import_and_prune_round_trip() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "bk-src", &["sodium.jar"]);
+    create_loader_instance(&data_dir, "bk-dst", &["lithium.jar"]);
+    let out_dir = data_dir.join("backups");
+    let out_arg = out_dir.to_string_lossy().to_string();
+
+    let exported = run_agora_json(
+        &data_dir,
+        &["backup", "export", "bk-src", "--out", &out_arg],
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let parsed = assert_json_stdout(&exported);
+    let artifact = parsed["path"].as_str().expect("artifact path").to_string();
+    assert!(Path::new(&artifact).is_file());
+
+    let imported = run_agora_json(
+        &data_dir,
+        &["backup", "import", &artifact, "--instance", "bk-dst"],
+    );
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let snapshots =
+        assert_json_stdout(&run_agora_json(&data_dir, &["snapshots", "list", "bk-dst"]));
+    assert!(!snapshots.as_array().unwrap().is_empty());
+
+    // Prune keeps the newest and needs --yes without a terminal.
+    run_agora(
+        &data_dir,
+        &["snapshots", "create", "bk-src", "--label", "second"],
+    );
+    let refused = run_agora(&data_dir, &["backup", "prune", "bk-src", "--keep", "1"]);
+    assert!(!refused.status.success(), "prune must not delete unasked");
+    let pruned = run_agora_json(
+        &data_dir,
+        &["backup", "prune", "bk-src", "--keep", "1", "--yes"],
+    );
+    assert!(
+        pruned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pruned.stderr)
+    );
+    assert_eq!(assert_json_stdout(&pruned)["status"], "pruned");
+}
+
+#[test]
+fn backup_import_rejects_a_file_that_is_not_a_backup() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "bk-bad", &["sodium.jar"]);
+    let junk = data_dir.join("junk.zip");
+    std::fs::write(&junk, b"not a zip").unwrap();
+    let output = run_agora(
+        &data_dir,
+        &[
+            "backup",
+            "import",
+            &junk.to_string_lossy(),
+            "--instance",
+            "bk-bad",
+        ],
+    );
+    assert!(!output.status.success());
+}
+
+#[test]
+fn import_launchers_lists_and_plan_refuses_unknown_instance() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let empty_root = data_dir.join("no-launcher-here");
+    std::fs::create_dir_all(&empty_root).unwrap();
+    let root = empty_root.to_string_lossy().to_string();
+
+    let listed = run_agora_json(&data_dir, &["import", "launchers", "--root", &root]);
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert!(assert_json_stdout(&listed).get("prism").is_some());
+
+    let plan = run_agora(
+        &data_dir,
+        &["import", "plan", "zz-no-such-instance", "--root", &root],
+    );
+    assert!(!plan.status.success());
+    assert!(String::from_utf8_lossy(&plan.stderr).contains("No launcher instance"));
+}
+
+/// An instance with one bundled mod and one switched-off mod. Importing its
+/// pack needs the loader, which Agora downloads, so the tests that import it
+/// are `#[ignore]`d (run them with `--ignored` on a machine with network).
+fn create_offline_pack_source(data_dir: &Path, id: &str) {
+    create_loader_instance(data_dir, id, &["bundled.jar", "off.jar"]);
+    let dir = data_dir.join("instances").join(id);
+    std::fs::rename(
+        dir.join("mods").join("off.jar"),
+        dir.join("mods").join("off.jar.disabled"),
+    )
+    .unwrap();
+    let manifest_path = dir.join("instance_manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["minecraft_version"] = "1.20.1".into();
+    manifest["loader_version"] = "0.15.0".into();
+    for m in manifest["mods"].as_array_mut().unwrap() {
+        if m["filename"] == "off.jar" {
+            m["enabled"] = false.into();
+        }
+    }
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+}
+
+fn assert_imported_pack_keeps_both_mods(data_dir: &Path, new_id: &str) {
+    let dir = data_dir.join("instances").join(new_id);
+    assert!(dir.is_dir(), "the new instance should exist");
+    assert!(dir.join("mods").join("bundled.jar").is_file());
+    assert!(
+        dir.join("mods").join("off.jar.disabled").is_file(),
+        "the disabled mod stays disabled"
+    );
+    assert!(!dir.join("mods").join("off.jar").exists());
+}
+
+fn assert_review_copy_cleaned_up(data_dir: &Path, review_id: &str) {
+    let staged = agora_core::app_paths::AppPaths::from_root(data_dir.to_path_buf())
+        .staging_root()
+        .join("pack-review")
+        .join(review_id);
+    assert!(!staged.exists(), "the staged copy should be removed");
+}
+
+#[test]
+#[ignore = "downloads the Fabric loader; run with --ignored"]
+fn pack_review_then_import_of_an_mrpack_keeps_both_mods() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_offline_pack_source(&data_dir, "mr-src");
+    let pack = data_dir.join("mr-src.mrpack");
+    let pack_arg = pack.to_string_lossy().to_string();
+    let exported = run_agora(
+        &data_dir,
+        &[
+            "pack", "export", "mr-src", "--format", "mrpack", "--out", &pack_arg,
+        ],
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+
+    let review = run_agora_json(&data_dir, &["pack", "review", &pack_arg]);
+    assert!(
+        review.status.success(),
+        "{}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+    let id = assert_json_stdout(&review)["reviewId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let imported = run_agora_json(&data_dir, &["pack", "import", &id, "--name", "mr-copy"]);
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let new_id = assert_json_stdout(&imported)["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_imported_pack_keeps_both_mods(&data_dir, &new_id);
+    assert_review_copy_cleaned_up(&data_dir, &id);
+}
+
+#[test]
+#[ignore = "fetches Minecraft metadata; run with --ignored"]
+fn import_plan_then_run_copies_a_prism_fixture_instance() {
+    let (_tmp, data_dir) = temp_data_dir();
+    // Outside the data dir: Agora refuses its own folder as an import source.
+    let fixture_tmp = tempdir();
+    let prism = fixture_tmp.path().join("PrismLauncher");
+    let instances = prism.join("instances");
+    let mods = instances.join("FixInst").join("minecraft").join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    std::fs::write(
+        prism.join("prismlauncher.cfg"),
+        "[General]\nInstanceDir=instances\n",
+    )
+    .unwrap();
+    std::fs::write(
+        instances.join("FixInst").join("instance.cfg"),
+        "[Minecraft]\nname=Fixture Instance\n",
+    )
+    .unwrap();
+    std::fs::write(
+        instances.join("FixInst").join("mmc-pack.json"),
+        r#"{"components":[{"uid":"net.minecraft","version":"1.21"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(mods.join("a.jar"), b"mod content").unwrap();
+    let root = prism.to_string_lossy().to_string();
+
+    let plan = run_agora_json(
+        &data_dir,
+        &["import", "plan", "prism:FixInst", "--root", &root],
+    );
+    assert!(
+        plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let parsed = assert_json_stdout(&plan);
+    let fingerprint = parsed["batch_fingerprint"].as_str().unwrap().to_string();
+
+    let stale = run_agora(
+        &data_dir,
+        &[
+            "import",
+            "run",
+            "prism:FixInst",
+            "--root",
+            &root,
+            "--fingerprint",
+            "0000",
+        ],
+    );
+    assert!(!stale.status.success(), "a stale fingerprint is refused");
+
+    let run = run_agora_json(
+        &data_dir,
+        &[
+            "import",
+            "run",
+            "prism:FixInst",
+            "--root",
+            &root,
+            "--fingerprint",
+            &fingerprint,
+        ],
+    );
+    assert!(
+        run.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let imported = parsed["items"][0]["destination_id"].as_str().unwrap();
+    assert!(data_dir
+        .join("instances")
+        .join(imported)
+        .join("mods")
+        .join("a.jar")
+        .is_file());
 }

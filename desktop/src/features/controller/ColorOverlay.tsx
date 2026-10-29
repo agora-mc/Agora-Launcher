@@ -95,7 +95,7 @@ export function ColorOverlay({ input, onClose }: ColorOverlayProps) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-90 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs"
       // controller-exempt: backdrop, not a control; Cancel closes this overlay.
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
@@ -103,6 +103,7 @@ export function ColorOverlay({ input, onClose }: ColorOverlayProps) {
         ref={rootRef}
         role="dialog"
         aria-modal="true"
+        data-modal-self-managed=""
         aria-label={label}
         className="flex max-h-[85vh] w-[min(30rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
       >

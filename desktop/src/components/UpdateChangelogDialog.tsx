@@ -66,9 +66,11 @@ export function UpdateChangelogDialog({
 }: {
   updates: UpdateInfo[];
   displayNameFor: (update: UpdateInfo) => string;
-  onConfirm: () => void;
+  /** Called with the updates left ticked; every one, unless the user unticked some. */
+  onConfirm: (selected: UpdateInfo[]) => void;
   onCancel: () => void;
 }) {
+  const [skipped, setSkipped] = useState<Set<string>>(() => new Set());
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(
@@ -115,6 +117,7 @@ export function UpdateChangelogDialog({
   });
 
   const single = updates.length === 1;
+  const chosenCount = updates.filter((update) => !skipped.has(update.mod_jar_id)).length;
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
@@ -125,7 +128,7 @@ export function UpdateChangelogDialog({
         <DialogDescription>
           {single
             ? 'What changed since the version you have installed.'
-            : 'Everything below will be updated in one reviewed operation.'}
+            : "Ticked items are updated in one reviewed operation. Untick any to leave it as it is; to choose a different version, use that mod's page instead."}
         </DialogDescription>
 
         {loading ? (
@@ -137,6 +140,20 @@ export function UpdateChangelogDialog({
               const isOpen = expanded.has(key);
               return (
                 <div key={key} className="rounded-lg border border-border p-3">
+                  <div className="flex items-center gap-2">
+                  {!single && (
+                    <input
+                      type="checkbox"
+                      aria-label={`Update ${entry.displayName}`}
+                      checked={!skipped.has(key)}
+                      onChange={(e) => setSkipped((current) => {
+                        const next = new Set(current);
+                        if (e.target.checked) next.delete(key); else next.add(key);
+                        return next;
+                      })}
+                      className="h-4 w-4 shrink-0 accent-primary"
+                    />
+                  )}
                   <button
                     type="button"
                     onClick={() => toggle(key)}
@@ -151,6 +168,7 @@ export function UpdateChangelogDialog({
                       {entry.update.current_version} → {entry.update.latest_version}
                     </span>
                   </button>
+                  </div>
                   {isOpen ? (
                     <div className="mt-2 border-t border-border pt-2">
                       {entry.error ? (
@@ -178,10 +196,11 @@ export function UpdateChangelogDialog({
           </button>
           <button
             type="button"
-            onClick={onConfirm}
-            className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            onClick={() => onConfirm(updates.filter((update) => !skipped.has(update.mod_jar_id)))}
+            disabled={chosenCount === 0}
+            className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {single ? 'Update' : `Update all ${updates.length}`}
+            {single ? 'Update' : chosenCount === updates.length ? `Update all ${updates.length}` : `Update ${chosenCount} of ${updates.length}`}
           </button>
         </div>
       </DialogContent>

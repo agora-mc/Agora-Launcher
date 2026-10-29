@@ -26,6 +26,7 @@ async function installPaletteMock(page: Page) {
           const row = instances.find((candidate) => candidate.instance_id === args.instanceId);
           return Promise.resolve({
             row,
+            pack_gaps: [],
             manifest: {
               instance_id: row?.instance_id,
               name: row?.name,

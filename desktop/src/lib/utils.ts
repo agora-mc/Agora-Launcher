@@ -16,6 +16,20 @@ export function formatDate(value: string | null | undefined): string {
   }).format(date);
 }
 
+/**
+ * A stored UTC timestamp as the user's local date and time. Raw values such as
+ * `2026-10-22T18:15:58.781044+00:00` read as machine output, not as a time.
+ */
+export function formatDateTime(value: string | null | undefined): string {
+  if (!value) return 'Unknown';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
 interface VersionParts {
   core: number[];
   pre: string | null;
@@ -41,6 +55,18 @@ function splitVersion(version: string): VersionParts {
  * versions (`0.16.9`, `50.1.0`) are plain numeric triples, but the prerelease
  * path keeps the sort stable if one ever appears.
  */
+/**
+ * Lifetime play time as a short label: "45 min", "3.5 h", "120 h". Returns
+ * null for nothing recorded, so callers can leave the label out entirely.
+ */
+export function formatPlayTime(ms: number | null | undefined): string | null {
+  if (!ms || ms < 60_000) return null;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = ms / 3_600_000;
+  return hours < 10 ? `${(Math.floor(hours * 10) / 10).toString()} h` : `${Math.floor(hours)} h`;
+}
+
 export function compareVersionsDescending(a: string, b: string): number {
   const va = splitVersion(a);
   const vb = splitVersion(b);

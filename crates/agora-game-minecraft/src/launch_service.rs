@@ -3,7 +3,7 @@
 
 use crate::java::JavaInstallation;
 use crate::launch::LoaderInfo;
-use crate::launch_planner::{BuildCommandRequest, LaunchFeatures, LaunchIdentity, ResolveRequest};
+use crate::launch_planner::{BuildCommandRequest, LaunchIdentity, ResolveRequest};
 use crate::runtime_manager::RuntimeProgress;
 use agora_core::ctx::Ctx;
 use agora_core::error::{LauncherError, LauncherResult};
@@ -162,6 +162,9 @@ pub struct LaunchRequest {
     pub mode: LaunchMode,
     pub health_policy: HealthPolicy,
     pub health_scan_token: Option<String>,
+    /// Open a world or join a server as soon as the game starts. Direct
+    /// launch only: the official launcher offers no way to pass it on.
+    pub quick_play: Option<crate::launch_planner::QuickPlay>,
 }
 
 /// State loaded and normalized by [`LaunchService`] before execution.
@@ -190,6 +193,10 @@ struct LaunchInputs {
     jvm_custom_args: String,
     jvm_always_pre_touch: bool,
     extra_game_args: Vec<String>,
+    window_size: Option<(u32, u32)>,
+    quick_play: Option<crate::launch_planner::QuickPlay>,
+    instance_name: String,
+    hooks: LaunchHooks,
 }
 
 /// Process-start result delivered before launch monitoring begins. Delegated
@@ -257,6 +264,14 @@ impl LaunchService {
         let started = Instant::now();
         let inputs = self.load_inputs(request).await?;
         progress.phase_completed("loading-inputs", started.elapsed().as_millis());
+        // Before the pre-launch snapshot, so the snapshot holds what launched.
+        for problem in agora_core::shared_settings::apply_before_launch(
+            &self.ctx,
+            &inputs.game_dir,
+            &inputs.manifest,
+        ) {
+            progress.log("stderr", &format!("[agora] {problem}"));
+        }
         // The complete direct-launch state machine contains several large
         // resolver/materializer futures. Keep it heap-backed so CLI hosts with
         // the default Windows main-thread stack do not have to inline that
@@ -373,14 +388,15 @@ impl LaunchService {
         let minecraft_root = self.ctx.paths.minecraft_runtime_root();
         let layout = crate::minecraft_runtime::ensure_runtime_layout(&minecraft_root)?;
         let jvm_gc_profile = crate::gc::GcSelection::from_persisted(&row.jvm_gc).resolve();
-        let global_pre_touch = agora_core::db::get_setting(&conn, "jvm_always_pre_touch")
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool())
-            .unwrap_or(true);
+        let global_pre_touch = agora_core::db::global_always_pre_touch(&conn).unwrap_or(true);
         let jvm_always_pre_touch = row.jvm_always_pre_touch && global_pre_touch;
 
         let game_dir = self.ctx.paths.instance_dir(&row.instance_id)?;
+        if let Some(target) = &request.quick_play {
+            validate_quick_play(request.mode, &game_dir, target)?;
+        }
+        let window_size = window_size(&manifest, &conn);
+        let hooks = LaunchHooks::from_manifest(&manifest);
         let jvm_memory_mb = if request.mode == LaunchMode::Direct && row.jvm_memory_mode == "auto" {
             let summary = crate::memory_recommendation::summarize_instance(&game_dir, &manifest);
             crate::memory_recommendation::detect_and_recommend(&summary).recommended_mb
@@ -417,6 +433,10 @@ impl LaunchService {
             jvm_custom_args: row.jvm_custom_args,
             jvm_always_pre_touch,
             extra_game_args: Vec::new(),
+            window_size,
+            quick_play: request.quick_play,
+            instance_name: row.name,
+            hooks,
         })
     }
 
@@ -556,6 +576,15 @@ impl LaunchService {
                 .process_session_manager
                 .note_latest(&request.instance_id, session_id);
             record_launch_started(&self.ctx, &request.instance_id);
+            if let Some(crate::launch_planner::QuickPlay::Multiplayer(address)) =
+                &request.quick_play
+            {
+                if let Ok(conn) =
+                    agora_core::db::local_state_connection(&self.ctx.paths.local_state_db())
+                {
+                    crate::worlds::record_server_join(&conn, &request.instance_id, address);
+                }
+            }
 
             let process_identity = ProcessIdentity {
                 pid: 0,
@@ -713,8 +742,11 @@ impl LaunchService {
                 progress.files(&update);
             }
         };
-        let materialized =
-            crate::launch_planner::materialize_with_progress(resolved, Some(&on_files)).await?;
+        let materialized = Box::pin(crate::launch_planner::materialize_with_progress(
+            resolved,
+            Some(&on_files),
+        ))
+        .await?;
         progress.phase_completed("materializing", materialize_started.elapsed().as_millis());
         let java_path = materialized.resolved.java.path.clone();
         let gc_args = crate::gc::compute_gc(
@@ -725,13 +757,23 @@ impl LaunchService {
         );
         let gc_args = crate::gc::apply_pre_touch(&gc_args.jvm_args, request.jvm_always_pre_touch);
         let user_jvm_args = crate::launch_planner::parse_argument_string(&gc_args)?;
+        let version = &materialized.resolved.version;
+        let (features, mut extra_game_args) =
+            crate::launch_planner::window_size_launch(version, request.window_size);
+        if let Some(target) = &request.quick_play {
+            extra_game_args.extend(crate::launch_planner::quick_play_args(version, target)?);
+        }
+        extra_game_args.extend(request.extra_game_args.iter().cloned());
         let prepared = crate::launch_planner::build_command(BuildCommandRequest {
             plan: &materialized,
             identity: &request.identity,
-            features: &LaunchFeatures::default(),
+            features: &features,
             user_jvm_args: &user_jvm_args,
-            extra_game_args: &request.extra_game_args,
+            extra_game_args: &extra_game_args,
         })?;
+
+        let mut prepared = prepared;
+        prepared.env.extend(request.hooks.env.clone());
 
         // Optional wrapper (`mangohud`, `gamescope …`) from the instance's own
         // preferences. Applied here rather than inside `build_command` so the
@@ -759,6 +801,18 @@ impl LaunchService {
             })??;
         progress.phase_completed("snapshot", snapshot_started.elapsed().as_millis());
         self.sync_world_datapacks(&request, progress).await;
+        if let Some(command) = &request.hooks.pre_launch {
+            progress.phase("pre-launch", "Running the pre-launch command");
+            let status = run_hook(command, &request, &java_path, progress).await?;
+            if !status.success() {
+                return Err(LauncherError::Generic {
+                    code: "ERR_PRE_LAUNCH_COMMAND".into(),
+                    message: format!(
+                        "The pre-launch command exited with {status}, so the game was not started. Its output is in the console."
+                    ),
+                });
+            }
+        }
         let operation_id = _op_handle.id().clone();
 
         // -- Direct mode: spawn Java and attach --
@@ -839,12 +893,12 @@ impl LaunchService {
                 progress.phase("ready", "Minecraft has finished loading");
             }
         };
-        let outcome = crate::launch_planner::wait_and_classify_with_progress(
+        let outcome = Box::pin(crate::launch_planner::wait_and_classify_with_progress(
             child,
             &request.game_dir,
             &[secret],
             Some(&output_progress),
-        )
+        ))
         .await
         .inspect_err(|_| {
             self.ctx.process_session_manager.remove(session_id);
@@ -899,6 +953,29 @@ impl LaunchService {
 
         // Session completed successfully — remove from manager.
         self.ctx.process_session_manager.remove(session_id);
+
+        for problem in
+            agora_core::shared_settings::capture(&self.ctx, &request.game_dir, &request.manifest)
+        {
+            progress.log("stderr", &format!("[agora] {problem}"));
+        }
+
+        // Runs after the instance is released, so the command may touch its
+        // files. Its result never changes how the session is classified.
+        if let Some(command) = &request.hooks.post_exit {
+            match run_hook(command, &request, &java_path, progress).await {
+                Ok(status) if !status.success() => {
+                    progress.log(
+                        "stderr",
+                        &format!("[agora] post-exit command exited with {status}"),
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    progress.log("stderr", &format!("[agora] post-exit command: {error}"))
+                }
+            }
+        }
 
         self.ctx
             .event_sink
@@ -1031,6 +1108,11 @@ impl LaunchService {
             outcome.clone(),
         );
         let _ = agora_core::lkg::run_retention(game_dir);
+        if let Ok(manifest) =
+            agora_core::helpers::read_manifest(&game_dir.join("instance_manifest.json"))
+        {
+            let _ = agora_core::shared_settings::capture(ctx, game_dir, &manifest);
+        }
 
         outcome
     }
@@ -1229,6 +1311,166 @@ fn create_fresh_prelaunch_snapshot(instance_dir: &Path, scope: &[&str]) -> Launc
 /// it is per-instance user intent that should travel with an exported instance,
 /// and it needs no migration. An unreadable manifest simply means no wrapper —
 /// this must never be the thing that stops a launch.
+/// The preference key for a fixed game window size, per instance
+/// (`user_preferences`) or as the global default (`user_settings`).
+pub const WINDOW_SIZE_KEY: &str = "agora_window_size";
+
+/// Read `{"width": W, "height": H}`; anything else means "no fixed size".
+pub fn parse_window_size(value: &serde_json::Value) -> Option<(u32, u32)> {
+    let dimension = |key: &str| {
+        value
+            .get(key)?
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| (200..=16_384).contains(n))
+    };
+    Some((dimension("width")?, dimension("height")?))
+}
+
+/// The instance's own window size, else the global default, else none.
+fn window_size(manifest: &InstanceManifest, conn: &rusqlite::Connection) -> Option<(u32, u32)> {
+    manifest
+        .user_preferences
+        .get(WINDOW_SIZE_KEY)
+        .and_then(parse_window_size)
+        .or_else(|| {
+            agora_core::db::get_setting(conn, WINDOW_SIZE_KEY)
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(parse_window_size)
+        })
+}
+
+/// Refuse a Quick Play target that cannot work before anything is prepared.
+fn validate_quick_play(
+    mode: LaunchMode,
+    game_dir: &std::path::Path,
+    target: &crate::launch_planner::QuickPlay,
+) -> LauncherResult<()> {
+    let invalid = |message: String| LauncherError::Generic {
+        code: "ERR_QUICK_PLAY".into(),
+        message,
+    };
+    if mode == LaunchMode::Delegated {
+        return Err(invalid(
+            "Joining a world or server on launch needs direct launch; the official launcher cannot be told where to go.".into(),
+        ));
+    }
+    if let crate::launch_planner::QuickPlay::Singleplayer(world) = target {
+        let plain =
+            !world.is_empty() && !world.contains(['/', '\\']) && world != "." && world != "..";
+        if !plain
+            || !game_dir
+                .join("saves")
+                .join(world)
+                .join("level.dat")
+                .is_file()
+        {
+            return Err(invalid(format!(
+                "This instance has no world named '{world}'."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Preference keys for the per-instance launch commands.
+pub const PRE_LAUNCH_KEY: &str = "agora_pre_launch_command";
+pub const POST_EXIT_KEY: &str = "agora_post_exit_command";
+pub const ENV_VARS_KEY: &str = "agora_env_vars";
+
+/// Commands run around a direct launch, and extra environment variables for
+/// the game. Stored in the instance's `user_preferences`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchHooks {
+    pub pre_launch: Option<String>,
+    pub post_exit: Option<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+impl LaunchHooks {
+    pub fn from_manifest(manifest: &InstanceManifest) -> Self {
+        let preferences = &manifest.user_preferences;
+        let text = |key: &str| {
+            preferences
+                .get(key)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let env = preferences
+            .get(ENV_VARS_KEY)
+            .and_then(|value| value.as_object())
+            .map(|vars| {
+                vars.iter()
+                    .filter(|(name, _)| valid_env_name(name))
+                    .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            pre_launch: text(PRE_LAUNCH_KEY),
+            post_exit: text(POST_EXIT_KEY),
+            env,
+        }
+    }
+}
+
+/// A name the operating system will accept for an environment variable.
+pub fn valid_env_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['=', '\0'])
+        && !name.chars().next().is_some_and(|c| c.is_ascii_digit())
+}
+
+/// Run a launch command in the instance folder and wait for it, streaming its
+/// output to the console. Parsed like the wrapper: arguments split on spaces
+/// with quotes respected, no shell. The `INST_*` variables match Prism
+/// Launcher's, so existing scripts keep working.
+async fn run_hook(
+    command: &str,
+    request: &LaunchInputs,
+    java_path: &Path,
+    progress: &dyn LaunchProgress,
+) -> LauncherResult<std::process::ExitStatus> {
+    let parts = crate::launch_planner::parse_argument_string(command)?;
+    let Some((program, args)) = parts.split_first() else {
+        return Err(LauncherError::Generic {
+            code: "ERR_LAUNCH_COMMAND".into(),
+            message: "The launch command is empty.".into(),
+        });
+    };
+    let mut child = tokio::process::Command::new(program);
+    child
+        .args(args)
+        .current_dir(&request.game_dir)
+        .envs(&request.hooks.env)
+        .env("INST_NAME", &request.instance_name)
+        .env("INST_ID", &request.instance_id)
+        .env("INST_DIR", &request.game_dir)
+        .env("INST_MC_DIR", &request.game_dir)
+        .env("INST_JAVA", java_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    agora_core::helpers::hide_console_window_async(&mut child);
+    let output = child
+        .output()
+        .await
+        .map_err(|error| LauncherError::Generic {
+            code: "ERR_LAUNCH_COMMAND".into(),
+            message: format!("Could not run '{program}': {error}"),
+        })?;
+    for (stream, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+        for line in String::from_utf8_lossy(bytes).lines() {
+            progress.log(stream, &format!("[{program}] {line}"));
+        }
+    }
+    Ok(output.status)
+}
+
 pub(crate) fn wrapper_command(game_dir: &std::path::Path) -> Option<String> {
     let manifest =
         agora_core::helpers::read_manifest(&game_dir.join("instance_manifest.json")).ok()?;
@@ -1288,6 +1530,7 @@ mod tests {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
         agora_core::db::upsert_instance(&conn, &row).unwrap();
@@ -1347,6 +1590,7 @@ mod tests {
                     mode: LaunchMode::Delegated,
                     health_policy: HealthPolicy::WarnOnly,
                     health_scan_token: None,
+                    quick_play: None,
                 }))
                 .unwrap();
             assert_eq!(

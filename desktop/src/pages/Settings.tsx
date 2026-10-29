@@ -58,7 +58,16 @@ import {
   testLauncherPath,
   openDataFolder,
   restartApp,
+  parseWindowSize,
+  WINDOW_SIZE_KEY,
+  type WindowSize,
+  msaListAccounts,
+  msaRemoveAccount,
+  msaSwitchAccount,
+  type MsaAccountSummary,
 } from '../lib/tauri';
+import { WindowSizeEditor } from '../components/WindowSizeEditor';
+import { SkinSettings } from '../components/SkinSettings';
 import type { CredentialStorageStatus, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus, MsaLoginPrompt } from '../lib/tauri';
 import { Privacy } from './Privacy';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
@@ -81,6 +90,11 @@ import { PluginManager } from '../features/plugins/PluginManager';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
 import type { Tab } from '../lib/useDestination';
+import {
+  SETTINGS_SECTION_EVENT,
+  peekPendingSettingsSection,
+  takePendingSettingsSection,
+} from '../lib/settingsSection';
 import { useConfirm } from '@/components/ui/confirm';
 import { ContentProvidersList } from '../components/ContentProvidersList';
 import { UpdateCenter } from '../features/updates/UpdateCenter';
@@ -180,8 +194,23 @@ export function Settings({
   const ts = useTypedSettings();
   const { confirm } = useConfirm();
 
-  const [activeTabId, setActiveTabId] = useState<string>(() => readStoredSettingsTab() ?? 'general');
-  const [activePageId, setActivePageId] = useState<string | null>(null);
+  const [activeTabId, setActiveTabId] = useState<string>(() => peekPendingSettingsSection()?.tab ?? readStoredSettingsTab() ?? 'general');
+  const [activePageId, setActivePageId] = useState<string | null>(() => peekPendingSettingsSection()?.page ?? null);
+
+  // The command palette can open a named section. Take that request on mount
+  // (Settings was not open) and again whenever one is announced (it was).
+  useEffect(() => {
+    const apply = () => {
+      const target = takePendingSettingsSection();
+      if (!target) return;
+      setActiveTabId(target.tab);
+      setActivePageId(target.page);
+      storeSettingsTab(target.tab);
+    };
+    apply();
+    window.addEventListener(SETTINGS_SECTION_EVENT, apply);
+    return () => window.removeEventListener(SETTINGS_SECTION_EVENT, apply);
+  }, []);
 
   const [modrinth, setModrinth] = useState(false);
   const [curatedSources, setCuratedSources] = useState<Record<string, boolean>>({
@@ -345,13 +374,31 @@ export function Settings({
     return () => { cancelled = true; };
   }, []);
 
+  const [msaAccounts, setMsaAccounts] = useState<MsaAccountSummary[]>([]);
+  // Reload the active account and the list together: signing out or in can
+  // change which account is active.
+  const refreshMsaAccounts = useCallback(async () => {
+    const [creds, accounts] = await Promise.all([
+      msaGetStatus().catch(() => null),
+      msaListAccounts().catch(() => [] as MsaAccountSummary[]),
+    ]);
+    setMsaCreds(creds);
+    setMsaAccounts(Array.isArray(accounts) ? accounts : []);
+  }, []);
+
   // Load MSA status on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const creds = await msaGetStatus();
-        if (!cancelled) setMsaCreds(creds);
+        const [creds, accounts] = await Promise.all([
+          msaGetStatus(),
+          msaListAccounts().catch(() => [] as MsaAccountSummary[]),
+        ]);
+        if (!cancelled) {
+          setMsaCreds(creds);
+          setMsaAccounts(Array.isArray(accounts) ? accounts : []);
+        }
       } catch {
         if (!cancelled) setMsaCreds(null);
       } finally {
@@ -534,6 +581,7 @@ export function Settings({
       const creds = await msaCompleteLogin();
       setMsaCreds(creds);
       setMsaPrompt(null);
+      await refreshMsaAccounts();
     } catch (e) {
       setMsaError(formatError(e));
       setMsaPrompt(null);
@@ -555,10 +603,38 @@ export function Settings({
     try {
       await msaLogout();
       setMsaCreds(null);
+      await refreshMsaAccounts();
     } catch (e) {
       showToast(formatError(e), 'error');
     }
   };
+
+  const handleMsaSwitch = async (uuid: string) => {
+    try {
+      const active = await msaSwitchAccount(uuid);
+      await refreshMsaAccounts();
+      showToast(`Now launching as ${active.username}.`, 'success');
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const handleMsaRemove = async (uuid: string) => {
+    try {
+      await msaRemoveAccount(uuid);
+      await refreshMsaAccounts();
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const otherMsaAccounts = (
+    <OtherMsaAccounts
+      accounts={msaAccounts.filter((account) => !account.active)}
+      onSwitch={handleMsaSwitch}
+      onRemove={handleMsaRemove}
+    />
+  );
 
   const toggleLaunchMode = async (value: boolean) => {
     setDirectLaunch(value);
@@ -1004,6 +1080,7 @@ export function Settings({
         <span className="text-sm">Show advanced settings</span>
         <input
           type="checkbox"
+          aria-label="Show advanced settings"
           checked={advancedMode}
           onChange={toggleAdvanced}
           className="h-5 w-5 accent-primary"
@@ -1224,7 +1301,7 @@ export function Settings({
       </label>
       <p className="text-xs text-muted-foreground">
         <strong>Off (default):</strong> Delegates to the official Mojang launcher — handles authentication and Minecraft execution.
-        The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded">--profile</code>.
+        The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded-sm">--profile</code>.
       </p>
       <p className="text-xs text-muted-foreground">
         <strong>On:</strong> Agora launches Minecraft directly — shows game console output in-app and gives you more control. Requires a Microsoft Account sign-in above for full online play.
@@ -1601,18 +1678,39 @@ export function Settings({
             Required for direct launch mode. Used to authenticate with Minecraft services.
           </p>
           <DegradedCredentialNotice backend={credentialStorage?.microsoft} portable={isPortable} />
-          <button
-            onClick={handleMsaSignOut}
-            className="text-xs text-muted-foreground hover:text-foreground underline"
-          >
-            Sign out
-          </button>
+          {otherMsaAccounts}
+          {!msaCreds.needs_reauth && msaPrompt && (
+            <MsaDeviceFlowPanel
+              prompt={msaPrompt}
+              polling={msaBusy}
+              onCancel={handleMsaCancelSignIn}
+            />
+          )}
+          {!msaCreds.needs_reauth && msaError && <p className="text-xs text-destructive">{msaError}</p>}
+          <div className="flex flex-wrap items-center gap-3">
+            {!msaCreds.needs_reauth && (
+              <button
+                onClick={handleMsaSignIn}
+                disabled={msaBusy}
+                className="rounded-lg border border-input px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
+              >
+                {msaBusy ? 'Waiting…' : 'Add another account'}
+              </button>
+            )}
+            <button
+              onClick={handleMsaSignOut}
+              className="text-xs text-muted-foreground hover:text-foreground underline"
+            >
+              Sign out {msaCreds.username}
+            </button>
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">
             Sign in with your Microsoft account to enable direct in-app launching (without the Mojang launcher).
           </p>
+          {otherMsaAccounts}
 
           {msaPrompt && (
             <MsaDeviceFlowPanel
@@ -1720,7 +1818,8 @@ export function Settings({
       </label>
       <p className="text-xs text-muted-foreground">
         Search Modrinth's whole library alongside the curated catalog, and enable live Modrinth
-        features, when permitted by Privacy settings. Off by default. Curated entries that happen to
+        features, when permitted by Privacy settings (turn on Advanced mode in Settings &gt; General to
+        see them). Off by default. Curated entries that happen to
         be Modrinth-sourced are not affected — those are controlled below and stay browsable and
         installable either way.
       </p>
@@ -1910,7 +2009,7 @@ export function Settings({
                   {mcpStatus?.running ? (
                     <>
                       Server running on{' '}
-                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded-sm">
                         http://127.0.0.1:39741/sse
                       </code>
                     </>
@@ -1985,7 +2084,7 @@ export function Settings({
           <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
             <h4 className="text-sm font-semibold">Bearer Token</h4>
             <p className="text-xs text-muted-foreground">
-              All MCP connections require this token in the <code className="bg-muted px-1 py-0.5 rounded">Authorization: Bearer &lt;token&gt;</code> header. Query-string tokens are not accepted.
+              All MCP connections require this token in the <code className="bg-muted px-1 py-0.5 rounded-sm">Authorization: Bearer &lt;token&gt;</code> header. Query-string tokens are not accepted.
             </p>
             {mcpToken?.token ? (
               <>
@@ -2025,7 +2124,7 @@ export function Settings({
             )}
             {advancedMode && (
               <p className="text-xs text-muted-foreground">
-                Token path: <code className="bg-muted px-1 py-0.5 rounded">{'<app_data>/mcp_token'}</code>
+                Token path: <code className="bg-muted px-1 py-0.5 rounded-sm">{'<app_data>/mcp_token'}</code>
               </p>
             )}
           </div>
@@ -2042,16 +2141,16 @@ export function Settings({
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
                 <li>
                   Add the config below to{' '}
-                  <code className="bg-muted px-1 py-0.5 rounded">
+                  <code className="bg-muted px-1 py-0.5 rounded-sm">
                     .opencode/opencode.json
                   </code>
                   {' '}or{' '}
-                  <code className="bg-muted px-1 py-0.5 rounded">
+                  <code className="bg-muted px-1 py-0.5 rounded-sm">
                     ~/.config/opencode/opencode.json (C:Users\[User]\.config\opencode)
                   </code>
                   .
                 </li>
-                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.opencode/skills/agora-mcp/SKILL.md</code>.</li>
+                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded-sm">.opencode/skills/agora-mcp/SKILL.md</code>.</li>
                 <li>Restart Opencode.</li>
               </ol>
               <div className="relative">
@@ -2071,7 +2170,7 @@ export function Settings({
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
                 <li>
                   Add the config below to{' '}
-                  <code className="bg-muted px-1 py-0.5 rounded">
+                  <code className="bg-muted px-1 py-0.5 rounded-sm">
                     {isWindows
                       ? '%APPDATA%\\Claude\\claude_desktop_config.json'
                       : '~/Library/Application Support/Claude/claude_desktop_config.json'}
@@ -2096,10 +2195,10 @@ export function Settings({
               <h5 className="text-xs font-semibold">Codex</h5>
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
                 <li>
-                  Set <code className="bg-muted px-1 py-0.5 rounded">AGORA_MCP_TOKEN</code> to the Bearer token shown above.
+                  Set <code className="bg-muted px-1 py-0.5 rounded-sm">AGORA_MCP_TOKEN</code> to the Bearer token shown above.
                 </li>
                 <li>
-                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded">~/.codex/config.toml</code>, then restart Codex.
+                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded-sm">~/.codex/config.toml</code>, then restart Codex.
                 </li>
               </ol>
               <div className="relative">
@@ -2118,7 +2217,7 @@ export function Settings({
               <h5 className="text-xs font-semibold">GitHub Copilot (VS Code)</h5>
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
                 <li>
-                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.vscode/mcp.json</code>.
+                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded-sm">.vscode/mcp.json</code>.
                 </li>
                 <li>
                   When Copilot prompts for the token, enter the Bearer token shown above, then start the server from the MCP controls.
@@ -2157,8 +2256,8 @@ export function Settings({
             <div className="space-y-1.5 pt-2 border-t border-border">
               <h5 className="text-xs font-semibold">Kilo Code (VS Code extension)</h5>
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
-                <li>Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.kilo/kilo.json</code> (project root or <code className="bg-muted px-1 py-0.5 rounded">~/.config/kilo/kilo.json</code>).</li>
-                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.kilo/skills/agora-mcp/SKILL.md</code>.</li>
+                <li>Add the config below to <code className="bg-muted px-1 py-0.5 rounded-sm">.kilo/kilo.json</code> (project root or <code className="bg-muted px-1 py-0.5 rounded-sm">~/.config/kilo/kilo.json</code>).</li>
+                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded-sm">.kilo/skills/agora-mcp/SKILL.md</code>.</li>
                 <li>Restart VS Code.</li>
               </ol>
               <div className="relative">
@@ -2176,8 +2275,8 @@ export function Settings({
             <div className="space-y-1 pt-2 border-t border-border">
               <h5 className="text-xs font-semibold">Other MCP clients</h5>
               <div className="text-xs text-muted-foreground space-y-0.5">
-                <p>Server URL: <code className="bg-muted px-1 py-0.5 rounded">http://127.0.0.1:39741/sse</code></p>
-                <p>Transport: <code className="bg-muted px-1 py-0.5 rounded">SSE (Server-Sent Events)</code></p>
+                <p>Server URL: <code className="bg-muted px-1 py-0.5 rounded-sm">http://127.0.0.1:39741/sse</code></p>
+                <p>Transport: <code className="bg-muted px-1 py-0.5 rounded-sm">SSE (Server-Sent Events)</code></p>
                 <p>Authentication: Bearer token (see above)</p>
                 <p>If you get stuck, your AI agent might be able to help you troubleshoot/customize the MCP integration.</p>
               </div>
@@ -2307,6 +2406,7 @@ export function Settings({
             </>
           ),
         },
+        { id: 'skin', label: 'Skin & cape', content: msaCreds && !msaCreds.needs_reauth ? <SkinSettings /> : <p className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">Sign in with a Microsoft account on the Sign in page to change your skin and cape.</p> },
       ],
     },
     {
@@ -2322,6 +2422,7 @@ export function Settings({
           content: (
             <>
               {launchModeCard}
+              <GameStartWindowSettings />
               {gate(launcherPathCard)}
               {disclaimerCard}
             </>
@@ -2337,6 +2438,7 @@ export function Settings({
             </>
           ),
         },
+        { id: 'window', label: 'Game window', content: <GameWindowSettings /> },
       ],
     },
     {
@@ -2407,7 +2509,7 @@ export function Settings({
           <p className="text-xs font-semibold text-destructive">Some settings failed to load</p>
           {Object.entries(ts.errors).map(([key, err]) => (
             <p key={key} className="text-xs text-destructive/80">
-              <code className="bg-destructive/10 px-1 rounded">{key}</code>: {err}
+              <code className="bg-destructive/10 px-1 rounded-sm">{key}</code>: {err}
             </p>
           ))}
         </div>
@@ -2461,5 +2563,144 @@ export function Settings({
         </div>
       </div>
     </div>
+  );
+}
+
+/** Global default for the game window size; instances can override it. */
+function GameWindowSettings() {
+  const [value, setValue] = useState<WindowSize | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getSetting(WINDOW_SIZE_KEY)
+      .then((stored) => setValue(parseWindowSize(stored)))
+      .catch((e) => { setValue(null); setError(formatError(e)); });
+  }, []);
+
+  return (
+    <SettingsSection icon={Cpu} title="Game window">
+      <p className="text-xs text-muted-foreground">
+        The size Minecraft opens at when Agora starts it (direct launch). An instance can set its own size on
+        its Java &amp; Args tab. With the official launcher, set the resolution on its installation instead.
+      </p>
+      {value === undefined ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : (
+        <WindowSizeEditor
+          value={value}
+          noneLabel="Let the game decide"
+          onSave={async (size) => {
+            try {
+              await setSetting(WINDOW_SIZE_KEY, size);
+            } catch (e) {
+              throw new Error(formatError(e));
+            }
+            setValue(size);
+          }}
+        />
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </SettingsSection>
+  );
+}
+
+/** Signed-in accounts other than the active one, with switch and remove. */
+function OtherMsaAccounts({
+  accounts,
+  onSwitch,
+  onRemove,
+}: {
+  accounts: MsaAccountSummary[];
+  onSwitch: (uuid: string) => Promise<void>;
+  onRemove: (uuid: string) => Promise<void>;
+}) {
+  if (accounts.length === 0) return null;
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-muted-foreground">Other signed-in accounts</p>
+      <ul className="divide-y divide-border rounded-lg border border-border">
+        {accounts.map((account) => (
+          <li key={account.uuid} className="flex items-center justify-between gap-2 px-3 py-2">
+            <span className="min-w-0 truncate text-sm">
+              {account.username}
+              {account.needs_reauth && <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">sign in again</span>}
+            </span>
+            <span className="flex shrink-0 gap-2">
+              <button
+                type="button"
+                onClick={() => void onSwitch(account.uuid)}
+                className="rounded-md border border-input px-2 py-1 text-xs font-medium hover:bg-accent"
+              >
+                Use for launching
+              </button>
+              <button
+                type="button"
+                onClick={() => void onRemove(account.uuid)}
+                className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground underline"
+              >
+                Remove
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** What the launcher window does while a game runs. */
+function GameStartWindowSettings() {
+  const [mode, setMode] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getSetting('launcher_on_game_start')
+      .then((value) => setMode(typeof value === 'string' ? value : 'keep'))
+      .catch(() => setMode('keep'));
+  }, []);
+
+  const choose = async (next: string) => {
+    const previous = mode;
+    setMode(next);
+    setError(null);
+    try {
+      await setSetting('launcher_on_game_start', next);
+    } catch (e) {
+      setMode(previous);
+      setError(formatError(e));
+    }
+  };
+
+  const options: { value: string; label: string; hint: string }[] = [
+    { value: 'keep', label: 'Keep Agora open', hint: 'The window stays where it is.' },
+    { value: 'minimize', label: 'Minimize Agora', hint: 'Comes back when the game closes (direct launch).' },
+    { value: 'hide', label: 'Hide Agora until the game closes', hint: 'Direct launch only; with the official launcher Agora minimizes instead, because it is not told when the game closes.' },
+  ];
+
+  return (
+    <SettingsSection icon={Rocket} title="When the game starts">
+      {mode === null ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : (
+        <div className="space-y-2" role="radiogroup" aria-label="When the game starts">
+          {options.map((option) => (
+            <label key={option.value} className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                name="launcher-on-game-start"
+                checked={mode === option.value}
+                onChange={() => void choose(option.value)}
+                className="mt-1 accent-primary"
+              />
+              <span>
+                <span className="block">{option.label}</span>
+                <span className="block text-xs text-muted-foreground">{option.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </SettingsSection>
   );
 }

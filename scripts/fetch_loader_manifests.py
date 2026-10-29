@@ -698,12 +698,20 @@ def _extract_version_json_sha256(jar_path: Path) -> str | None:
 
 
 def _neoforge_version_to_mc(version: str) -> str | None:
-    """Map NeoForge version to Minecraft version heuristically."""
-    parts = version.split(".")
+    """Map NeoForge version to Minecraft version heuristically.
+
+    Up to 1.21.x NeoForge drops the leading ``1.``: ``21.1.181`` is 1.21.1.
+    From 26.1 on it copies the Minecraft version and adds a build number:
+    ``26.1.0.5`` is 26.1, ``26.1.2.123`` is 26.1.2.
+    """
+    parts = version.split("-", 1)[0].split(".")
     if not parts or not parts[0].isdigit():
         return None
     major = parts[0]
     minor = parts[1] if len(parts) > 1 else "0"
+    if int(major) >= 26:
+        patch = parts[2] if len(parts) > 3 else "0"
+        return f"{major}.{minor}" if patch == "0" else f"{major}.{minor}.{patch}"
     if minor == "0":
         return f"1.{major}"
     return f"1.{major}.{minor}"

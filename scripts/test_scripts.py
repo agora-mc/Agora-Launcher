@@ -182,6 +182,26 @@ class TestIsStandardRelease(unittest.TestCase):
         self.assertFalse(refresh_loader_manifests._is_standard_release(""))
 
 
+class TestNeoForgeVersionToMc(unittest.TestCase):
+    """NeoForge changed its numbering at Minecraft 26.1."""
+
+    def test_pre_26_scheme_drops_leading_one(self):
+        to_mc = fetch_loader_manifests._neoforge_version_to_mc
+        self.assertEqual(to_mc("21.1.181"), "1.21.1")
+        self.assertEqual(to_mc("21.0.143"), "1.21")
+        self.assertEqual(to_mc("20.2.3-beta"), "1.20.2")
+
+    def test_26_scheme_copies_minecraft_version(self):
+        to_mc = fetch_loader_manifests._neoforge_version_to_mc
+        self.assertEqual(to_mc("26.1.0.5"), "26.1")
+        self.assertEqual(to_mc("26.1.2.123"), "26.1.2")
+        self.assertEqual(to_mc("26.3.0.99"), "26.3")
+        self.assertEqual(to_mc("26.1.0.0-beta"), "26.1")
+
+    def test_non_numeric_is_rejected(self):
+        self.assertIsNone(fetch_loader_manifests._neoforge_version_to_mc("abc"))
+
+
 
 
 

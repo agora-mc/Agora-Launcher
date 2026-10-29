@@ -84,7 +84,7 @@ function computeEarned(data: FieldGuideData): Set<string> {
 }
 
 export function FieldGuide() {
-  const { journal: liveJournal, enabled } = useAmbience();
+  const { journal: liveJournal, enabled, reducedMotion } = useAmbience();
   const [saved, setSaved] = useState<FieldGuideData>(() => loadSavedGuideSync());
 
   // Hydrate from Agora app data (local_state.db) — migrates legacy WebView
@@ -139,7 +139,11 @@ export function FieldGuide() {
             <h2 className="text-2xl font-bold">Field Guide</h2>
             <p className="mt-1 max-w-2xl text-sm text-white/75">
               Every discovery hidden in the living background, plus the achievements you've earned.
-              {enabled ? ' The background is running — keep an eye out.' : ' Turn the living background on to find more.'}
+              {!enabled
+                ? ' Turn the living background on to find more.'
+                : reducedMotion
+                  ? ' Reduce motion is on, so the background holds still as one picture.'
+                  : ' The background is running — keep an eye out.'}
             </p>
           </div>
           <div className="flex items-center gap-3">

@@ -15,8 +15,8 @@
  * crash doctor) but drops every decorative and gamified system, and it takes
  * Browse from the STANDARD page rather than the Bazaar. Its one cross-cutting
  * effect is `reducedMotion`, which the presentation-motion coordinator applies
- * to the app-wide motion preference — and reduced motion in turn switches the
- * living background off (see `AmbienceProvider`).
+ * to the app-wide motion preference — and reduced motion holds the living
+ * background still rather than stopping it (see `AmbienceEngine`).
  */
 
 import type { AmbienceProfile } from '../features/ambience/engine/engine';
