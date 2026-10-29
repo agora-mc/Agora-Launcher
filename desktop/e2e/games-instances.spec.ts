@@ -287,3 +287,29 @@ test('creating an instance needs a name, explains how it runs, and opens the new
 
   await expect(page.getByTestId('instance-overview').getByRole('heading', { name: 'Grounded', exact: true })).toBeVisible();
 });
+
+test('a launch that starts names the process, how it runs, and what the page does about it', async ({ page }) => {
+  await boot(page, {
+    games_instance_list: { instances: [grounded] },
+    games_instance_get: groundedDetail,
+    games_instance_check: cleanCheck,
+    games_instance_launch: {
+      status: 'launched',
+      pid: 4242,
+      deployment: 'links',
+      notice: 'The virtual file system is not set up, so this launch uses linked files.',
+      findings: [],
+      reason: null,
+      next: null,
+    },
+  });
+
+  await cardFor(page, 'Grounded').getByRole('button', { name: 'Open' }).click();
+  await page.getByRole('button', { name: 'Launch Grounded' }).click();
+
+  const result = page.getByRole('status').filter({ hasText: 'The game is starting (process 4242)' });
+  await expect(result).toContainText('Agora will put your files back when it closes.');
+  await expect(result).toContainText('Running from linked files.');
+  await expect(result).toContainText('The virtual file system is not set up, so this launch uses linked files.');
+  await expect(page.getByRole('button', { name: 'Launch Grounded' })).toBeVisible();
+});

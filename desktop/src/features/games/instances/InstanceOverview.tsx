@@ -63,11 +63,13 @@ export function InstanceOverviewTab({ instanceId }: InstanceOverviewTabProps) {
     setPage({ status: 'loaded', detail, check, checkError });
   }, [instanceId]);
 
-  // Start from nothing on each instance, so a page never shows the last instance's answers.
+  // Start from nothing on each instance, so a page never shows the last instance's answers. The
+  // "Launch anyway" choice goes too: a tick made for one instance must not carry over to another.
   useEffect(() => {
     setPage({ status: 'loading' });
     setReply(null);
     setActionError(null);
+    setLaunchAnyway(false);
     load().catch((failure: unknown) => setPage({ status: 'failed', message: gamesErrorMessage(failure) }));
   }, [load]);
 
@@ -119,12 +121,14 @@ export function InstanceOverviewTab({ instanceId }: InstanceOverviewTabProps) {
     setActionError(null);
     try {
       await setGameInstanceDeployment(instanceId, choice);
-      await load();
     } catch (failure) {
       setActionError(`The way this instance runs was not changed. ${gamesErrorMessage(failure)}`);
+      return;
     } finally {
       setBusy(null);
     }
+    // The change is saved at this point; a failed refresh must not read as a failed change.
+    refreshDetail();
   };
 
   const launch = async (deployment?: DeploymentMode) => {

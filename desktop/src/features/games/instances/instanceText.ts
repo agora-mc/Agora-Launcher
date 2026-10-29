@@ -69,7 +69,7 @@ export function baseModeCopy(mode: BaseMode): { label: string; explain: string }
   return mode === 'linked'
     ? {
         label: 'Linked base',
-        explain: 'Files are shared with the game install, so the base takes almost no extra disk space. A change to a linked file also changes the install.',
+        explain: 'Most game files are shared with the install (as hard links), so the base takes little extra disk space. A change to a linked file also changes the install.',
       }
     : {
         label: 'Copied base',

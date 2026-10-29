@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckFinding, InstanceCheck } from './api';
 import {
+  baseModeCopy,
   checkHeadline,
   DEPLOYMENT_OPTIONS,
   deploymentLabel,
@@ -47,6 +48,15 @@ describe('deployment words', () => {
     expect(fallbackTradeoffs('links').some((line) => line.includes('may be refused'))).toBe(true);
     expect(fallbackTradeoffs('copies').some((line) => line.includes('disk space'))).toBe(true);
     expect(fallbackTradeoffs('virtual')).toEqual([]);
+  });
+});
+
+describe('base modes', () => {
+  it('says a linked base shares most files with the install as hard links, not that it is free', () => {
+    const linked = baseModeCopy('linked').explain;
+    expect(linked).toContain('hard links');
+    expect(linked).not.toContain('almost no');
+    expect(baseModeCopy('copied').explain).toContain('about the size of the game');
   });
 });
 
