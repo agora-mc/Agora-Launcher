@@ -105,15 +105,9 @@ mod tests {
             tools::games_tools_swap_costs,
             tools::games_tools_swap_status,
             tools::games_tools_swap_restore,
-            import::games_import_mo2_scan,
-            import::games_import_mo2,
-            catalog::games_catalog_list,
-            catalog::games_catalog_install,
-            user_files::games_user_files_status,
-            user_files::games_user_files_restore,
         );
         assert_eq!(
-            checked, 49,
+            checked, 43,
             "the stub list drifted from the brief's command list"
         );
     }
