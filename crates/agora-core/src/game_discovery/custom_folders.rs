@@ -80,7 +80,10 @@ pub fn list_folders(paths: &AppPaths) -> LauncherResult<Vec<String>> {
         Err(error) => {
             return Err(refused(
                 ERR_FOLDERS_UNREADABLE,
-                format!("Agora could not read your game folders list at {}: {error}", path.display()),
+                format!(
+                    "Agora could not read your game folders list at {}: {error}",
+                    path.display()
+                ),
             ))
         }
     };
@@ -106,12 +109,35 @@ pub fn list_folders(paths: &AppPaths) -> LauncherResult<Vec<String>> {
     Ok(file.folders)
 }
 
+/// A folder the user added, and whether it is still on disk. A folder that is gone is listed, so
+/// the user can remove it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListedFolder {
+    pub path: String,
+    pub present: bool,
+}
+
+/// The folders the user added, each with whether it is still there.
+pub fn list_folder_status(paths: &AppPaths) -> LauncherResult<Vec<ListedFolder>> {
+    Ok(list_folders(paths)?
+        .into_iter()
+        .map(|path| {
+            let present = Path::new(&path).is_dir();
+            ListedFolder { path, present }
+        })
+        .collect())
+}
+
 fn save_folders(paths: &AppPaths, folders: &[String]) -> LauncherResult<()> {
     let path = folders_file(paths);
     let write_failed = |error: std::io::Error| {
         refused(
             ERR_FOLDERS_WRITE,
-            format!("Agora could not save your game folders list at {}: {error}", path.display()),
+            format!(
+                "Agora could not save your game folders list at {}: {error}",
+                path.display()
+            ),
         )
     };
     let root = paths.root();
@@ -120,8 +146,16 @@ fn save_folders(paths: &AppPaths, folders: &[String]) -> LauncherResult<()> {
         version: FOLDERS_VERSION,
         folders: folders.to_vec(),
     })
-    .map_err(|error| refused(ERR_FOLDERS_WRITE, format!("Agora could not encode your game folders: {error}")))?;
-    let tmp = root.join(format!("{FOLDERS_FILE}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    .map_err(|error| {
+        refused(
+            ERR_FOLDERS_WRITE,
+            format!("Agora could not encode your game folders: {error}"),
+        )
+    })?;
+    let tmp = root.join(format!(
+        "{FOLDERS_FILE}.{}.tmp",
+        uuid::Uuid::new_v4().simple()
+    ));
     let result = write_synced(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(error) = result {
         let _ = std::fs::remove_file(&tmp);
@@ -157,10 +191,35 @@ pub fn display_path(canonical: &Path) -> String {
 pub fn folder_key(display: &str) -> String {
     let trimmed = display.trim().trim_end_matches(['\\', '/']);
     if cfg!(windows) {
-        trimmed.to_lowercase()
+        // Windows drops trailing dots and spaces from a name, so `Skyrim.` is `Skyrim`.
+        trimmed.trim_end_matches(['.', ' ']).to_lowercase()
     } else {
         trimmed.to_string()
     }
+}
+
+/// Whether the last part of `path` is a Windows device name (`NUL`, `CON`, `COM1`...). Windows
+/// opens those whatever folder they sit in, so they are never a game folder, and `NUL.txt` is
+/// `NUL` too.
+fn names_a_windows_device(path: &str) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let last = path
+        .rsplit(['\\', '/'])
+        .find(|part| !part.is_empty())
+        .unwrap_or("");
+    let stem = last
+        .trim_end_matches(['.', ' '])
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
 }
 
 /// Whether `child` is strictly inside `parent`, comparing whole path components.
@@ -175,6 +234,18 @@ pub fn add_folder(
     registry: &GameRegistry,
     requested: &str,
 ) -> LauncherResult<AddedFolder> {
+    let store_installs = discover_all().installs;
+    add_folder_checked(paths, registry, requested, &store_installs)
+}
+
+/// `add_folder` with the store installs given, so the refusals about them can be tested without
+/// a real Steam or GOG on the machine.
+fn add_folder_checked(
+    paths: &AppPaths,
+    registry: &GameRegistry,
+    requested: &str,
+    store_installs: &[DiscoveredInstall],
+) -> LauncherResult<AddedFolder> {
     let requested = requested.trim();
     if requested.is_empty() {
         return Err(refused(
@@ -183,13 +254,24 @@ pub fn add_folder(
         ));
     }
     if requested.contains('\0') {
-        return Err(refused(ERR_FOLDER_INVALID, "That is not a usable folder path."));
+        return Err(refused(
+            ERR_FOLDER_INVALID,
+            "That is not a usable folder path.",
+        ));
+    }
+    if names_a_windows_device(requested) {
+        return Err(refused(
+            ERR_FOLDER_INVALID,
+            format!("{requested} is the name of a Windows device, not a game folder."),
+        ));
     }
     let raw = Path::new(requested);
     let metadata = std::fs::metadata(raw).map_err(|_| {
         refused(
             ERR_FOLDER_MISSING,
-            format!("{requested} does not exist. Check the spelling, or that its drive is connected."),
+            format!(
+                "{requested} does not exist. Check the spelling, or that its drive is connected."
+            ),
         )
     })?;
     if !metadata.is_dir() {
@@ -223,8 +305,7 @@ pub fn add_folder(
         }
     }
 
-    let store_report = discover_all();
-    for install in &store_report.installs {
+    for install in store_installs {
         let install_key = folder_key(&display_path(&install.location));
         if install_key == key {
             return Err(refused(
@@ -253,12 +334,14 @@ pub fn add_folder(
             let expected: Vec<String> = registry
                 .games()
                 .flat_map(|game| {
-                    game.version_sources.iter().filter_map(move |source| match source {
-                        agora_game_api::VersionSource::Executable { path } => {
-                            Some(format!("{} ({})", path.as_str(), game.name))
-                        }
-                        _ => None,
-                    })
+                    game.version_sources
+                        .iter()
+                        .filter_map(move |source| match source {
+                            agora_game_api::VersionSource::Executable { path } => {
+                                Some(format!("{} ({})", path.as_str(), game.name))
+                            }
+                            _ => None,
+                        })
                 })
                 .collect();
             let looking_for = if expected.is_empty() {
@@ -301,7 +384,10 @@ pub fn add_folder(
 pub fn remove_folder(paths: &AppPaths, requested: &str) -> LauncherResult<String> {
     let requested = requested.trim();
     if requested.is_empty() {
-        return Err(refused(ERR_FOLDER_INVALID, "No folder was given to remove."));
+        return Err(refused(
+            ERR_FOLDER_INVALID,
+            "No folder was given to remove.",
+        ));
     }
     let key = match std::fs::canonicalize(requested) {
         Ok(canonical) => folder_key(&display_path(&canonical)),
@@ -445,6 +531,35 @@ mod tests {
         AppPaths::from_root(dir.join("data"))
     }
 
+    /// `add_folder` with no store installs, so a test never reads the real machine's stores.
+    fn add(
+        paths: &AppPaths,
+        registry: &GameRegistry,
+        requested: &str,
+    ) -> LauncherResult<AddedFolder> {
+        add_folder_checked(paths, registry, requested, &[])
+    }
+
+    fn store_install_at(location: &Path, name: &str) -> DiscoveredInstall {
+        DiscoveredInstall {
+            store: StoreId::steam(),
+            product: "489830".to_string(),
+            name: name.to_string(),
+            kind: InstallKind::BaseGame,
+            parent_product: None,
+            location: location.to_path_buf(),
+            store_version: None,
+            store_build: None,
+            executables: Vec::new(),
+            capabilities: InstallCapabilities {
+                executables_readable: true,
+                accepts_new_files: true,
+                relocatable: true,
+            },
+            volume: None,
+        }
+    }
+
     #[test]
     fn a_missing_list_is_empty_and_a_damaged_one_is_an_error() {
         let tmp = tempfile::tempdir().unwrap();
@@ -463,7 +578,10 @@ mod tests {
         let paths = paths_in(tmp.path());
         std::fs::create_dir_all(paths.root()).unwrap();
         std::fs::write(folders_file(&paths), br#"{"version": 9, "folders": []}"#).unwrap();
-        assert_eq!(list_folders(&paths).unwrap_err().code(), ERR_FOLDERS_UNREADABLE);
+        assert_eq!(
+            list_folders(&paths).unwrap_err().code(),
+            ERR_FOLDERS_UNREADABLE
+        );
     }
 
     #[test]
@@ -473,9 +591,13 @@ mod tests {
         let game_dir = tmp.path().join("SkyrimCopy");
         std::fs::create_dir_all(&game_dir).unwrap();
         std::fs::write(game_dir.join("SkyrimSE.exe"), b"not really an exe").unwrap();
-        let registry = registry_with(vec![game("skyrim-se", "Skyrim Special Edition", "SkyrimSE.exe")]);
+        let registry = registry_with(vec![game(
+            "skyrim-se",
+            "Skyrim Special Edition",
+            "SkyrimSE.exe",
+        )]);
 
-        let added = add_folder(&paths, &registry, &format!("{}/", game_dir.display())).unwrap();
+        let added = add(&paths, &registry, &format!("{}/", game_dir.display())).unwrap();
         assert_eq!(added.game_id, "skyrim-se");
         assert_eq!(list_folders(&paths).unwrap(), vec![added.path.clone()]);
 
@@ -484,6 +606,131 @@ mod tests {
         assert_eq!(installs.len(), 1);
         assert_eq!(installs[0].store, StoreId::direct());
         assert_eq!(installs[0].name, "SkyrimCopy");
+
+        // Identification claims it by its executable, the same way it claims a store install.
+        let report = crate::game_discovery::DiscoveryReport { installs, warnings };
+        let inventory =
+            crate::game_registry::identify_installs(&registry, &report, &|_: &Path| None);
+        assert_eq!(
+            inventory.installs.len(),
+            1,
+            "the folder is identified as a game install"
+        );
+        assert_eq!(inventory.installs[0].game.to_string(), "skyrim-se");
+    }
+
+    #[test]
+    fn a_folder_in_the_list_reports_whether_it_is_still_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = paths_in(tmp.path());
+        let game_dir = tmp.path().join("Skyrim");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        std::fs::write(game_dir.join("SkyrimSE.exe"), b"x").unwrap();
+        let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
+        let added = add(&paths, &registry, &game_dir.display().to_string()).unwrap();
+
+        assert_eq!(
+            list_folder_status(&paths).unwrap(),
+            vec![ListedFolder {
+                path: added.path.clone(),
+                present: true
+            }]
+        );
+        std::fs::remove_dir_all(&game_dir).unwrap();
+        assert_eq!(
+            list_folder_status(&paths).unwrap(),
+            vec![ListedFolder {
+                path: added.path,
+                present: false
+            }],
+            "a folder that is gone is still listed, so the user can remove it"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_is_a_store_install_or_inside_one_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = paths_in(tmp.path());
+        let steam_dir = tmp.path().join("steamapps").join("Skyrim");
+        let inner = steam_dir.join("Data");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(steam_dir.join("SkyrimSE.exe"), b"x").unwrap();
+        std::fs::write(inner.join("SkyrimSE.exe"), b"x").unwrap();
+        let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
+        let stores = [store_install_at(&steam_dir, "Skyrim")];
+
+        let same = add_folder_checked(&paths, &registry, &steam_dir.display().to_string(), &stores);
+        assert_eq!(
+            same.unwrap_err().code(),
+            ERR_FOLDER_INSIDE_INSTALL,
+            "the store already finds it"
+        );
+        let within = add_folder_checked(&paths, &registry, &inner.display().to_string(), &stores);
+        assert_eq!(within.unwrap_err().code(), ERR_FOLDER_INSIDE_INSTALL);
+        assert!(list_folders(&paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_windows_device_name_is_refused_as_not_a_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = paths_in(tmp.path());
+        let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
+        if cfg!(windows) {
+            for name in [
+                "NUL",
+                "nul",
+                "NUL.txt",
+                "C:\\Games\\CON",
+                "COM1",
+                "lpt9.log",
+                "AUX.",
+            ] {
+                assert_eq!(
+                    add(&paths, &registry, name).unwrap_err().code(),
+                    ERR_FOLDER_INVALID,
+                    "{name} names a device"
+                );
+            }
+            assert!(
+                !names_a_windows_device("C:\\Games\\CONSOLE"),
+                "a longer name is a folder"
+            );
+            assert!(
+                !names_a_windows_device("C:\\Games\\COM10"),
+                "COM10 is not a device name"
+            );
+        }
+        assert!(list_folders(&paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_folder_spelt_with_trailing_dots_or_spaces_is_the_same_folder() {
+        if !cfg!(windows) {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = paths_in(tmp.path());
+        let game_dir = tmp.path().join("Skyrim");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        std::fs::write(game_dir.join("SkyrimSE.exe"), b"x").unwrap();
+        let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
+        add(&paths, &registry, &game_dir.display().to_string()).unwrap();
+
+        for spelling in [
+            format!("{}.", game_dir.display()),
+            format!("{} ", game_dir.display()),
+        ] {
+            assert_eq!(
+                add(&paths, &registry, &spelling).unwrap_err().code(),
+                ERR_FOLDER_DUPLICATE,
+                "{spelling:?} is the folder already listed"
+            );
+        }
+        assert_eq!(
+            folder_key("C:\\Games\\Skyrim."),
+            folder_key("c:\\games\\skyrim")
+        );
+        assert_eq!(list_folders(&paths).unwrap().len(), 1);
     }
 
     #[test]
@@ -495,15 +742,15 @@ mod tests {
         std::fs::write(game_dir.join("SkyrimSE.exe"), b"x").unwrap();
         let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
 
-        add_folder(&paths, &registry, &game_dir.display().to_string()).unwrap();
+        add(&paths, &registry, &game_dir.display().to_string()).unwrap();
         let trailing = format!("{}{}", game_dir.display(), std::path::MAIN_SEPARATOR);
-        let error = add_folder(&paths, &registry, &trailing).unwrap_err();
+        let error = add(&paths, &registry, &trailing).unwrap_err();
         assert_eq!(error.code(), ERR_FOLDER_DUPLICATE);
         if cfg!(windows) {
             // Windows names are case-insensitive, so another casing is the same folder.
             let shouted = game_dir.display().to_string().to_uppercase();
             assert_eq!(
-                add_folder(&paths, &registry, &shouted).unwrap_err().code(),
+                add(&paths, &registry, &shouted).unwrap_err().code(),
                 ERR_FOLDER_DUPLICATE
             );
         }
@@ -516,16 +763,23 @@ mod tests {
         let paths = paths_in(tmp.path());
         let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
 
-        assert_eq!(add_folder(&paths, &registry, "   ").unwrap_err().code(), ERR_FOLDER_INVALID);
+        assert_eq!(
+            add(&paths, &registry, "   ").unwrap_err().code(),
+            ERR_FOLDER_INVALID
+        );
         let missing = tmp.path().join("nope");
         assert_eq!(
-            add_folder(&paths, &registry, &missing.display().to_string()).unwrap_err().code(),
+            add(&paths, &registry, &missing.display().to_string())
+                .unwrap_err()
+                .code(),
             ERR_FOLDER_MISSING
         );
         let file = tmp.path().join("SkyrimSE.exe");
         std::fs::write(&file, b"x").unwrap();
         assert_eq!(
-            add_folder(&paths, &registry, &file.display().to_string()).unwrap_err().code(),
+            add(&paths, &registry, &file.display().to_string())
+                .unwrap_err()
+                .code(),
             ERR_FOLDER_NOT_A_FOLDER
         );
         assert!(list_folders(&paths).unwrap().is_empty());
@@ -539,7 +793,7 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
         let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
 
-        let error = add_folder(&paths, &registry, &plain.display().to_string()).unwrap_err();
+        let error = add(&paths, &registry, &plain.display().to_string()).unwrap_err();
         assert_eq!(error.code(), ERR_FOLDER_NOT_A_GAME);
         assert!(error.to_string().contains("SkyrimSE.exe"), "{error}");
     }
@@ -556,7 +810,7 @@ mod tests {
             game("game-b", "Game B", "Shared.exe"),
         ]);
 
-        let error = add_folder(&paths, &registry, &both.display().to_string()).unwrap_err();
+        let error = add(&paths, &registry, &both.display().to_string()).unwrap_err();
         assert_eq!(error.code(), ERR_FOLDER_NOT_A_GAME);
         assert!(list_folders(&paths).unwrap().is_empty());
     }
@@ -572,8 +826,8 @@ mod tests {
         std::fs::write(inner.join("SkyrimSE.exe"), b"x").unwrap();
         let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
 
-        add_folder(&paths, &registry, &game_dir.display().to_string()).unwrap();
-        let error = add_folder(&paths, &registry, &inner.display().to_string()).unwrap_err();
+        add(&paths, &registry, &game_dir.display().to_string()).unwrap();
+        let error = add(&paths, &registry, &inner.display().to_string()).unwrap_err();
         assert_eq!(error.code(), ERR_FOLDER_INSIDE_INSTALL);
     }
 
@@ -585,12 +839,16 @@ mod tests {
         std::fs::create_dir_all(&game_dir).unwrap();
         std::fs::write(game_dir.join("SkyrimSE.exe"), b"x").unwrap();
         let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
-        let added = add_folder(&paths, &registry, &game_dir.display().to_string()).unwrap();
+        let added = add(&paths, &registry, &game_dir.display().to_string()).unwrap();
 
         std::fs::remove_dir_all(&game_dir).unwrap();
         let (installs, warnings) = discover_folders(&paths);
         assert!(installs.is_empty());
-        assert_eq!(warnings.len(), 1, "a gone folder is named, not dropped silently");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "a gone folder is named, not dropped silently"
+        );
 
         assert_eq!(remove_folder(&paths, &added.path).unwrap(), added.path);
         assert!(list_folders(&paths).unwrap().is_empty());
@@ -600,19 +858,29 @@ mod tests {
     fn removing_a_folder_that_was_never_added_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = paths_in(tmp.path());
-        let error = remove_folder(&paths, &tmp.path().join("elsewhere").display().to_string()).unwrap_err();
+        let error =
+            remove_folder(&paths, &tmp.path().join("elsewhere").display().to_string()).unwrap_err();
         assert_eq!(error.code(), ERR_FOLDER_NOT_LISTED);
-        assert_eq!(remove_folder(&paths, "  ").unwrap_err().code(), ERR_FOLDER_INVALID);
+        assert_eq!(
+            remove_folder(&paths, "  ").unwrap_err().code(),
+            ERR_FOLDER_INVALID
+        );
     }
 
     #[test]
     fn keys_ignore_case_and_trailing_separators_on_windows_only() {
         if cfg!(windows) {
-            assert_eq!(folder_key("D:\\Games\\Skyrim\\"), folder_key("d:\\games\\skyrim"));
+            assert_eq!(
+                folder_key("D:\\Games\\Skyrim\\"),
+                folder_key("d:\\games\\skyrim")
+            );
         } else {
             assert_ne!(folder_key("/games/Skyrim"), folder_key("/games/skyrim"));
         }
         assert_eq!(display_path(Path::new(r"\\?\D:\Games")), r"D:\Games");
-        assert_eq!(display_path(Path::new(r"\\?\UNC\server\share")), r"\\server\share");
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share")),
+            r"\\server\share"
+        );
     }
 }

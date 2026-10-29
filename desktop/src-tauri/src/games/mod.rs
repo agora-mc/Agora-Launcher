@@ -62,9 +62,6 @@ mod tests {
     #[test]
     fn every_stub_fails_loudly_with_not_implemented() {
         let checked = assert_every_stub_fails!(
-            discovery::games_discover,
-            discovery::games_add_folder,
-            discovery::games_remove_folder,
             bases::games_base_list,
             bases::games_base_build,
             bases::games_base_verify,
@@ -113,7 +110,7 @@ mod tests {
             user_files::games_user_files_restore,
         );
         assert_eq!(
-            checked, 49,
+            checked, 46,
             "the stub list drifted from the brief's command list"
         );
     }

@@ -19,6 +19,7 @@ use agora_game_minecraft::instance_service::{CreateInstanceRequest, InstanceServ
 use agora_game_minecraft::loader_service::LoaderService;
 use agora_game_minecraft::runtime_service::RuntimeService;
 
+mod cli_discovery;
 mod cli_govniche;
 mod cli_network;
 mod cli_tools;
@@ -369,7 +370,7 @@ enum GamesCmd {
     /// Add or remove game folders that Agora's store scan did not find (MASTER_SPEC §26.3).
     Folder {
         #[command(subcommand)]
-        action: FolderCmd,
+        action: cli_discovery::FolderCmd,
     },
     /// Manage pinned bases for games.
     Base {
@@ -801,22 +802,6 @@ enum InstanceContentCmd {
         /// "on" or "off".
         state: String,
     },
-}
-
-#[derive(Subcommand)]
-enum FolderCmd {
-    /// Add a folder that holds a game the store scan did not find.
-    Add {
-        /// The folder the game is installed in (the one with its executable).
-        path: String,
-    },
-    /// Stop searching a folder added with `games folder add`.
-    Remove {
-        /// The folder, as `games folder list` shows it.
-        path: String,
-    },
-    /// List the folders you added, and whether each is still there.
-    List,
 }
 
 #[derive(Subcommand)]
@@ -5712,55 +5697,7 @@ async fn run_command(
                     print_games_list(&ctx.games, &inventory);
                 }
             }
-            GamesCmd::Folder { action } => {
-                use agora_core::game_discovery::custom_folders;
-                match action {
-                    FolderCmd::Add { path } => {
-                        let added = custom_folders::add_folder(&ctx.paths, &ctx.games, &path)
-                            .map_err(|error| anyhow::anyhow!("{error}"))?;
-                        if json {
-                            println!("{}", serde_json::to_string_pretty(&added)?);
-                        } else {
-                            println!("Added {} as {}.", added.path, added.game_name);
-                            println!("Run `agora games list` to see its runtime and whether Agora can manage it.");
-                        }
-                    }
-                    FolderCmd::Remove { path } => {
-                        let removed = custom_folders::remove_folder(&ctx.paths, &path)
-                            .map_err(|error| anyhow::anyhow!("{error}"))?;
-                        if json {
-                            println!("{}", serde_json::json!({ "removed": removed }));
-                        } else {
-                            println!("Removed {removed} from your game folders. Its files were not touched.");
-                        }
-                    }
-                    FolderCmd::List => {
-                        let folders = custom_folders::list_folders(&ctx.paths)
-                            .map_err(|error| anyhow::anyhow!("{error}"))?;
-                        let entries: Vec<serde_json::Value> = folders
-                            .iter()
-                            .map(|folder| {
-                                serde_json::json!({
-                                    "path": folder,
-                                    "present": std::path::Path::new(folder).is_dir(),
-                                })
-                            })
-                            .collect();
-                        if json {
-                            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "folders": entries }))?);
-                        } else if folders.is_empty() {
-                            println!("No game folders added. Use `agora games folder add <path>` for a copy the store scan did not find.");
-                        } else {
-                            println!("Game folders ({}):", folders.len());
-                            for folder in &folders {
-                                let present = std::path::Path::new(folder).is_dir();
-                                let note = if present { "" } else { " (not there now, so it is not searched)" };
-                                println!("  - {folder}{note}");
-                            }
-                        }
-                    }
-                }
-            }
+            GamesCmd::Folder { action } => cli_discovery::run_games_folder(action, ctx, json)?,
             GamesCmd::Base { action } => match action {
                 BaseCmd::Build {
                     install_id,
@@ -6815,7 +6752,8 @@ async fn run_command(
                                 (store, running_from)
                             }
                             agora_game_api::BaseReference::Unpinned { install, .. } => {
-                                let report = agora_core::game_discovery::discover_with_folders(&ctx.paths);
+                                let report =
+                                    agora_core::game_discovery::discover_with_folders(&ctx.paths);
                                 let matching = report.installs.iter().find(|discovered| {
                                     agora_core::game_registry::make_install_id(
                                         &discovered.store,

@@ -577,7 +577,9 @@ pub fn identify_installs(
         let claimed = if bg.store == agora_game_api::StoreId::direct() {
             registry.game_for_folder(&bg.location)
         } else {
-            registry.game_for_store_product(&bg.store, &bg.product).cloned()
+            registry
+                .game_for_store_product(&bg.store, &bg.product)
+                .cloned()
         };
         if let Some(game_id) = claimed {
             let game_def = registry
