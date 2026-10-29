@@ -505,10 +505,12 @@ mod tests {
     /// Read-only check against a real MO2 import. Run by hand:
     /// `cargo test -p agora-desktop --lib real_profile_read_only -- --ignored --nocapture`.
     ///
-    /// Runs the same core calls as `games_plugins_list` and `games_plugins_check`, and writes
-    /// nothing: no sort, move, lock or set. The data root is opened with `CoreContext::for_testing`
-    /// rather than `initialize`, because `initialize` creates the required folders and migrates
-    /// `local_state.db`, which would write to the real data root.
+    /// Runs the same core calls as `games_plugins_list` and `games_plugins_check`, and writes no
+    /// plugin, list or state file: no sort, move, lock or set. The data root is opened with
+    /// `CoreContext::for_testing` rather than `initialize`, because `initialize` creates the
+    /// required folders and migrates `local_state.db`. Opening `local_state.db` (already in WAL
+    /// mode) can still create and remove its `-wal` and `-shm` sidecars, which changes the data
+    /// root's folder timestamp but no file in it.
     #[test]
     #[ignore = "reads the p3-done data root; run by hand, read only"]
     fn real_profile_read_only() {
