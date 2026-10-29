@@ -15,7 +15,7 @@ import { pinnedMotion } from '../../components/presentation-capabilities';
 import { useAmbience } from '../../features/ambience/AmbienceProvider';
 import { SettingsSection } from './SettingsSection';
 
-const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
 
 /**
  * Theme sub-page — color mode, accent, and the custom surface colors.
@@ -99,7 +99,7 @@ export function AppearanceThemeSettings() {
             aria-label="Custom accent color"
             value={preferences.customAccent}
             onChange={(event) => setPreferences({ customAccent: event.target.value })}
-            className="h-9 w-14 cursor-pointer rounded border border-input bg-background p-1"
+            className="h-9 w-14 cursor-pointer rounded-sm border border-input bg-background p-1"
           />
         </label>
       )}
@@ -141,7 +141,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom block color" checked={preferences.surfaceMode === 'custom'} onChange={(event) => setPreferences({ surfaceMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.surfaceMode === 'custom' && (
-            <input type="color" aria-label="Block color" value={preferences.customSurface} onChange={(event) => setPreferences({ customSurface: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Block color" value={preferences.customSurface} onChange={(event) => setPreferences({ customSurface: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           <label className="block space-y-1 text-xs">
             <span className="flex justify-between"><span>Block opacity</span><span>{Math.round(preferences.surfaceOpacity * 100)}%</span></span>
@@ -157,7 +157,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom navigation color" checked={preferences.navMode === 'custom'} onChange={(event) => setPreferences({ navMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.navMode === 'custom' && (
-            <input type="color" aria-label="Navigation color" value={preferences.customNav} onChange={(event) => setPreferences({ customNav: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Navigation color" value={preferences.customNav} onChange={(event) => setPreferences({ customNav: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           <label className="block space-y-1 text-xs">
             <span className="flex justify-between"><span>Navigation opacity</span><span>{Math.round(preferences.navOpacity * 100)}%</span></span>
@@ -173,7 +173,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom background" checked={preferences.backgroundMode === 'custom'} onChange={(event) => setPreferences({ backgroundMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.backgroundMode === 'custom' && (
-            <input type="color" aria-label="Background color" value={preferences.customBackground} onChange={(event) => setPreferences({ customBackground: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Background color" value={preferences.customBackground} onChange={(event) => setPreferences({ customBackground: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           </div>
           <div className="space-y-2 rounded-lg border border-border bg-muted p-3">
@@ -185,7 +185,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom text color" checked={preferences.textMode === 'custom'} onChange={(event) => setPreferences({ textMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.textMode === 'custom' && (
-            <input type="color" aria-label="Block text color" value={preferences.customText} onChange={(event) => setPreferences({ customText: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Block text color" value={preferences.customText} onChange={(event) => setPreferences({ customText: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           </div>
           <div className="space-y-2 rounded-lg border border-border bg-muted p-3 lg:col-span-2">
@@ -197,7 +197,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom background text color" checked={preferences.backgroundTextMode === 'custom'} onChange={(event) => setPreferences({ backgroundTextMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.backgroundTextMode === 'custom' && (
-            <input type="color" aria-label="Background text color" value={preferences.customBackgroundText} onChange={(event) => setPreferences({ customBackgroundText: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Background text color" value={preferences.customBackgroundText} onChange={(event) => setPreferences({ customBackgroundText: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           </div>
           <div className="space-y-2 rounded-lg border border-border bg-muted p-3 lg:col-span-2">
@@ -209,7 +209,7 @@ export function AppearanceThemeSettings() {
             <input type="checkbox" aria-label="Use custom border color" checked={preferences.borderMode === 'custom'} onChange={(event) => setPreferences({ borderMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
           </label>
           {preferences.borderMode === 'custom' && (
-            <input type="color" aria-label="Border color" value={preferences.customBorder} onChange={(event) => setPreferences({ customBorder: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+            <input type="color" aria-label="Border color" value={preferences.customBorder} onChange={(event) => setPreferences({ customBorder: event.target.value })} className="h-9 w-full cursor-pointer rounded-sm border border-input bg-background p-1" />
           )}
           </div>
         </div>
@@ -289,6 +289,7 @@ export function AppearanceInterfaceSettings() {
           <input
             type="range"
             aria-label="Text scale"
+            aria-valuetext={`${Math.round(preferences.fontScale * 100)}%`}
             min="0.85"
             max="2"
             step="0.05"
@@ -303,6 +304,7 @@ export function AppearanceInterfaceSettings() {
           <input
             type="range"
             aria-label="Border thickness"
+            aria-valuetext={`${Math.round(preferences.borderThickness * 100)}%`}
             min="1"
             max="3"
             step="0.25"
@@ -337,6 +339,7 @@ export function AppearanceInterfaceSettings() {
           </select>
           <span className="block text-xs text-muted-foreground">
             Controls nonessential animations, transitions, and smooth scrolling throughout the app.
+            With Reduce motion, the living background stays on as a still picture: nothing drifts or moves.
             {motionPin === 'reduced' ? ' Simple interaction mode keeps this on Reduce motion.' : ''}
           </span>
         </label>
@@ -396,24 +399,22 @@ export function AppearanceResetControls({ onResetLayout }: { onResetLayout: () =
  * without it.
  */
 export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLivingBackground?: () => void }) {
-  const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground, motionSuppressed } = useAmbience();
-  const { setPreferences } = useUiPreferences();
+  const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground } = useAmbience();
   // The interaction preference is owned by the Interface sub-page; read it
   // directly so this card can tell "the world is off because of Simple mode"
-  // from "off because the user chose Reduce motion".
+  // from "the user turned it off".
   const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(true); }, []);
   if (!loaded) return null;
 
-  const suppressed = motionSuppressed || interaction === 'simple';
+  const suppressed = interaction === 'simple';
 
-  /** Leave Simple mode and pin Full motion so the living background can run. */
-  const enableLivingBackgroundMotion = () => {
+  /** Leave Simple mode so the living background can run again. */
+  const leaveSimpleMode = () => {
     setInteraction('standard');
     savePreference('standard');
     suspendHighInteraction();
-    setPreferences({ motion: 'full' });
   };
 
   return (
@@ -450,18 +451,18 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
       {onOpenLivingBackground && suppressed && (
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2.5 space-y-2" role="alert">
           <p className="text-sm font-semibold text-red-700 dark:text-red-300">
-            To use the living background you must disable reduced motion and Simple mode.
+            To use the living background you must leave Simple interaction mode.
           </p>
           <p className="text-xs text-muted-foreground">
-            The world is movement — weather, animals, day and night — so it stays off while motion is
-            reduced or Simple interaction mode is selected. Your other ambience settings are kept.
+            Simple mode keeps the world off, as the quiet version of the workbench. Your other ambience
+            settings are kept.
           </p>
           <button
             type="button"
-            onClick={enableLivingBackgroundMotion}
+            onClick={leaveSimpleMode}
             className="rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
-            Disable Simple mode and use full motion
+            Leave Simple mode
           </button>
         </div>
       )}
@@ -471,7 +472,7 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
           type="checkbox"
           aria-label="Living background"
           checked={enabled}
-          disabled={motionSuppressed}
+          disabled={suppressed}
           onChange={(event) => setEnabled(event.target.checked)}
           className="mt-0.5 h-5 w-5 accent-primary disabled:opacity-50"
         />
@@ -481,11 +482,10 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
             A gentle living world — hills, weather, animals and small discoveries — behind every page.
             Purely decorative.
           </span>
-          {motionSuppressed ? (
+          {suppressed ? (
             <span className="mt-1 block text-xs text-muted-foreground">
-              Off because motion is reduced — the world is movement, so there is nothing honest to show
-              while it is held still. Set Motion to Full (or leave Simple interaction mode) to bring it
-              back; your other ambience settings are kept.
+              Off in Simple interaction mode. Leave Simple mode to bring it back; your other ambience
+              settings are kept.
             </span>
           ) : null}
         </span>
@@ -571,7 +571,7 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
           </label>
 
           <p className="text-xs text-muted-foreground">
-            Reducing motion switches the living background off entirely.
+            With Reduce motion on, the living background holds still as one picture instead of moving.
           </p>
         </>
       )}

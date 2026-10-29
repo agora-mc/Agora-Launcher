@@ -7,6 +7,10 @@ import { ThemeProvider } from '@/components/theme/theme-provider';
 import { AdvancedModeProvider } from '@/components/AdvancedModeContext';
 import { ControllerProvider } from './features/controller/ControllerProvider';
 import { ConfirmProvider } from '@/components/ui/confirm';
+import { installModalFocus } from '@/lib/modalFocus';
+
+// Hand-rolled `aria-modal` dialogs get focus-in, a Tab trap, Escape and focus restore.
+installModalFocus();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

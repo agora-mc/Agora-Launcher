@@ -980,7 +980,7 @@ pub async fn resolve(request: ResolveRequest) -> LauncherResult<ResolvedLaunchPl
 /// Every download is gated by the policy embedded in `resolved.network_policy`.
 /// Cache hits are validated and returned without network access.
 pub async fn materialize(resolved: ResolvedLaunchPlan) -> LauncherResult<MaterializedLaunchPlan> {
-    materialize_with_progress(resolved, None).await
+    Box::pin(materialize_with_progress(resolved, None)).await
 }
 
 /// [`materialize`] that reports verified-file counts for the client JAR,
@@ -1952,6 +1952,118 @@ pub fn build_command(request: BuildCommandRequest<'_>) -> LauncherResult<Prepare
 
 /// Spawn the prepared command while leaving ownership and lifecycle handling
 /// with the desktop or CLI caller.
+/// Where the game goes straight after it starts, instead of the title screen.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "target", rename_all = "snake_case")]
+pub enum QuickPlay {
+    /// A world, by its folder name under `saves/`.
+    Singleplayer(String),
+    /// A server address, `host` or `host:port`.
+    Multiplayer(String),
+}
+
+/// Whether a version understands the 1.20+ Quick Play arguments. Mojang ships
+/// them as feature-gated game arguments, so their presence is the test.
+fn supports_quick_play(version: &VersionInfo) -> bool {
+    version.arguments.as_ref().is_some_and(|arguments| {
+        arguments
+            .game
+            .iter()
+            .any(|value| value.to_string().contains("--quickPlayMultiplayer"))
+    })
+}
+
+/// Split `host[:port]`, allowing a bracketed IPv6 host.
+pub(crate) fn split_server_address(address: &str) -> (String, Option<String>) {
+    let address = address.trim();
+    if let Some(rest) = address.strip_prefix('[') {
+        if let Some((host, tail)) = rest.split_once(']') {
+            let port = tail.strip_prefix(':').filter(|p| !p.is_empty());
+            return (host.to_string(), port.map(str::to_string));
+        }
+    }
+    match address.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => (
+            host.to_string(),
+            (!port.is_empty()).then(|| port.to_string()),
+        ),
+        _ => (address.to_string(), None),
+    }
+}
+
+/// Game arguments that send the game straight into a world or server.
+///
+/// The arguments are appended explicitly rather than by switching on Mojang's
+/// feature flags, because those flags also pull in a `quickPlayPath` log file
+/// Agora does not use. Versions before 1.20 can still join a server through
+/// the older `--server`/`--port` pair; they have no way to open a world.
+pub fn quick_play_args(version: &VersionInfo, target: &QuickPlay) -> LauncherResult<Vec<String>> {
+    let invalid = |message: &str| LauncherError::Generic {
+        code: "ERR_QUICK_PLAY".into(),
+        message: message.into(),
+    };
+    match target {
+        QuickPlay::Singleplayer(world) => {
+            if world.trim().is_empty() {
+                return Err(invalid("Choose a world to open."));
+            }
+            if !supports_quick_play(version) {
+                return Err(invalid(
+                    "Opening a world directly needs Minecraft 1.20 or newer.",
+                ));
+            }
+            Ok(vec!["--quickPlaySingleplayer".into(), world.clone()])
+        }
+        QuickPlay::Multiplayer(address) => {
+            let (host, port) = split_server_address(address);
+            if host.is_empty() || host.chars().any(char::is_whitespace) {
+                return Err(invalid("That server address is not valid."));
+            }
+            if supports_quick_play(version) {
+                let joined = match port {
+                    Some(port) if host.contains(':') => format!("[{host}]:{port}"),
+                    Some(port) => format!("{host}:{port}"),
+                    None => host,
+                };
+                Ok(vec!["--quickPlayMultiplayer".into(), joined])
+            } else {
+                let mut args = vec!["--server".into(), host];
+                args.extend(["--port".into(), port.unwrap_or_else(|| "25565".into())]);
+                Ok(args)
+            }
+        }
+    }
+}
+
+/// Launch features and any extra game arguments for a fixed window size.
+///
+/// Modern versions carry `--width`/`--height` behind the
+/// `has_custom_resolution` feature; versions that still use the single
+/// `minecraftArguments` string accept the same flags appended by hand.
+pub fn window_size_launch(
+    version: &VersionInfo,
+    size: Option<(u32, u32)>,
+) -> (LaunchFeatures, Vec<String>) {
+    let mut features = LaunchFeatures::default();
+    let Some((width, height)) = size else {
+        return (features, Vec::new());
+    };
+    if version.arguments.is_some() {
+        features.values.insert("has_custom_resolution".into(), true);
+        features.resolution_width = Some(width);
+        features.resolution_height = Some(height);
+        (features, Vec::new())
+    } else {
+        let extra = vec![
+            "--width".into(),
+            width.to_string(),
+            "--height".into(),
+            height.to_string(),
+        ];
+        (features, extra)
+    }
+}
+
 /// Run the game under a wrapper command such as `mangohud` or
 /// `gamescope -W 1920 -H 1080 --`.
 ///
@@ -2025,7 +2137,10 @@ pub async fn wait_and_classify(
     game_dir: &Path,
     secrets: &[&str],
 ) -> LauncherResult<agora_core::lkg::LaunchOutcome> {
-    wait_and_classify_with_progress(child, game_dir, secrets, None).await
+    Box::pin(wait_and_classify_with_progress(
+        child, game_dir, secrets, None,
+    ))
+    .await
 }
 
 /// Bounded line count retained for crash-triage after streaming.
@@ -2789,7 +2904,8 @@ async fn download_sha1_atomic(
         .get(url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(agora_core::http_client::transport_failure_from)?;
+    agora_core::connectivity::record_reachable();
     if !response.status().is_success() {
         return Err(LauncherError::Generic {
             code: "ERR_DOWNLOAD_HTTP".into(),
@@ -2802,7 +2918,7 @@ async fn download_sha1_atomic(
     let bytes = response
         .bytes()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?
+        .map_err(agora_core::http_client::transport_failure_from)?
         .to_vec();
     if !artifact_matches(&bytes, Some(&resolved_sha1), expected_size) {
         return Err(LauncherError::HashMismatch);
@@ -2853,7 +2969,8 @@ async fn resolve_sidecar_sha1(
         .get(&sidecar_url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(agora_core::http_client::transport_failure_from)?;
+    agora_core::connectivity::record_reachable();
     let final_url = response.url().as_str();
     ensure_artifact_url_for_category(final_url, category)?;
     if !response.status().is_success() {
@@ -2868,7 +2985,7 @@ async fn resolve_sidecar_sha1(
     let text = response
         .text()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(agora_core::http_client::transport_failure_from)?;
     let hash = parse_sha1_sidecar(&text).ok_or_else(|| LauncherError::Generic {
         code: "ERR_ARTIFACT_HASH_INVALID".into(),
         message: format!("Artifact SHA-1 sidecar is invalid: {sidecar_url}"),
@@ -3058,6 +3175,20 @@ fn extract_natives_atomically(
                     code: "ERR_NATIVE_ARCHIVE".into(),
                     message: format!("Invalid native archive {}: {error}", archive_path.display()),
                 })?;
+            let central_records = std::fs::File::open(archive_path)
+                .and_then(|file| {
+                    central_directory_record_count(file, archive.central_directory_start())
+                })
+                .map_err(native_io_error)?;
+            if central_records != archive.len() {
+                return Err(LauncherError::Generic {
+                    code: "ERR_NATIVE_DUPLICATE_PATH".into(),
+                    message: format!(
+                        "Native archive {} contains duplicate entry names.",
+                        archive_path.display()
+                    ),
+                });
+            }
             total_entries = total_entries.saturating_add(archive.len());
             if total_entries > MAX_ENTRIES {
                 return Err(LauncherError::ZipBomb);
@@ -3070,7 +3201,13 @@ fn extract_natives_atomically(
                             code: "ERR_NATIVE_ARCHIVE_ENTRY".into(),
                             message: error.to_string(),
                         })?;
-                let raw_name = entry.name();
+                let raw_name = entry
+                    .name()
+                    .map_err(|error| LauncherError::Generic {
+                        code: "ERR_NATIVE_ARCHIVE_ENTRY".into(),
+                        message: error.to_string(),
+                    })?
+                    .into_owned();
 
                 // Check for NUL bytes in the entry name (must be done on the
                 // raw string before any normalization).
@@ -3503,6 +3640,33 @@ pub(crate) fn safe_relative_path(raw: &str) -> LauncherResult<PathBuf> {
     Ok(path)
 }
 
+/// Count the raw records in a ZIP central directory.
+///
+/// `zip::ZipArchive` keeps only the last of several entries that share a name,
+/// so `len()` alone cannot reveal duplicates; comparing it with this count can.
+fn central_directory_record_count(file: std::fs::File, start: u64) -> std::io::Result<usize> {
+    use std::io::{Read, Seek, SeekFrom};
+    const SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+    let mut reader = std::io::BufReader::new(file);
+    reader.seek(SeekFrom::Start(start))?;
+    let mut header = [0u8; 46];
+    let mut count = 0usize;
+    loop {
+        match reader.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        if header[..4] != SIGNATURE {
+            break;
+        }
+        let field = |at: usize| i64::from(u16::from_le_bytes([header[at], header[at + 1]]));
+        reader.seek_relative(field(28) + field(30) + field(32))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 fn native_io_error(error: std::io::Error) -> LauncherError {
     LauncherError::Generic {
         code: "ERR_NATIVE_EXTRACTION".into(),
@@ -3799,8 +3963,12 @@ pub(crate) async fn load_json_cache_first<T: serde::de::DeserializeOwned>(
     // Phase 3: Fetch fresh data from the network. Transport errors fall back
     // to the stale cache; integrity/parse errors never do.
     let response = match client.get(url).send().await {
-        Ok(r) => r,
+        Ok(r) => {
+            agora_core::connectivity::record_reachable();
+            r
+        }
         Err(_) => {
+            agora_core::connectivity::record_unreachable();
             if let Some(parsed) = stale_parsed {
                 return Ok(parsed);
             }
@@ -3821,7 +3989,7 @@ pub(crate) async fn load_json_cache_first<T: serde::de::DeserializeOwned>(
             if let Some(parsed) = stale_parsed {
                 return Ok(parsed);
             }
-            return Err(LauncherError::NetworkOffline);
+            return Err(agora_core::http_client::transport_failure());
         }
     };
 
@@ -4064,7 +4232,8 @@ async fn download_verified_inner(
         .get(url)
         .send()
         .await
-        .map_err(|_| LauncherError::NetworkOffline)?;
+        .map_err(agora_core::http_client::transport_failure_from)?;
+    agora_core::connectivity::record_reachable();
     // Defense-in-depth: verify the final response URL is category-safe.
     let final_url = response.url().as_str();
     ensure_artifact_url_for_category(final_url, category)?;
@@ -4078,12 +4247,87 @@ async fn download_verified_inner(
         .bytes()
         .await
         .map(|b| b.to_vec())
-        .map_err(|_| LauncherError::NetworkOffline)
+        .map_err(agora_core::http_client::transport_failure_from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn modern_version() -> VersionInfo {
+        VersionInfo {
+            arguments: Some(launch::VersionArguments {
+                jvm: Vec::new(),
+                game: vec![serde_json::json!({
+                    "rules": [{"action": "allow", "features": {"is_quick_play_multiplayer": true}}],
+                    "value": ["--quickPlayMultiplayer", "${quickPlayMultiplayer}"]
+                })],
+            }),
+            ..VersionInfo::default()
+        }
+    }
+
+    fn legacy_version() -> VersionInfo {
+        VersionInfo {
+            minecraft_arguments: Some("--username ${auth_player_name}".into()),
+            ..VersionInfo::default()
+        }
+    }
+
+    #[test]
+    fn quick_play_uses_modern_flags_when_the_version_has_them() {
+        let world = QuickPlay::Singleplayer("My World".into());
+        assert_eq!(
+            quick_play_args(&modern_version(), &world).unwrap(),
+            vec!["--quickPlaySingleplayer", "My World"]
+        );
+        let server = QuickPlay::Multiplayer("play.example.net:25570".into());
+        assert_eq!(
+            quick_play_args(&modern_version(), &server).unwrap(),
+            vec!["--quickPlayMultiplayer", "play.example.net:25570"]
+        );
+    }
+
+    #[test]
+    fn quick_play_falls_back_to_server_and_port_on_old_versions() {
+        let server = QuickPlay::Multiplayer("play.example.net".into());
+        assert_eq!(
+            quick_play_args(&legacy_version(), &server).unwrap(),
+            vec!["--server", "play.example.net", "--port", "25565"]
+        );
+        let v6 = QuickPlay::Multiplayer("[::1]:25570".into());
+        assert_eq!(
+            quick_play_args(&legacy_version(), &v6).unwrap(),
+            vec!["--server", "::1", "--port", "25570"]
+        );
+        let world = QuickPlay::Singleplayer("World".into());
+        assert!(quick_play_args(&legacy_version(), &world).is_err());
+    }
+
+    #[test]
+    fn quick_play_rejects_blank_or_spaced_targets() {
+        assert!(quick_play_args(&modern_version(), &QuickPlay::Singleplayer(" ".into())).is_err());
+        assert!(quick_play_args(
+            &modern_version(),
+            &QuickPlay::Multiplayer("bad host".into())
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn window_size_uses_features_or_appended_flags() {
+        let (features, extra) = window_size_launch(&modern_version(), Some((1280, 720)));
+        assert_eq!(features.values.get("has_custom_resolution"), Some(&true));
+        assert_eq!(features.resolution_width, Some(1280));
+        assert!(extra.is_empty());
+
+        let (features, extra) = window_size_launch(&legacy_version(), Some((854, 480)));
+        assert!(features.values.is_empty());
+        assert_eq!(extra, vec!["--width", "854", "--height", "480"]);
+
+        let (features, extra) = window_size_launch(&modern_version(), None);
+        assert!(features.values.is_empty() && extra.is_empty());
+    }
 
     #[test]
     fn adopted_client_jar_uses_loader_profile_filename() {
@@ -4590,12 +4834,30 @@ mod tests {
     // Helper: build a test ZIP in memory from named byte slices
     // -----------------------------------------------------------------------
 
+    /// zip 9 refuses to write duplicate names, so write a same-length
+    /// placeholder and patch it into `name` in both the local and central headers.
+    fn make_zip_with_duplicate_names(name: &str) -> Vec<u8> {
+        let mut placeholder = name.to_string();
+        placeholder.pop();
+        placeholder.push('\u{1}');
+        let mut data = make_zip(&[(name, b"first"), (&placeholder, b"second")]);
+        let (from, to) = (placeholder.as_bytes(), name.as_bytes());
+        let mut i = 0;
+        while i + from.len() <= data.len() {
+            if &data[i..i + from.len()] == from {
+                data[i..i + from.len()].copy_from_slice(to);
+            }
+            i += 1;
+        }
+        data
+    }
+
     fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
             for &(name, data) in entries {
-                zip.start_file(name, zip::write::FileOptions::default())
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
                     .unwrap();
                 zip.write_all(data).unwrap();
             }
@@ -4615,7 +4877,7 @@ mod tests {
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
             for &(name, data, _mode) in entries {
-                zip.start_file(name, zip::write::FileOptions::default())
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
                     .unwrap();
                 zip.write_all(data).unwrap();
             }
@@ -4640,9 +4902,13 @@ mod tests {
         for entry in entries.iter().take(cd_entries) {
             let fn_len = u16::from_le_bytes(buf[pos + 28..pos + 30].try_into().unwrap()) as usize;
 
+            // The high byte of "version made by" is the creating system; the
+            // writer picks it from the host OS (DOS on Windows), and only a
+            // Unix (3) entry has its external attributes read as a Unix mode.
+            buf[pos + 5] = 3;
             let mode = entry.2;
-            // Upper 16 bits = Unix mode; bits 8-15 = system (3 = Unix).
-            let ext = (mode << 16) | (3u32 << 8);
+            // Upper 16 bits of the external attributes = Unix mode.
+            let ext = mode << 16;
             buf[pos + 38..pos + 42].copy_from_slice(&ext.to_le_bytes());
 
             pos += 46 + fn_len;
@@ -4764,10 +5030,13 @@ mod tests {
         let mut bytes = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-            zip.add_directory("natives/", zip::write::FileOptions::default())
+            zip.add_directory("natives/", zip::write::SimpleFileOptions::default())
                 .unwrap();
-            zip.start_file("natives/example.dll", zip::write::FileOptions::default())
-                .unwrap();
+            zip.start_file(
+                "natives/example.dll",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
             zip.write_all(b"native").unwrap();
             zip.finish().unwrap();
         }
@@ -4901,7 +5170,7 @@ mod tests {
 
     #[test]
     fn rejects_exact_duplicate_entry() {
-        let zip_data = make_zip(&[("org/lib.so", b"content"), ("org/lib.so", b"content")]);
+        let zip_data = make_zip_with_duplicate_names("org/lib.so");
         assert!(extract_test_zip(&zip_data, None).is_err());
     }
 
@@ -6294,9 +6563,14 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line))
-            .await
-            .unwrap();
+        let _outcome = Box::pin(wait_and_classify_with_progress(
+            child,
+            tmp.path(),
+            &[],
+            Some(&on_line),
+        ))
+        .await
+        .unwrap();
 
         let collected = lines.lock().unwrap();
         assert!(
@@ -6317,12 +6591,12 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(
+        let _outcome = Box::pin(wait_and_classify_with_progress(
             child,
             tmp.path(),
             &["super-sensitive-value"],
             Some(&on_line),
-        )
+        ))
         .await
         .unwrap();
 
@@ -6360,7 +6634,12 @@ $output.Write($after, 0, $after.Length)
 
         tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line)),
+            Box::pin(wait_and_classify_with_progress(
+                child,
+                tmp.path(),
+                &[],
+                Some(&on_line),
+            )),
         )
         .await
         .expect("non-UTF-8 output must not stop draining the child pipe")
@@ -6398,9 +6677,14 @@ $output.Write($after, 0, $after.Length)
         };
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _outcome = wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line))
-            .await
-            .unwrap();
+        let _outcome = Box::pin(wait_and_classify_with_progress(
+            child,
+            tmp.path(),
+            &[],
+            Some(&on_line),
+        ))
+        .await
+        .unwrap();
 
         let collected = lines.lock().unwrap();
         assert!(

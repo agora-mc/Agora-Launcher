@@ -60,6 +60,8 @@ pub struct InstanceDetail {
     pub manifest: Option<InstanceManifest>,
     pub snapshot_readiness: String,
     pub snapshot_error: Option<String>,
+    /// Pack entries still missing from the instance; empty when none are known missing.
+    pub pack_gaps: Vec<agora_core::db::InstancePackGap>,
 }
 
 /// What applying a template to an existing instance actually did.
@@ -80,6 +82,36 @@ pub struct TemplateApplyOutcome {
     pub undo_snapshot_id: Option<String>,
 }
 
+/// What to capture into a new template. The id is minted by core.
+#[derive(Debug, Clone)]
+pub struct CaptureTemplateRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub jvm: crate::template_service::TemplateJvm,
+    /// Instance to copy the selected files from. `None` for a JVM-only profile.
+    pub source_instance_id: Option<String>,
+    /// Relative paths within the source instance, as offered by
+    /// `template_service::list_capturable_files`.
+    pub selected_paths: Vec<String>,
+}
+
+/// Health status for one entry in a background all-instance scan. Individual
+/// failures are returned in-band so an unreadable instance never prevents the
+/// rest of the library from reporting its health state.
+#[derive(Debug, serde::Serialize)]
+pub struct InstanceHealthScanResult {
+    pub instance_id: String,
+    pub report: Option<crate::health::HealthReport>,
+    pub error: Option<String>,
+}
+
+fn template_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_TEMPLATE".into(),
+        message,
+    }
+}
+
 /// Core-owned preparation result for an official-launcher handoff.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DelegatedLaunchPreparation {
@@ -98,6 +130,11 @@ pub struct DelegatedLaunchPreparation {
     /// absent or in a shape Agora declines to rewrite.
     pub selection_applied: bool,
 }
+
+/// `user_preferences` key holding the instance's notes.
+pub const NOTES_KEY: &str = "agora_notes";
+/// Settings key mapping instance id to its group name in My Instances.
+pub const INSTANCE_GROUPS_KEY: &str = "instance_groups";
 
 /// Narrow adapter type: a synchronous callback that moves a quarantined
 /// directory to the OS trash. The desktop adapter supplies the real
@@ -138,11 +175,29 @@ impl InstanceService {
         let manifest = read_manifest(&self.ctx.paths.instance_manifest(&instance_id)?)?;
         let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
         let readiness = agora_core::snapshot::snapshot_readiness(&instance_dir);
+        let pack_gaps =
+            agora_core::db::list_instance_pack_gaps(&conn, &instance_id).map_err(|error| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
+                    message: error.to_string(),
+                }
+            })?;
+        // A gap is over once the file is in the instance by any route (a retry,
+        // or the user adding the same jar by hand). Without a manifest we cannot
+        // tell, so every recorded gap stays.
+        let pack_gaps = match &manifest {
+            Some(manifest) => pack_gaps
+                .into_iter()
+                .filter(|gap| !manifest_has_file(manifest, &gap.filename))
+                .collect(),
+            None => pack_gaps,
+        };
         Ok(Some(InstanceDetail {
             row,
             manifest,
             snapshot_readiness: readiness.as_str().into(),
             snapshot_error: agora_core::snapshot::snapshot_readiness_error(&instance_dir),
+            pack_gaps,
         }))
     }
 
@@ -170,8 +225,51 @@ impl InstanceService {
         })
     }
 
+    /// Lock the instance and take the lock snapshot Revert returns to.
+    ///
+    /// The snapshot is taken before the lock is set, so it records the
+    /// unlocked state, and a failed snapshot leaves the instance unlocked:
+    /// locking without one would leave Revert pointing at an older state.
+    /// The new snapshot replaces the previous lock snapshot.
     pub fn lock(&self, instance_id: &str) -> LauncherResult<()> {
-        self.set_locked(instance_id, true)
+        let instance_id = self.validate_id(instance_id)?;
+        let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+        let _guard = self.ctx.lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(instance_id.clone()),
+            "lock_instance",
+        )?;
+        let label = format!("Locked {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
+        let snapshot = agora_core::snapshot::create_snapshot_scoped_with_origin(
+            &instance_dir,
+            Some(&label),
+            agora_core::snapshot::prelaunch_tracked_entries(),
+            agora_core::snapshot::SnapshotOrigin::Lock,
+        )
+        .map_err(|error| LauncherError::Generic {
+            code: "ERR_LOCK_SNAPSHOT".into(),
+            message: format!(
+                "Could not take the lock snapshot, so the instance was not locked: {error}"
+            ),
+        })?;
+        self.set_locked(&instance_id, true)?;
+        // Revert picks the newest lock snapshot, so a failed cleanup of the old
+        // ones leaves clutter, not a wrong revert. Say so rather than hide it.
+        match agora_core::snapshot::lock_snapshots(&instance_dir) {
+            Ok(old) => {
+                for previous in old.into_iter().filter(|s| s.id != snapshot.id) {
+                    if let Err(error) =
+                        agora_core::snapshot::delete_snapshot(&instance_dir, &previous.id)
+                    {
+                        eprintln!(
+                            "[lock] could not remove the previous lock snapshot {}: {error}",
+                            previous.id
+                        );
+                    }
+                }
+            }
+            Err(error) => eprintln!("[lock] could not list lock snapshots to replace: {error}"),
+        }
+        Ok(())
     }
 
     pub fn unlock(&self, instance_id: &str) -> LauncherResult<()> {
@@ -420,6 +518,348 @@ impl InstanceService {
         Ok(())
     }
 
+    /// Set (or clear, with a blank string) the command the game is launched
+    /// under.
+    ///
+    /// Stored in the manifest's `user_preferences` so it travels with an
+    /// exported instance and needs no migration. Validated by parsing it the
+    /// same way the launcher will, so a malformed quote is rejected while the
+    /// user is looking at the field rather than at a failed launch.
+    pub fn set_wrapper_command(&self, instance_id: &str, wrapper: &str) -> LauncherResult<()> {
+        let trimmed = wrapper.trim().to_string();
+        if !trimmed.is_empty() {
+            crate::launch_planner::parse_argument_string(&trimmed)?;
+        }
+        let value = (!trimmed.is_empty()).then_some(serde_json::Value::String(trimmed));
+        self.set_user_preference(
+            instance_id,
+            "agora_wrapper_command",
+            value,
+            "wrapper-command",
+        )
+    }
+
+    /// Set (or clear, with `None`) a fixed game window size for this instance.
+    /// Without one the global default applies, and without that the game's own.
+    pub fn set_window_size(
+        &self,
+        instance_id: &str,
+        size: Option<(u32, u32)>,
+    ) -> LauncherResult<()> {
+        let value = match size {
+            Some((width, height)) => {
+                let value = serde_json::json!({ "width": width, "height": height });
+                if crate::launch_service::parse_window_size(&value).is_none() {
+                    return Err(LauncherError::Generic {
+                        code: "ERR_WINDOW_SIZE".into(),
+                        message: "Window width and height must each be between 200 and 16384."
+                            .into(),
+                    });
+                }
+                Some(value)
+            }
+            None => None,
+        };
+        self.set_user_preference(
+            instance_id,
+            crate::launch_service::WINDOW_SIZE_KEY,
+            value,
+            "window-size",
+        )
+    }
+
+    /// Set the commands run before and after a direct launch and the extra
+    /// environment variables for the game. Blank commands and an empty map
+    /// clear them. Commands are parsed now, as the launcher will, so a
+    /// malformed quote is refused here rather than at launch.
+    pub fn set_launch_hooks(
+        &self,
+        instance_id: &str,
+        pre_launch: &str,
+        post_exit: &str,
+        env: std::collections::BTreeMap<String, String>,
+    ) -> LauncherResult<()> {
+        let command = |value: &str| -> LauncherResult<Option<serde_json::Value>> {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            crate::launch_planner::parse_argument_string(trimmed)?;
+            Ok(Some(serde_json::Value::String(trimmed.to_string())))
+        };
+        let pre = command(pre_launch)?;
+        let post = command(post_exit)?;
+        if let Some(bad) = env
+            .keys()
+            .find(|name| !crate::launch_service::valid_env_name(name))
+        {
+            return Err(LauncherError::Generic {
+                code: "ERR_ENV_VAR_NAME".into(),
+                message: format!("'{bad}' is not a valid environment variable name."),
+            });
+        }
+        let env = (!env.is_empty()).then(|| serde_json::json!(env));
+        self.set_user_preference(
+            instance_id,
+            crate::launch_service::PRE_LAUNCH_KEY,
+            pre,
+            "launch-hooks",
+        )?;
+        self.set_user_preference(
+            instance_id,
+            crate::launch_service::POST_EXIT_KEY,
+            post,
+            "launch-hooks",
+        )?;
+        self.set_user_preference(
+            instance_id,
+            crate::launch_service::ENV_VARS_KEY,
+            env,
+            "launch-hooks",
+        )
+    }
+
+    /// Switch sharing of game settings (`options.txt`) and of the server list
+    /// with other instances on or off. Switching one on when no shared copy
+    /// exists yet makes this instance's the shared one.
+    pub fn set_sharing(
+        &self,
+        instance_id: &str,
+        options: bool,
+        servers: bool,
+    ) -> LauncherResult<()> {
+        use agora_core::shared_settings::{SHARE_OPTIONS_KEY, SHARE_SERVERS_KEY};
+        let value = |on: bool| on.then_some(serde_json::Value::Bool(true));
+        self.set_user_preference(instance_id, SHARE_OPTIONS_KEY, value(options), "sharing")?;
+        self.set_user_preference(instance_id, SHARE_SERVERS_KEY, value(servers), "sharing")?;
+        let (has_options, has_servers) = agora_core::shared_settings::shared_copy_exists(&self.ctx);
+        if (options && !has_options) || (servers && !has_servers) {
+            let instance_id = self.validate_id(instance_id)?;
+            let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+            let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
+            let dir = self.ctx.paths.instance_dir(&instance_id)?;
+            let _ = agora_core::shared_settings::capture(&self.ctx, &dir, &manifest);
+        }
+        Ok(())
+    }
+
+    /// Free-form notes about this instance. Blank clears them.
+    pub fn set_notes(&self, instance_id: &str, notes: &str) -> LauncherResult<()> {
+        let notes = notes.trim_end();
+        if notes.len() > 64 * 1024 {
+            return Err(LauncherError::Generic {
+                code: "ERR_NOTES_TOO_LONG".into(),
+                message: "Notes are limited to 64 KB.".into(),
+            });
+        }
+        let value =
+            (!notes.trim().is_empty()).then(|| serde_json::Value::String(notes.to_string()));
+        self.set_user_preference(instance_id, NOTES_KEY, value, "notes")
+    }
+
+    /// Which group each instance is filed under in My Instances. Instances
+    /// without an entry are ungrouped. Entries for deleted instances are
+    /// harmless and dropped the next time the map is written.
+    pub fn groups(&self) -> LauncherResult<std::collections::BTreeMap<String, String>> {
+        let conn = self.connection()?;
+        Ok(agora_core::db::get_setting(&conn, INSTANCE_GROUPS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default())
+    }
+
+    /// File an instance under a group, or ungroup it with `None` or a blank
+    /// name. Kept in one settings entry rather than per instance because
+    /// grouping is how the library is laid out, not part of the instance.
+    pub fn set_group(&self, instance_id: &str, group: Option<&str>) -> LauncherResult<()> {
+        let instance_id = self.validate_id(instance_id)?;
+        let group = group.map(str::trim).filter(|name| !name.is_empty());
+        if group.is_some_and(|name| name.chars().count() > 64) {
+            return Err(LauncherError::Generic {
+                code: "ERR_GROUP_NAME".into(),
+                message: "Group names are limited to 64 characters.".into(),
+            });
+        }
+        let existing: std::collections::HashSet<String> = self
+            .list()?
+            .into_iter()
+            .map(|row| row.instance_id)
+            .collect();
+        if !existing.contains(&instance_id) {
+            return Err(LauncherError::Generic {
+                code: "ERR_INSTANCE_NOT_FOUND".into(),
+                message: format!("Instance '{instance_id}' not found."),
+            });
+        }
+        let mut groups = self.groups()?;
+        groups.retain(|id, _| existing.contains(id));
+        match group {
+            Some(name) => {
+                groups.insert(instance_id, name.to_string());
+            }
+            None => {
+                groups.remove(&instance_id);
+            }
+        }
+        let conn = self.connection()?;
+        agora_core::db::set_setting(&conn, INSTANCE_GROUPS_KEY, &serde_json::json!(groups)).map_err(
+            |error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            },
+        )
+    }
+
+    /// Write one key of the manifest's `user_preferences` (removing it for
+    /// `None`). Stored there so it travels with an exported instance and needs
+    /// no migration.
+    fn set_user_preference(
+        &self,
+        instance_id: &str,
+        key: &str,
+        value: Option<serde_json::Value>,
+        operation: &str,
+    ) -> LauncherResult<()> {
+        let instance_id = self.validate_id(instance_id)?;
+        let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+        let _lock = self.ctx.lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(instance_id.clone()),
+            operation,
+        )?;
+        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
+        if !manifest.user_preferences.is_object() {
+            manifest.user_preferences = serde_json::json!({});
+        }
+        if let Some(preferences) = manifest.user_preferences.as_object_mut() {
+            match value {
+                Some(value) => {
+                    preferences.insert(key.into(), value);
+                }
+                None => {
+                    preferences.remove(key);
+                }
+            }
+        }
+        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)
+    }
+
+    /// Scan every local instance with the cached health check.
+    ///
+    /// An unreadable instance is reported in-band, so one broken instance
+    /// never hides the health of the rest of the library. Read-only apart from
+    /// the health cache.
+    pub fn health_scan_all(&self) -> LauncherResult<Vec<InstanceHealthScanResult>> {
+        let rows = self.list()?;
+        let mut results = Vec::with_capacity(rows.len());
+        for row in rows {
+            let instance_id = row.instance_id;
+            // A stored ID that would not survive sanitizing is damaged data;
+            // it is reported, not repaired.
+            let result = if !instance_id.is_empty()
+                && agora_core::paths::sanitize_id(&instance_id) == instance_id
+            {
+                self.health_report(&instance_id)
+            } else {
+                Err(LauncherError::Generic {
+                    code: "ERR_INVALID_INSTANCE".into(),
+                    message: "Stored instance ID is invalid.".into(),
+                })
+            };
+            match result {
+                Ok(report) => results.push(InstanceHealthScanResult {
+                    instance_id,
+                    report: Some(report),
+                    error: None,
+                }),
+                Err(error) => results.push(InstanceHealthScanResult {
+                    instance_id,
+                    report: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        }
+        Ok(results)
+    }
+
+    /// The cached pre-launch health check for one instance.
+    ///
+    /// Same check the desktop's all-instance scan runs. The registry database
+    /// is consulted for curated known conflicts when it is present.
+    pub fn health_report(&self, instance_id: &str) -> LauncherResult<crate::health::HealthReport> {
+        let instance_id = self.validate_id(instance_id)?;
+        let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+        let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+        let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
+        let registry_db = self.ctx.paths.registry_db();
+        Ok(crate::health::cached_health(
+            &instance_dir,
+            &manifest,
+            Some(&registry_db),
+            None,
+        ))
+    }
+
+    /// Capture a new template from an instance's selected files and/or JVM
+    /// settings. The id is minted here, so callers never choose one.
+    pub fn capture_template(
+        &self,
+        request: CaptureTemplateRequest,
+    ) -> LauncherResult<crate::template_service::InstanceTemplate> {
+        let root = self.ctx.paths.templates_root();
+        let id = crate::template_service::new_template_id(&request.name).map_err(template_error)?;
+        let source_dir = match &request.source_instance_id {
+            Some(instance_id) => {
+                let instance_id = self.validate_id(instance_id)?;
+                Some(self.ctx.paths.instance_dir(&instance_id)?)
+            }
+            None => None,
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        crate::template_service::create_template(
+            &root,
+            crate::template_service::CreateTemplateRequest {
+                id: &id,
+                name: &request.name,
+                description: request.description,
+                jvm: request.jvm,
+                source_instance_dir: source_dir.as_deref(),
+                selected_paths: &request.selected_paths,
+                now: &now,
+            },
+        )
+        .map_err(template_error)
+    }
+
+    /// Delete a template and everything it captured.
+    ///
+    /// When the template is the default for new instances, the default is
+    /// cleared first, so the setting never points at a template that no
+    /// longer exists. If the setting cannot be read or cleared, nothing is
+    /// deleted.
+    pub fn delete_template(&self, template_id: &str) -> LauncherResult<()> {
+        let root = self.ctx.paths.templates_root();
+        let conn = self.connection()?;
+        let local_state_error = |error: anyhow::Error| LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: error.to_string(),
+        };
+        let is_default = agora_core::db::get_setting(&conn, DEFAULT_TEMPLATE_SETTING_KEY)
+            .map_err(local_state_error)?
+            .and_then(|value| value.as_str().map(str::to_string))
+            .is_some_and(|current| current == template_id);
+        if is_default {
+            agora_core::db::set_setting(
+                &conn,
+                DEFAULT_TEMPLATE_SETTING_KEY,
+                &serde_json::Value::String(String::new()),
+            )
+            .map_err(local_state_error)?;
+        }
+        drop(conn);
+        crate::template_service::delete_template(&root, template_id).map_err(template_error)
+    }
+
     pub fn memory_recommendation(
         &self,
         instance_id: &str,
@@ -450,6 +890,13 @@ impl InstanceService {
                 message: error.to_string(),
             }
         })?;
+        // The manifest carries the name too (exports and pack identity read it);
+        // keep it in step so a rename is never visible in only one place.
+        let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+        if let Some(mut manifest) = read_manifest(&manifest_path)? {
+            manifest.name = name.trim().to_string();
+            agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        }
         self.record_change(&instance_id, "rename");
         Ok(())
     }
@@ -506,10 +953,7 @@ impl InstanceService {
                 message: error.to_string(),
             })?
             .ok_or(LauncherError::LaunchFailed)?;
-        let user_override = agora_core::db::get_setting(&conn, "jvm_always_pre_touch")
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
+        let user_override = agora_core::db::global_always_pre_touch(&conn);
         let manifest = read_manifest(&self.ctx.paths.instance_manifest(&instance_id)?)?;
         let memory_mb = if row.jvm_memory_mode == "auto" {
             if let Some(manifest) = manifest.as_ref() {
@@ -635,13 +1079,14 @@ impl InstanceService {
         )
     }
 
-    /// Delete an instance with a filesystem quarantine so a database failure
-    /// can restore the original directory before the operation returns.
+    /// Delete an instance by moving it into Agora's "Recently deleted" area
+    /// (`recently_deleted.rs`), from where it can be restored for
+    /// [`crate::recently_deleted::RETENTION_DAYS`] days.
     ///
-    /// When `trash_fn` is provided, the quarantined directory is moved to the
-    /// OS trash instead of being hard-removed. This is the narrow adapter
-    /// boundary — core never depends on the `trash` crate.
-    pub fn delete(&self, instance_id: &str, trash_fn: Option<TrashFn>) -> LauncherResult<()> {
+    /// Fails closed: any error leaves the instance exactly where it was.
+    /// A pack-locked instance is refused (unlock it first), and so is one
+    /// whose lock is held by another operation such as a launch.
+    pub fn delete(&self, instance_id: &str) -> LauncherResult<()> {
         let instance_id = self.validate_id(instance_id)?;
         let op = self
             .ctx
@@ -689,52 +1134,28 @@ impl InstanceService {
             });
         }
         let dir = self.ctx.paths.instance_dir(&instance_id)?;
-        let quarantine = self.ctx.paths.staging_dir(&format!(
-            "delete-{}-{}",
-            instance_id,
-            uuid::Uuid::new_v4()
-        ))?;
-        let moved = dir.exists();
-        if moved {
-            if let Some(parent) = quarantine.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| LauncherError::Generic {
-                    code: "ERR_INSTANCE_DELETE".into(),
+        let result = if std::fs::symlink_metadata(&dir).is_ok() {
+            crate::recently_deleted::stash_instance(
+                &self.ctx.paths.recently_deleted_root(),
+                &conn,
+                &row,
+                &dir,
+                chrono::DateTime::<chrono::Utc>::from(self.ctx.clock.now()),
+            )
+            .map(|_| ())
+        } else {
+            // A row whose folder is already gone: nothing to recover, just
+            // drop the row (as before).
+            agora_core::db::delete_instance(&conn, &instance_id).map_err(|error| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
                     message: error.to_string(),
-                })?;
-            }
-            std::fs::rename(&dir, &quarantine).map_err(|error| LauncherError::Generic {
-                code: "ERR_INSTANCE_DELETE".into(),
-                message: error.to_string(),
-            })?;
-        }
-        if let Err(error) = agora_core::db::delete_instance(&conn, &instance_id) {
-            if moved {
-                let _ = std::fs::rename(&quarantine, &dir);
-            }
-            op.fail(error.to_string());
-            return Err(LauncherError::Generic {
-                code: "ERR_LOCAL_STATE_FAILED".into(),
-                message: error.to_string(),
-            });
-        }
-        let moved_to_trash = trash_fn.is_some();
-        if moved && quarantine.exists() {
-            if let Some(trash) = trash_fn {
-                if let Err(error) = trash(&quarantine) {
-                    let _ = agora_core::db::upsert_instance(&conn, &row);
-                    let _ = std::fs::rename(&quarantine, &dir);
-                    op.fail(error.to_string());
-                    return Err(error);
                 }
-            } else {
-                std::fs::remove_dir_all(&quarantine).map_err(|error| LauncherError::Generic {
-                    code: "ERR_INSTANCE_DELETE".into(),
-                    message: error.to_string(),
-                })?;
-            }
-        }
-        if !moved_to_trash {
-            let _ = agora_core::snapshot::prune_unreferenced_objects(&dir);
+            })
+        };
+        if let Err(error) = result {
+            op.fail(error.to_string());
+            return Err(error);
         }
         if let Some(profiles_path) = &crate::context::launcher_profiles_path(&self.ctx) {
             let profile_id = crate::launcher_profiles::profile_id_for(&instance_id);
@@ -763,6 +1184,108 @@ impl InstanceService {
         }
         op.complete();
         Ok(())
+    }
+
+    /// Entries in "Recently deleted", newest first.
+    pub fn list_recently_deleted(
+        &self,
+    ) -> LauncherResult<Vec<crate::recently_deleted::RecentlyDeletedEntry>> {
+        Ok(crate::recently_deleted::list_entries(
+            &self.ctx.paths.recently_deleted_root(),
+        ))
+    }
+
+    /// Restore a deleted instance: files and database rows (import provenance,
+    /// pack inventory, launch history). If its id has been taken since, it
+    /// comes back under a free id and the outcome says so.
+    pub fn restore_deleted(
+        &self,
+        entry_id: &str,
+    ) -> LauncherResult<crate::recently_deleted::RestoreOutcome> {
+        let root = self.ctx.paths.recently_deleted_root();
+        let entry = crate::recently_deleted::list_entries(&root)
+            .into_iter()
+            .find(|e| e.entry_id == entry_id)
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_INSTANCE_RESTORE".into(),
+                message: "That deleted instance is no longer available.".into(),
+            })?;
+        let original = self.validate_id(&entry.instance_id)?;
+        let op = self
+            .ctx
+            .operation_manager
+            .register_for_instance("Restore instance", &original);
+        let _lock = match self.ctx.lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(original.clone()),
+            "restore",
+        ) {
+            Ok(l) => l,
+            Err(e) => {
+                op.fail(e.to_string());
+                return Err(e);
+            }
+        };
+        let (mut conn, probe) = match (self.connection(), self.connection()) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => {
+                op.fail(e.to_string());
+                return Err(e);
+            }
+        };
+        let paths = &self.ctx.paths;
+        let free = |candidate: &str| {
+            paths
+                .instance_dir(candidate)
+                .map(|dir| std::fs::symlink_metadata(dir).is_err())
+                .unwrap_or(false)
+                && matches!(agora_core::db::get_instance(&probe, candidate), Ok(None))
+        };
+        match crate::recently_deleted::restore_entry(
+            &root,
+            entry_id,
+            &mut conn,
+            &paths.instances_root(),
+            &free,
+        ) {
+            Ok(outcome) => {
+                op.complete();
+                Ok(outcome)
+            }
+            Err(error) => {
+                op.fail(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    /// Send one deleted instance to the OS trash now ("Delete now").
+    pub fn purge_deleted(&self, entry_id: &str, trash: &TrashFn) -> LauncherResult<()> {
+        crate::recently_deleted::purge_entry(
+            &self.ctx.paths.recently_deleted_root(),
+            entry_id,
+            trash,
+        )
+    }
+
+    /// Cleanup pass: entries past their window or over the size budget go to
+    /// the OS trash; failures leave the entry in place.
+    pub fn cleanup_recently_deleted(
+        &self,
+        trash: &TrashFn,
+    ) -> crate::recently_deleted::CleanupSummary {
+        // First repair anything a crash left half-done.
+        if let Ok(mut conn) = self.connection() {
+            crate::recently_deleted::reconcile(
+                &self.ctx.paths.recently_deleted_root(),
+                &mut conn,
+                &self.ctx.paths.instances_root(),
+            );
+        }
+        crate::recently_deleted::cleanup(
+            &self.ctx.paths.recently_deleted_root(),
+            chrono::DateTime::<chrono::Utc>::from(self.ctx.clock.now()),
+            trash,
+        )
     }
 
     /// Clone an existing instance: copy directory contents per prefs, create a
@@ -937,6 +1460,7 @@ impl InstanceService {
             icon_path: None,
             launch_mode_override: "auto".into(),
             import_source: None,
+            total_play_ms: 0,
         };
         let mut new_manifest = InstanceManifest {
             manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
@@ -1053,6 +1577,39 @@ impl InstanceService {
             });
         }
 
+        // A clone of an import is still "from CurseForge" (or Prism, ...):
+        // carry the provenance so the badge survives. The clone gets its own
+        // record under a distinct source key, so re-importing the original
+        // never matches (and never updates) the clone, and it has no tracked
+        // source files of its own.
+        if let Ok(Some(source_import)) = agora_core::db::get_instance_import(&conn, &source_id) {
+            let record = agora_core::db::InstanceImportRecord {
+                instance_id: new_id.clone(),
+                installation_key: "clone".into(),
+                source_instance_key: format!("clone-of:{source_id}"),
+                source_path: String::new(),
+                source_metadata_json: serde_json::json!({ "cloned_from": source_id }).to_string(),
+                imported_settings_json: "{}".into(),
+                source_fingerprint: String::new(),
+                imported_at: chrono::Utc::now().to_rfc3339(),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+                last_result: "cloned".into(),
+                launcher_kind: source_import.launcher_kind,
+            };
+            // Fail the clone rather than hand back one that quietly lost its
+            // provenance: roll the new instance back completely.
+            if let Err(error) = agora_core::db::replace_instance_import(&conn, &record, &[]) {
+                let _ = agora_core::db::delete_instance(&conn, &new_row.instance_id);
+                let _ = std::fs::remove_dir_all(&dest_dir);
+                let message = format!("Cannot record where the clone came from: {error}");
+                op.fail(message.clone());
+                return Err(LauncherError::Generic {
+                    code: "ERR_CLONE".into(),
+                    message,
+                });
+            }
+        }
+
         // Persist pack file inventory for the clone — recomputed from the
         // cloned directory so ClonePrefs filtering and symlink/hardlink
         // handling are reflected, not just copied DB rows.
@@ -1064,10 +1621,7 @@ impl InstanceService {
 
         // Launcher profile
         if let Some(profiles_path) = &crate::context::launcher_profiles_path(&self.ctx) {
-            let user_override = agora_core::db::get_setting(&conn, "jvm_always_pre_touch")
-                .ok()
-                .flatten()
-                .and_then(|value| value.as_bool());
+            let user_override = agora_core::db::global_always_pre_touch(&conn);
             let jvm = crate::jvm_config::JvmConfig {
                 memory_mb: new_row.jvm_memory_mb,
                 gc: new_row.jvm_gc.clone(),
@@ -1237,19 +1791,37 @@ impl InstanceService {
         };
         let policy = agora_core::network::NetworkPolicy::from_db(&conn);
         drop(conn);
+        self.ctx.progress_sink.report(ProgressEvent::new(
+            operation_id.clone(),
+            ProgressPhase::Downloading,
+            format!(
+                "Downloading Minecraft {} metadata",
+                request.minecraft_version
+            ),
+        ));
         if let Err(error) = crate::minecraft_metadata::ensure_base_version_metadata(
             &minecraft_root,
             &request.minecraft_version,
             &policy,
         )
         .await
-        {
+        .map_err(|e| {
+            e.while_attempting(format!(
+                "download Minecraft {} metadata",
+                request.minecraft_version
+            ))
+        }) {
             let _ = std::fs::remove_dir_all(&staging_dir);
             op.fail(error.to_string());
             return Err(error);
         }
 
         if !matches!(request.loader.as_str(), "" | "vanilla") {
+            let loader_label = format!(
+                "{} {}",
+                loader_display_name(&request.loader),
+                request.loader_version
+            );
             if let Err(error) = LoaderService::new(self.ctx.clone())
                 .ensure_installed(
                     &request.loader,
@@ -1258,6 +1830,7 @@ impl InstanceService {
                     false,
                 )
                 .await
+                .map_err(|e| e.while_attempting(format!("download {loader_label}")))
             {
                 let _ = std::fs::remove_dir_all(&staging_dir);
                 op.fail(error.to_string());
@@ -1299,10 +1872,7 @@ impl InstanceService {
             });
         }
         if let Some(profiles_path) = &crate::context::launcher_profiles_path(&self.ctx) {
-            let user_override = agora_core::db::get_setting(&conn, "jvm_always_pre_touch")
-                .ok()
-                .flatten()
-                .and_then(|value| value.as_bool());
+            let user_override = agora_core::db::global_always_pre_touch(&conn);
             let jvm = crate::jvm_config::JvmConfig {
                 memory_mb: row.jvm_memory_mb,
                 gc: row.jvm_gc.clone(),
@@ -1407,6 +1977,20 @@ impl InstanceService {
     }
 }
 
+/// Whether the manifest lists a content file with this name. An empty name
+/// never matches, so an unnamed pack entry stays a known gap.
+fn manifest_has_file(manifest: &InstanceManifest, filename: &str) -> bool {
+    !filename.is_empty()
+        && manifest
+            .mods
+            .iter()
+            .chain(&manifest.resourcepacks)
+            .chain(&manifest.shaders)
+            .chain(&manifest.datapacks)
+            .chain(&manifest.worlds)
+            .any(|entry| entry.filename == filename)
+}
+
 /// Fill unset JVM fields on a create request from a template.
 ///
 /// One-directional on purpose: the template is a default, never an override.
@@ -1431,7 +2015,7 @@ fn apply_template_jvm_to_request(
     }
 }
 
-fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRow {
+pub(crate) fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRow {
     InstanceRow {
         instance_id: instance_id.into(),
         name: request.name.clone(),
@@ -1472,6 +2056,7 @@ fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRo
         icon_path: None,
         launch_mode_override: "auto".into(),
         import_source: None,
+        total_play_ms: 0,
     }
 }
 
@@ -1548,6 +2133,297 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_gap_is_over_once_the_file_is_in_the_manifest_by_any_route() {
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "inst", "name": "Inst", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.16.0", "is_locked": false,
+            "mods": [{
+                "filename": "sodium.jar", "registry_id": null, "modrinth_id": null,
+                "source": "manual", "version": null, "sha256": "", "installed_at": "now"
+            }],
+            "resourcepacks": [], "shaders": [], "datapacks": [], "worlds": [],
+            "user_preferences": {}
+        }))
+        .unwrap();
+        assert!(manifest_has_file(&manifest, "sodium.jar"));
+        assert!(!manifest_has_file(&manifest, "xaero.jar"));
+        // Case and whitespace are not forgiven: a different file is a different file.
+        assert!(!manifest_has_file(&manifest, "Sodium.jar"));
+        assert!(!manifest_has_file(&manifest, " sodium.jar"));
+        // An unnamed gap must never be cleared by an unnamed installed entry.
+        assert!(!manifest_has_file(&manifest, ""));
+    }
+
+    #[test]
+    fn get_reports_only_the_pack_gaps_still_missing() {
+        let (ctx, root) = context();
+        let request = CreateInstanceRequest {
+            name: "Inst".into(),
+            instance_id: "inst".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        agora_core::db::upsert_instance(&conn, &prepare_row("inst", &request)).unwrap();
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "inst", "name": "Inst", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.16.0", "is_locked": false,
+            "mods": [{
+                "filename": "sodium.jar", "registry_id": null, "modrinth_id": null,
+                "source": "manual", "version": null, "sha256": "", "installed_at": "now"
+            }],
+            "resourcepacks": [], "shaders": [], "datapacks": [], "worlds": [],
+            "user_preferences": {}, "manifest_version": agora_core::models::CURRENT_MANIFEST_VERSION
+        }))
+        .unwrap();
+        std::fs::create_dir_all(ctx.paths.instance_dir("inst").unwrap()).unwrap();
+        agora_core::helpers::atomic_write_manifest(
+            &ctx.paths.instance_manifest("inst").unwrap(),
+            &manifest,
+        )
+        .unwrap();
+        let gap = |filename: &str| agora_core::db::InstancePackGap {
+            filename: filename.into(),
+            display_name: filename.into(),
+            status: "failed".into(),
+            reason: None,
+        };
+        agora_core::db::replace_instance_pack_gaps(
+            &conn,
+            "inst",
+            &[gap("sodium.jar"), gap("xaero.jar")],
+        )
+        .unwrap();
+        drop(conn);
+
+        let detail = InstanceService::new(ctx.clone())
+            .get("inst")
+            .unwrap()
+            .unwrap();
+        let missing: Vec<&str> = detail
+            .pack_gaps
+            .iter()
+            .map(|g| g.filename.as_str())
+            .collect();
+        assert_eq!(
+            missing,
+            vec!["xaero.jar"],
+            "sodium.jar is in the manifest now"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An unlocked instance with one mod on disk and a matching manifest.
+    fn instance_with_mod() -> (Ctx, PathBuf) {
+        let (ctx, root) = context();
+        let request = CreateInstanceRequest {
+            name: "Inst".into(),
+            instance_id: "inst".into(),
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        agora_core::db::upsert_instance(&conn, &prepare_row("inst", &request)).unwrap();
+        drop(conn);
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::write(dir.join("mods").join("a.jar"), b"original").unwrap();
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "inst", "name": "Inst", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.16.0", "is_locked": false,
+            "mods": [], "resourcepacks": [], "shaders": [], "datapacks": [], "worlds": [],
+            "user_preferences": {}, "manifest_version": agora_core::models::CURRENT_MANIFEST_VERSION
+        }))
+        .unwrap();
+        agora_core::helpers::atomic_write_manifest(
+            &ctx.paths.instance_manifest("inst").unwrap(),
+            &manifest,
+        )
+        .unwrap();
+        (ctx, root)
+    }
+
+    fn lock_snapshot_ids(dir: &Path) -> Vec<String> {
+        agora_core::snapshot::lock_snapshots(dir)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    #[test]
+    fn groups_and_notes_round_trip() {
+        let (ctx, _root) = instance_with_mod();
+        let service = InstanceService::new(ctx.clone());
+        service.set_group("inst", Some("  Modded  ")).unwrap();
+        assert_eq!(
+            service.groups().unwrap().get("inst").map(String::as_str),
+            Some("Modded")
+        );
+        service.set_group("inst", Some(" ")).unwrap();
+        assert!(service.groups().unwrap().is_empty());
+        assert!(service.set_group("missing", Some("x")).is_err());
+
+        service
+            .set_notes(
+                "inst",
+                "Seed 1234
+",
+            )
+            .unwrap();
+        let manifest = service.get("inst").unwrap().unwrap().manifest.unwrap();
+        assert_eq!(manifest.user_preferences[NOTES_KEY], "Seed 1234");
+        service.set_notes("inst", "  ").unwrap();
+        let manifest = service.get("inst").unwrap().unwrap().manifest.unwrap();
+        assert!(manifest.user_preferences.get(NOTES_KEY).is_none());
+    }
+
+    #[test]
+    fn lock_then_revert_removes_what_was_added_since_and_the_revert_can_be_undone() {
+        let (ctx, root) = instance_with_mod();
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        let service = InstanceService::new(ctx.clone());
+        service.lock("inst").unwrap();
+        assert!(
+            agora_core::snapshot::lock_snapshots(&dir).unwrap()[0].is_preserved(),
+            "a lock snapshot is never pushed out by automatic retention"
+        );
+        service.unlock("inst").unwrap();
+        std::fs::write(dir.join("mods").join("b.jar"), b"added").unwrap();
+
+        agora_core::snapshot_service::SnapshotService::new(ctx.clone())
+            .revert_to_lock("inst")
+            .unwrap();
+
+        assert!(
+            !dir.join("mods").join("b.jar").exists(),
+            "the mod added after locking is gone"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("a.jar")).unwrap(),
+            b"original"
+        );
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        assert!(
+            !agora_core::db::get_instance(&conn, "inst")
+                .unwrap()
+                .unwrap()
+                .is_locked
+        );
+
+        // The revert's own undo point brings the removed mod back.
+        let undo = agora_core::snapshot::list_snapshots(&dir)
+            .unwrap()
+            .into_iter()
+            .find(|s| {
+                s.label
+                    .as_deref()
+                    .is_some_and(|l| l.starts_with("pre-restore-"))
+            })
+            .expect("the revert took no undo snapshot");
+        agora_core::snapshot_service::SnapshotService::new(ctx.clone())
+            .restore("inst", &undo.id)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("b.jar")).unwrap(),
+            b"added"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn revert_refuses_an_instance_with_no_lock_snapshot_and_changes_nothing() {
+        // Locked before lock snapshots existed: there is no lock snapshot to return to.
+        let (ctx, root) = instance_with_mod();
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        std::fs::write(dir.join("mods").join("b.jar"), b"added").unwrap();
+
+        match agora_core::snapshot_service::SnapshotService::new(ctx.clone()).revert_to_lock("inst")
+        {
+            Err(LauncherError::Generic { code, .. }) => assert_eq!(code, "ERR_NO_LOCK_SNAPSHOT"),
+            Err(other) => panic!("expected a plain refusal, got {other:?}"),
+            Ok(_) => panic!("revert with no lock snapshot must not restore anything"),
+        }
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("b.jar")).unwrap(),
+            b"added"
+        );
+        assert!(agora_core::snapshot::list_snapshots(&dir)
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relocking_replaces_the_lock_snapshot_and_unlocking_keeps_it() {
+        let (ctx, root) = instance_with_mod();
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        let service = InstanceService::new(ctx.clone());
+        service.lock("inst").unwrap();
+        let first = lock_snapshot_ids(&dir);
+        assert_eq!(first.len(), 1);
+        service.unlock("inst").unwrap();
+        assert_eq!(
+            lock_snapshot_ids(&dir),
+            first,
+            "unlocking keeps the lock snapshot for Revert"
+        );
+
+        std::fs::write(dir.join("mods").join("b.jar"), b"added").unwrap();
+        service.lock("inst").unwrap();
+        let second = lock_snapshot_ids(&dir);
+        assert_eq!(second.len(), 1, "only the newest lock snapshot is kept");
+        assert_ne!(second, first);
+        service.unlock("inst").unwrap();
+
+        // Revert returns to the second lock, which already had the added mod.
+        agora_core::snapshot_service::SnapshotService::new(ctx.clone())
+            .revert_to_lock("inst")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("b.jar")).unwrap(),
+            b"added"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn revert_refuses_while_the_instance_is_locked() {
+        let (ctx, root) = instance_with_mod();
+        let dir = ctx.paths.instance_dir("inst").unwrap();
+        InstanceService::new(ctx.clone()).lock("inst").unwrap();
+        match agora_core::snapshot_service::SnapshotService::new(ctx.clone()).revert_to_lock("inst")
+        {
+            Err(LauncherError::Generic { code, .. }) => assert_eq!(code, "ERR_INSTANCE_LOCKED"),
+            Err(other) => panic!("expected a refusal, got {other:?}"),
+            Ok(_) => panic!("revert on a locked instance must not restore anything"),
+        }
+        assert_eq!(
+            std::fs::read(dir.join("mods").join("a.jar")).unwrap(),
+            b"original"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn crud_uses_core_paths_and_database() {
         let (ctx, root) = context();
         let request = CreateInstanceRequest {
@@ -1592,6 +2468,11 @@ mod tests {
         assert!(locked_detail.manifest.unwrap().is_locked);
         service.rename("test", "Renamed").unwrap();
         assert_eq!(service.list().unwrap()[0].name, "Renamed");
+        assert_eq!(
+            service.get("test").unwrap().unwrap().manifest.unwrap().name,
+            "Renamed",
+            "rename must reach the manifest too"
+        );
         service.unlock("test").unwrap();
         let unlocked_detail = service.get("test").unwrap().unwrap();
         assert!(!unlocked_detail.row.is_locked);
@@ -1599,7 +2480,7 @@ mod tests {
         assert!(crate::install_service::InstallService::new(ctx)
             .check_not_locked("test")
             .is_ok());
-        service.delete("test", None).unwrap();
+        service.delete("test").unwrap();
         assert!(service.list().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1966,7 +2847,7 @@ mod tests {
         }
         write_ui_state_selecting(&official_root, "agora-doomed");
 
-        InstanceService::new(ctx).delete("doomed", None).unwrap();
+        InstanceService::new(ctx).delete("doomed").unwrap();
 
         let profiles: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&profiles_path).unwrap()).unwrap();
@@ -2053,7 +2934,7 @@ $#
         let service = InstanceService::new(ctx);
         assert_eq!(op_mgr.active_count(), 0);
 
-        service.delete("delop", None).unwrap();
+        service.delete("delop").unwrap();
 
         let all = op_mgr.list_all();
         let del_ops: Vec<_> = all
@@ -2248,5 +3129,918 @@ $#
         assert_eq!(db_files, live_files);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    mod recently_deleted_tests {
+        use super::*;
+        use crate::instance_service::TrashFn;
+        use std::sync::Mutex;
+
+        fn request(id: &str) -> CreateInstanceRequest {
+            CreateInstanceRequest {
+                name: format!("Name {id}"),
+                instance_id: id.into(),
+                minecraft_version: "1.21".into(),
+                loader: "vanilla".into(),
+                loader_version: "".into(),
+                jvm_memory_mb: None,
+                jvm_memory_mode: None,
+                jvm_gc: None,
+                jvm_custom_args: None,
+                jvm_always_pre_touch: None,
+                is_modpack: None,
+                pack_icon_url: None,
+                template_id: None,
+            }
+        }
+
+        /// An instance with files, pack inventory, import provenance and launch history.
+        fn seed(ctx: &Ctx, id: &str) {
+            let req = request(id);
+            let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            agora_core::db::upsert_instance(&conn, &prepare_row(id, &req)).unwrap();
+            let dir = ctx.paths.instance_dir(id).unwrap();
+            std::fs::create_dir_all(dir.join("mods")).unwrap();
+            std::fs::create_dir_all(dir.join("snapshots")).unwrap();
+            std::fs::write(dir.join("mods").join("a.jar"), b"jar-bytes").unwrap();
+            std::fs::write(dir.join("snapshots").join("s1"), b"snapshot").unwrap();
+            std::fs::write(
+                ctx.paths.instance_manifest(id).unwrap(),
+                serde_json::to_vec(&manifest_from_request(id, &req)).unwrap(),
+            )
+            .unwrap();
+            agora_core::db::replace_instance_pack_files(
+                &conn,
+                id,
+                &[agora_core::db::InstancePackFile {
+                    relative_path: "mods/a.jar".into(),
+                    sha256: "ab".repeat(32),
+                    size: 9,
+                }],
+            )
+            .unwrap();
+            let record = agora_core::db::InstanceImportRecord {
+                instance_id: id.into(),
+                launcher_kind: "curseforge".into(),
+                installation_key: "cf:test".into(),
+                source_instance_key: "src-key".into(),
+                source_path: "C:/cf/test".into(),
+                source_metadata_json: "{}".into(),
+                imported_settings_json: "{}".into(),
+                source_fingerprint: "fp".into(),
+                imported_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                last_result: "imported".into(),
+            };
+            let files = [agora_core::db::InstanceImportFileRecord {
+                relative_path: "mods/a.jar".into(),
+                sha256: "cd".repeat(32),
+                size: 9,
+                source_modified_ns: Some(5),
+            }];
+            agora_core::db::replace_instance_import(&conn, &record, &files).unwrap();
+            agora_core::launch_history::begin_launch(
+                &conn,
+                id,
+                "2026-01-02T00:00:00Z",
+                3,
+                "1.21",
+                "vanilla",
+            )
+            .unwrap();
+        }
+
+        fn db_state(ctx: &Ctx, id: &str) -> String {
+            let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            serde_json::to_string(&crate::recently_deleted::capture_db_state(&conn, id).unwrap())
+                .unwrap()
+        }
+
+        fn files_of(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+            let mut out = Vec::new();
+            let mut stack = vec![dir.to_path_buf()];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(&d).unwrap() {
+                    let p = e.unwrap().path();
+                    let m = std::fs::symlink_metadata(&p).unwrap();
+                    if m.file_type().is_symlink() {
+                        out.push((
+                            format!("LINK:{}", p.strip_prefix(dir).unwrap().display()),
+                            Vec::new(),
+                        ));
+                    } else if m.is_dir() {
+                        stack.push(p);
+                    } else {
+                        out.push((
+                            p.strip_prefix(dir).unwrap().display().to_string(),
+                            std::fs::read(&p).unwrap(),
+                        ));
+                    }
+                }
+            }
+            out.sort();
+            out
+        }
+
+        /// A stand-in for the OS trash: moves the folder aside and remembers it.
+        fn fake_trash(bin: std::path::PathBuf) -> (TrashFn, Arc<Mutex<Vec<std::path::PathBuf>>>) {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let seen2 = seen.clone();
+            std::fs::create_dir_all(&bin).unwrap();
+            let f: TrashFn = Arc::new(move |path: &Path| {
+                let dest = bin.join(path.file_name().unwrap());
+                std::fs::rename(path, &dest).map_err(|e| LauncherError::Generic {
+                    code: "ERR_TEST".into(),
+                    message: e.to_string(),
+                })?;
+                seen2.lock().unwrap().push(dest);
+                Ok(())
+            });
+            (f, seen)
+        }
+
+        fn failing_trash() -> TrashFn {
+            Arc::new(|_: &Path| {
+                Err(LauncherError::Generic {
+                    code: "ERR_TEST".into(),
+                    message: "trash unavailable".into(),
+                })
+            })
+        }
+
+        #[cfg(windows)]
+        fn make_link(target: &Path, link: &Path) {
+            junction::create(target, link).unwrap();
+        }
+        #[cfg(unix)]
+        fn make_link(target: &Path, link: &Path) {
+            std::os::unix::fs::symlink(target, link).unwrap();
+        }
+
+        #[test]
+        fn delete_lists_then_restore_is_identical() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let dir = ctx.paths.instance_dir("pack").unwrap();
+            let files_before = files_of(&dir);
+            let db_before = db_state(&ctx, "pack");
+            assert!(db_before.contains("curseforge") && db_before.contains("mods/a.jar"));
+            let service = InstanceService::new(ctx.clone());
+
+            service.delete("pack").unwrap();
+            assert!(service.list().unwrap().is_empty());
+            assert!(!dir.exists());
+            let entries = service.list_recently_deleted().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].instance_id, "pack");
+            assert_eq!(entries[0].name, "Name pack");
+            assert_eq!(entries[0].import_source.as_deref(), Some("curseforge"));
+            assert!(entries[0].size_bytes > 0);
+            // The cascade really removed the rows while it was deleted.
+            assert!(!db_state(&ctx, "pack").contains("curseforge"));
+
+            let outcome = service.restore_deleted(&entries[0].entry_id).unwrap();
+            assert_eq!(outcome.instance_id, "pack");
+            assert!(!outcome.renamed);
+            assert_eq!(files_of(&dir), files_before);
+            assert_eq!(db_state(&ctx, "pack"), db_before);
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            assert_eq!(service.list().unwrap()[0].name, "Name pack");
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn restore_when_id_is_taken_uses_a_free_name_and_says_so() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            seed(&ctx, "pack"); // a new instance took the id
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+
+            let outcome = service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(outcome.renamed);
+            assert_eq!(outcome.original_instance_id, "pack");
+            assert_eq!(outcome.instance_id, "pack-restored");
+            let rows = service.list().unwrap();
+            assert_eq!(rows.len(), 2);
+            let restored = rows
+                .iter()
+                .find(|r| r.instance_id == "pack-restored")
+                .unwrap();
+            assert_eq!(restored.name, "Name pack (restored)");
+            assert_eq!(restored.import_source.as_deref(), Some("curseforge"));
+            let manifest = read_manifest(&ctx.paths.instance_manifest("pack-restored").unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(manifest.instance_id, "pack-restored");
+            let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            assert_eq!(
+                agora_core::db::list_instance_pack_files(&conn, "pack-restored")
+                    .unwrap()
+                    .len(),
+                1
+            );
+            // The live one is untouched.
+            assert_eq!(
+                agora_core::db::list_instance_pack_files(&conn, "pack")
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn cleanup_purges_only_after_the_window() {
+            let (ctx, root) = context();
+            let clock = agora_core::ctx::TestClock::new(std::time::SystemTime::now());
+            let ctx = ctx.with_clock(Arc::new(clock.clone()));
+            seed(&ctx, "old");
+            seed(&ctx, "fresh");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("old").unwrap();
+            clock.advance(std::time::Duration::from_secs(20 * 24 * 3600));
+            service.delete("fresh").unwrap();
+            let (trash, seen) = fake_trash(root.join("bin"));
+
+            // Day 20: nothing is old enough.
+            let summary = service.cleanup_recently_deleted(&trash);
+            assert_eq!((summary.purged, summary.failed, summary.kept), (0, 0, 2));
+
+            // Day 31: "old" is past 30 days, "fresh" (11 days) is not.
+            clock.advance(std::time::Duration::from_secs(11 * 24 * 3600));
+            let summary = service.cleanup_recently_deleted(&trash);
+            assert_eq!((summary.purged, summary.failed, summary.kept), (1, 0, 1));
+            assert_eq!(seen.lock().unwrap().len(), 1);
+            let left = service.list_recently_deleted().unwrap();
+            assert_eq!(left.len(), 1);
+            assert_eq!(left[0].instance_id, "fresh");
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn purge_failure_leaves_the_entry_restorable() {
+            let (ctx, root) = context();
+            let clock = agora_core::ctx::TestClock::new(std::time::SystemTime::now());
+            let ctx = ctx.with_clock(Arc::new(clock.clone()));
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            clock.advance(std::time::Duration::from_secs(40 * 24 * 3600));
+
+            let summary = service.cleanup_recently_deleted(&failing_trash());
+            assert_eq!((summary.purged, summary.failed), (0, 1));
+            assert!(service
+                .purge_deleted(&entry.entry_id, &failing_trash())
+                .is_err());
+            assert_eq!(service.list_recently_deleted().unwrap().len(), 1);
+            service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(ctx
+                .paths
+                .instance_dir("pack")
+                .unwrap()
+                .join("mods/a.jar")
+                .is_file());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_link_inside_the_instance_is_never_followed() {
+            let (ctx, root) = context();
+            seed(&ctx, "linked");
+            let outside = root.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("precious.txt"), b"keep me").unwrap();
+            std::fs::write(outside.join("big.bin"), vec![0u8; 2_000_000]).unwrap();
+            let dir = ctx.paths.instance_dir("linked").unwrap();
+            make_link(&outside, &dir.join("shared"));
+            let service = InstanceService::new(ctx.clone());
+
+            service.delete("linked").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            // The size counted the instance's own files, not the link target.
+            assert!(entry.size_bytes < 1_000_000);
+            assert_eq!(
+                std::fs::read(outside.join("precious.txt")).unwrap(),
+                b"keep me"
+            );
+
+            // Restoring brings the link back as a link.
+            service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(std::fs::symlink_metadata(dir.join("shared"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+
+            // Purging detaches the link before the (fake) trash sees the tree.
+            service.delete("linked").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let (trash, seen) = fake_trash(root.join("bin"));
+            service.purge_deleted(&entry.entry_id, &trash).unwrap();
+            let moved = seen.lock().unwrap()[0].clone();
+            assert!(files_of(&moved)
+                .iter()
+                .all(|(name, _)| !name.starts_with("LINK:")));
+            assert!(std::fs::symlink_metadata(moved.join("instance").join("shared")).is_err());
+            assert_eq!(
+                std::fs::read(outside.join("precious.txt")).unwrap(),
+                b"keep me"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn size_budget_purges_oldest_first_and_only_as_much_as_needed() {
+            let (ctx, root) = context();
+            let clock = agora_core::ctx::TestClock::new(std::time::SystemTime::now());
+            let ctx = ctx.with_clock(Arc::new(clock.clone()));
+            for id in ["first", "second", "third"] {
+                seed(&ctx, id);
+                std::fs::write(
+                    ctx.paths.instance_dir(id).unwrap().join("big.bin"),
+                    vec![1u8; 1000],
+                )
+                .unwrap();
+            }
+            let service = InstanceService::new(ctx.clone());
+            for id in ["first", "second", "third"] {
+                service.delete(id).unwrap();
+                clock.advance(std::time::Duration::from_secs(60));
+            }
+            let entries = service.list_recently_deleted().unwrap();
+            let each = entries[0].size_bytes;
+            let (trash, seen) = fake_trash(root.join("bin"));
+            // Room for two of the three: only the oldest goes.
+            let summary = crate::recently_deleted::cleanup_with_budget(
+                &ctx.paths.recently_deleted_root(),
+                chrono::DateTime::<chrono::Utc>::from(ctx.clock.now()),
+                &trash,
+                each * 2 + 10,
+            );
+            assert_eq!((summary.purged, summary.kept), (1, 2));
+            assert_eq!(seen.lock().unwrap().len(), 1);
+            let left: Vec<_> = service
+                .list_recently_deleted()
+                .unwrap()
+                .into_iter()
+                .map(|e| e.instance_id)
+                .collect();
+            assert!(left.contains(&"second".to_string()) && left.contains(&"third".to_string()));
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn locked_instance_is_refused_and_untouched() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.lock("pack").unwrap();
+            let before = files_of(&ctx.paths.instance_dir("pack").unwrap());
+            let error = service.delete("pack").unwrap_err();
+            assert!(error.to_string().contains("locked"));
+            assert_eq!(files_of(&ctx.paths.instance_dir("pack").unwrap()), before);
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            assert_eq!(service.list().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn instance_held_by_another_operation_is_refused_and_untouched() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let _held = ctx
+                .lock_manager
+                .acquire(
+                    agora_core::lock_manager::LockResource::Instance("pack".into()),
+                    "launch",
+                )
+                .unwrap();
+            let service = InstanceService::new(ctx.clone());
+            assert!(service.delete("pack").is_err());
+            assert!(ctx
+                .paths
+                .instance_dir("pack")
+                .unwrap()
+                .join("mods/a.jar")
+                .is_file());
+            assert_eq!(service.list().unwrap().len(), 1);
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn delete_fails_closed_when_recently_deleted_cannot_be_used() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            // A file where the holding area should be makes every move fail.
+            std::fs::write(ctx.paths.recently_deleted_root(), b"in the way").unwrap();
+            let service = InstanceService::new(ctx.clone());
+            let before = db_state(&ctx, "pack");
+            assert!(service.delete("pack").is_err());
+            assert!(ctx
+                .paths
+                .instance_dir("pack")
+                .unwrap()
+                .join("mods/a.jar")
+                .is_file());
+            assert_eq!(db_state(&ctx, "pack"), before);
+            assert_eq!(service.list().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn restore_rejects_unknown_and_hostile_entry_ids() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            for bad in ["", "..", "../instances", "nope", "a/b", "a\\b"] {
+                assert!(service.restore_deleted(bad).is_err(), "{bad:?}");
+                assert!(
+                    service.purge_deleted(bad, &failing_trash()).is_err(),
+                    "{bad:?}"
+                );
+            }
+            assert_eq!(service.list_recently_deleted().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn corrupt_entry_is_not_listed_and_not_restored() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let json = ctx
+                .paths
+                .recently_deleted_root()
+                .join(&entry.entry_id)
+                .join("entry.json");
+            std::fs::write(&json, b"{ not json").unwrap();
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Cleanup must not destroy what it cannot read.
+            let (trash, seen) = fake_trash(root.join("bin"));
+            service.cleanup_recently_deleted(&trash);
+            assert!(seen.lock().unwrap().is_empty());
+            assert!(ctx
+                .paths
+                .recently_deleted_root()
+                .join(&entry.entry_id)
+                .join("instance")
+                .is_dir());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn clone_of_an_import_keeps_its_source_badge() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let clone = rt
+                .block_on(service.clone(CloneRequest {
+                    source_instance_id: "pack".into(),
+                    new_name: "Copy".into(),
+                    prefs: ClonePrefs::default(),
+                }))
+                .unwrap();
+            let row = service
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.instance_id == clone.instance_id)
+                .unwrap();
+            assert_eq!(row.import_source.as_deref(), Some("curseforge"));
+            // Re-importing the original must never resolve to the clone.
+            let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            let found = agora_core::db::find_instance_import_by_source(
+                &conn,
+                "curseforge",
+                "cf:test",
+                "src-key",
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(found.instance_id, "pack");
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        /// review: rows keyed by instance_id but not reached by a foreign key
+        /// (mcp_approval_grants, crash_events) are neither captured nor deleted,
+        /// so a deleted instance's rows stay behind and attach to whatever
+        /// instance later takes its id.
+        #[test]
+        fn review_rows_outside_the_cascade_do_not_follow_a_reused_id() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            {
+                let conn =
+                    agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                conn.execute(
+                    "INSERT INTO mcp_approval_grants (tool_name, instance_id, state, granted_at)
+                     VALUES ('tool.x', 'pack', 'granted', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO crash_events (instance_id, fingerprint, exception_class, top_frames_json, occurred_at)
+                     VALUES ('pack', 'fp', 'E', '[]', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+            }
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            // A brand-new instance takes the id.
+            seed(&ctx, "pack");
+            let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            for table in ["mcp_approval_grants", "crash_events"] {
+                let leaked: i64 = conn
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE instance_id = 'pack'"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    leaked, 0,
+                    "{table} rows of the deleted 'pack' now belong to the new 'pack'"
+                );
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        /// review: a failed "Delete now" must leave the entry exactly as it was.
+        /// Today detach_links removes the instance's links before the trash
+        /// call, so a trash failure still costs the user their links.
+        #[test]
+        fn review_failed_delete_now_keeps_the_instances_links() {
+            let (ctx, root) = context();
+            seed(&ctx, "linked");
+            let outside = root.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("precious.txt"), b"keep me").unwrap();
+            make_link(
+                &outside,
+                &ctx.paths.instance_dir("linked").unwrap().join("shared"),
+            );
+            let service = InstanceService::new(ctx.clone());
+            service.delete("linked").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let link = ctx
+                .paths
+                .recently_deleted_root()
+                .join(&entry.entry_id)
+                .join("instance")
+                .join("shared");
+
+            assert!(service
+                .purge_deleted(&entry.entry_id, &failing_trash())
+                .is_err());
+            assert!(
+                std::fs::symlink_metadata(&link).is_ok(),
+                "a failed Delete now removed the instance's link"
+            );
+            assert_eq!(
+                std::fs::read(outside.join("precious.txt")).unwrap(),
+                b"keep me"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        /// review: if the clone's provenance write fails, the clone must not
+        /// quietly succeed without its badge (either failing or the badge is fine).
+        #[test]
+        fn review_clone_provenance_write_failure_is_not_silent() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            {
+                let conn =
+                    agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                conn.execute_batch(
+                    "CREATE TRIGGER review_block_clone_import BEFORE INSERT ON instance_imports
+                     WHEN NEW.installation_key = 'clone'
+                     BEGIN SELECT RAISE(ABORT, 'blocked for review'); END;",
+                )
+                .unwrap();
+            }
+            let service = InstanceService::new(ctx.clone());
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(service.clone(CloneRequest {
+                source_instance_id: "pack".into(),
+                new_name: "Copy".into(),
+                prefs: ClonePrefs::default(),
+            }));
+            if let Ok(clone) = result {
+                let row = service
+                    .list()
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.instance_id == clone.instance_id)
+                    .unwrap();
+                assert!(
+                    row.import_source.is_some(),
+                    "clone succeeded without its import badge and nothing reported it"
+                );
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        /// Every table carrying an instance_id is captured. When a new one is
+        /// added this fails until someone decides how it behaves on delete
+        /// (and, if it holds permissions, adds it to PERMISSION_TABLES).
+        #[test]
+        fn every_instance_id_table_is_covered() {
+            let (ctx, root) = context();
+            let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            let mut covered: Vec<String> = crate::recently_deleted::instance_tables(&conn)
+                .unwrap()
+                .into_iter()
+                .map(|s| s.table)
+                .collect();
+            covered.sort();
+            let mut with_column: Vec<String> = Vec::new();
+            let mut stmt = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+                .unwrap();
+            let names: Vec<String> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            for name in names {
+                let mut info = conn
+                    .prepare(&format!("PRAGMA table_info(\"{name}\")"))
+                    .unwrap();
+                let has = info
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .unwrap()
+                    .any(|c| c.unwrap() == "instance_id");
+                if has {
+                    with_column.push(name);
+                }
+            }
+            for t in &with_column {
+                assert!(
+                    covered.contains(t),
+                    "{t} has instance_id but is not captured"
+                );
+            }
+            // Reviewed list: a new table must be added here on purpose.
+            let mut reviewed: Vec<&str> = vec![
+                "crash_events",
+                "crash_survivals",
+                // Other games' instances. Ids are unique across games, so a Minecraft delete finds
+                // no row here; the generic capture still carries one if it ever did.
+                "game_instances",
+                "instance_import_files",
+                "instance_import_jobs",
+                "instance_imports",
+                "instance_pack_files",
+                "instance_pack_gaps",
+                "instance_update_cache",
+                "launch_history",
+                "mcp_approval_grants",
+                "plugin_storage",
+                "user_instances",
+            ];
+            reviewed.sort();
+            let mut direct = with_column.clone();
+            direct.sort();
+            assert_eq!(
+                direct, reviewed,
+                "a table with an instance_id column was added or removed: review its delete/restore behaviour"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn permission_rows_do_not_carry_to_a_renamed_restore_but_do_to_the_same_id() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            {
+                let conn =
+                    agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                conn.execute(
+                    "INSERT INTO mcp_approval_grants (tool_name, instance_id, state, granted_at)
+                     VALUES ('tool.x', 'pack', 'granted', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+                // A child table without instance_id, reached through a foreign key.
+                conn.execute(
+                    "INSERT INTO crash_survivals (instance_id, occurred_at) VALUES ('pack', 't')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO crash_survival_mods (survival_id, mod_id) VALUES (last_insert_rowid(), 'm')",
+                    [],
+                )
+                .unwrap();
+            }
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+            assert_eq!(count("SELECT COUNT(*) FROM crash_survival_mods"), 0);
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+
+            // Same id: everything comes back, grants and linked rows included.
+            service.restore_deleted(&entry.entry_id).unwrap();
+            assert_eq!(
+                count("SELECT COUNT(*) FROM mcp_approval_grants WHERE instance_id='pack'"),
+                1
+            );
+            assert_eq!(count("SELECT COUNT(*) FROM crash_survival_mods"), 1);
+
+            // Renamed restore: no grant for the new id.
+            service.delete("pack").unwrap();
+            seed(&ctx, "pack");
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let outcome = service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(outcome.renamed);
+            assert_eq!(count("SELECT COUNT(*) FROM mcp_approval_grants"), 0);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn reconcile_finishes_a_delete_that_crashed_before_the_rows_went() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let before = {
+                let conn =
+                    agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                crate::recently_deleted::capture_db_state(&conn, "pack").unwrap()
+            };
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            // Crash simulation: the folder is in the entry but the rows are back.
+            {
+                let mut conn =
+                    agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                crate::recently_deleted::replay_db_state(&mut conn, &before, "pack", "pack", None)
+                    .unwrap();
+            }
+            assert_eq!(service.list().unwrap().len(), 1);
+            let (trash, _) = fake_trash(root.join("bin"));
+            service.cleanup_recently_deleted(&trash);
+            assert!(service.list().unwrap().is_empty());
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            service.restore_deleted(&entry.entry_id).unwrap();
+            assert!(ctx
+                .paths
+                .instance_dir("pack")
+                .unwrap()
+                .join("mods/a.jar")
+                .is_file());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn reconcile_leaves_a_different_instance_with_a_reused_id_alone() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            // A new instance (different created_at) took the id, then lost its folder.
+            seed(&ctx, "pack");
+            {
+                let conn =
+                    agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+                conn.execute(
+                    "UPDATE user_instances SET created_at = 'other' WHERE instance_id='pack'",
+                    [],
+                )
+                .unwrap();
+            }
+            std::fs::remove_dir_all(ctx.paths.instance_dir("pack").unwrap()).unwrap();
+            let (trash, _) = fake_trash(root.join("bin"));
+            service.cleanup_recently_deleted(&trash);
+            assert_eq!(service.list().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn reconcile_finishes_a_restore_that_crashed_before_the_rows_came_back() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            // Crash simulation: folder moved back, rows not restored.
+            std::fs::rename(
+                ctx.paths
+                    .recently_deleted_root()
+                    .join(&entry.entry_id)
+                    .join("instance"),
+                ctx.paths.instance_dir("pack").unwrap(),
+            )
+            .unwrap();
+            assert!(service.list().unwrap().is_empty());
+            let (trash, _) = fake_trash(root.join("bin"));
+            service.cleanup_recently_deleted(&trash);
+            assert_eq!(service.list().unwrap().len(), 1);
+            assert!(service.list_recently_deleted().unwrap().is_empty());
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn hostile_entry_contents_are_refused_on_restore() {
+            let (ctx, root) = context();
+            seed(&ctx, "pack");
+            let service = InstanceService::new(ctx.clone());
+            service.delete("pack").unwrap();
+            let entry = service.list_recently_deleted().unwrap().remove(0);
+            let json_path = ctx
+                .paths
+                .recently_deleted_root()
+                .join(&entry.entry_id)
+                .join("entry.json");
+            let original = std::fs::read_to_string(&json_path).unwrap();
+            let tamper = |f: &dyn Fn(&mut serde_json::Value)| {
+                let mut v: serde_json::Value = serde_json::from_str(&original).unwrap();
+                f(&mut v);
+                std::fs::write(&json_path, serde_json::to_vec(&v).unwrap()).unwrap();
+            };
+            // Unknown table.
+            tamper(&|v| v["db"][0]["table"] = "sqlite_master".into());
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Unknown column.
+            tamper(&|v| {
+                v["db"][0]["columns"][0] = "evil\" TEXT); DROP TABLE user_instances; --".into()
+            });
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Rows for another instance.
+            tamper(&|v| {
+                let t = v["db"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|d| d["table"] == "launch_history")
+                    .unwrap();
+                let col = t["columns"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .position(|c| c == "instance_id")
+                    .unwrap();
+                t["rows"][0][col] = "victim".into();
+            });
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Instance id that escapes the instances folder.
+            tamper(&|v| v["instance_id"] = "..\\..\\x".into());
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            tamper(&|v| v["instance_id"] = "pack:stream".into());
+            assert!(service.restore_deleted(&entry.entry_id).is_err());
+            // Nothing was written anywhere.
+            assert!(service.list().unwrap().is_empty());
+            assert!(!ctx.paths.instance_dir("pack").unwrap().exists());
+            // The untampered entry still restores.
+            std::fs::write(&json_path, &original).unwrap();
+            service.restore_deleted(&entry.entry_id).unwrap();
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn instance_ids_with_a_colon_are_refused() {
+            assert!(agora_core::app_paths::validate_path_component("pack:stream").is_err());
+            assert!(agora_core::app_paths::validate_path_component("C:pack").is_err());
+            assert!(agora_core::app_paths::validate_path_component("pack").is_ok());
+        }
+    }
+}
+
+/// The name a player sees for a loader id. The id itself is what the manifest
+/// and the loader catalog key on, so only the label changes.
+fn loader_display_name(loader: &str) -> &str {
+    match loader {
+        "fabric" => "Fabric",
+        "quilt" => "Quilt",
+        "forge" => "Forge",
+        "neoforge" => "NeoForge",
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod loader_label_tests {
+    use super::loader_display_name;
+
+    #[test]
+    fn known_loaders_get_player_facing_names() {
+        assert_eq!(loader_display_name("fabric"), "Fabric");
+        assert_eq!(loader_display_name("neoforge"), "NeoForge");
+    }
+
+    #[test]
+    fn unknown_or_hostile_ids_pass_through_unchanged() {
+        assert_eq!(loader_display_name(""), "");
+        assert_eq!(loader_display_name("Fabric"), "Fabric");
+        assert_eq!(loader_display_name("fabric "), "fabric ");
     }
 }

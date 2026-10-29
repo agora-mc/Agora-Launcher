@@ -285,6 +285,20 @@ pub(crate) fn content_key(entry: &InstalledMod) -> String {
     )
 }
 
+/// The name enrichment may show for an installed row. A catalog-backed row
+/// keeps the catalog's display name, so the instance view matches Browse. A
+/// Modrinth project title (for Iris, "Iris Shaders") only names a row the
+/// catalog does not.
+pub fn enriched_display_name(
+    status: &MetadataStatus,
+    modrinth_title: Option<String>,
+) -> Option<String> {
+    match status {
+        MetadataStatus::Complete => None,
+        MetadataStatus::Partial | MetadataStatus::Unavailable => modrinth_title,
+    }
+}
+
 pub(crate) fn filename_display_name(filename: &str) -> String {
     Path::new(filename)
         .file_stem()
@@ -421,5 +435,29 @@ mod tests {
         let filtered = list_installed_content(&dir, &manifest, Some("resourcepack"), None);
         assert_eq!(filtered.len(), 1);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_catalog_named_row_keeps_its_catalog_name_over_modrinth_title() {
+        assert_eq!(
+            enriched_display_name(&MetadataStatus::Complete, Some("Iris Shaders".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn a_row_the_catalog_does_not_name_takes_the_modrinth_title() {
+        assert_eq!(
+            enriched_display_name(&MetadataStatus::Partial, Some("Sodium".into())),
+            Some("Sodium".into())
+        );
+        assert_eq!(
+            enriched_display_name(&MetadataStatus::Unavailable, Some("Sodium".into())),
+            Some("Sodium".into())
+        );
+        assert_eq!(
+            enriched_display_name(&MetadataStatus::Unavailable, None),
+            None
+        );
     }
 }

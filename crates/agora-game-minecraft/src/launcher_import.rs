@@ -108,6 +108,16 @@ pub struct ContentInventory {
     pub has_shaderpacks: bool,
     pub has_datapacks: bool,
     pub has_saves: bool,
+    /// Mod jars directly in `mods/` (enabled or `.disabled`). `None` when the
+    /// folder exists but could not be read, so the review never shows a count
+    /// that looks complete when it is not.
+    pub mod_count: Option<u64>,
+    /// Resource packs directly in `resourcepacks/`.
+    pub resourcepack_count: Option<u64>,
+    /// Shader packs directly in `shaderpacks/` (folders and zips only).
+    pub shaderpack_count: Option<u64>,
+    /// Worlds directly in `saves/`.
+    pub world_count: Option<u64>,
 }
 
 /// A single import candidate instance discovered from a source launcher.
@@ -381,7 +391,64 @@ fn inventory_payload(payload_root: &Path) -> Result<ContentInventory, String> {
         has_shaderpacks,
         has_datapacks,
         has_saves,
+        mod_count: count_content_entries(payload_root, "mods", is_mod_jar),
+        resourcepack_count: count_content_entries(payload_root, "resourcepacks", any_entry),
+        shaderpack_count: count_content_entries(payload_root, "shaderpacks", is_shader_pack_entry),
+        world_count: count_content_entries(payload_root, "saves", is_world_folder),
     })
+}
+
+fn any_entry(_name: &str, _is_dir: bool) -> bool {
+    true
+}
+
+fn is_mod_jar(name: &str, is_dir: bool) -> bool {
+    let lower = name.to_ascii_lowercase();
+    !is_dir && (lower.ends_with(".jar") || lower.ends_with(".jar.disabled"))
+}
+
+fn is_world_folder(_name: &str, is_dir: bool) -> bool {
+    is_dir
+}
+
+/// Whether a `shaderpacks/` entry is a shader pack. Iris keeps a settings
+/// sidecar (`<pack>.zip.txt`) beside each shader zip; that file is not a shader.
+pub(crate) fn is_shader_pack_entry(name: &str, is_dir: bool) -> bool {
+    is_dir || name.to_ascii_lowercase().ends_with(".zip")
+}
+
+/// Count the entries directly inside `payload_root/subdir` that `accept` keeps.
+///
+/// Counts what the import would actually copy: a missing folder, or a link or
+/// reparse point (never copied), is `Some(0)`. A folder that exists but cannot
+/// be read is `None`.
+fn count_content_entries(
+    payload_root: &Path,
+    subdir: &str,
+    accept: fn(&str, bool) -> bool,
+) -> Option<u64> {
+    let folder = payload_root.join(subdir);
+    let meta = match std::fs::symlink_metadata(&folder) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(0),
+        Err(_) => return None,
+    };
+    if unsafe_filesystem_entry(&folder, &meta.file_type()) || !meta.is_dir() {
+        return Some(0);
+    }
+    let read_dir = std::fs::read_dir(&folder).ok()?;
+    let mut count: u64 = 0;
+    for entry in read_dir {
+        let entry = entry.ok()?;
+        let file_type = entry.file_type().ok()?;
+        if unsafe_filesystem_entry(&entry.path(), &file_type) {
+            continue;
+        }
+        if accept(&entry.file_name().to_string_lossy(), file_type.is_dir()) {
+            count += 1;
+        }
+    }
+    Some(count)
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +696,10 @@ fn inspect_prism_instance(folder_name: &str, instance_dir: &Path) -> ImportCandi
         has_shaderpacks: false,
         has_datapacks: false,
         has_saves: false,
+        mod_count: None,
+        resourcepack_count: None,
+        shaderpack_count: None,
+        world_count: None,
     });
 
     let (status, mut all_warnings) = if loader_tuple.is_some() {
@@ -1029,6 +1100,10 @@ fn inspect_curseforge_instance(folder_name: &str, instance_dir: &Path) -> Import
         has_shaderpacks: false,
         has_datapacks: false,
         has_saves: false,
+        mod_count: None,
+        resourcepack_count: None,
+        shaderpack_count: None,
+        world_count: None,
     });
 
     let (status, mut all_warnings) = if minecraft_version.is_some() {
@@ -1556,6 +1631,10 @@ fn enumerate_modrinth_db_instances(
             has_shaderpacks: false,
             has_datapacks: false,
             has_saves: false,
+            mod_count: None,
+            resourcepack_count: None,
+            shaderpack_count: None,
+            world_count: None,
         });
 
         let settings_preview = if tables.contains(&"instance_launch_overrides".to_string()) {
@@ -1887,6 +1966,10 @@ fn enumerate_modrinth_legacy_profiles(
             has_shaderpacks: false,
             has_datapacks: false,
             has_saves: false,
+            mod_count: None,
+            resourcepack_count: None,
+            shaderpack_count: None,
+            world_count: None,
         });
 
         let (status, mut all_warnings) = if loader_tuple.is_some() {
@@ -1946,6 +2029,10 @@ fn unsupported_candidate(
             has_shaderpacks: false,
             has_datapacks: false,
             has_saves: false,
+            mod_count: None,
+            resourcepack_count: None,
+            shaderpack_count: None,
+            world_count: None,
         },
         loader_tuple: None,
         last_played: None,
@@ -2126,6 +2213,53 @@ mod tests {
     fn test_inventory_missing_root_fails() {
         let dir = tempfile::tempdir().unwrap();
         assert!(inventory_payload(&dir.path().join("nope")).is_err());
+    }
+
+    #[test]
+    fn test_inventory_counts_top_level_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("mods").join("nested.jar")).unwrap();
+        std::fs::write(root.join("mods").join("a.jar"), "x").unwrap();
+        std::fs::write(root.join("mods").join("b.jar.disabled"), "x").unwrap();
+        std::fs::write(root.join("mods").join("notes.txt"), "x").unwrap();
+        std::fs::create_dir_all(root.join("resourcepacks").join("folder-pack")).unwrap();
+        std::fs::write(root.join("resourcepacks").join("zip-pack.zip"), "x").unwrap();
+        std::fs::create_dir_all(root.join("saves").join("World A")).unwrap();
+        std::fs::create_dir_all(root.join("saves").join("World B")).unwrap();
+        std::fs::write(root.join("saves").join("readme.txt"), "x").unwrap();
+
+        let result = inventory_payload(root).unwrap();
+        assert_eq!(result.mod_count, Some(2));
+        assert_eq!(result.resourcepack_count, Some(2));
+        assert_eq!(result.world_count, Some(2));
+        // No shaderpacks folder at all is zero, not unknown.
+        assert_eq!(result.shaderpack_count, Some(0));
+    }
+
+    #[test]
+    fn test_inventory_shader_sidecar_is_not_a_shader_pack() {
+        let dir = tempfile::tempdir().unwrap();
+        let shaders = dir.path().join("shaderpacks");
+        std::fs::create_dir_all(shaders.join("Folder Pack")).unwrap();
+        std::fs::write(shaders.join("ComplementaryUnbound_r5.6.1.zip"), "zip").unwrap();
+        std::fs::write(shaders.join("ComplementaryUnbound_r5.6.1.zip.txt"), "iris").unwrap();
+        std::fs::write(shaders.join("UPPER.ZIP"), "zip").unwrap();
+        std::fs::write(shaders.join("stray.txt"), "x").unwrap();
+
+        let result = inventory_payload(dir.path()).unwrap();
+        assert_eq!(result.shaderpack_count, Some(3));
+    }
+
+    #[test]
+    fn test_count_content_entries_hostile_names() {
+        // Empty names, case, and non-jar names never count as mods.
+        assert!(!is_mod_jar("", false));
+        assert!(!is_mod_jar("Mod.JAR.txt", false));
+        assert!(is_mod_jar("Mod.JAR", false));
+        assert!(!is_mod_jar("folder.jar", true));
+        assert!(!is_shader_pack_entry("", false));
+        assert!(is_shader_pack_entry("", true));
     }
 
     // --------------------------------------------------------------
@@ -2881,6 +3015,10 @@ mod tests {
                 has_shaderpacks: false,
                 has_datapacks: false,
                 has_saves: false,
+                mod_count: None,
+                resourcepack_count: None,
+                shaderpack_count: None,
+                world_count: None,
             },
             loader_tuple: Some(LoaderTuple {
                 loader: "forge".into(),

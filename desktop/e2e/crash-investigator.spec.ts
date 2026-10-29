@@ -15,6 +15,7 @@ interface CrashCfg {
   investigateError?: string;
   exportFail?: boolean;
   noSuspects?: boolean;
+  noLogs?: boolean;
   stillCrashingSuspects?: number;
   stillCrashingRuledOut?: string;
   launchError?: string;
@@ -29,6 +30,7 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
     investigateError: '',
     exportFail: false,
     noSuspects: false,
+    noLogs: false,
     stillCrashingSuspects: 1,
     stillCrashingRuledOut: 'suspect-mod',
     launchError: '',
@@ -65,7 +67,7 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
       const stillCrashingResult = makeStillCrashingResult();
       const evidenceResult = {
         evidence: {
-          sources: [{
+          sources: cfg.noLogs ? [] : [{
             meta: {
               basename: 'latest.log', kind: 'LatestLog', size_bytes: 120,
               truncated: false, stale: false, supplementary: false,
@@ -294,6 +296,13 @@ test.describe('CrashInvestigator', () => {
     await expect(page.getByText(/We didn’t detect a problem automatically, but let’s diagnose it/)).toBeVisible({ timeout: 10000 });
     // The generic "couldn't tell" card would only repeat the header.
     await expect(page.getByText(/We couldn’t tell which mod caused this/)).toHaveCount(0);
+  });
+
+  test('says plainly when there were no crash logs to read', async ({ page }) => {
+    await installMock(page, { noLogs: true, noSuspects: true });
+    await openDialog(page);
+    await expect(page.getByText('No crash logs yet: this checks what happened in a crashed game, not whether the setup is ready')).toBeVisible();
+    await expect(page.getByText(/We checked 0 files/)).toHaveCount(0);
   });
 
   test('ruled-out absent initially, appears after still-crashing', async ({ page }) => {

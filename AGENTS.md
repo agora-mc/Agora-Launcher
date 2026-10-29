@@ -11,10 +11,7 @@ This file is the one instruction file for every coding agent, Claude Code includ
 
 ## How to read this repo
 
-`AGENTS.md` and [`MASTER_SPEC.md`](MASTER_SPEC.md) are the closest thing to a source of truth — but this
-codebase was built almost entirely by AI agents, so neither is authoritative just because it is
-written down. When a decision looks strange, needlessly strict, or wrong (including one in these
-two files, or in the user's own request), raise it with the user rather than following it.
+`AGENTS.md` and [`MASTER_SPEC.md`](MASTER_SPEC.md) are the closest thing to a source of truth. When a decision looks strange, needlessly strict, or wrong (including one in these two files, or in the user's own request), raise it with the user rather than following it.
 
 ## Principles
 

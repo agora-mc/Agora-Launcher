@@ -347,6 +347,28 @@ fn write_template(root: &Path, template: &InstanceTemplate) -> Result<(), String
     Ok(())
 }
 
+/// A fresh template id for a display name.
+///
+/// The id is generated rather than derived from the name: two templates may
+/// legitimately share a display name, and a name is renameable while the id is
+/// what the default-template setting and instance rows point at. The name slug
+/// is appended only so the directory is recognizable on disk.
+pub fn new_template_id(name: &str) -> Result<String, String> {
+    let slug: String = agora_core::paths::sanitize_id(name)
+        .chars()
+        .take(24)
+        .collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("Cannot mint a template id: system clock is before 1970 ({e})"))?
+        .as_nanos();
+    Ok(if slug.is_empty() {
+        format!("tpl-{stamp}")
+    } else {
+        format!("tpl-{stamp}-{slug}")
+    })
+}
+
 /// Everything needed to capture one template.
 ///
 /// A struct rather than a parameter list because the pieces are independently

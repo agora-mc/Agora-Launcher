@@ -22,6 +22,7 @@
     "vanilla-plus"
   ],
   "curator_note": "Lightweight client-side minimap with waypoints. A solid vanilla-plus navigation aid; disable for a purist experience.",
+  "curator_warning": "Do not use XaeroPlus with this mod. The author says XaeroPlus is not affiliated with them and causes bugs and crashes that are hard to track. Source: the author's CurseForge page for this mod (curseforge.com/minecraft/mc-mods/Xaeros-Minimap).",
   "governance": {
     "immune": false,
     "override_justification": null,

@@ -1011,6 +1011,8 @@ export function LiveInstanceEditor({
         // Claims controller input while open. An attribute rather than an
         // import: this area may not depend on app-level modules.
         data-controller-dialog={optionalOpen ? '' : undefined}
+        // Closed scrims stay mounted and fade; `inert` keeps Tab out of them.
+        {...(optionalOpen ? {} : { inert: '' })}
         // controller-exempt: click-outside backdrop, not a control; the dialog
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setOptionalOpen(false); }}
@@ -1050,7 +1052,7 @@ export function LiveInstanceEditor({
             </div>
           )}
           <div className="inst-pf-actions">
-            <button type="button" className="inst-btn" onClick={() => setOptionalOpen(false)}>Done</button>
+            <button type="button" className="inst-btn" data-modal-close="" onClick={() => setOptionalOpen(false)}>Done</button>
           </div>
         </div>
       </div>,
@@ -1061,6 +1063,8 @@ export function LiveInstanceEditor({
       <div
         className={`inst-scrim ${preflightOpen ? 'show' : ''}`}
         data-controller-dialog={preflightOpen ? '' : undefined}
+        // Closed scrims stay mounted and fade; `inert` keeps Tab out of them.
+        {...(preflightOpen ? {} : { inert: '' })}
         // controller-exempt: click-outside backdrop, not a control; the dialog
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setPreflightOpen(false); }}
@@ -1093,6 +1097,8 @@ export function LiveInstanceEditor({
       <div
         className={`inst-scrim ${doctorOpen ? 'show' : ''}`}
         data-controller-dialog={doctorOpen ? '' : undefined}
+        // Closed scrims stay mounted and fade; `inert` keeps Tab out of them.
+        {...(doctorOpen ? {} : { inert: '' })}
         // controller-exempt: click-outside backdrop, not a control; the dialog
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setDoctorOpen(false); }}

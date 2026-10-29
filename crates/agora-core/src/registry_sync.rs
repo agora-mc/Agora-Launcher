@@ -145,6 +145,12 @@ pub async fn check_and_download_update(
 
     let latest = match query_latest_release(registry_repo, github_token.as_deref()).await {
         Ok(release) => release,
+        // With no cached catalog there is nothing to fall back to. Say what
+        // failed rather than returning an empty status the UI reads as "no
+        // catalog found".
+        Err(e) if !has_cached_db => {
+            return Err(e.while_attempting("download the catalog"));
+        }
         Err(e) => {
             return Ok(RegistryStatus {
                 has_cached_db,
@@ -153,7 +159,10 @@ pub async fn check_and_download_update(
                 latest_tag: None,
                 update_available: false,
                 checked: false,
-                message: format!("Could not check for updates: {}. Using cached catalog.", e),
+                message: format!(
+                    "{} Using the cached catalog.",
+                    e.while_attempting("check for updates")
+                ),
             });
         }
     };
@@ -474,10 +483,10 @@ impl GitHubRelease {
     }
 }
 
-async fn query_latest_release(repo: &str, token: Option<&str>) -> Result<GitHubRelease, String> {
+async fn query_latest_release(repo: &str, token: Option<&str>) -> LauncherResult<GitHubRelease> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
     let _permit = crate::github_ratelimit::acquire_github_permit().await;
-    let clients = crate::http_client::HttpClients::new().map_err(|e| e.to_string())?;
+    let clients = crate::http_client::HttpClients::new()?;
     let headers = token
         .map(|t| vec![("Authorization".into(), format!("Bearer {t}"))])
         .unwrap_or_default();
@@ -487,23 +496,30 @@ async fn query_latest_release(repo: &str, token: Option<&str>) -> Result<GitHubR
         &url,
         headers,
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     if crate::github_ratelimit::is_rate_limit_response(&resp) {
         let retry = crate::github_ratelimit::parse_retry_after(&resp);
         crate::github_ratelimit::report_rate_limit(retry).await;
-        return Err(format!("GitHub rate limited (HTTP {})", resp.status()));
+        return Err(LauncherError::Generic {
+            code: "ERR_REGISTRY_RATE_LIMITED".into(),
+            message: format!("GitHub rate limited (HTTP {}).", resp.status()),
+        });
     }
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        return Err(LauncherError::Generic {
+            code: "ERR_REGISTRY_CHECK".into(),
+            message: format!("GitHub answered HTTP {}.", resp.status()),
+        });
     }
     let body = crate::http_client::checked_response_bytes(
         resp,
         crate::http_client::ClientCategory::GitHub,
     )
-    .await
-    .map_err(|e| e.to_string())?;
-    serde_json::from_slice::<GitHubRelease>(&body).map_err(|e| e.to_string())
+    .await?;
+    serde_json::from_slice::<GitHubRelease>(&body).map_err(|e| LauncherError::Generic {
+        code: "ERR_REGISTRY_CHECK".into(),
+        message: format!("Catalog release metadata was not readable: {e}."),
+    })
 }
 
 async fn download_file(url: &str, token: Option<&str>) -> LauncherResult<Vec<u8>> {

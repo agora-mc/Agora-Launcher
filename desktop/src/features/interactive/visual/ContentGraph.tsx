@@ -293,7 +293,7 @@ export function ContentGraph({ scene, selection, onSelect, onIntent, capabilitie
               setShowAll(false);
             }}
             placeholder="Filter by name…"
-            className="w-56 max-w-full rounded-md border border-border bg-card px-2.5 py-1 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-56 max-w-full rounded-md border border-border bg-card px-2.5 py-1 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
       ) : null}

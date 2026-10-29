@@ -14,8 +14,8 @@
  * so the pin reads as a pin rather than a silent override.
  *
  * The rest of the cascade is downstream and lives where it belongs: reduced
- * motion switches the living background off inside `AmbienceProvider`, and the
- * living background going off takes background removal with it.
+ * motion holds the living background still (the engine paints one frame), and
+ * Simple keeps the living background off through the ambience coordinator.
  */
 
 import { useEffect, useRef } from 'react';

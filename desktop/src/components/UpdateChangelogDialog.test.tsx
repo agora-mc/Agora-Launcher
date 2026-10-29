@@ -96,6 +96,22 @@ describe('UpdateChangelogDialog', () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
+  it('confirms only the updates left ticked', async () => {
+    const onConfirm = vi.fn();
+    render(
+      <UpdateChangelogDialog
+        updates={[update('sodium'), update('lithium')]}
+        displayNameFor={(u) => u.mod_jar_id}
+        onConfirm={onConfirm}
+        onCancel={vi.fn()}
+      />,
+    );
+    await waitFor(() => screen.getByRole('checkbox', { name: 'Update lithium' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Update lithium' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Update 1 of 2' }));
+    expect(onConfirm.mock.calls[0][0].map((u: { mod_jar_id: string }) => u.mod_jar_id)).toEqual(['sodium']);
+  });
+
   // A registry read failing must not prevent the user updating — the changelog
   // is advisory, the update is the point.
   it('still allows the update when the changelog lookup fails', async () => {

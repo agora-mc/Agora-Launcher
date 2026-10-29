@@ -9,13 +9,13 @@ function sourceSummary(item: BrowseCardProps['item']): string {
   const source = sourceLabel(item);
   if (item.author) return `by ${item.author} · ${source}`;
   if (item.registryItem?.download_strategy) {
-    // Name the preferred source, and say how many fallbacks stand behind it
-    // rather than listing every one in a card subtitle.
+    // Name the preferred download source, and say how many backups stand
+    // behind it rather than listing every one in a card subtitle.
     const sources = downloadSourcesOf(item.registryItem);
     const preferred = downloadSourceLabel(sources[0].strategy);
-    const fallbacks = sources.length - 1;
-    return fallbacks > 0
-      ? `${source} · ${preferred} +${fallbacks} fallback${fallbacks > 1 ? 's' : ''}`
+    const backups = sources.length - 1;
+    return backups > 0
+      ? `${source} · downloads from ${preferred}, ${backups} backup ${backups > 1 ? 'sources' : 'source'}`
       : `${source} · ${preferred}`;
   }
   return source;
