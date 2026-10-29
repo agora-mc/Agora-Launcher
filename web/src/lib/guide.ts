@@ -7,6 +7,7 @@ import type {
   GuideTopic,
 } from '@guide/guideContent';
 
+export { GUIDE_OVERVIEW } from '@guide/guideContent';
 export type { GuideCallout, GuideLevel, GuidePage, GuideSection, GuideTopic };
 
 /**

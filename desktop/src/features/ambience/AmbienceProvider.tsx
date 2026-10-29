@@ -23,6 +23,8 @@ export interface AmbienceContextValue {
   profile: AmbienceProfile;
   /** True when ambience is on at all (profile !== 'off'). */
   enabled: boolean;
+  /** Motion is reduced (Motion setting or OS): the world is on but held as one still picture. */
+  reducedMotion: boolean;
   setEnabled: (on: boolean) => void;
   soundOn: boolean;
   setSoundOn: (on: boolean) => void;
@@ -43,12 +45,6 @@ export interface AmbienceContextValue {
   /** Hide the standard page background (0% opacity) behind the world. */
   clearBackground: boolean;
   setClearBackground: (on: boolean) => void;
-  /**
-   * The living background is off because motion is reduced, not because the
-   * user switched it off. Settings uses this to explain the disabled control
-   * instead of silently ignoring a click.
-   */
-  motionSuppressed: boolean;
   /** Living-background page controls (proxied to the engine). */
   setTod: (t: number) => void;
   setWeather: (w: 'clear' | 'rain' | 'snow') => void;
@@ -124,9 +120,9 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
   const [lastEvent, setLastEvent] = useState<AmbienceEvent | null>(null);
   const [engine, setEngine] = useState<AmbienceEngine | null>(null);
   /**
-   * Reduced motion is LIVE state, not a mount-time snapshot: it now decides
-   * whether the living world runs at all, so the switch has to follow the
-   * Motion setting (and the OS query) as they change.
+   * Reduced motion is LIVE state, not a mount-time snapshot: the world is
+   * held still while it is on, so the engine has to hear about the Motion
+   * setting (and the OS query) as they change.
    */
   const [reducedMotion, setReducedMotion] = useState(reducedMotionPref);
   const overrideRef = useRef<AmbienceProfile | null>(null);
@@ -165,7 +161,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
   // expose the ambience state to CSS (translucent shell over the world)
   useEffect(() => {
     const root = document.documentElement;
-    const active = settings && settings.enabled && !reducedMotion ? (overrideRef.current ?? 'full') : 'off';
+    const active = settings && settings.enabled ? (overrideRef.current ?? 'full') : 'off';
     root.setAttribute('data-ambience', active);
     // Background removal only ever means "let the living world show through",
     // so it must follow the world: with nothing rendering behind it, a 0%
@@ -175,7 +171,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
       root.removeAttribute('data-ambience');
       root.removeAttribute('data-ambience-clear');
     };
-  }, [settings, override, reducedMotion]);
+  }, [settings, override]);
 
   // The world runs at `full` whenever it is on. There used to be a calm/full
   // "background intensity" setting, but it never took: the coordinator forces a
@@ -183,12 +179,11 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
   // seen. A surface that wants the quiet version still asks for it through
   // `overrideProfile` (the Lab bench does).
   //
-  // Reduced motion switches the living world OFF entirely. It is a wandering,
-  // weather-changing, animated background whose whole point is movement, so
-  // "reduce motion" cannot honestly mean "same world, held still". The stored
-  // `enabled` flag is left untouched, so the world comes back by itself when
-  // motion is allowed again.
-  const effectiveProfile: AmbienceProfile = !settings || !settings.enabled || reducedMotion
+  // Reduced motion does not turn the world off. The canvas stays mounted and
+  // holds one still frame (see AmbienceEngine.setReducedMotion), so the
+  // sidebar entry and the page keep working. The stored `enabled` flag is the
+  // only thing that switches the world off.
+  const effectiveProfile: AmbienceProfile = !settings || !settings.enabled
     ? 'off'
     : (overrideRef.current ?? 'full');
 
@@ -211,6 +206,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AmbienceContextValue>(() => ({
     profile: effectiveProfile,
     enabled: effectiveProfile !== 'off',
+    reducedMotion,
     // Turning the world off takes background removal with it: the setting only
     // exists to reveal the world, and it is the one ambience option that keeps
     // changing the page after the world stops rendering.
@@ -225,7 +221,6 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     setMusicOn: (on) => persist({ musicOn: on }),
     clearBackground: effectiveProfile !== 'off' && (settings?.clearBackground ?? false),
     setClearBackground: (on) => persist({ clearBackground: on }),
-    motionSuppressed: reducedMotion,
     journal,
     lastEvent,
     overrideProfile: (p) => setOverride(p),

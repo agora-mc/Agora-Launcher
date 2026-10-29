@@ -2,12 +2,13 @@
 
 > This is not a warehouse. This is a boutique.
 
-Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery platform. Community-curated manifests are compiled into a signed catalog, and each Minecraft setup lives in an isolated instance.
+Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery platform. Agora uses community-curated manifests compiled into a signed catalog to provide a community managed, curated list of mods from any source. 
+
+If you aren't a contributor or developer, I recommend visiting Agora's website, https://agoramc.com/.
 
 ## AI disclaimer
 
-I used AI extensively to build Agora, this text block is part of the very little that was actually written by flesh and blood. I made decisions, overviewed progress, and came up with ideas, but the work was done by a machine. Agora was still months of work. So while I tried my best to use my programming knowledge to steer it, this project was beyond my experience and skill level so there may be major architectural flaws and security risks. I would appreciate any suggestions from experienced professionals that would like to help. 
-For now Agora's small amount of art is also made by AI, but there's very little beyond I suppose the living background and I would be extremely grateful if someone wants to contribute their actual, human made work to Agora.
+I have a degree in game development and computer science. Using my experience, I worked with AI heavily to build Agora, nonetheless, everything has been reviewed, designed, and ideated by me. 
 
 ## Platforms and Signing
 
@@ -15,15 +16,15 @@ Windows is tested and signed, I don't have macOS or Linux right now so they are 
 
 ## Download and documentation
 
-- [Desktop and CLI releases](https://github.com/agora-mc/Agora-Launcher/releases) - choose the newest published `v*` release, not a `registry-*` data release.
-- [Website](https://agoramc.com/)
+- [Website](https://agoramc.com/) - if you aren't a contributor or developer, this is the place to go!
 - [Documentation home](https://agoramc.com/docs) - start here; it routes you by what you are trying to do.
 - [Task guides](https://agoramc.com/docs/guides) - every workflow, written both as steps and as an explanation.
-- [Troubleshooting and support](./docs/TROUBLESHOOTING.md)
-- [CLI reference](./docs/CLI.md)
+- [Desktop and CLI releases](https://github.com/agora-mc/Agora-Launcher/releases) - choose the newest published `v*` release, not a `registry-*` data release.
+- [Troubleshooting and support](https://agoramc.com/docs/troubleshooting)
+- [CLI reference](https://agoramc.com/docs/cli)
 - [How the documentation is organized](./docs/README.md)
 
-Agora also includes a searchable **Help & Guide** tied to the current desktop interface. The website publishes the same guides, so nothing there can contradict the app.
+Agora also includes a searchable **Help & Guide** tied to the current desktop interface. The website also publishes the same guides as well as other useful documentation.
 
 ## First run
 
@@ -61,7 +62,7 @@ Agora makes no automated analytics calls. Functional features can still contact 
 
 ## Project principles
 
-- **$0/month server footprint** - GitHub, GitHub Release Assets, and static hosting carry the public distribution load.
+- **low cost no-server, highly scalable footprint** - GitHub, GitHub Release Assets, and static hosting carry the public distribution load.
 - **No forced sign-in** - Agora works without a Microsoft account, so delegated launch is the default. Direct launch is an equally supported mode, not a fallback.
 - **Curated, not warehoused** - boutique quality and community review take priority over inventory size.
 - **Decentralized governance** - votes, reviews, and triage remain inspectable GitHub interactions.

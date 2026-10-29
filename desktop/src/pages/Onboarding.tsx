@@ -5,6 +5,8 @@ import {
   ensureJavaRuntime,
   focusMainWindow,
   formatError,
+  getAuthStatus,
+  getGithubProfile,
   getSetting,
   githubLogin,
   githubLoginPoll,
@@ -40,6 +42,7 @@ import {
 import { pinnedMotion } from '../components/presentation-capabilities';
 import { motionAfterPinEnds, rememberMotionBeforePin, takeMotionBeforePin } from '../components/motion-before-pin';
 import { useConfirm } from '@/components/ui/confirm';
+import { Check } from 'lucide-react';
 
 /**
  * Every step's Back/Continue row. Sticky inside the card's scroll area: at
@@ -157,7 +160,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
   return (
     <OnboardingFlowContext.Provider value={{ directLaunch }}>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs">
         <div ref={scrollRef} className="w-[70vw] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-border bg-card shadow-xl">
           <div className="p-6 sm:p-8">
             {step === 'welcome' && <WelcomeStep onContinue={() => setStep('appearance')} />}
@@ -340,8 +343,11 @@ function AppearanceStep({
   onBack: () => void;
 }) {
   const { preferences, setPreferences } = useUiPreferences();
+  // Compare key by key, as Settings → Appearance does. Comparing whole objects
+  // as JSON is sensitive to key order and to any key a preset leaves out, and
+  // left the default preset looking unselected.
   const activePreset = (preset: UiPreferences) =>
-    JSON.stringify(preset) === JSON.stringify(preferences);
+    (Object.keys(preset) as (keyof UiPreferences)[]).every((key) => preset[key] === preferences[key]);
   // The interaction mode is a presentation preference with its own versioned
   // key (mirrors Settings → Appearance → Interaction mode), so it is
   // read/written directly rather than folded into the theme blob.
@@ -386,12 +392,18 @@ function AppearanceStep({
               type="button"
               aria-pressed={active}
               onClick={() => setPreferences(preset.preferences)}
-              className={`rounded-lg border p-3 text-left transition-colors ${
+              className={`relative rounded-lg border-2 p-3 text-left transition-colors ${
                 active
-                  ? 'border-primary bg-primary/5'
+                  ? 'border-primary bg-primary/15 ring-2 ring-primary shadow-xs'
                   : 'border-border bg-card hover:border-primary/40 hover:bg-accent'
               }`}
             >
+              {active && (
+                <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
+                  <Check aria-hidden="true" className="h-3 w-3" />
+                  Selected
+                </span>
+              )}
               <span className="flex gap-1">
                 <span className="h-3 w-3 rounded-full ring-1 ring-black/10" style={{ backgroundColor: swatches.bg }} />
                 <span className="h-3 w-3 rounded-full ring-1 ring-black/10" style={{ backgroundColor: swatches.surface }} />
@@ -431,19 +443,27 @@ function AppearanceStep({
             aria-label="Interaction mode"
             value={interaction}
             onChange={(event) => applyInteraction(event.target.value as InteractionPreference)}
-            className="mt-1 block w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-1 block w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="standard">Standard</option>
             <option value="simple">Simple</option>
             <option value="high-interaction">High Interaction</option>
           </select>
           <span className="block text-xs text-muted-foreground">
-            Standard is the full launcher. High Interaction turns an instance into a visual workbench
-            and Browse into the Bazaar. Simple is the quiet version of that workbench — the same big
-            Play button, shelf and pre-flight check with the decoration, scores and surprises removed,
-            plain Browse sorted by Best, and reduced motion. Reviews and content changes always open
-            the Standard screens, which remain the only place a change is applied. You can change this
-            at any time in Settings → Appearance.
+            Standard: the full launcher, with every detail shown.
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            High Interaction: a visual, playful view. Your instance becomes a picture you can explore,
+            and Browse becomes The Bazaar, a browse-by-stalls view.
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            Simple: a calmer High Interaction. It keeps the big Play button and readiness check, drops
+            the decoration, scores and surprises, shows Browse as a plain list sorted by Best, and uses
+            less motion.
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            Reviews and content changes always open the Standard screens, the only place a change is
+            applied. You can change this any time in Settings → Appearance.
           </span>
         </label>
       </div>
@@ -582,7 +602,7 @@ function ServicesStep({
       <div className="space-y-4">
         <ServiceToggle
           title="Modrinth live browsing"
-          description="Enable live Modrinth search and category browsing when permitted by Privacy settings. Curated Modrinth-sourced catalog entries are always visible — this only controls live third-party browsing."
+          description="Enable live Modrinth search and category browsing when permitted by Privacy settings (Settings > General > Advanced mode shows them). Curated Modrinth-sourced catalog entries are always visible — this only controls live third-party browsing."
           checked={values.modrinth}
           onChange={(modrinth) => {
             onChange({ ...values, modrinth });
@@ -694,7 +714,7 @@ function ServiceToggle({
           }`}
         >
           <span
-            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
               checked ? 'translate-x-5' : 'translate-x-0.5'
             }`}
           />
@@ -815,7 +835,7 @@ function JavaStep({
             }`}
           >
             <span
-              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
                 checked ? 'translate-x-5' : 'translate-x-0.5'
               }`}
             />
@@ -1100,6 +1120,31 @@ function GithubStep({
   // in-flight one.
   const sessionIdRef = useRef(0);
 
+  // Whether a GitHub token is already stored (from an earlier run, or the OS
+  // credential store). `undefined` while the check is running. A failed check,
+  // or a stored token whose profile can't be read, lands on the sign-in offer,
+  // which never claims an account that was not confirmed.
+  const [account, setAccount] = useState<{ login: string } | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stored = await getAuthStatus();
+        if (!stored) {
+          if (!cancelled) setAccount(null);
+          return;
+        }
+        const profile = await getGithubProfile();
+        if (!cancelled) setAccount(profile?.login ? { login: profile.login } : null);
+      } catch {
+        // Expired or unreadable session: the backend clears an expired token,
+        // so the honest state is "not signed in".
+        if (!cancelled) setAccount(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const signIn = async () => {
     setError(null);
     setResult(null);
@@ -1144,10 +1189,20 @@ function GithubStep({
     <div>
       <Stepper current="github" />
       <h2 className="text-2xl font-bold mb-2">Connect GitHub</h2>
-      <p className="text-muted-foreground mb-6">
-        Sign in with GitHub to participate in community governance (voting, proposals). This is
-        optional and can be completed later in Settings.
-      </p>
+      {account ? (
+        <p className="text-muted-foreground mb-6">
+          <span className="text-primary">
+            Signed in as{' '}
+            <strong>@{account.login}</strong>.
+          </span>{' '}
+          Voting and proposals use this account.
+        </p>
+      ) : (
+        <p className="text-muted-foreground mb-6">
+          Sign in with GitHub to participate in community governance (voting, proposals). This is
+          optional and can be completed later in Settings.
+        </p>
+      )}
 
       {device && (
         <DeviceFlowPanel
@@ -1178,7 +1233,27 @@ function GithubStep({
           Back
         </button>
         <div className="flex gap-2">
-          {!polling && (
+          {account === undefined && (
+            <button
+              disabled
+              className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground opacity-50"
+            >
+              Checking GitHub…
+            </button>
+          )}
+          {account && (
+            <button
+              onClick={() => {
+                // Invalidate the polling session before navigating away.
+                sessionIdRef.current += 1;
+                onContinue();
+              }}
+              className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Continue
+            </button>
+          )}
+          {account === null && !polling && (
             <button
               onClick={() => {
                 // Invalidate the polling session before navigating away.
@@ -1190,13 +1265,15 @@ function GithubStep({
               I'll do this later
             </button>
           )}
-          <button
-            onClick={signIn}
-            disabled={polling}
-          className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {polling ? 'Waiting…' : 'Sign in with GitHub'}
-          </button>
+          {account === null && (
+            <button
+              onClick={signIn}
+              disabled={polling}
+              className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {polling ? 'Waiting…' : 'Sign in with GitHub'}
+            </button>
+          )}
         </div>
       </div>
     </div>

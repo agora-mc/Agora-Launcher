@@ -133,6 +133,8 @@ pub const AGORA_OAUTH_CLIENT_ID: &str = match option_env!("AGORA_OAUTH_CLIENT_ID
 };
 
 const KEYRING_SERVICE: &str = "com.agoramc";
+/// The credential-store service every Agora secret is filed under.
+pub(crate) const KEYRING_SERVICE_NAME: &str = KEYRING_SERVICE;
 const KEYRING_ACCOUNT: &str = "github-token";
 
 /// Fallback token file name (in app data dir) for when OS keyring is unavailable.

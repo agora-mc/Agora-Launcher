@@ -100,14 +100,13 @@ async function installHomeMock(page: Page, opts: HomeMockOptions = {}) {
       snapshots: Record<string, unknown>[];
       driftResult: Record<string, unknown>;
       registryStatus: Record<string, unknown>;
-      recommendations: Record<string, unknown>[];
       updatesResult: Record<string, unknown>[];
       launchMode: string;
       forYouItems: Record<string, unknown>[];
     }) => {
       const {
         instances, crashResult, lkgMarker, snapshots, driftResult,
-        registryStatus, recommendations, updatesResult, launchMode, forYouItems,
+        registryStatus, updatesResult, launchMode, forYouItems,
       } = params;
 
       const callbacks = new Map<number, (...args: unknown[]) => void>();
@@ -176,7 +175,7 @@ async function installHomeMock(page: Page, opts: HomeMockOptions = {}) {
     },
     {
       instances, crashResult, lkgMarker, snapshots, driftResult,
-      registryStatus, recommendations, updatesResult, launchMode,
+      registryStatus, updatesResult, launchMode,
       forYouItems: effectiveForYou,
     },
   );
@@ -197,7 +196,7 @@ test.describe('Home — zone B: Hero / Continue Playing', () => {
     await expect(page.getByRole('button', { name: 'Browse mod packs' })).toBeVisible();
   });
 
-  test('shows Continue Playing for the last-launched instance', async ({ page }) => {
+  test('shows a Play button for the last-launched instance', async ({ page }) => {
     const instance = { ...DEFAULT_INSTANCE, last_launched_at: '2026-07-12T10:00:00Z' };
     await installHomeMock(page, { instances: [instance] });
     await page.goto('/');
@@ -205,19 +204,26 @@ test.describe('Home — zone B: Hero / Continue Playing', () => {
     // Instance name appears in the hero card heading
     await expect(page.getByRole('heading', { name: 'Test Instance' })).toBeVisible();
     await expect(page.getByText('fabric 0.16.9 · MC 1.21')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Continue Playing' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Play Test Instance', exact: true })).toBeVisible();
   });
 
-  test('Continue Playing button with no launched instance shows welcome', async ({ page }) => {
+  test('Play button with no launched instance still shows for the first instance', async ({ page }) => {
     const instance = { ...DEFAULT_INSTANCE, last_launched_at: null };
     await installHomeMock(page, { instances: [instance] });
     await page.goto('/');
 
-    // Instance with null last_launched_at still shows Continue Playing
+    // Instance with null last_launched_at still gets the Play button
     // (heroInstance = lastLaunched ?? sortedByLaunched[0])
     await expect(page.getByRole('heading', { name: 'Test Instance' })).toBeVisible();
     await expect(page.getByText('Not launched yet')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Continue Playing' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Play Test Instance', exact: true })).toBeVisible();
+  });
+
+  test('header points newcomers at the Ctrl K command palette', async ({ page }) => {
+    await installHomeMock(page, { instances: [DEFAULT_INSTANCE] });
+    await page.goto('/');
+
+    await expect(page.getByText('to search and jump anywhere.')).toBeVisible();
   });
 
 });
@@ -428,7 +434,7 @@ test.describe('Home — zone C: Maintenance / LKG', () => {
     });
     await page.goto('/');
 
-    await expect(page.getByText('Last Known Good')).toBeVisible();
+    await expect(page.getByText('Last setup that launched fine')).toBeVisible();
     await expect(page.getByText(/Before playing session 2026-07-11/)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Restore' })).toBeVisible();
   });
@@ -440,9 +446,9 @@ test.describe('Home — zone C: Maintenance / LKG', () => {
     });
     await page.goto('/');
 
-    await expect(page.getByText('No last-known-good state yet')).toBeVisible();
+    await expect(page.getByText('No setup that launched fine yet')).toBeVisible();
     await expect(
-      page.getByText(/Play an instance successfully for at least 60 seconds/),
+      page.getByText(/Play an instance without a crash for at least 60 seconds/),
     ).toBeVisible();
   });
 
@@ -474,7 +480,7 @@ test.describe('Home — zone C: Maintenance / LKG', () => {
     await page.goto('/');
 
     // KnownGoodCard visible
-    await expect(page.getByText('Last Known Good')).toBeVisible();
+    await expect(page.getByText('Last setup that launched fine')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Restore' })).toBeVisible();
 
     // Click Restore
@@ -489,7 +495,7 @@ test.describe('Home — zone C: Maintenance / LKG', () => {
     await confirmDialog.getByRole('button', { name: 'Restore snapshot' }).click();
 
     // After restore completes, loadData() re-runs and the KnownGoodCard re-renders
-    await expect(page.getByText('Last Known Good')).toBeVisible();
+    await expect(page.getByText('Last setup that launched fine')).toBeVisible();
     await expect(page.getByText(/Before playing session 2026-07-11/)).toBeVisible();
   });
 

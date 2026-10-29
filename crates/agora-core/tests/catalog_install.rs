@@ -164,7 +164,7 @@ fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for (name, content) in entries {
         writer
-            .start_file(*name, zip::write::FileOptions::default())
+            .start_file(*name, zip::write::SimpleFileOptions::default())
             .unwrap();
         writer.write_all(content).unwrap();
     }

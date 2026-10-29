@@ -1,34 +1,36 @@
 import { useCallback, useEffect, useState } from 'react';
 import { WifiOff } from 'lucide-react';
-import { useOfflineStatus } from '@/hooks/use-offline-status';
+import { useConnectivity } from '@/hooks/use-connectivity';
 
 const DISMISSED_KEY = 'offline_banner_dismissed';
 
 /**
- * Offline Mode banner — renders a slim amber top-of-viewport bar
- * only when the browser reports offline.  Dismissible for the
+ * Offline banner — a slim amber top-of-viewport bar shown when the app's own
+ * recent requests could not reach their servers. Driven by the same backend
+ * status as the Privacy badge, so the two cannot disagree. Dismissible for the
  * session (persisted in sessionStorage).
  */
 export function OfflineBanner() {
   const [dismissed, setDismissed] = useState(false);
 
-  const { isOnline } = useOfflineStatus();
+  const { state } = useConnectivity();
+  const unreachable = state === 'unreachable';
 
   // When connectivity returns, clear the dismissed flag so the banner
   // can reappear next time the user goes offline.
   useEffect(() => {
-    if (isOnline) {
+    if (state === 'reachable') {
       sessionStorage.removeItem(DISMISSED_KEY);
       setDismissed(false);
     }
-  }, [isOnline]);
+  }, [state]);
 
   const handleDismiss = useCallback(() => {
     setDismissed(true);
     sessionStorage.setItem(DISMISSED_KEY, '1');
   }, []);
 
-  if (isOnline || dismissed) {
+  if (!unreachable || dismissed) {
     return null;
   }
 
@@ -46,8 +48,8 @@ export function OfflineBanner() {
       <div className="flex items-center gap-2">
         <WifiOff className="h-4 w-4 shrink-0" />
         <span className="text-xs leading-snug">
-          You&apos;re offline — Agora is running in Offline Mode. Cached catalog
-          and local instances remain available.
+          Can&apos;t reach the internet right now. Your cached catalog and local
+          instances still work; downloads and online search don&apos;t.
         </span>
       </div>
 
@@ -63,7 +65,7 @@ export function OfflineBanner() {
 
         <button
           onClick={handleDismiss}
-          className="ml-1 rounded p-0.5 text-amber-300 hover:text-amber-100 hover:bg-amber-800/50 transition-colors"
+          className="ml-1 rounded-sm p-0.5 text-amber-300 hover:text-amber-100 hover:bg-amber-800/50 transition-colors"
           aria-label="Dismiss offline banner"
         >
           <svg

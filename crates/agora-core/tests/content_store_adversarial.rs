@@ -14,7 +14,7 @@ fn ctx(tmp: &Path) -> CoreContext {
 fn zip_with(path: &Path, entries: &[(&str, &[u8])]) -> PathBuf {
     let file = std::fs::File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::FileOptions::default();
+    let opts = zip::write::SimpleFileOptions::default();
     for (name, bytes) in entries {
         if name.ends_with('/') {
             zip.add_directory(name.trim_end_matches('/'), opts).unwrap();

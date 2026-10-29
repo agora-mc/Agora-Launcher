@@ -1,5 +1,5 @@
 use crate::jar_metadata::{
-    parse_jar_metadata_for_loader_with_status, ParseDiagnostic, ParseStatus,
+    is_platform_dependency, parse_jar_metadata_for_loader_with_status, ParseDiagnostic, ParseStatus,
 };
 use crate::loader_compatibility::{
     evaluate_loader_compatibility, CurrentLoaderStatus, LoaderCompatibilityReport,
@@ -101,6 +101,11 @@ pub struct Blocker {
     pub filename: Option<String>,
     pub message: String,
     pub suggested_action: Option<String>,
+    /// The tracked jar that would satisfy this requirement if it were back in
+    /// `mods/`. Set only when that file is known to be missing, so the desktop
+    /// can offer Reinstall without parsing the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_file: Option<String>,
     /// Structured loader-compatibility evidence when this blocker is a loader
     /// requirement finding. Absent for every other blocker kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,6 +180,12 @@ pub struct HealthReport {
     pub blockers: Vec<Blocker>,
     #[serde(default)]
     pub recommendations: Vec<Recommendation>,
+    /// Enabled mod files the instance manifest tracks but `mods/` does not
+    /// contain, by filename. The same finding the `ManifestDrift` warning
+    /// names, kept structured so the desktop can act on it without parsing
+    /// the message.
+    #[serde(default)]
+    pub missing_files: Vec<String>,
     pub scan_token: String,
 }
 
@@ -193,7 +204,12 @@ struct CachedHealth {
 const HEALTH_CACHE_CAPACITY: usize = 64;
 /// v6: JAR parser variable expansion changed; reports written before the
 /// matching parser cache schema can retain literal `${...}` constraints.
-const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 6;
+/// v7: reports carry `missing_files`. A v6 report would deserialize with an
+/// empty list, which would read as "nothing is missing" to the desktop.
+/// v8: a requirement supplied only by a missing tracked file is a blocker with
+/// `missing_file` set. In v7 the same finding was a warning (or absent), so a
+/// v7 report would understate it.
+const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 8;
 const JAR_METADATA_CACHE_SCHEMA_VERSION: u32 = 1;
 // v2 resolves Forge/NeoForge TOML variables and distinguishes third-party
 // language-provider mods from built-in FML loader capabilities.
@@ -961,6 +977,15 @@ fn is_fabric_api_module(id: &str) -> bool {
     id.starts_with("fabric-") || id.starts_with("fabric_")
 }
 
+/// Whether a manifest entry declares itself as `dep_resolved` (its primary id
+/// or a module id it provides), with aliases applied on both sides.
+fn entry_supplies_id(item: &InstalledMod, dep_resolved: &str, aliases: &AliasMap) -> bool {
+    item.mod_jar_id
+        .iter()
+        .chain(item.provided_mod_ids.iter())
+        .any(|id| aliases.resolve_or_self(id).to_lowercase() == dep_resolved)
+}
+
 /// Registry-derived inputs for one health scan: JAR alias pairs, curated
 /// dependency overrides keyed by registry id, and `(item_id, display_name)`
 /// for every active catalog mod. All three degrade to empty when `registry.db`
@@ -970,6 +995,12 @@ type RegistryHealthInputs = (
     HashMap<String, registry::ManifestDeps>,
     Vec<(String, String)>,
 );
+
+/// A mod file name as a player would say it: no `.jar` / `.disabled` suffix.
+fn player_mod_label(filename: &str) -> String {
+    let trimmed = filename.strip_suffix(".disabled").unwrap_or(filename);
+    trimmed.strip_suffix(".jar").unwrap_or(trimmed).to_string()
+}
 
 /// Tell the player how to actually obtain a dependency that is not installed.
 ///
@@ -995,10 +1026,10 @@ fn missing_dependency_guidance(
 ) -> String {
     match catalog_name {
         Some(name) => format!(
-            "'{name}' is in Agora's catalog. Open Browse, filter to Minecraft {minecraft_version} / {loader}, and install it."
+            "{name} is in Agora's catalog. Use Find to open Browse for Minecraft {minecraft_version} / {loader} and install it."
         ),
         None => format!(
-            "Agora's catalog has no mod with the ID '{dependency_id}'. Search Modrinth or CurseForge for a Minecraft {minecraft_version} / {loader} mod that provides that mod ID, then put the .jar in this instance's mods folder; Agora will launch it, but will not track or update it."
+            "Agora's catalog doesn't list it. Use Find to search for it, or look on Modrinth or CurseForge for a Minecraft {minecraft_version} / {loader} version that provides '{dependency_id}' and put the .jar in this instance's mods folder yourself; Agora will launch it, but will not track or update it."
         ),
     }
 }
@@ -1205,6 +1236,20 @@ fn health_from_inventory(
     }
 
     // 5. Required dependency checks (alias-aware)
+    //
+    // Presence is judged from files on disk only, so a tracked entry whose file
+    // is gone satisfies nothing. When such an entry is the only thing that
+    // would supply a requirement, name it: the user needs to reinstall it.
+    let missing_entries: Vec<&InstalledMod> = manifest
+        .mods
+        .iter()
+        .filter(|item| {
+            item.enabled
+                && item.content_type == "mod"
+                && missing_enabled_manifest_files.contains(&item.filename)
+        })
+        .collect();
+    let mut reported_missing_providers: HashSet<(String, String)> = HashSet::new();
     for ij in &jars {
         let source = &ij.filename;
         for dep in &ij.metadata.depends_on {
@@ -1214,8 +1259,49 @@ fn health_from_inventory(
                 // A bundled module is registered under its own id (see
                 // `resolve_capability_providers`), so ask for the id as written.
                 || dependency_presence_keys.contains(&dependency_id_key(dep))
-                || (connector_bridge_present && is_fabric_api_module(&dep_resolved));
+                || (connector_bridge_present && is_fabric_api_module(&dep_resolved))
+                // The loader itself supplies some libraries (MixinExtras on a
+                // new enough Fabric or NeoForge), so no jar has to.
+                || is_platform_dependency(dep, &manifest.loader, &manifest.loader_version);
             if !dep_present {
+                if let Some(provider) = missing_entries
+                    .iter()
+                    .find(|item| entry_supplies_id(item, &dep_resolved, &aliases))
+                {
+                    // The tracked file is known to be gone, so this is a
+                    // definite gap, not an unreadable-JAR maybe: it blocks
+                    // whatever the inventory state.
+                    let provider_id = provider
+                        .registry_id
+                        .clone()
+                        .or_else(|| provider.mod_jar_id.clone())
+                        .unwrap_or_else(|| player_mod_label(&provider.filename));
+                    let provider_name = catalog_names
+                        .get(&provider_id.to_lowercase())
+                        .cloned()
+                        .unwrap_or_else(|| provider_id.clone());
+                    if reported_missing_providers
+                        .insert((source.clone(), provider.filename.clone()))
+                    {
+                        blockers.push(Blocker {
+                            kind: BlockerKind::MissingRequiredDependency,
+                            mod_id: Some(provider_id),
+                            filename: Some(source.clone()),
+                            message: format!(
+                                "{} needs {}, whose file is missing.",
+                                player_mod_label(source),
+                                provider_name
+                            ),
+                            suggested_action: Some(format!(
+                                "Reinstall {} from the Health Check, or put {} back in this instance's mods folder.",
+                                provider_name, provider.filename
+                            )),
+                            loader_compatibility: None,
+                            missing_file: Some(provider.filename.clone()),
+                        });
+                    }
+                    continue;
+                }
                 let display_name = if dep_resolved != dep.to_lowercase() {
                     dep_resolved.clone()
                 } else {
@@ -1237,8 +1323,9 @@ fn health_from_inventory(
                         mod_id: Some(display_name.clone()),
                         filename: Some(source.clone()),
                         message: format!(
-                            "'{}' requires '{}', but Agora could not verify every enabled JAR.",
-                            source, display_name
+                            "{} needs {}, but Agora couldn't read every mod file, so it can't tell whether it is installed.",
+                            player_mod_label(source),
+                            catalog_name.unwrap_or(display_name.as_str())
                         ),
                         suggested_action: Some(format!(
                             "An unreadable JAR may already provide it, so this can be a false alarm. If the game fails to start: {guidance}"
@@ -1255,11 +1342,13 @@ fn health_from_inventory(
                         // coarse repair of disabling the dependent mod.
                         filename: Some(source.clone()),
                         message: format!(
-                            "'{}' requires '{}' but no enabled artifact provides it.",
-                            source, display_name
+                            "{} needs {}, which isn't installed.",
+                            player_mod_label(source),
+                            catalog_name.unwrap_or(display_name.as_str())
                         ),
                         suggested_action: Some(guidance),
                         loader_compatibility: None,
+                        missing_file: None,
                     });
                 }
             }
@@ -1459,6 +1548,7 @@ fn health_from_inventory(
                             source, target_provider.owner_filename
                         )),
                         loader_compatibility: None,
+                        missing_file: None,
                     });
                     }
                     version_match::VersionMatch::Matched
@@ -1536,6 +1626,7 @@ fn health_from_inventory(
                                     message,
                                     suggested_action: Some(mitigation),
                                     loader_compatibility: None,
+                                    missing_file: None,
                                 });
                             } else {
                                 // Non-hard (or unrecognized/missing) severity:
@@ -1566,7 +1657,10 @@ fn health_from_inventory(
                 // A bundled module is registered under its own id (see
                 // `resolve_capability_providers`), so ask for the id as written.
                 || dependency_presence_keys.contains(&dependency_id_key(dep))
-                || (connector_bridge_present && is_fabric_api_module(&dep_resolved));
+                || (connector_bridge_present && is_fabric_api_module(&dep_resolved))
+                // The loader itself supplies some libraries (MixinExtras on a
+                // new enough Fabric or NeoForge), so no jar has to.
+                || is_platform_dependency(dep, &manifest.loader, &manifest.loader_version);
             if !dep_present {
                 let display_name = if dep_resolved != dep.to_lowercase() {
                     dep_resolved.clone()
@@ -1668,6 +1762,7 @@ fn health_from_inventory(
                     message: loader_mismatch_message(manifest, &report),
                     suggested_action: loader_mismatch_action(manifest, &report),
                     loader_compatibility: Some(issue),
+                    missing_file: None,
                 });
             }
             CurrentLoaderStatus::Indeterminate => {
@@ -1684,6 +1779,7 @@ fn health_from_inventory(
                             .into(),
                     ),
                     loader_compatibility: Some(issue),
+                    missing_file: None,
                 });
             }
         }
@@ -1703,6 +1799,7 @@ fn health_from_inventory(
         warnings,
         blockers,
         recommendations,
+        missing_files: missing_enabled_manifest_files,
         scan_token: scan_token(instance_dir, manifest, registry_db_path),
     }
 }
@@ -2010,7 +2107,7 @@ mod tests {
         let path = mods_dir.join(filename);
         let file = std::fs::File::create(&path).expect("create jar file");
         let mut zip = zip::ZipWriter::new(file);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         for (name, content) in entries {
             zip.start_file(*name, opts).expect("start_file");
             zip.write_all(content.as_bytes()).expect("write_all");
@@ -2023,7 +2120,7 @@ mod tests {
         let mut cursor = Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut cursor);
-            let opts = zip::write::FileOptions::default();
+            let opts = zip::write::SimpleFileOptions::default();
             for (name, content) in entries {
                 zip.start_file(*name, opts).expect("start nested entry");
                 zip.write_all(content).expect("write nested entry");
@@ -2037,7 +2134,7 @@ mod tests {
         use std::io::Write;
         let file = std::fs::File::create(mods_dir.join(filename)).expect("create jar file");
         let mut zip = zip::ZipWriter::new(file);
-        let opts = zip::write::FileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default();
         for (name, content) in entries {
             zip.start_file(*name, opts).expect("start jar entry");
             zip.write_all(content).expect("write jar entry");
@@ -2242,6 +2339,28 @@ mod tests {
             .find(|warning| warning.kind == WarningKind::ManifestDrift)
             .expect("missing tracked files must be visible in health output");
         assert!(warning.message.contains("missing-provider.jar"));
+        assert_eq!(
+            report.missing_files,
+            vec!["missing-provider.jar".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_files_lists_only_enabled_tracked_files_absent_from_mods() {
+        // Hostile mix: a present file, a disabled entry whose file is gone (not
+        // a missing enabled file), and an enabled entry with no file on disk.
+        let dir = fresh_instance("missing_files_structured");
+        std::fs::write(dir.join("mods").join("present.jar"), b"not a zip")
+            .expect("write present jar");
+        let mut manifest = tracked_manifest(&[
+            ("present.jar", "present"),
+            ("gone-disabled.jar", "gone_disabled"),
+            ("gone.jar", "gone"),
+        ]);
+        manifest.mods[1].enabled = false;
+        let report = health(&dir, &manifest, None);
+        assert_eq!(report.missing_files, vec!["gone.jar".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2681,6 +2800,67 @@ mandatory=true
     }
 
     #[test]
+    fn health_connector_nested_mod_in_manifest_supplies_connectormod_without_project_mapping() {
+        // Sinytra Connector ships its mod as META-INF/jarjar/*-mod.jar named only
+        // by the manifest (no metadata.json); an imported pack has no mapping.
+        let dir = fresh_instance("connector_nested_manifest");
+        let mods_dir = dir.join("mods");
+        let nested = jar_bytes(&[(
+            "META-INF/mods.toml",
+            b"[[mods]]
+modId=\"connectormod\"
+version=\"1.0\"
+",
+        )]);
+        write_binary_jar(
+            &mods_dir,
+            "connector.jar",
+            &[
+                (
+                    "META-INF/MANIFEST.MF",
+                    b"Manifest-Version: 1.0
+Embedded-Dependencies-Mod: META-INF/jarjar/c-mod.jar
+
+",
+                ),
+                ("META-INF/jarjar/c-mod.jar", &nested),
+            ],
+        );
+        let extras = r#"[[mods]]
+modId="connectorextras"
+version="1.0"
+[[dependencies.connectorextras]]
+modId="connectormod"
+mandatory=true
+"#;
+        write_jar(&mods_dir, "extras.jar", &[("META-INF/mods.toml", extras)]);
+        let manifest = tracked_manifest_for_loader(
+            "forge",
+            &[
+                ("connector.jar", "connector"),
+                ("extras.jar", "connectorextras"),
+            ],
+        );
+        let report = health(&dir, &manifest, None);
+        assert!(report.blockers.is_empty(), "{report:?}");
+
+        // Without the provider the same pack still blocks, in player words.
+        std::fs::remove_file(mods_dir.join("connector.jar")).unwrap();
+        let manifest = tracked_manifest_for_loader("forge", &[("extras.jar", "connectorextras")]);
+        let report = health(&dir, &manifest, None);
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|b| b.kind == BlockerKind::MissingRequiredDependency)
+            .expect("real missing dependency must still block");
+        assert_eq!(
+            blocker.message,
+            "extras needs connectormod, which isn't installed."
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn health_disabled_provider_does_not_satisfy_dependency() {
         let dir = fresh_instance("disabled_provider");
         write_jar(
@@ -2931,6 +3111,77 @@ type="required"
                 .iter()
                 .any(|blocker| { blocker.kind == BlockerKind::MissingRequiredDependency }),
             "JarJar dependencies were not inventoried: {report:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_mixinextras_required_is_met_by_a_fabric_loader_that_bundles_it() {
+        let dir = fresh_instance("mixinextras_required_modern_fabric");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","depends":{"fabricloader":">=0.15.0","mixinextras":">=0.2.0"}}"#,
+            )],
+        );
+        let mut manifest = tracked_manifest(&[("consumer.jar", "consumer")]);
+        manifest.loader_version = "0.20.1".into();
+        let report = health(&dir, &manifest, None);
+        assert!(
+            !report
+                .blockers
+                .iter()
+                .any(|blocker| blocker.mod_id.as_deref() == Some("mixinextras")),
+            "{:?}",
+            report.blockers
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_mixinextras_required_is_still_missing_on_an_old_fabric_loader() {
+        let dir = fresh_instance("mixinextras_required_old_fabric");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","depends":{"fabricloader":">=0.14.0","mixinextras":">=0.2.0"}}"#,
+            )],
+        );
+        let mut manifest = tracked_manifest(&[("consumer.jar", "consumer")]);
+        manifest.loader_version = "0.14.22".into();
+        let report = health(&dir, &manifest, None);
+        assert!(report.blockers.iter().any(|blocker| {
+            blocker.kind == BlockerKind::MissingRequiredDependency
+                && blocker.mod_id.as_deref() == Some("mixinextras")
+        }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_mixinextras_suggested_is_not_recommended_on_a_fabric_loader_that_bundles_it() {
+        let dir = fresh_instance("mixinextras_suggested_modern_fabric");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","suggests":{"mixinextras":"*"}}"#,
+            )],
+        );
+        let mut manifest = tracked_manifest(&[("consumer.jar", "consumer")]);
+        manifest.loader_version = "0.20.1".into();
+        let report = health(&dir, &manifest, None);
+        assert!(
+            !report
+                .recommendations
+                .iter()
+                .any(|rec| rec.mod_id.as_deref() == Some("mixinextras")),
+            "{:?}",
+            report.recommendations
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3750,6 +4001,105 @@ type="required"
     fn invalidate_health_cache_is_ok_when_caches_absent() {
         let dir = fresh_instance("invalidate_health_absent");
         invalidate_health_cache(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Real-shaped Fabric data: Fabric API is tracked in the manifest (with the
+    /// module ids its jar provides) but its file is gone from mods/. Sodium needs
+    /// one of those modules, so it must not count as satisfied.
+    #[test]
+    fn health_missing_provider_file_does_not_satisfy_its_modules() {
+        let dir = fresh_instance("missing_provider_modules");
+        write_jar(
+            &dir.join("mods"),
+            "sodium-fabric-0.5.8+mc1.20.4.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"schemaVersion":1,"id":"sodium","version":"0.5.8+mc1.20.4","depends":{"fabricloader":">=0.14.22","minecraft":"~1.20.4","fabric-rendering-data-attachment-v1":"*"}}"#,
+            )],
+        );
+        let mut manifest = tracked_manifest_for_loader(
+            "fabric",
+            &[
+                ("sodium-fabric-0.5.8+mc1.20.4.jar", "sodium"),
+                ("fabric-api-0.97.3+1.20.4.jar", "fabric-api"),
+            ],
+        );
+        manifest.mods[1].provided_mod_ids = vec!["fabric-rendering-data-attachment-v1".into()];
+        let report = health(&dir, &manifest, None);
+        assert_eq!(
+            report.missing_files,
+            vec!["fabric-api-0.97.3+1.20.4.jar".to_string()]
+        );
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
+            .expect("a module supplied only by a missing file must block");
+        assert_eq!(
+            blocker.filename.as_deref(),
+            Some("sodium-fabric-0.5.8+mc1.20.4.jar")
+        );
+        assert_eq!(
+            blocker.missing_file.as_deref(),
+            Some("fabric-api-0.97.3+1.20.4.jar")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An unreadable JAR elsewhere in mods/ used to downgrade every missing
+    /// requirement to "can't tell whether it is installed", even when the
+    /// tracked provider's file is known to be gone. That is the "1 warning"
+    /// the user saw for a definite gap.
+    #[test]
+    fn missing_provider_stays_a_blocker_when_an_unrelated_jar_is_unreadable() {
+        let dir = fresh_instance("missing_provider_unreadable");
+        write_jar(
+            &dir.join("mods"),
+            "sodium-fabric-0.5.8+mc1.20.4.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"schemaVersion":1,"id":"sodium","version":"0.5.8+mc1.20.4","depends":{"fabric-rendering-data-attachment-v1":"*"}}"#,
+            )],
+        );
+        std::fs::write(dir.join("mods/unreadable.jar"), b"not a zip").unwrap();
+        let mut manifest = tracked_manifest_for_loader(
+            "fabric",
+            &[
+                ("sodium-fabric-0.5.8+mc1.20.4.jar", "sodium"),
+                ("unreadable.jar", "unreadable"),
+                ("fabric-api-0.97.3+1.20.4.jar", "fabric-api"),
+            ],
+        );
+        manifest.mods[2].provided_mod_ids = vec!["fabric-rendering-data-attachment-v1".into()];
+        let report = health(&dir, &manifest, None);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == WarningKind::InventoryIncomplete));
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.kind == WarningKind::MissingRequiredDependencyUnverified),
+            "{:?}",
+            report.warnings
+        );
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
+            .expect("a known-missing provider must block");
+        assert!(
+            blocker.message.contains("whose file is missing"),
+            "{}",
+            blocker.message
+        );
+        assert!(
+            blocker.message.contains("fabric-api"),
+            "{}",
+            blocker.message
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

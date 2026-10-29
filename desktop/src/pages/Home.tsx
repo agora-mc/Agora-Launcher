@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { JumpBackIn } from '@/components/JumpBackIn';
+import type { QuickPlay } from '@/lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
 import { RegistryStatusView } from '../components/registry-status-view';
 import {
@@ -13,16 +15,19 @@ import {
   restoreSnapshot,
   forYouItems,
   setSetting,
+  type HealthReport,
   type InstanceRow,
   type RegistryItem,
 } from '../lib/tauri';
 import type { Tab } from '../lib/useDestination';
 import type { ProcessState } from '../lib/useProcessController';
 import { TourStartButton } from '../features/tour';
-import { ArrowRight, BookOpen, GraduationCap, HeartHandshake, MessagesSquare } from 'lucide-react';
+import { ArrowRight, BookOpen, GraduationCap, HeartHandshake, Info, MessagesSquare } from 'lucide-react';
 import { agoraDiscordUrl, agoraSponsorsUrl } from '../lib/brandConfig';
 import { useConfirm } from '@/components/ui/confirm';
-import { GUIDE_TOPICS } from '../data/guideContent';
+import { GUIDE_OVERVIEW, GUIDE_TOPICS } from '../data/guideContent';
+import { healthCounts } from '@/lib/healthSummary';
+import { HealthNotice, ReviewBeforeLaunchButtons } from '../components/HealthLaunchControls';
 
 // ---------------------------------------------------------------------------
 // D1: Action-oriented Home
@@ -36,13 +41,18 @@ export function Home({
   onLaunch,
   processState,
   onKillProcess,
+  healthReports,
+  onReviewHealth,
 }: {
   onNavigateTab: (tab: Tab) => void;
   onOpenInstance: (instanceId: string) => void;
   onOpenMod: (itemId: string) => void;
-  onLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
+  onLaunch: (instanceId: string, directLaunch: boolean, quickPlay?: QuickPlay) => Promise<boolean>;
   processState: ProcessState;
   onKillProcess: () => Promise<void>;
+  /** Health reports from the app-level monitor (the same data My Instances reads). */
+  healthReports: Record<string, HealthReport>;
+  onReviewHealth: (instanceId: string, instanceName: string, report: HealthReport) => void;
 }) {
   const { confirm } = useConfirm();
   const { state, status, error, hasCachedDb, actions } = useRegistryState();
@@ -108,7 +118,7 @@ export function Home({
               instanceId: inst.instance_id,
               instanceName: inst.name,
               id: snapshotId,
-              label: snapshot?.label ?? 'Last known good',
+              label: snapshot?.label ?? 'Last setup that launched fine',
               promotedAt: typeof marker?.lastPromotedAt === 'string' ? marker.lastPromotedAt : null,
               added: addedEntries.length - disabled,
               removed: removedEntries.length - disabled,
@@ -276,7 +286,12 @@ export function Home({
       <section className="agora-hero compact">
         <h2 className="text-2xl font-bold mb-2">Home</h2>
         <p className="text-muted-foreground">Your modding dashboard.</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Press <kbd className="rounded-sm border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">Ctrl K</kbd> to search and jump anywhere.
+        </p>
       </section>
+
+      <OverviewCard />
 
       {/* Zone A: Alerts — compact warnings */}
       {lastCrash && (
@@ -299,13 +314,22 @@ export function Home({
         instance={heroInstance}
         loading={instancesLoading}
         processState={processState}
+        healthReport={heroInstance ? healthReports[heroInstance.instance_id] ?? null : null}
         onLaunch={() => {
           if (heroInstance) {
             void handleContinuePlaying();
           }
         }}
+        onReviewHealth={(report) => {
+          if (heroInstance) onReviewHealth(heroInstance.instance_id, heroInstance.name, report);
+        }}
         onKill={() => { void onKillProcess(); }}
         onBrowsePacks={() => onNavigateTab('browse')}
+      />
+
+      <JumpBackIn
+        disabled={processState.phase === 'launching' || processState.phase === 'running'}
+        onPlay={(instanceId, quickPlay) => { void onLaunch(instanceId, true, quickPlay); }}
       />
 
 
@@ -337,7 +361,7 @@ export function Home({
         </section>
 
         {/* Support Agora */}
-        <section className="flex h-full flex-col rounded-xl border border-pink-500/100 bg-pink-500/50 p-6">
+        <section className="flex h-full flex-col rounded-xl border border-pink-500/40 bg-pink-500/10 p-6">
           <div className="flex items-center gap-2 mb-3">
             <HeartHandshake className="h-5 w-5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
             <h3 className="text-lg font-semibold">Support Agora’s future</h3>
@@ -368,9 +392,9 @@ export function Home({
       )}
       {knownGoodChecked && instances.length > 0 && knownGood.length === 0 && (
         <div className="rounded-xl border border-dashed border-border bg-card p-4">
-          <h4 className="text-sm font-semibold">No last-known-good state yet</h4>
+          <h4 className="text-sm font-semibold">No setup that launched fine yet</h4>
           <p className="mt-1 text-xs text-muted-foreground">
-            Play an instance successfully for at least 60 seconds. Agora will then promote its exact pre-launch snapshot for one-click recovery.
+            Play an instance without a crash for at least 60 seconds. Agora will then keep a copy of its mods and settings from just before that launch, so you can restore it in one click.
           </p>
         </div>
       )}
@@ -427,19 +451,22 @@ function CrashAlert({ instanceName, crashFilename, canRestore, onRestore }: {
   );
 }
 
-function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill, onBrowsePacks }: {
+function ContinuePlayingCard({ instance, loading, processState, healthReport, onLaunch, onReviewHealth, onKill, onBrowsePacks }: {
   instance: InstanceRow | null;
   loading: boolean;
   processState: ProcessState;
+  /** The instance's latest health report, or null when no check has run yet. */
+  healthReport: HealthReport | null;
   onLaunch: () => void;
+  onReviewHealth: (report: HealthReport) => void;
   onKill: () => void;
   onBrowsePacks: () => void;
 }) {
   if (loading) {
     return (
       <div className="rounded-xl border border-border bg-card p-6 space-y-2">
-        <div className="h-5 w-32 bg-muted animate-pulse rounded" />
-        <div className="h-4 w-48 bg-muted animate-pulse rounded" />
+        <div className="h-5 w-32 bg-muted animate-pulse rounded-sm" />
+        <div className="h-4 w-48 bg-muted animate-pulse rounded-sm" />
       </div>
     );
   }
@@ -470,6 +497,8 @@ function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill
     && ['launching', 'running', 'stopping', 'delegated'].includes(processState.phase)
     && !isCurrent;
   const buttonDisabled = isLaunching || isStopping || isDelegated || anotherProcessActive;
+  // Same rule as My Instances: a blocker means "not ready", so the main action is to review it.
+  const blockedByHealth = healthReport !== null && healthCounts(healthReport).problems > 0;
 
   return (
     <div className="rounded-xl border border-border bg-card p-6">
@@ -478,6 +507,9 @@ function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill
         {instance.loader} {instance.loader_version} · MC {instance.minecraft_version}
       </p>
       <p className="text-xs text-muted-foreground mb-4">{timeAgo}</p>
+      {healthReport && (
+        <HealthNotice className="mb-4" report={healthReport} onReview={() => onReviewHealth(healthReport)} />
+      )}
       <div className="flex gap-2">
         {isRunning ? (
           <button
@@ -486,17 +518,49 @@ function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill
           >
             Kill
           </button>
+        ) : blockedByHealth && healthReport ? (
+          <ReviewBeforeLaunchButtons
+            onReview={() => onReviewHealth(healthReport)}
+            onLaunch={onLaunch}
+            disabled={buttonDisabled}
+            launchLabel={isLaunching ? 'Starting…' : 'Launch anyway'}
+          />
         ) : (
           <button
             onClick={onLaunch}
             disabled={buttonDisabled}
             className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isLaunching ? 'Starting…' : isStopping ? 'Stopping…' : isDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : 'Continue Playing'}
+            {isLaunching ? 'Starting…' : isStopping ? 'Stopping…' : isDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : `Play ${instance.name}`}
           </button>
         )}
       </div>
     </div>
+  );
+}
+
+function OverviewCard() {
+  const { title, body, terms, callout } = GUIDE_OVERVIEW;
+  return (
+    <section aria-labelledby="home-overview-heading" className="rounded-xl border border-border bg-card p-5">
+      <h3 id="home-overview-heading" className="text-lg font-semibold">{title}</h3>
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{body}</p>
+      <dl className="mt-4 grid gap-2 lg:grid-cols-3">
+        {terms.map(({ term, definition }) => (
+          <div key={term} className="rounded-lg bg-muted/50 p-3">
+            <dt className="text-sm font-semibold">{term}</dt>
+            <dd className="mt-1 text-xs leading-5 text-muted-foreground">{definition}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-4 flex gap-3 rounded-lg border border-blue-500/25 bg-blue-500/5 p-3">
+        <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+        <div>
+          <p className="text-sm font-semibold">{callout.title}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{callout.text}</p>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -556,7 +620,7 @@ function KnownGoodCard({
 }) {
   return (
     <div className="rounded-xl border border-border bg-card p-4 space-y-2">
-      <h4 className="font-semibold text-sm">Last Known Good</h4>
+      <h4 className="font-semibold text-sm">Last setup that launched fine</h4>
       <div className="space-y-1">
         {snapshots.slice(0, 3).map((s) => (
           <div key={s.id} className="flex items-center justify-between text-xs">

@@ -336,6 +336,12 @@ impl CoreContext {
             }
         }
 
+        // The proxy applies to every HTTP client built from here on, including
+        // the ones helpers build outside the context.
+        if let Ok(conn) = crate::db::local_state_connection(&paths.local_state_db()) {
+            crate::http_client::configure_proxy(crate::http_client::saved_proxy(&conn));
+        }
+
         let ctx = Self {
             lock_manager: LockManager::new(paths.locks_root()),
             external_data_root: None,

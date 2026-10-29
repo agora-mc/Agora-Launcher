@@ -21,10 +21,48 @@ pub async fn create_instance<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     req: CreateInstanceRequest,
 ) -> LauncherResult<InstanceRow> {
-    let ctx = crate::core_context(&app)?;
+    let instance_id = req.instance_id.clone();
+    let ctx =
+        crate::core_context(&app)?.with_progress_sink(std::sync::Arc::new(CreateProgressEmitter {
+            app: app.clone(),
+            instance_id,
+        }));
     agora_game_minecraft::instance_service::InstanceService::new(ctx)
         .create(req)
         .await
+}
+
+/// The sink that feeds the Create dialog for `instance_id`.
+pub fn create_progress_sink<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    instance_id: &str,
+) -> std::sync::Arc<dyn agora_core::event_sink::ProgressSink> {
+    std::sync::Arc::new(CreateProgressEmitter {
+        app: app.clone(),
+        instance_id: instance_id.to_string(),
+    })
+}
+
+/// Forwards the core's create-time progress to the Create dialog, which listens
+/// for `instance:create-progress`. Without this sink the dialog sat on
+/// "Starting..." for the whole download, because nothing was ever emitted.
+struct CreateProgressEmitter<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
+    instance_id: String,
+}
+
+impl<R: tauri::Runtime> agora_core::event_sink::ProgressSink for CreateProgressEmitter<R> {
+    fn report(&self, event: agora_core::event_sink::ProgressEvent) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "instance:create-progress",
+            serde_json::json!({
+                "instance_id": self.instance_id,
+                "stage": format!("{:?}", event.phase).to_lowercase(),
+                "message": event.message,
+            }),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -103,19 +141,45 @@ pub fn get_instance_detail<R: tauri::Runtime>(
     agora_game_minecraft::instance_service::InstanceService::new(ctx).get(instance_id)
 }
 
-/// Delete an instance: delegates to core `InstanceService::delete` with the
-/// OS-trash adapter so files land in the Recycle Bin (not hard-removed).
+/// Delete an instance: delegates to core `InstanceService::delete`, which
+/// moves it into Agora's "Recently deleted" area (restorable for 30 days).
 pub fn delete_instance<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     instance_id: &str,
 ) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
     let service = agora_game_minecraft::instance_service::InstanceService::new(ctx);
-    service.delete(instance_id, Some(trash_adapter()))
+    service.delete(instance_id)
 }
 
-/// Build the OS-trash adapter that core calls on the quarantined directory.
-fn trash_adapter() -> agora_game_minecraft::instance_service::TrashFn {
+pub fn list_recently_deleted<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> LauncherResult<Vec<agora_game_minecraft::recently_deleted::RecentlyDeletedEntry>> {
+    let ctx = crate::core_context(app)?;
+    agora_game_minecraft::instance_service::InstanceService::new(ctx).list_recently_deleted()
+}
+
+pub fn restore_deleted_instance<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    entry_id: &str,
+) -> LauncherResult<agora_game_minecraft::recently_deleted::RestoreOutcome> {
+    let ctx = crate::core_context(app)?;
+    agora_game_minecraft::instance_service::InstanceService::new(ctx).restore_deleted(entry_id)
+}
+
+/// "Delete now": hand the entry to the OS trash.
+pub fn purge_deleted_instance<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    entry_id: &str,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(app)?;
+    agora_game_minecraft::instance_service::InstanceService::new(ctx)
+        .purge_deleted(entry_id, &trash_adapter())
+}
+
+/// Build the OS-trash adapter that core calls when an entry leaves
+/// "Recently deleted".
+pub fn trash_adapter() -> agora_game_minecraft::instance_service::TrashFn {
     std::sync::Arc::new(|path| {
         trash::delete(path).map_err(|e| LauncherError::Generic {
             code: "ERR_INSTANCE_DELETE".into(),
@@ -152,12 +216,21 @@ pub async fn rename_instance<R: tauri::Runtime>(
     agora_game_minecraft::instance_service::InstanceService::new(ctx).rename(instance_id, new_name)
 }
 
-/// Revert an unlocked instance to its lock snapshot (§6.5).
+/// Revert an unlocked instance to its lock snapshot (§6.5). Restores through
+/// core, which takes an undo snapshot first.
 pub async fn revert_instance<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     instance_id: &str,
 ) -> LauncherResult<()> {
-    lock_instance(app, instance_id).await
+    let ctx = crate::core_context(app)?;
+    let instance_id = instance_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        agora_core::snapshot_service::SnapshotService::new(ctx)
+            .revert_to_lock(&instance_id)
+            .map(|_| ())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 /// Launch an instance by delegating to the official Mojang launcher.
