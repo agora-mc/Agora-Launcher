@@ -887,6 +887,24 @@ fn installed_files(
     Ok((installed, names))
 }
 
+/// The Links plan an engine game's load order reads its installed plugins from, planned once so a
+/// caller can pass it to several `_with_view` reads. `None` for a game whose rules read no plan.
+fn plan_for_order(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+) -> Result<Option<DeploymentPlan>, LoadOrderError> {
+    if !is_engine(rule_of(definition)?) {
+        return Ok(None);
+    }
+    game_deploy::plan(ctx, instance_id, definition, DeployMode::Links)
+        .map(Some)
+        .map_err(|e| LoadOrderError::Files {
+            instance_id: instance_id.to_string(),
+            reason: e.to_string(),
+        })
+}
+
 fn order_of(
     ctx: &Ctx,
     instance_id: &str,
@@ -979,7 +997,30 @@ pub fn sort(
     definition: &GameDefinition,
     dry_run: bool,
 ) -> Result<SortReport, LoadOrderError> {
-    if !is_engine(rule_of(definition)?) {
+    Ok(sort_inner(ctx, instance_id, definition, dry_run, false)?.0)
+}
+
+/// [`sort`], then the instance's load order as it stands afterwards. Both read the installed
+/// plugins from one deployment plan, where calling [`sort`] and then [`order`] plans twice.
+pub fn sort_and_order(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    dry_run: bool,
+) -> Result<(SortReport, LoadOrder), LoadOrderError> {
+    let (report, order) = sort_inner(ctx, instance_id, definition, dry_run, true)?;
+    Ok((report, order.expect("the order was asked for")))
+}
+
+fn sort_inner(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    dry_run: bool,
+    want_order: bool,
+) -> Result<(SortReport, Option<LoadOrder>), LoadOrderError> {
+    let rule = rule_of(definition)?;
+    if !is_engine(rule) {
         return Err(LoadOrderError::NoRules(definition.id.as_str().to_string()));
     }
     let _lock = ctx
@@ -989,17 +1030,31 @@ pub fn sort(
             "plugins-order",
         )
         .map_err(PluginListError::from)?;
-    let mut entries = order_of(ctx, instance_id, definition)?.entries;
+    let links = plan_for_order(ctx, instance_id, definition)?;
+    let mut entries = order_of_with_view(ctx, instance_id, definition, links.as_ref())?.entries;
     let (moves, blocked) = sort_entries(&mut entries)?;
     let written = !dry_run && !moves.is_empty();
     if written {
         write_entries(ctx, instance_id, definition, &entries)?;
     }
-    Ok(SortReport {
-        moves,
-        blocked,
-        written,
-    })
+    let order = if want_order {
+        Some(order_of_with_view(
+            ctx,
+            instance_id,
+            definition,
+            links.as_ref(),
+        )?)
+    } else {
+        None
+    };
+    Ok((
+        SortReport {
+            moves,
+            blocked,
+            written,
+        },
+        order,
+    ))
 }
 
 /// Move one listed plugin to a position, or before or after another plugin.
@@ -1010,6 +1065,30 @@ pub fn move_plugin(
     plugin: &str,
     target: &MoveTarget,
 ) -> Result<MoveReport, LoadOrderError> {
+    Ok(move_inner(ctx, instance_id, definition, plugin, target, false)?.0)
+}
+
+/// [`move_plugin`], then the instance's load order as it stands afterwards. Both read the installed
+/// plugins from one deployment plan, where calling [`move_plugin`] and then [`order`] plans twice.
+pub fn move_plugin_and_order(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    plugin: &str,
+    target: &MoveTarget,
+) -> Result<(MoveReport, LoadOrder), LoadOrderError> {
+    let (report, order) = move_inner(ctx, instance_id, definition, plugin, target, true)?;
+    Ok((report, order.expect("the order was asked for")))
+}
+
+fn move_inner(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    plugin: &str,
+    target: &MoveTarget,
+    want_order: bool,
+) -> Result<(MoveReport, Option<LoadOrder>), LoadOrderError> {
     rule_of(definition)?;
     let _lock = ctx
         .lock_manager
@@ -1018,18 +1097,32 @@ pub fn move_plugin(
             "plugins-order",
         )
         .map_err(PluginListError::from)?;
-    let mut entries = order_of(ctx, instance_id, definition)?.entries;
+    let links = plan_for_order(ctx, instance_id, definition)?;
+    let mut entries = order_of_with_view(ctx, instance_id, definition, links.as_ref())?.entries;
     let (name, from, to) = move_entry(&mut entries, plugin, target)?;
     let written = from != to;
     if written {
         write_entries(ctx, instance_id, definition, &entries)?;
     }
-    Ok(MoveReport {
-        plugin: name,
-        from,
-        to,
-        written,
-    })
+    let order = if want_order {
+        Some(order_of_with_view(
+            ctx,
+            instance_id,
+            definition,
+            links.as_ref(),
+        )?)
+    } else {
+        None
+    };
+    Ok((
+        MoveReport {
+            plugin: name,
+            from,
+            to,
+            written,
+        },
+        order,
+    ))
 }
 
 #[cfg(test)]

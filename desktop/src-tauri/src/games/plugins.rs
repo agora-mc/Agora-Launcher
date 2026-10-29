@@ -293,7 +293,8 @@ pub async fn games_plugins_move(
 ) -> Result<MoveChange, GamesError> {
     run_blocking(app, "Moving the plugin", move |ctx| {
         game_definition!(&ctx, &instance_id, definition);
-        let report = load_order::move_plugin(
+        // One deployment plan serves the move and the order it returns.
+        let (report, order) = load_order::move_plugin_and_order(
             &ctx,
             &instance_id,
             definition,
@@ -301,7 +302,6 @@ pub async fn games_plugins_move(
             &MoveTarget::Position(to),
         )
         .map_err(core_failed)?;
-        let order = load_order::order(&ctx, &instance_id, definition).map_err(core_failed)?;
         Ok(MoveChange {
             report,
             plugins: PluginsView::from_order(&order),
@@ -320,9 +320,9 @@ pub async fn games_plugins_sort(
 ) -> Result<SortChange, GamesError> {
     run_blocking(app, "Sorting the plugins", move |ctx| {
         game_definition!(&ctx, &instance_id, definition);
-        let report =
-            load_order::sort(&ctx, &instance_id, definition, dry_run).map_err(core_failed)?;
-        let order = load_order::order(&ctx, &instance_id, definition).map_err(core_failed)?;
+        // One deployment plan serves the sort and the order it returns.
+        let (report, order) = load_order::sort_and_order(&ctx, &instance_id, definition, dry_run)
+            .map_err(core_failed)?;
         Ok(SortChange {
             report,
             plugins: PluginsView::from_order(&order),
