@@ -369,3 +369,37 @@ fn probe_a_corrupt_item_can_still_be_removed() {
     cs::remove_item(&c, &item.item_id).expect("a corrupt item must be removable");
     assert!(!c.paths.content_object_path(&item.files[0].sha256).exists());
 }
+
+#[test]
+#[cfg(windows)]
+fn names_that_differ_only_in_non_ascii_case_are_one_file_on_windows() {
+    // NTFS folds case for every Unicode letter: "CAFÉ.txt" and "café.txt" are one file, so an
+    // archive holding both would overwrite one with the other. The check only folds ASCII.
+    use agora_game_api::RelPath;
+    let paths = [
+        RelPath::new("Data/CAFÉ.txt").unwrap(),
+        RelPath::new("Data/café.txt").unwrap(),
+    ];
+    assert!(
+        cs::validate_path_set(&paths).is_err(),
+        "two names NTFS reads as one file are refused"
+    );
+}
+
+#[test]
+fn entry_names_windows_cannot_create_are_refused_before_they_are_stored() {
+    // Archives are stored once and deployed on Windows, where these characters cannot be in a
+    // file name. Refusing them at the store is the only place the failure is cheap to report.
+    for name in [
+        "Data/what?.txt",
+        "Data/a*b.esp",
+        "Data/quote\"d.txt",
+        "Data/less<than.txt",
+        "Data/pipe|x.txt",
+    ] {
+        assert!(
+            cs::validate_entry_path(name).is_err(),
+            "{name} cannot be a file name on Windows"
+        );
+    }
+}

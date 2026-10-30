@@ -258,6 +258,32 @@ fn list_items_shows_an_unreadable_record_as_damaged_and_it_can_be_removed() {
 }
 
 #[test]
+fn removing_a_damaged_item_works_while_another_record_is_damaged() {
+    // The item being removed is not read, so a second damaged record should not block removing
+    // the first. Today the sweep reads every other record and refuses, so the user cannot clear
+    // either one until the other is gone by hand.
+    use agora_core::content_store::{list_items, ItemEntry};
+    let (_tmp, ctx) = test_ctx();
+    let items_dir = ctx.paths.content_items_dir();
+    std::fs::create_dir_all(&items_dir).unwrap();
+    std::fs::write(items_dir.join("aaa111.json"), b"{ not json").unwrap();
+    std::fs::write(items_dir.join("bbb222.json"), b"{ not json").unwrap();
+
+    remove_item(&ctx, "aaa111")
+        .expect("a damaged record is removed even while another record is damaged");
+    assert!(!items_dir.join("aaa111.json").exists());
+    let remaining: Vec<String> = list_items(&ctx)
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            assert!(matches!(entry, ItemEntry::Damaged(_)));
+            entry.item_id().to_string()
+        })
+        .collect();
+    assert_eq!(remaining, ["bbb222"]);
+}
+
+#[test]
 fn test_refusal_empty_component() {
     let (_tmp, ctx) = test_ctx();
     let work = tempfile::tempdir().unwrap();

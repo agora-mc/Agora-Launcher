@@ -910,4 +910,86 @@ mod tests {
             r"\\server\share"
         );
     }
+
+    /// Make a junction (no admin needed, unlike a symlink). A failed `mklink` fails the test.
+    #[cfg(windows)]
+    fn make_junction(link: &Path, target: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .expect("cmd runs");
+        assert!(status.success(), "mklink /J {link:?} {target:?} failed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_store_install_reached_through_a_junction_is_the_same_folder() {
+        // The store finds Skyrim at a junction's spelling. The user adds the real folder behind
+        // that junction: it is the same install and must be refused as inside the store's install.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = paths_in(tmp.path());
+        let library = tmp.path().join("SteamLibrary");
+        let real = library.join("Skyrim");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("SkyrimSE.exe"), b"x").unwrap();
+        let link = tmp.path().join("LinkedLibrary");
+        make_junction(&link, &library);
+        let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
+        let stores = [store_install_at(&link.join("Skyrim"), "Skyrim")];
+
+        let error = add_folder_checked(&paths, &registry, &real.display().to_string(), &stores)
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ERR_FOLDER_INSIDE_INSTALL,
+            "the same folder as the store's install, reached by a junction: {error}"
+        );
+        assert!(list_folders(&paths).unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_to_a_listed_folder_is_the_same_folder_and_a_duplicate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = paths_in(tmp.path());
+        let real = tmp.path().join("Skyrim");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("SkyrimSE.exe"), b"x").unwrap();
+        let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
+        add(&paths, &registry, &real.display().to_string()).unwrap();
+
+        let alias = tmp.path().join("Alias");
+        make_junction(&alias, &real);
+        assert_eq!(
+            add(&paths, &registry, &alias.display().to_string())
+                .unwrap_err()
+                .code(),
+            ERR_FOLDER_DUPLICATE
+        );
+        assert_eq!(list_folders(&paths).unwrap().len(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_gone_folder_is_removable_by_another_spelling_of_its_path() {
+        // Once the folder is gone, only the stored spelling is matched. The same path written with
+        // `/` separators names the same folder, so removing it must work.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = paths_in(tmp.path());
+        let game_dir = tmp.path().join("Skyrim");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        std::fs::write(game_dir.join("SkyrimSE.exe"), b"x").unwrap();
+        let registry = registry_with(vec![game("skyrim-se", "Skyrim", "SkyrimSE.exe")]);
+        let added = add(&paths, &registry, &game_dir.display().to_string()).unwrap();
+        std::fs::remove_dir_all(&game_dir).unwrap();
+
+        let forward = added.path.replace('\\', "/");
+        assert_eq!(
+            remove_folder(&paths, &forward).unwrap_or_else(|e| panic!("{forward}: {e}")),
+            added.path
+        );
+        assert!(list_folders(&paths).unwrap().is_empty());
+    }
 }

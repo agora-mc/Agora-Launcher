@@ -1613,3 +1613,127 @@ fn install_size_is_what_a_copied_base_holds_and_errors_when_unreadable() {
 
     assert!(install_size(&tmp.path().join("gone"), &def, BuildOptions::default()).is_err());
 }
+
+#[test]
+fn every_damaged_record_the_list_shows_can_be_removed_by_the_id_it_is_listed_under() {
+    // The list shows a record by the id its file name gives, and `agora games base list` tells the
+    // user to remove it by that id. Those ids are not plain names, so removal refuses them and the
+    // record stays forever. Each listed record must be removable, and nothing else may go.
+    let tmp = TempDir::new().unwrap();
+    let data = tmp.path().join("data");
+    let paths = AppPaths::from_root(data.clone());
+    std::fs::create_dir_all(paths.base_manifests_dir()).unwrap();
+    std::fs::create_dir_all(paths.bases_dir()).unwrap();
+    let sentinel = data.join("sentinel.txt");
+    std::fs::write(&sentinel, b"keep me").unwrap();
+    for name in ["...json", " .json", "skyrim-se_steam_1.0.0_nobuild..json"] {
+        std::fs::write(paths.base_manifests_dir().join(name), "{ not json").unwrap();
+    }
+
+    let damaged: Vec<String> = list_bases(&paths)
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            BaseEntry::Damaged(d) => Some(d.base_id),
+            BaseEntry::Readable(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        damaged.len(),
+        3,
+        "every damaged record is listed: {damaged:?}"
+    );
+
+    for id in &damaged {
+        remove_base(&paths, id)
+            .unwrap_or_else(|e| panic!("the listed damaged record {id:?} can be removed: {e}"));
+    }
+    assert!(
+        list_bases(&paths).unwrap().is_empty(),
+        "no damaged record is left"
+    );
+    assert!(sentinel.exists(), "nothing outside the records was removed");
+}
+
+#[test]
+fn building_over_a_damaged_record_replaces_its_stale_folder_instead_of_failing_with_io() {
+    // A folder under the base's name with no readable record is what an interrupted build leaves,
+    // and the build moves it aside. A damaged record is no readable record either, so the same
+    // recovery must run; today the rename onto the old folder fails with a raw IO error.
+    let tmp = TempDir::new().unwrap();
+    let (paths, _install_dir, install) = built(&tmp, Some("9"));
+    let root = tmp.path().join("AgoraBases");
+    let def = test_definition();
+    let first = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Copied,
+        Some(&root),
+        BuildOptions::default(),
+        &|_| {},
+    )
+    .unwrap();
+    let base_id = first.manifest().base_id.clone();
+    std::fs::write(paths.base_manifest_path(&base_id), "{ not json").unwrap();
+
+    let again = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Copied,
+        Some(&root),
+        BuildOptions::default(),
+        &|_| {},
+    )
+    .unwrap_or_else(|e| panic!("a build over a damaged record must not fail: {e}"));
+    assert!(matches!(again, BuildOutcome::Built { .. }), "{again:?}");
+    assert!(
+        verify_base(again.manifest(), VerifyDepth::Full, &|_| false, &|_| false)
+            .problems
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_tampered_record_cannot_point_removal_at_a_folder_in_someone_elses_agorabases() {
+    // The check accepts any folder named AgoraBases as a bases root, which is how a base on another
+    // drive is kept. A hand-edited record can use that to name a folder the user keeps.
+    let tmp = TempDir::new().unwrap();
+    let (paths, _install_dir, install) = built(&tmp, Some("10"));
+    let root = tmp.path().join("AgoraBases");
+    let outcome = build_base(
+        &paths,
+        &install,
+        &test_definition(),
+        BaseMode::Copied,
+        Some(&root),
+        BuildOptions::default(),
+        &|_| {},
+    )
+    .unwrap();
+    let base_id = outcome.manifest().base_id.clone();
+    let victim = tmp
+        .path()
+        .join("Documents")
+        .join("AgoraBases")
+        .join(&base_id);
+    std::fs::create_dir_all(&victim).unwrap();
+    std::fs::write(victim.join("my-saves.txt"), b"keep me").unwrap();
+    let mut manifest = outcome.manifest().clone();
+    manifest.location = victim.clone();
+    std::fs::write(
+        paths.base_manifest_path(&base_id),
+        serde_json::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    assert!(
+        remove_base(&paths, &base_id).is_err(),
+        "a record pointing at a folder outside this data folder's bases must be refused"
+    );
+    assert!(
+        victim.join("my-saves.txt").exists(),
+        "the user's folder survives a tampered record"
+    );
+}
