@@ -325,6 +325,9 @@ impl CoreContext {
         }
 
         // 5. Validate lock directory is usable (warning only).
+        //    Known write: every open, read or write, creates and removes `locks/.probe`, which
+        //    changes the folder's modified time and leaves no file behind. It is the writability
+        //    check itself, so it stays.
         let locks_root = paths.locks_root();
         if locks_root.exists() {
             let probe = locks_root.join(".probe");

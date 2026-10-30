@@ -4730,6 +4730,69 @@ fn games_instance_check_passes_a_runtime_with_its_own_frameworks() {
     assert_eq!(json["load_order_findings"][0]["plugin"], "Skyrim.esm");
 }
 
+/// Every table of the data root's `local_state.db`, as rows of text, read-only.
+fn local_state_rows(data_dir: &Path) -> std::collections::BTreeMap<String, Vec<String>> {
+    let conn = rusqlite::Connection::open_with_flags(
+        data_dir.join("local_state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+            let columns = stmt.column_count();
+            let rows: Vec<String> = stmt
+                .query_map([], |row| {
+                    let mut cells = Vec::new();
+                    for i in 0..columns {
+                        let value: rusqlite::types::Value = row.get(i)?;
+                        cells.push(format!("{value:?}"));
+                    }
+                    Ok(cells.join("|"))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            (table, rows)
+        })
+        .collect()
+}
+
+#[test]
+fn games_instance_checks_change_no_database_row() {
+    // The framework, load order, tool-output and content reads leave every table of the data
+    // root's database as they found it. (The probe in `locks/` and the CLI log are the known
+    // writes that remain; they are not database rows.)
+    let fixture = skyrim_fixture("1.6.1170.0", &["skse64_1_6_1170.dll"]);
+    let id = fixture.instance_id.clone();
+    let before = local_state_rows(&fixture.data_dir);
+    assert!(!before.is_empty(), "the fixture has tables to compare");
+
+    for args in [
+        &["games", "instance", "check", id.as_str()][..],
+        &["games", "instance", "plugins", id.as_str()][..],
+        &["games", "instance", "plugins", "check", id.as_str()][..],
+        &["games", "instance", "content", "list", id.as_str()][..],
+    ] {
+        let out = run_agora(&fixture.data_dir, args);
+        assert!(
+            out.status.code() == Some(0) || out.status.code() == Some(1),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    assert_eq!(local_state_rows(&fixture.data_dir), before);
+}
+
 #[test]
 fn games_instance_check_lists_a_rule_it_cannot_check_but_exits_zero() {
     // A three-part version cannot fill the Address Library rule's {4}: a definition-side

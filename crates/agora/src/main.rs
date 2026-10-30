@@ -1893,6 +1893,8 @@ async fn async_main() {
             std::process::exit(1);
         }
     };
+    // Known write: every run, reads included, appends its diagnostics to this log (by default
+    // `logs/agora-cli.log`). It is the support record of what a run printed, so it stays.
     progress.log("info", "Agora CLI started");
 
     // Migration must run before normal initialization. Initializing the
@@ -7862,27 +7864,20 @@ async fn run_command(
                     let game_def = ctx.games.game(&record.game).ok_or_else(|| {
                         anyhow::anyhow!("Game definition not found for {}", record.game)
                     })?;
-                    let findings = match agora_core::game_instance::runtime_findings(
-                        ctx,
-                        &instance_id,
-                        game_def,
-                    ) {
-                        Ok(findings) => findings,
-                        Err(e) => fail(format!("{e}")),
-                    };
                     let pinned =
                         matches!(record.base, agora_game_api::BaseReference::Pinned { .. });
-                    // The plugin list is synced at launch, so its order is checked for a pinned
-                    // instance of a game that keeps one. An unpinned instance has no synced list.
-                    let load_order: Vec<agora_core::game_load_order::Finding> =
-                        if pinned && game_def.plugin_list.is_some() {
-                            match agora_core::game_load_order::check(ctx, &instance_id, game_def) {
-                                Ok(found) => found,
-                                Err(e) => fail(format!("{e}")),
-                            }
-                        } else {
-                            Vec::new()
-                        };
+                    // The framework files, the plugin load order and the tool outputs: the same
+                    // checks the instance Overview runs (`launch_checks`). An unpinned instance has
+                    // none, and a pinned one's load order is checked because its list is synced at
+                    // launch.
+                    let agora_core::game_instance::LaunchChecks {
+                        runtime: findings,
+                        load_order,
+                        outputs: generated,
+                    } = match agora_core::game_instance::launch_checks(ctx, &record, game_def) {
+                        Ok(checks) => checks,
+                        Err(e) => fail(format!("{e}")),
+                    };
                     // Only a framework built for another version, or a load order that would stop
                     // the game, fails the check. A rule that cannot be checked is listed, as a
                     // warning, and so are an unreadable header and a plugin listed twice.
@@ -7894,14 +7889,6 @@ async fn run_command(
                         .any(agora_core::game_load_order::Finding::refuses_launch);
                     let refuses = framework_refuses || order_refuses;
                     // Tool output that is stale or unknown is a warning, never a refusal (§26.9).
-                    let generated: Vec<agora_core::game_tools::OutputFinding> = if pinned {
-                        match agora_core::game_tools::output_findings(ctx, &instance_id, game_def) {
-                            Ok(found) => found,
-                            Err(e) => fail(format!("{e}")),
-                        }
-                    } else {
-                        Vec::new()
-                    };
                     let status = if refuses {
                         "findings"
                     } else if findings.is_empty() && load_order.is_empty() && generated.is_empty() {

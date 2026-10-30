@@ -1539,6 +1539,58 @@ pub fn get_item(ctx: &Ctx, item_id_or_prefix: &str) -> Result<ContentItem, Conte
     Ok(item)
 }
 
+/// The ids of the items in the store's folder, listed once. [`get_item_indexed`] resolves against
+/// them, so a caller that reads many items (a deployment plan) lists the folder once, not per item.
+/// A folder that does not exist has no items.
+pub fn item_ids(ctx: &Ctx) -> Result<std::collections::BTreeSet<String>, ContentError> {
+    let mut ids = std::collections::BTreeSet::new();
+    let items_dir = ctx.paths.content_items_dir();
+    if !items_dir.exists() {
+        return Ok(ids);
+    }
+    for entry in std::fs::read_dir(items_dir)? {
+        let path = entry?.path();
+        if path.extension().map(|e| e == "json").unwrap_or(false) {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                ids.insert(stem.to_string());
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// [`get_item`], resolving the id against `ids` (from [`item_ids`]) instead of listing the folder
+/// again. It gives the same item, or the same error, as `get_item`.
+pub fn get_item_indexed(
+    ctx: &Ctx,
+    ids: &std::collections::BTreeSet<String>,
+    item_id_or_prefix: &str,
+) -> Result<ContentItem, ContentError> {
+    let prefix = item_id_or_prefix;
+    if !is_item_id(prefix) {
+        return Err(ContentError::NotFound(prefix.to_string()));
+    }
+    let mut matches: Vec<String> = ids
+        .range(prefix.to_string()..)
+        .take_while(|id| id.starts_with(prefix))
+        .cloned()
+        .collect();
+    let item_id = match matches.len() {
+        0 => return Err(ContentError::NotFound(prefix.to_string())),
+        1 => matches.remove(0),
+        _ => {
+            matches.sort();
+            return Err(ContentError::AmbiguousPrefix {
+                prefix: prefix.to_string(),
+                matches: matches.join(", "),
+            });
+        }
+    };
+    let content = std::fs::read_to_string(ctx.paths.content_item_path(&item_id))?;
+    let item: ContentItem = serde_json::from_str(&content)?;
+    Ok(item)
+}
+
 /// One record in the store's items folder: an item that reads, or a record that does not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]

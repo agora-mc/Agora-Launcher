@@ -889,7 +889,7 @@ fn installed_files(
 
 /// The Links plan an engine game's load order reads its installed plugins from, planned once so a
 /// caller can pass it to several `_with_view` reads. `None` for a game whose rules read no plan.
-fn plan_for_order(
+pub fn plan_for_order(
     ctx: &Ctx,
     instance_id: &str,
     definition: &GameDefinition,

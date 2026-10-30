@@ -436,26 +436,21 @@ fn check_instance(app: &tauri::AppHandle, instance_id: &str) -> Result<InstanceC
         .ok_or_else(|| game_missing(record.game.as_str()))?;
     let pinned = is_pinned(&record);
 
+    // The same checks `agora games instance check` runs, from the same core call, in the same order.
+    let checks =
+        game_instance::launch_checks(&ctx, &record, definition).map_err(|error| match error {
+            game_instance::LaunchChecksError::Runtime(inner) => map_error(inner),
+            other => core_failed(other),
+        })?;
     let mut findings = Vec::new();
-    if pinned {
-        // The same three checks `agora games instance check` runs, in the same order.
-        for finding in
-            game_instance::runtime_findings(&ctx, instance_id, definition).map_err(map_error)?
-        {
-            findings.push(framework_finding(&finding));
-        }
-        if definition.plugin_list.is_some() {
-            let order = agora_core::game_load_order::check(&ctx, instance_id, definition)
-                .map_err(core_failed)?;
-            for finding in &order {
-                findings.push(load_order_finding(finding));
-            }
-        }
-        let outputs = agora_core::game_tools::output_findings(&ctx, instance_id, definition)
-            .map_err(core_failed)?;
-        for output in &outputs {
-            findings.push(tool_finding(output));
-        }
+    for finding in &checks.runtime {
+        findings.push(framework_finding(finding));
+    }
+    for finding in &checks.load_order {
+        findings.push(load_order_finding(finding));
+    }
+    for output in &checks.outputs {
+        findings.push(tool_finding(output));
     }
     Ok(InstanceCheck {
         instance_id: instance_id.to_string(),

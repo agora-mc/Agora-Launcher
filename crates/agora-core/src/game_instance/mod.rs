@@ -791,6 +791,75 @@ pub fn runtime_findings(
     ))
 }
 
+/// The findings `games instance check` and the instance Overview report, from one place so they
+/// cannot disagree. An unpinned instance runs from its install folder and has none.
+pub struct LaunchChecks {
+    pub runtime: Vec<agora_game_api::RuntimeFileFinding>,
+    pub load_order: Vec<crate::game_load_order::Finding>,
+    pub outputs: Vec<crate::game_tools::OutputFinding>,
+}
+
+/// Which check failed, so each caller keeps the error code it gives that check.
+#[derive(Debug, thiserror::Error)]
+pub enum LaunchChecksError {
+    #[error(transparent)]
+    Runtime(#[from] InstanceError),
+    #[error(transparent)]
+    LoadOrder(#[from] crate::game_load_order::LoadOrderError),
+    #[error(transparent)]
+    Outputs(#[from] crate::game_tools::ToolError),
+}
+
+/// The launch checks of an instance: its framework files, its plugin load order and its tool
+/// outputs. A pinned instance's load order and outputs both judge the instance's Links plan, which
+/// is planned here once, not once per check and once per generated layer. The framework check's
+/// own plan and the Links plan are independent reads, so they are made side by side. The errors
+/// keep their order: a framework error is reported before a load-order error.
+pub fn launch_checks(
+    ctx: &Ctx,
+    record: &GameInstanceRecord,
+    definition: &GameDefinition,
+) -> Result<LaunchChecks, LaunchChecksError> {
+    let id = record.instance_id.as_str();
+    let pinned = matches!(record.base, BaseReference::Pinned { .. });
+    let (runtime, links) = std::thread::scope(|scope| {
+        let runtime = scope.spawn(|| runtime_findings(ctx, id, definition));
+        let links = scope.spawn(|| match definition.plugin_list {
+            Some(_) if pinned => crate::game_load_order::plan_for_order(ctx, id, definition),
+            _ => Ok(None),
+        });
+        (join_scoped(runtime), join_scoped(links))
+    });
+    let runtime = runtime?;
+    if !pinned {
+        return Ok(LaunchChecks {
+            runtime,
+            load_order: Vec::new(),
+            outputs: Vec::new(),
+        });
+    }
+    let links = links?;
+    let load_order = match definition.plugin_list {
+        Some(_) => crate::game_load_order::check_with_view(ctx, id, definition, links.as_ref())?,
+        None => Vec::new(),
+    };
+    let outputs =
+        crate::game_tools::output_findings_with_view(ctx, id, definition, links.as_ref())?;
+    Ok(LaunchChecks {
+        runtime,
+        load_order,
+        outputs,
+    })
+}
+
+/// The result of a scoped thread. A panic in the thread is raised again here, not turned into a
+/// value.
+fn join_scoped<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
 /// Prepare launch for a generic game instance.
 pub fn prepare_launch(
     ctx: &Ctx,

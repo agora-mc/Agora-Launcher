@@ -980,22 +980,29 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
     if !pattern.contains('*') {
         return pattern == text;
     }
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.is_empty() {
+    // The pieces between the `*`s, read in order without collecting them: this runs for every path
+    // and every copy pattern when a plan is made, so an allocation here is paid 200k times.
+    let mut pieces = pattern.split('*');
+    let Some(first) = pieces.next() else {
         return true;
-    }
-    if !text.starts_with(parts[0]) {
+    };
+    if !text.starts_with(first) {
         return false;
     }
-    let mut cur = &text[parts[0].len()..];
-    for &part in &parts[1..parts.len() - 1] {
+    let mut cur = &text[first.len()..];
+    while let Some(part) = pieces.next() {
+        if pieces.clone().next().is_none() {
+            // The last piece anchors the end of the text.
+            return cur.ends_with(part);
+        }
         if let Some(idx) = cur.find(part) {
             cur = &cur[idx + part.len()..];
         } else {
             return false;
         }
     }
-    cur.ends_with(parts[parts.len() - 1])
+    // A pattern with a `*` has at least two pieces, so the loop returns above.
+    false
 }
 
 // ---------------------------------------------------------------------------

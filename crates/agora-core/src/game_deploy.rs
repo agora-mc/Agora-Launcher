@@ -525,14 +525,21 @@ fn plan_inner(
         });
     }
 
+    // The store's item ids, listed once for every content layer below (not once per layer).
+    let item_ids = crate::content_store::item_ids(ctx);
     // 2. Enabled content layers in stack order (lowest first)
     for layer in manifest.layers.layers() {
         if !layer.enabled {
             continue;
         }
         if let LayerSource::Content { content: item_id } = &layer.source {
-            let item = crate::content_store::get_item(ctx, item_id)
-                .map_err(|_| DeployError::ContentNotFound(item_id.clone()))?;
+            let item = item_ids
+                .as_ref()
+                .map_err(|_| ())
+                .and_then(|ids| {
+                    crate::content_store::get_item_indexed(ctx, ids, item_id).map_err(|_| ())
+                })
+                .map_err(|()| DeployError::ContentNotFound(item_id.clone()))?;
             let mut content_files = Vec::new();
             let src_path = layer.source_path.as_str().trim_matches('/');
             let src_parts: Vec<&str> = if src_path.is_empty() {
@@ -813,14 +820,20 @@ fn plan_inner(
     for (_key, cand) in candidates {
         // A generated layer's files are copies in every mode, as the writable layer's are.
         let generated = matches!(cand.source, FileSource::Generated { .. });
-        let declared = rules.is_declared_write(cand.path.as_str());
+        // One normalization serves both rules. The conditions are pure, so the cheap ones come first.
+        let normalized = PathRules::normalized(cand.path.as_str());
+        let declared = normalized
+            .as_deref()
+            .is_some_and(|n| rules.is_declared_normalized(n));
         let is_config_copy = mode == DeployMode::Links
-            && cand.size <= 1024 * 1024
-            && rules.is_copy_pattern(cand.path.as_str())
             && !declared
             && !cand.own_copy
             && !generated
-            && !matches!(cand.source, FileSource::Writable { .. });
+            && !matches!(cand.source, FileSource::Writable { .. })
+            && cand.size <= 1024 * 1024
+            && normalized
+                .as_deref()
+                .is_some_and(|n| rules.is_copy_normalized(n));
 
         let placement = match mode {
             _ if generated => Placement::Copy,
@@ -1128,7 +1141,13 @@ pub(crate) fn visible_paths_of(
                 .map(|file| file.path.as_str().to_string()),
         );
     }
-    paths.sort_by_key(|path| path.to_ascii_lowercase());
+    // The order of the lower-cased paths, compared without building each one (this sorts every
+    // path the game sees, so a String per comparison was most of the time in a check).
+    paths.sort_by(|a, b| {
+        a.bytes()
+            .map(|c| c.to_ascii_lowercase())
+            .cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+    });
     paths.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     Ok(paths)
 }
@@ -1830,6 +1849,16 @@ impl PathRules {
         RelPath::new(path)
             .ok()
             .map(|rel| rel.as_str().to_ascii_lowercase())
+    }
+
+    /// [`Self::is_copy_pattern`] for a path already run through [`Self::normalized`].
+    fn is_copy_normalized(&self, normalized: &str) -> bool {
+        self.copy.iter().any(|glob| glob.matches(normalized))
+    }
+
+    /// [`Self::is_declared_write`] for a path already run through [`Self::normalized`].
+    fn is_declared_normalized(&self, normalized: &str) -> bool {
+        self.declared.iter().any(|glob| glob.matches(normalized))
     }
 
     fn is_copy_pattern(&self, path: &str) -> bool {
