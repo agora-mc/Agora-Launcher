@@ -22,8 +22,8 @@ use agora_game_api::RelPath;
 use sha2::{Digest, Sha256};
 
 use super::{
-    disk_free_space, is_reparse_point_or_symlink, validate_entry_path, validate_path_set,
-    ContentError, StagedEntry, StagingGuard, HASH_BUFFER_SIZE, ONE_GIB,
+    disk_free_space, fold_case, is_reparse_point_or_symlink, validate_entry_path,
+    validate_path_set, ContentError, StagedEntry, StagingGuard, HASH_BUFFER_SIZE, ONE_GIB,
 };
 use crate::ctx::Ctx;
 
@@ -239,13 +239,10 @@ fn plan_from_listing(listed: Vec<ListedEntry>) -> Result<RarPlan, ContentError> 
     }
     validate_path_set(&file_paths)?;
 
-    let file_set: HashSet<String> = file_paths
-        .iter()
-        .map(|p| p.as_str().to_ascii_lowercase())
-        .collect();
+    let file_set: HashSet<String> = file_paths.iter().map(|p| fold_case(p.as_str())).collect();
     let mut dirs = HashSet::new();
     for dir in &dir_paths {
-        if file_set.contains(&dir.as_str().to_ascii_lowercase()) {
+        if file_set.contains(&fold_case(dir.as_str())) {
             return Err(ContentError::InvalidPath {
                 path: dir.to_string(),
                 reason: "is both a folder and a file in the archive".into(),

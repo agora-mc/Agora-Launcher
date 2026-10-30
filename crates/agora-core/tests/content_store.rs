@@ -250,10 +250,10 @@ fn list_items_shows_an_unreadable_record_as_damaged_and_it_can_be_removed() {
     // The user can remove a damaged item record. A file that is not named like an item says so.
     assert!(!damaged[0].error.contains("delete the file yourself"));
     assert!(damaged[1].error.contains("delete the file yourself"));
-    // (Removing an item reads every other record, so a second damaged record has to go first.)
-    assert!(remove_item(&ctx, "abc123").is_err());
-    std::fs::remove_file(items_dir.join("notes.json")).unwrap();
+    // (A second damaged record does not get in the way: it cannot refer to the one being removed.)
     remove_item(&ctx, "abc123").unwrap();
+    assert_eq!(list_items(&ctx).unwrap().len(), 2);
+    std::fs::remove_file(items_dir.join("notes.json")).unwrap();
     assert_eq!(list_items(&ctx).unwrap().len(), 1);
 }
 
@@ -580,11 +580,11 @@ fn test_verify_problem_kinds() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Removal refuses when another manifest is unreadable
+// 6. Removal with another manifest unreadable: the item goes, every object stays
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_removal_refuses_when_another_manifest_unreadable() {
+fn test_removal_with_another_manifest_unreadable_keeps_every_object() {
     let (_tmp, ctx) = test_ctx();
     let work = tempfile::tempdir().unwrap();
 
@@ -595,19 +595,27 @@ fn test_removal_refuses_when_another_manifest_unreadable() {
     let zip2 = work.path().join("mod2.zip");
     create_zip(&zip2, &[("file2.txt", b"mod2-data")]);
     let out2 = add_archive(&ctx, &zip2, Some("Mod2")).unwrap();
+    let obj1_path = ctx.paths.content_object_path(&out1.item().files[0].sha256);
+    let obj2_path = ctx.paths.content_object_path(&out2.item().files[0].sha256);
 
-    // Corrupt Mod2 manifest
+    // Corrupt Mod2 manifest: it cannot name Mod1, so removing Mod1 goes ahead.
     let m2_path = ctx.paths.content_item_path(&out2.item().item_id);
     std::fs::write(&m2_path, b"corrupt manifest").unwrap();
+    remove_item(&ctx, &out1.item().item_id).unwrap();
+    assert!(!ctx.paths.content_item_path(&out1.item().item_id).exists());
 
-    // Attempt to remove Mod1
-    let res = remove_item(&ctx, &out1.item().item_id);
-    assert!(matches!(res, Err(ContentError::UnreadableManifest { .. })));
+    // The damaged record may still hold a hash, so no object is deleted while it is there.
+    assert!(m2_path.exists());
+    assert!(obj2_path.exists());
+    assert!(
+        obj1_path.exists(),
+        "left for the next sweep, not deleted blind"
+    );
 
-    // Mod1 manifest and object still exist! Deletes nothing.
-    assert!(ctx.paths.content_item_path(&out1.item().item_id).exists());
-    let obj1_path = ctx.paths.content_object_path(&out1.item().files[0].sha256);
-    assert!(obj1_path.exists());
+    // Once the damaged record is removed, the sweep clears every object nothing references.
+    remove_item(&ctx, &out2.item().item_id).unwrap();
+    assert!(!obj1_path.exists());
+    assert!(!obj2_path.exists());
 }
 
 // ---------------------------------------------------------------------------

@@ -180,7 +180,7 @@ fn probe_parallel_adds_of_one_archive_make_one_item() {
 }
 
 #[test]
-fn probe_removal_with_unreadable_neighbour_deletes_nothing() {
+fn probe_removal_with_unreadable_neighbour_removes_the_item_and_deletes_no_object() {
     let tmp = tempfile::tempdir().unwrap();
     let c = ctx(tmp.path());
     let a = cs::add_archive(
@@ -206,18 +206,21 @@ fn probe_removal_with_unreadable_neighbour_deletes_nothing() {
         .join(format!("{}.json", b.item().item_id));
     std::fs::write(&b_manifest, b"{ not json").unwrap();
     let objects_before = count_files(&content_root(&c).join("objects"));
-    assert!(
-        cs::remove_item(&c, &a.item().item_id).is_err(),
-        "removal proceeded past an unreadable manifest"
-    );
+    // The unreadable record cannot name `a`, so `a` goes. It might still hold a hash of `shared`,
+    // or of `b`'s own file, so no object is deleted while it is there.
+    cs::remove_item(&c, &a.item().item_id).expect("an unreadable neighbour does not block removal");
     assert_eq!(
         count_files(&content_root(&c).join("objects")),
         objects_before
     );
-    assert!(content_root(&c)
+    assert!(!content_root(&c)
         .join("items")
         .join(format!("{}.json", a.item().item_id))
         .exists());
+    assert!(
+        b_manifest.exists(),
+        "the damaged record is left for the user"
+    );
 }
 
 #[test]
@@ -402,4 +405,43 @@ fn entry_names_windows_cannot_create_are_refused_before_they_are_stored() {
             "{name} cannot be a file name on Windows"
         );
     }
+}
+
+#[test]
+fn entry_names_with_control_characters_or_a_greater_than_sign_are_refused_and_named() {
+    for name in [
+        "Data/a>b.txt",
+        "Data/tab\there.txt",
+        "Data/new\nline.txt",
+        "Data/nul\0byte.txt",
+        "Data/bell\u{7}.txt",
+        "Data/\u{1f}x.txt",
+    ] {
+        let err = cs::validate_entry_path(name).expect_err(name).to_string();
+        assert!(err.contains("Windows cannot have"), "{name:?}: {err}");
+        assert!(err.contains("Data/"), "the entry is named: {err}");
+    }
+    // Ordinary names, including non-ASCII ones, are still fine.
+    for name in ["Data/café.txt", "Data/a b.txt", "Data/x-1_(2).esp"] {
+        cs::validate_entry_path(name).expect(name);
+    }
+}
+
+#[test]
+fn names_that_differ_only_in_case_are_one_file_for_ascii_and_beyond() {
+    use agora_game_api::RelPath;
+    for (a, b) in [
+        ("Data/a.txt", "Data/A.txt"),
+        ("Data/Ünï.txt", "Data/üNÏ.txt"),
+        ("Data/Σ.txt", "Data/σ.txt"),
+        ("Data/ǅ.txt", "Data/ǆ.txt"),
+    ] {
+        let paths = [RelPath::new(a).unwrap(), RelPath::new(b).unwrap()];
+        assert!(cs::validate_path_set(&paths).is_err(), "{a} vs {b}");
+    }
+    let distinct = [
+        RelPath::new("Data/café.txt").unwrap(),
+        RelPath::new("Data/cafe.txt").unwrap(),
+    ];
+    cs::validate_path_set(&distinct).expect("different letters are not folded together");
 }

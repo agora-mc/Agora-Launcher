@@ -446,6 +446,8 @@ impl Fixture {
             &self.def,
             &ToolId::new(tool).unwrap(),
             capture,
+            // The costs are the user's to accept; a test that runs by swap has accepted them.
+            capture == CaptureMode::Swap,
             launcher,
             &CancellationToken::new(),
         )
@@ -1861,6 +1863,7 @@ fn a_promoted_run_after_a_refusal_resets_the_count() {
         &f.def,
         &ToolId::new("nemesis").unwrap(),
         CaptureMode::Links,
+        false,
         "agora_vfs.dll was not found",
         &launcher,
         &CancellationToken::new(),
@@ -1894,6 +1897,7 @@ fn a_run_by_a_tier_chosen_after_a_refusal_names_the_vfs_failure_in_its_reason() 
         &f.def,
         &ToolId::new("nemesis").unwrap(),
         CaptureMode::Links,
+        false,
         reason,
         &StagingLauncher::new(),
         &CancellationToken::new(),
@@ -1911,6 +1915,71 @@ fn a_run_by_a_tier_chosen_after_a_refusal_names_the_vfs_failure_in_its_reason() 
 }
 
 #[test]
+fn a_swap_whose_costs_were_not_acknowledged_is_refused_by_core_and_touches_nothing() {
+    let _swap = SwapTest::same_volume();
+    let mut tool = writes_or_fails("nemesis");
+    tool.uses_install_path = true;
+    let f = swap_fixture(vec![tool]);
+    let install = install_dir(&f);
+    let before = snapshot(&real_data(&f));
+    let entries_before = names(&install);
+    let tool_id = ToolId::new("nemesis").unwrap();
+
+    let direct = game_tools::run(
+        &f.ctx,
+        f.id(),
+        &f.def,
+        &tool_id,
+        CaptureMode::Swap,
+        false,
+        &StagingLauncher::new(),
+        &CancellationToken::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(direct, ToolError::SwapNotConfirmed), "{direct:?}");
+
+    // The tier chosen after a refusal is the same swap and is refused the same way.
+    let after_refusal = game_tools::run_after_vfs_refusal(
+        &f.ctx,
+        f.id(),
+        &f.def,
+        &tool_id,
+        CaptureMode::Swap,
+        false,
+        "agora_vfs.dll was not found",
+        &StagingLauncher::new(),
+        &CancellationToken::new(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(after_refusal, ToolError::SwapNotConfirmed),
+        "{after_refusal:?}"
+    );
+
+    assert_eq!(snapshot(&real_data(&f)), before);
+    assert_eq!(names(&install), entries_before);
+    assert!(!journal_file(&f).exists());
+    assert!(f.generated("nemesis").is_none(), "nothing was built");
+}
+
+#[test]
+fn the_acknowledgement_is_not_needed_by_the_other_captures() {
+    let f = fixture(vec![tagged("nemesis")]);
+    let out = game_tools::run(
+        &f.ctx,
+        f.id(),
+        &f.def,
+        &ToolId::new("nemesis").unwrap(),
+        CaptureMode::Links,
+        false,
+        &StagingLauncher::new().with_env("AGORA_TEST_TAG", "1"),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert!(out.promoted, "{out:?}");
+}
+
+#[test]
 fn a_swap_chosen_after_a_refusal_names_the_vfs_failure_in_its_reason() {
     let _swap = SwapTest::same_volume();
     let mut tool = writes_or_fails("nemesis");
@@ -1923,6 +1992,7 @@ fn a_swap_chosen_after_a_refusal_names_the_vfs_failure_in_its_reason() {
         &f.def,
         &ToolId::new("nemesis").unwrap(),
         CaptureMode::Swap,
+        true,
         "agora_vfs.dll was not found",
         &StagingLauncher::new(),
         &CancellationToken::new(),
@@ -2400,6 +2470,7 @@ fn real_injection_a_32_bit_tool_is_captured_from_links_under_auto_when_the_x86_d
         &f.def,
         &ToolId::new("wow").unwrap(),
         CaptureMode::Links,
+        false,
         &refusal,
         &launcher,
         &CancellationToken::new(),

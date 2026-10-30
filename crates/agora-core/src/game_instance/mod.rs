@@ -605,6 +605,24 @@ pub fn record_launch(ctx: &Ctx, id: &str) -> Result<(), InstanceError> {
     Ok(())
 }
 
+/// Give a generic game instance a new name, in the list and in its manifest.
+pub fn rename(ctx: &Ctx, id: &str, name: &str) -> Result<(), InstanceError> {
+    let db_path = ctx.paths.local_state_db();
+    let conn = crate::db::local_state_connection(&db_path)
+        .map_err(|e| InstanceError::Other(e.to_string()))?;
+    let count = conn.execute(
+        "UPDATE game_instances SET name = ?1 WHERE instance_id = ?2",
+        [name, id],
+    )?;
+    if count == 0 {
+        return Err(InstanceError::NotFound(id.to_string()));
+    }
+    let mut manifest = get_manifest(ctx, id)?;
+    manifest.name = name.to_string();
+    crate::game_deploy::write_instance_manifest_atomic(ctx, id, &manifest)?;
+    Ok(())
+}
+
 /// What a launch does when the virtual file system (rung 1) cannot start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VfsFailure {
