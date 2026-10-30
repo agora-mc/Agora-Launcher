@@ -187,14 +187,18 @@ pub fn display_path(canonical: &Path) -> String {
 }
 
 /// The identity of a folder for comparisons. Two spellings of one folder (case, a trailing
-/// separator) give the same key on Windows, where names are case-insensitive.
+/// separator, `/` for a backslash) give the same key on Windows, where names are case-insensitive.
 pub fn folder_key(display: &str) -> String {
-    let trimmed = display.trim().trim_end_matches(['\\', '/']);
     if cfg!(windows) {
-        // Windows drops trailing dots and spaces from a name, so `Skyrim.` is `Skyrim`.
-        trimmed.trim_end_matches(['.', ' ']).to_lowercase()
+        // Windows takes `/` as a separator too, and drops trailing dots and spaces from a name,
+        // so `Skyrim.` is `Skyrim`.
+        let slashed = display.trim().replace('/', "\\");
+        slashed
+            .trim_end_matches('\\')
+            .trim_end_matches(['.', ' '])
+            .to_lowercase()
     } else {
-        trimmed.to_string()
+        display.trim().trim_end_matches(['\\', '/']).to_string()
     }
 }
 
@@ -306,7 +310,12 @@ fn add_folder_checked(
     }
 
     for install in store_installs {
-        let install_key = folder_key(&display_path(&install.location));
+        // The store may know the install by a junction's or a link's spelling; compare the real
+        // folder. An install that is gone cannot be resolved, so its stored spelling stands.
+        let install_key = match std::fs::canonicalize(&install.location) {
+            Ok(real) => folder_key(&display_path(&real)),
+            Err(_) => folder_key(&display_path(&install.location)),
+        };
         if install_key == key {
             return Err(refused(
                 ERR_FOLDER_INSIDE_INSTALL,

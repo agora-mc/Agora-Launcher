@@ -483,13 +483,13 @@ pub struct RemoveReply {
 }
 
 /// Delete a base no instance uses. Core refuses while any instance is pinned to it and names
-/// them; the UI asks before calling this.
+/// them; the UI asks before calling this. The id is not checked here: a damaged record is listed
+/// under its file name, which need not be a plain name, and core decides what such an id can reach.
 #[tauri::command]
 pub async fn games_base_remove(
     app: tauri::AppHandle,
     base_id: String,
 ) -> Result<RemoveReply, GamesError> {
-    validate_base_id(&base_id)?;
     tokio::task::spawn_blocking(move || -> Result<RemoveReply, GamesError> {
         let ctx = crate::core_context(&app)?;
         game_base::remove_base(&ctx.paths, &base_id).map_err(base_error)?;

@@ -1534,10 +1534,9 @@ fn remove_refuses_ids_that_could_name_the_data_folder_and_deletes_nothing() {
     std::fs::create_dir_all(paths.bases_dir()).unwrap();
     let sentinel = data.join("sentinel.txt");
     std::fs::write(&sentinel, b"keep me").unwrap();
-    // A record whose file name is "...json" has the id "..": before the id check, removing it
-    // would delete the folder that holds the whole data folder.
-    std::fs::write(paths.base_manifests_dir().join("...json"), "{ not json").unwrap();
-
+    // Without a listed damaged record of that name, ids like ".." reach nothing and are refused.
+    // (A damaged record file really named "...json" is the id ".."; removing it deletes only that
+    // record file, see every_damaged_record_the_list_shows_can_be_removed_by_the_id_it_is_listed_under.)
     for bad in ["..", ".", "../x", "a/b", "", ".hidden", "skyrim-se.", "nul"] {
         assert!(
             matches!(remove_base(&paths, bad), Err(BaseError::Other(_))),
@@ -1736,4 +1735,70 @@ fn a_tampered_record_cannot_point_removal_at_a_folder_in_someone_elses_agorabase
         victim.join("my-saves.txt").exists(),
         "the user's folder survives a tampered record"
     );
+}
+
+fn build_in_other_root(tmp: &TempDir, build: &str) -> (AppPaths, std::path::PathBuf, String) {
+    let (paths, _install_dir, install) = built(tmp, Some(build));
+    let root = tmp.path().join("AgoraBases");
+    let outcome = build_base(
+        &paths,
+        &install,
+        &test_definition(),
+        BaseMode::Copied,
+        Some(&root),
+        BuildOptions::default(),
+        &|_| {},
+    )
+    .unwrap();
+    (paths, root, outcome.manifest().base_id.clone())
+}
+
+#[test]
+fn a_base_in_another_root_is_removable_only_while_its_root_is_remembered() {
+    // The roots a build used are kept in the data folder; removal trusts exactly those.
+    let tmp = TempDir::new().unwrap();
+    let (paths, root, base_id) = build_in_other_root(&tmp, "11");
+    let roots: Vec<std::path::PathBuf> =
+        serde_json::from_str(&std::fs::read_to_string(paths.base_roots_file()).unwrap()).unwrap();
+    assert_eq!(roots, vec![root.clone()]);
+
+    // Forgetting the root (a restored data folder, a hand edit) leaves the folder alone.
+    std::fs::remove_file(paths.base_roots_file()).unwrap();
+    assert!(remove_base(&paths, &base_id).is_err());
+    assert!(root.join(&base_id).is_dir());
+    assert!(paths.base_manifest_path(&base_id).exists());
+}
+
+#[test]
+fn an_unreadable_root_list_refuses_removal_instead_of_guessing() {
+    let tmp = TempDir::new().unwrap();
+    let (paths, root, base_id) = build_in_other_root(&tmp, "12");
+    std::fs::write(paths.base_roots_file(), "{ not a list").unwrap();
+
+    let error = remove_base(&paths, &base_id).unwrap_err();
+    assert!(error.to_string().contains("roots.json"), "{error}");
+    assert!(root.join(&base_id).is_dir());
+    assert!(paths.base_manifest_path(&base_id).exists());
+}
+
+#[test]
+fn a_root_is_registered_once_however_often_it_is_built_into() {
+    let tmp = TempDir::new().unwrap();
+    let (paths, _install_dir, install) = built(&tmp, Some("13"));
+    let root = tmp.path().join("AgoraBases");
+    for mode in [BaseMode::Copied, BaseMode::Linked] {
+        build_base(
+            &paths,
+            &install,
+            &test_definition(),
+            mode,
+            Some(&root),
+            BuildOptions::default(),
+            &|_| {},
+        )
+        .unwrap();
+    }
+    let roots: Vec<std::path::PathBuf> =
+        serde_json::from_str(&std::fs::read_to_string(paths.base_roots_file()).unwrap()).unwrap();
+    assert_eq!(roots, vec![root]);
 }

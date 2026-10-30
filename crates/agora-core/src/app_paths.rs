@@ -192,6 +192,12 @@ impl AppPaths {
         self.root.join("bases").join("manifests")
     }
 
+    /// The bases roots outside the data folder that Agora created (`bases/roots.json`). Removal
+    /// only deletes base folders directly inside one of these or `bases_dir`.
+    pub fn base_roots_file(&self) -> PathBuf {
+        self.root.join("bases").join("roots.json")
+    }
+
     /// Manifest path for a specific pinned base (`bases/manifests/<base_id>.json`).
     pub fn base_manifest_path(&self, base_id: &str) -> PathBuf {
         self.base_manifests_dir().join(format!("{base_id}.json"))

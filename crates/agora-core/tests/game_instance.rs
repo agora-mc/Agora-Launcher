@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use agora_core::ctx::CoreContext;
-use agora_core::game_base::{remove_base, BaseError, BaseMode, BuildOutcome};
+use agora_core::game_base::{
+    build_base, remove_base, BaseError, BaseMode, BuildOptions, BuildOutcome,
+};
 use agora_core::game_discovery::{DiscoveredInstall, DiscoveryReport, InstallCapabilities};
 use agora_core::game_instance::{
     create, delete, get, get_manifest, prepare_launch_with_discovery, record_launch,
@@ -524,4 +526,56 @@ fn a_bad_chosen_id_is_refused_before_any_base_is_built() {
         );
         assert!(!ctx.paths.base_manifest_path(&base_id).exists());
     }
+}
+
+#[test]
+fn building_over_a_damaged_record_an_instance_is_pinned_to_is_refused_and_keeps_the_folder() {
+    // A damaged record is replaced by a new build, but not while an instance runs from that base.
+    let tmp = TempDir::new().unwrap();
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    let ctx = CoreContext::for_testing(tmp.path().join("app_data"));
+    agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
+    let def = make_test_definition();
+    let install = make_test_install(&install_dir, "steam", "489830", true, true);
+    let rec = create(
+        &ctx,
+        &install,
+        &def,
+        "Pinned",
+        Some("skyrim-pinned".into()),
+        BaseMode::Linked,
+        &|_| {},
+    )
+    .unwrap();
+    let base_id = match &rec.base {
+        BaseReference::Pinned { id, .. } => id.clone(),
+        _ => panic!("expected pinned base"),
+    };
+    let manifest_path = ctx.paths.base_manifest_path(&base_id);
+    let folder = ctx.paths.bases_dir().join(&base_id);
+    assert!(folder.is_dir());
+    std::fs::write(&manifest_path, "{ not json").unwrap();
+
+    let error = build_base(
+        &ctx.paths,
+        &install,
+        &def,
+        BaseMode::Linked,
+        None,
+        BuildOptions::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("damaged base"),
+        "a clear reason, not a raw IO error: {error}"
+    );
+    assert!(folder.is_dir(), "the base the instance runs from is kept");
+    assert_eq!(
+        std::fs::read_to_string(&manifest_path).unwrap(),
+        "{ not json",
+        "the damaged record is untouched"
+    );
 }
