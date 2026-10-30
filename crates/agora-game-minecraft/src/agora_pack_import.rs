@@ -17,10 +17,13 @@
 //! The network and install steps sit behind [`PackBackend`] so the decision
 //! logic can be tested without a network; [`CoreBackend`] is the real one.
 
+use agora_core::artifact_hash::HashOrigin;
 use agora_core::ctx::Ctx;
 use agora_core::db::InstancePackGap;
-use agora_core::error::{LauncherError, LauncherResult};
-use agora_core::models::{InstanceManifest, ModVersionCandidate, PackOrigin, PackPlatform};
+use agora_core::error::{HashConfirmation, LauncherError, LauncherResult};
+use agora_core::models::{
+    InstalledMod, InstanceManifest, ModVersionCandidate, PackOrigin, PackPlatform,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -321,6 +324,9 @@ pub enum PackNeedsAction {
     EnableModrinth,
     /// A source or network switch in Settings is off.
     OpenSettings,
+    /// The download differs from the hash the modpack lists for it. Nothing was
+    /// installed; retrying with the install-anyway override installs it.
+    ConfirmHash,
 }
 
 /// How one pack entry ended.
@@ -330,7 +336,9 @@ pub struct PackEntryOutcome {
     pub name: String,
     pub status: PackEntryStatus,
     /// Installed only: the bytes matched the SHA-256 the pack pinned. `false`
-    /// means the pack pinned none, so the file could not be checked against it.
+    /// means the pack pinned none, so the file could not be checked against it,
+    /// or the user installed it although it differs. This says nothing about the
+    /// source: whether the *source* vouched for the file is in `reason`.
     pub verified_against_pack: bool,
     /// Why it failed or what it needs; for an unverified install, the caveat.
     pub reason: Option<String>,
@@ -413,6 +421,16 @@ pub struct PackCandidate {
     pub source: String,
 }
 
+/// What the backend installed, for the report to describe honestly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledFile {
+    /// Lowercase SHA-256 of the bytes that were written.
+    pub sha256: String,
+    /// The source published a checksum and the bytes matched it. A hash that only
+    /// the modpack listed does not count.
+    pub source_verified: bool,
+}
+
 /// Why a lookup produced no candidates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendError {
@@ -440,12 +458,6 @@ pub trait PackBackend: Send + Sync {
     fn installed_filenames(&self, instance_id: &str) -> Vec<String>;
     /// SHA-256 of a file already in the instance, `None` if it cannot be read.
     fn installed_sha256(&self, instance_id: &str, filename: &str) -> Option<String>;
-    /// Whether the file just installed was checked against a hash its source
-    /// published. `false` means the source published none, which the report says
-    /// plainly. Backends that cannot tell answer `true`.
-    fn installed_hash_verified(&self, _instance_id: &str, _filename: &str) -> bool {
-        true
-    }
     /// The catalog's name for a registry id, when it is known.
     fn display_name(&self, registry_id: &str) -> Option<String>;
     /// Whether this install's catalog has the registry id at all. Local only.
@@ -464,14 +476,17 @@ pub trait PackBackend: Send + Sync {
         instance_id: &str,
         project_id: &str,
     ) -> Result<Vec<PackCandidate>, BackendError>;
-    /// Download, verify against the source's hash and `required_sha256`, and
-    /// install. Nothing may be written unless every check passes.
+    /// Download, verify against the source's hash and `required_sha256` (the
+    /// hash the pack lists), and install. Nothing may be written unless every
+    /// check passes. A file that differs from `required_sha256` comes back as
+    /// `NeedsAction(ConfirmHash, ..)` unless the user already chose to install
+    /// anyway; a mismatch with the source's own hash is always a failure.
     async fn install(
         &self,
         instance_id: &str,
         candidate: &PackCandidate,
         required_sha256: Option<&str>,
-    ) -> Result<(), BackendError>;
+    ) -> Result<InstalledFile, BackendError>;
     /// Switch an installed mod off (`<name>.jar` becomes `<name>.jar.disabled`).
     fn disable(&self, instance_id: &str, filename: &str) -> Result<(), String>;
 }
@@ -602,7 +617,7 @@ async fn install_one(
         .install(instance_id, candidate, pin.as_deref())
         .await
     {
-        Ok(()) => {
+        Ok(installed) => {
             let mut done = outcome(entry, PackEntryStatus::Installed, None, None);
             done.name = candidate.filename.clone();
             let disable_note = if entry.arrives_enabled() {
@@ -621,11 +636,19 @@ async fn install_one(
                 done.reason = Some(note);
                 return done;
             }
-            if pin.is_some() {
-                done.verified_against_pack = true;
-            } else if !backend.installed_hash_verified(instance_id, &candidate.filename) {
+            if let Some(pin) = &pin {
+                if installed.sha256.eq_ignore_ascii_case(pin) {
+                    done.verified_against_pack = true;
+                    if !installed.source_verified {
+                        done.reason = Some(PACK_HASH_ONLY_NOTE.to_string());
+                    }
+                } else {
+                    done.reason = Some(INSTALLED_PAST_PACK_HASH_NOTE.to_string());
+                }
+            } else if !installed.source_verified {
                 done.reason = Some(
-                    "The pack pinned no SHA-256 and the source published no checksum for this                      file, so Agora could not verify it."
+                    "The pack pinned no SHA-256 and the source published no checksum for this \
+                     file, so Agora could not verify it."
                         .to_string(),
                 );
             } else {
@@ -680,6 +703,15 @@ pub async fn install_pack_entries(
     }
     outcomes
 }
+
+/// An installed file the pack's hash matched and the source published nothing
+/// for: only the pack vouches for it, and the report says so.
+const PACK_HASH_ONLY_NOTE: &str = "Matches the hash in the modpack. The source published no \
+     checksum, so the modpack's hash is the only check on this file.";
+
+/// The user installed a file that differs from the pack's hash.
+const INSTALLED_PAST_PACK_HASH_NOTE: &str = "Installed anyway: this file does not match the \
+     hash in the modpack, and you chose to install it.";
 
 /// Reason on an entry that was already in the instance with nothing to check
 /// it against. Such a file is the user's, not the pack's.
@@ -769,6 +801,9 @@ pub struct CoreBackend {
     /// The user allowed Modrinth for this import only (see
     /// [`CoreBackend::with_modrinth_allowed_once`]).
     allow_modrinth_once: bool,
+    /// The user chose to install files that differ from the hash the pack lists
+    /// (see [`CoreBackend::accepting_pack_hash_mismatch`]).
+    accept_pack_hash: bool,
 }
 
 impl CoreBackend {
@@ -776,6 +811,7 @@ impl CoreBackend {
         Self {
             ctx,
             allow_modrinth_once: false,
+            accept_pack_hash: false,
         }
     }
 
@@ -786,7 +822,16 @@ impl CoreBackend {
         Self {
             ctx,
             allow_modrinth_once: true,
+            accept_pack_hash: false,
         }
+    }
+
+    /// The install-anyway override: files that differ from the hash the pack
+    /// lists are installed instead of stopping to ask. A hash the *source*
+    /// published is still enforced.
+    pub fn accepting_pack_hash_mismatch(mut self, accept: bool) -> Self {
+        self.accept_pack_hash = accept;
+        self
     }
 
     fn instance(&self, instance_id: &str) -> Result<agora_core::models::InstanceRow, BackendError> {
@@ -819,20 +864,6 @@ impl PackBackend for CoreBackend {
             .join(agora_core::helpers::content_subdir(&entry.content_type))
             .join(filename);
         agora_core::helpers::hash_file_sha256(&path).ok()
-    }
-
-    fn installed_hash_verified(&self, instance_id: &str, filename: &str) -> bool {
-        let Ok(manifest_path) = self.ctx.paths.instance_manifest(instance_id) else {
-            return true;
-        };
-        let Ok(manifest) = agora_core::helpers::read_manifest(&manifest_path) else {
-            return true;
-        };
-        let verified = all_entries(&manifest)
-            .find(|e| e.filename == filename)
-            .map(|e| e.hash_verified)
-            .unwrap_or(true);
-        verified
     }
 
     fn display_name(&self, registry_id: &str) -> Option<String> {
@@ -970,11 +1001,12 @@ impl PackBackend for CoreBackend {
         instance_id: &str,
         candidate: &PackCandidate,
         required_sha256: Option<&str>,
-    ) -> Result<(), BackendError> {
+    ) -> Result<InstalledFile, BackendError> {
         let installer = crate::install_service::InstallService::new(self.ctx.clone());
-        // A pinned hash also stands in when the source published none: the
-        // bytes are then held to the one hash anybody vouched for.
-        let expected_sha256 = candidate.expected_sha256.as_deref().or(required_sha256);
+        // Only a hash the source's own rules name is "expected". The pack's hash
+        // is a pin of its own: it stands in when the source published nothing,
+        // but it is never recorded as the source having verified the file.
+        let expected_sha256 = candidate.expected_sha256.as_deref();
         if candidate.source == "modrinth_raw" {
             // Raw Modrinth keeps its own rules (gate re-check, SHA-1 required).
             let raw = crate::modrinth::RawModrinthVersionCandidate {
@@ -1004,6 +1036,7 @@ impl PackBackend for CoreBackend {
                     &raw,
                     "mod",
                     required_sha256,
+                    self.accept_pack_hash,
                 )
                 .await
             } else {
@@ -1013,10 +1046,11 @@ impl PackBackend for CoreBackend {
                     &raw,
                     "mod",
                     required_sha256,
+                    self.accept_pack_hash,
                 )
                 .await
             };
-            return installed.map(|_| ()).map_err(install_error);
+            return installed.map(installed_file).map_err(install_error);
         }
         installer
             .install_artifact_pinned(
@@ -1032,25 +1066,55 @@ impl PackBackend for CoreBackend {
                 expected_sha256,
                 required_sha256,
                 candidate.sha512.as_deref(),
+                self.accept_pack_hash,
             )
             .await
-            .map(|_| ())
+            .map(installed_file)
             .map_err(install_error)
+    }
+}
+
+fn installed_file(installed: InstalledMod) -> InstalledFile {
+    InstalledFile {
+        sha256: installed.sha256,
+        source_verified: installed.hash_verified,
     }
 }
 
 fn describe_install_error(error: LauncherError) -> String {
     match error {
         LauncherError::HashMismatch => "The downloaded file does not match the SHA-256 \
-            hash the pack pinned (or the hash its source published). It was not installed."
+            hash its source published (or the hash the pack lists is not a valid SHA-256). \
+            It was not installed."
             .to_string(),
         other => other.to_string(),
+    }
+}
+
+/// What the entry says when a download differs from the hash the modpack lists.
+/// Names the file, the pack's hash and the downloaded hash.
+fn hash_confirmation_note(confirmation: &HashConfirmation) -> String {
+    match confirmation.expected_from {
+        HashOrigin::PackPin => format!(
+            "{} does not match the hash in the modpack: the modpack lists {}, the download is \
+             {}. It was not installed. Install it anyway only if you trust this file.",
+            confirmation.file, confirmation.expected, confirmation.actual
+        ),
+        _ => format!(
+            "{} It was not installed. Install it anyway only if you trust this file.",
+            confirmation
+        ),
     }
 }
 
 fn install_error(error: LauncherError) -> BackendError {
     if is_unreachable(&error) {
         BackendError::Offline
+    } else if let LauncherError::HashConfirmationRequired(confirmation) = &error {
+        BackendError::NeedsAction(
+            PackNeedsAction::ConfirmHash,
+            hash_confirmation_note(confirmation),
+        )
     } else {
         BackendError::Failed(describe_install_error(error))
     }
@@ -1264,18 +1328,22 @@ async fn snapshot_before_retry(ctx: &Ctx, instance_id: &str) -> LauncherResult<(
 /// Try the given entries again on an existing instance (after the user turned
 /// Modrinth on, or allowed it for this import). Only entries not already
 /// installed are fetched. `allow_modrinth_once` leaves the `modrinth_enabled`
-/// toggle alone and lets just these entries use Modrinth.
+/// toggle alone and lets just these entries use Modrinth. `install_anyway` is the
+/// user's answer to a `ConfirmHash` stop: the entries passed are installed even
+/// though they differ from the hash the modpack lists.
 pub async fn retry_agora_pack_entries(
     ctx: &Ctx,
     instance_id: &str,
     entries: Vec<AgoraPackEntry>,
     allow_modrinth_once: bool,
+    install_anyway: bool,
 ) -> LauncherResult<PackImportReport> {
     let backend = if allow_modrinth_once {
         CoreBackend::with_modrinth_allowed_once(ctx.clone())
     } else {
         CoreBackend::new(ctx.clone())
-    };
+    }
+    .accepting_pack_hash_mismatch(install_anyway);
     retry_agora_pack_entries_with(&backend, ctx, instance_id, entries).await
 }
 
@@ -1465,6 +1533,8 @@ pub async fn retry_agora_pack_entries_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agora_core::download::{sha1_hex, sha256_hex, sha512_hex};
+    use agora_core::helpers::read_manifest;
     use std::sync::Mutex;
 
     const GOOD_PIN: &str = "4277bee0ef05d1e9dc1e03b51d52c67bd6457bb57402407e59b16ad7b08e8379";
@@ -1496,6 +1566,11 @@ mod tests {
         present_sha256: Option<String>,
         /// Installed files whose source published no checksum.
         unverified: Vec<String>,
+        /// The SHA-256 an install reports having written; the pin it was asked
+        /// for when `None` (a file that matched).
+        written_sha256: Option<String>,
+        /// Filenames whose install stops to ask about the pack's hash.
+        confirm_hash: Vec<String>,
         names: Vec<(String, String)>,
         /// Registry ids this install's catalog has.
         known: Vec<String>,
@@ -1524,6 +1599,8 @@ mod tests {
                 present: Vec::new(),
                 present_sha256: None,
                 unverified: Vec::new(),
+                written_sha256: None,
+                confirm_hash: Vec::new(),
                 names: Vec::new(),
                 known: Vec::new(),
                 catalog_error: None,
@@ -1543,9 +1620,6 @@ mod tests {
         }
         fn installed_sha256(&self, _: &str, _: &str) -> Option<String> {
             self.present_sha256.clone()
-        }
-        fn installed_hash_verified(&self, _: &str, filename: &str) -> bool {
-            !self.unverified.iter().any(|f| f == filename)
         }
         fn display_name(&self, registry_id: &str) -> Option<String> {
             self.names
@@ -1599,9 +1673,15 @@ mod tests {
             _: &str,
             candidate: &PackCandidate,
             required: Option<&str>,
-        ) -> Result<(), BackendError> {
+        ) -> Result<InstalledFile, BackendError> {
             if self.install_offline {
                 return Err(BackendError::Offline);
+            }
+            if self.confirm_hash.contains(&candidate.filename) {
+                return Err(BackendError::NeedsAction(
+                    PackNeedsAction::ConfirmHash,
+                    "does not match the hash in the modpack".into(),
+                ));
             }
             if let Some((file, message)) = &self.install_error {
                 if *file == candidate.filename {
@@ -1612,7 +1692,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((candidate.filename.clone(), required.map(str::to_string)));
-            Ok(())
+            Ok(InstalledFile {
+                sha256: self
+                    .written_sha256
+                    .clone()
+                    .or_else(|| required.map(str::to_string))
+                    .unwrap_or_else(|| "ab".repeat(32)),
+                source_verified: !self.unverified.contains(&candidate.filename),
+            })
         }
     }
 
@@ -1964,7 +2051,7 @@ mod tests {
         bytes: &[u8],
         sha1: &str,
         required: Option<&str>,
-    ) -> LauncherResult<agora_core::models::InstalledMod> {
+    ) -> LauncherResult<InstalledMod> {
         commit_with_sha512(ctx, bytes, sha1, required, None)
     }
 
@@ -1974,7 +2061,20 @@ mod tests {
         sha1: &str,
         required: Option<&str>,
         sha512: Option<&str>,
-    ) -> LauncherResult<agora_core::models::InstalledMod> {
+    ) -> LauncherResult<InstalledMod> {
+        commit_full(ctx, bytes, Some(sha1), required, sha512, false)
+    }
+
+    /// The whole hash gate: what the source published (`sha1`, `sha512`), the
+    /// hash the pack lists (`required`) and whether the user said install anyway.
+    fn commit_full(
+        ctx: &Ctx,
+        bytes: &[u8],
+        sha1: Option<&str>,
+        required: Option<&str>,
+        sha512: Option<&str>,
+        accept: bool,
+    ) -> LauncherResult<InstalledMod> {
         crate::install_service::InstallService::new(ctx.clone()).commit_verified_artifact(
             "inst",
             "m.jar",
@@ -1984,12 +2084,12 @@ mod tests {
             Some("proj"),
             "modrinth_raw",
             Some("1"),
-            Some(sha1),
+            sha1,
             None,
             required,
             sha512,
             None,
-            false,
+            accept,
             bytes.to_vec(),
         )
     }
@@ -2000,7 +2100,7 @@ mod tests {
         let bytes = b"jar bytes";
         let sha1 = agora_core::download::sha1_hex(bytes);
         let err = commit(&ctx, bytes, &sha1, Some(GOOD_PIN)).unwrap_err();
-        assert_eq!(err.code(), "ERR_HASH_MISMATCH");
+        assert_eq!(err.code(), "ERR_HASH_CONFIRMATION_REQUIRED");
         let dir = ctx.paths.instance_dir("inst").unwrap();
         assert!(!dir.join("mods").join("m.jar").exists(), "no file written");
         let manifest =
@@ -2025,6 +2125,313 @@ mod tests {
             .join("m.jar")
             .exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // ---- the pack's hash as a pin (rule 1-3 of the hash policy)
+
+    fn mod_on_disk(ctx: &Ctx) -> bool {
+        ctx.paths
+            .instance_dir("inst")
+            .unwrap()
+            .join("mods")
+            .join("m.jar")
+            .exists()
+    }
+
+    fn manifest_mod(ctx: &Ctx) -> InstalledMod {
+        let manifest = read_manifest(&ctx.paths.instance_manifest("inst").unwrap()).unwrap();
+        assert_eq!(manifest.mods.len(), 1, "exactly one recorded mod");
+        manifest.mods[0].clone()
+    }
+
+    fn pack_confirmation(error: LauncherError) -> HashConfirmation {
+        match error {
+            LauncherError::HashConfirmationRequired(detail) => detail,
+            other => panic!("expected a confirmation stop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn source_hash_present_and_pack_agrees_installs_verified_by_the_source() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let sha1 = sha1_hex(bytes);
+        let sha256 = sha256_hex(bytes);
+        commit_full(&ctx, bytes, Some(&sha1), Some(&sha256), None, false).unwrap();
+        let recorded = manifest_mod(&ctx);
+        assert!(recorded.hash_verified, "the source's hash matched");
+        assert_eq!(recorded.sha256, sha256);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_hash_present_and_pack_disagrees_stops_then_override_installs() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let sha1 = sha1_hex(bytes);
+        let stop = commit_full(&ctx, bytes, Some(&sha1), Some(GOOD_PIN), None, false).unwrap_err();
+        let detail = pack_confirmation(stop);
+        assert_eq!(detail.file, "m.jar");
+        assert_eq!(detail.expected, GOOD_PIN);
+        assert_eq!(detail.actual, sha256_hex(bytes));
+        assert_eq!(detail.expected_from, HashOrigin::PackPin);
+        assert!(!mod_on_disk(&ctx), "nothing written while it asks");
+
+        commit_full(&ctx, bytes, Some(&sha1), Some(GOOD_PIN), None, true).unwrap();
+        assert!(mod_on_disk(&ctx));
+        assert!(
+            manifest_mod(&ctx).hash_verified,
+            "the source still vouched for the bytes it published a hash for"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_wrong_source_hash_is_final_even_when_the_pack_agrees_and_the_user_says_anyway() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let sha256 = sha256_hex(bytes);
+        let wrong_sha1 = sha1_hex(b"other bytes");
+        for accept in [false, true] {
+            let err = commit_full(&ctx, bytes, Some(&wrong_sha1), Some(&sha256), None, accept)
+                .unwrap_err();
+            assert_eq!(err.code(), "ERR_HASH_MISMATCH", "accept={accept}");
+            assert!(!mod_on_disk(&ctx));
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn only_the_sha256_disagreeing_still_stops_when_sha1_and_sha512_match() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let sha1 = sha1_hex(bytes);
+        let sha512 = sha512_hex(bytes);
+        let err = commit_full(
+            &ctx,
+            bytes,
+            Some(&sha1),
+            Some(GOOD_PIN),
+            Some(&sha512),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HASH_CONFIRMATION_REQUIRED");
+        assert!(!mod_on_disk(&ctx));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_silent_and_pack_matches_installs_but_is_not_called_source_verified() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let sha256 = sha256_hex(bytes);
+        let installed = commit_full(&ctx, bytes, None, Some(&sha256), None, false).unwrap();
+        assert!(mod_on_disk(&ctx));
+        assert!(
+            !installed.hash_verified,
+            "the pack's hash must not be recorded as the source having verified the file"
+        );
+        assert_eq!(installed.sha256, sha256);
+        assert!(!manifest_mod(&ctx).hash_verified);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_silent_and_pack_mismatches_stops_naming_both_hashes_override_installs() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let actual = sha256_hex(bytes);
+        let detail = pack_confirmation(
+            commit_full(&ctx, bytes, None, Some(GOOD_PIN), None, false).unwrap_err(),
+        );
+        assert_eq!(
+            (detail.expected.as_str(), detail.actual.as_str()),
+            (GOOD_PIN, actual.as_str())
+        );
+        assert!(!mod_on_disk(&ctx), "nothing written while it asks");
+        let note = hash_confirmation_note(&detail);
+        for part in ["m.jar", GOOD_PIN, actual.as_str(), "modpack"] {
+            assert!(note.contains(part), "{part} missing from: {note}");
+        }
+        assert!(manifest_mod_count(&ctx) == 0, "no manifest entry");
+
+        let installed = commit_full(&ctx, bytes, None, Some(GOOD_PIN), None, true).unwrap();
+        assert!(mod_on_disk(&ctx));
+        assert!(!installed.hash_verified);
+        assert_eq!(installed.sha256, actual, "the bytes' real hash is recorded");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn manifest_mod_count(ctx: &Ctx) -> usize {
+        read_manifest(&ctx.paths.instance_manifest("inst").unwrap())
+            .unwrap()
+            .mods
+            .len()
+    }
+
+    #[test]
+    fn neither_hash_installs_unverified_and_remembers_the_bytes_hash() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let installed = commit_full(&ctx, bytes, None, None, None, false).unwrap();
+        assert!(!installed.hash_verified);
+        let recorded = manifest_mod(&ctx);
+        assert!(!recorded.hash_verified);
+        assert_eq!(recorded.sha256, sha256_hex(bytes));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_malformed_pack_hash_never_matches_anything_even_with_install_anyway() {
+        let bytes = b"jar bytes";
+        let sha1 = sha1_hex(bytes);
+        let sixty_five = format!("{}a", sha256_hex(bytes));
+        let sixty_three = sha256_hex(bytes)[1..].to_string();
+        let not_hex = "zz".repeat(32);
+        for bad in [
+            "",
+            "  ",
+            "ab",
+            not_hex.as_str(),
+            sixty_five.as_str(),
+            sixty_three.as_str(),
+        ] {
+            for accept in [false, true] {
+                let (ctx, root) = temp_ctx_with_instance();
+                let err =
+                    commit_full(&ctx, bytes, Some(&sha1), Some(bad), None, accept).unwrap_err();
+                assert_eq!(err.code(), "ERR_HASH_MISMATCH", "{bad:?} accept={accept}");
+                assert!(!mod_on_disk(&ctx), "{bad:?} wrote a file");
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+        // Upper-case hex is a valid hash.
+        let (ctx, root) = temp_ctx_with_instance();
+        let upper = sha256_hex(bytes).to_uppercase();
+        commit_full(&ctx, bytes, Some(&sha1), Some(&upper), None, false).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // ---- what the report says
+
+    fn pack_installed(backend: &Fake, sha: Option<&str>) -> PackEntryOutcome {
+        run(backend, vec![entry("mod-2.0.jar", "2.0", sha)])
+            .into_iter()
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_pack_hash_with_a_silent_source_is_labelled_as_the_packs_not_the_sources() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("2.0", "mod-2.0.jar")];
+        backend.unverified = vec!["mod-2.0.jar".into()];
+        let out = pack_installed(&backend, Some(GOOD_PIN));
+        assert_eq!(out.status, PackEntryStatus::Installed);
+        assert!(out.verified_against_pack, "it matched the pack");
+        let reason = out.reason.expect("says where the check came from");
+        assert!(reason.contains("hash in the modpack"), "{reason}");
+        assert!(reason.contains("source published no checksum"), "{reason}");
+        assert!(!reason.contains("verified by"), "{reason}");
+    }
+
+    #[test]
+    fn a_pack_hash_that_agrees_with_the_sources_needs_no_caveat() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("2.0", "mod-2.0.jar")];
+        let out = pack_installed(&backend, Some(GOOD_PIN));
+        assert!(out.verified_against_pack);
+        assert_eq!(out.reason, None);
+    }
+
+    #[test]
+    fn a_file_installed_past_the_packs_hash_is_not_reported_as_matching() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("2.0", "mod-2.0.jar")];
+        backend.written_sha256 = Some("b".repeat(64));
+        let out = pack_installed(&backend, Some(GOOD_PIN));
+        assert_eq!(out.status, PackEntryStatus::Installed);
+        assert!(!out.verified_against_pack);
+        assert!(out
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("does not match the hash in the modpack"));
+    }
+
+    #[test]
+    fn a_stop_on_the_packs_hash_is_a_needs_action_that_leaves_a_gap() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("2.0", "mod-2.0.jar")];
+        backend.confirm_hash = vec!["mod-2.0.jar".into()];
+        let out = pack_installed(&backend, Some(GOOD_PIN));
+        assert_eq!(out.status, PackEntryStatus::NeedsAction);
+        assert_eq!(out.action, Some(PackNeedsAction::ConfirmHash));
+        assert!(!out.verified_against_pack);
+        assert_eq!(gap_for(&out).unwrap().status, "needs_action");
+    }
+
+    #[test]
+    fn a_confirmation_stop_names_the_file_and_both_hashes_whatever_its_origin() {
+        let actual = "c".repeat(64);
+        for origin in [
+            HashOrigin::PackPin,
+            HashOrigin::PreviousInstall,
+            HashOrigin::CuratorPin,
+        ] {
+            let stop = install_error(LauncherError::HashConfirmationRequired(HashConfirmation {
+                file: "sodium.jar".into(),
+                release: None,
+                expected: GOOD_PIN.into(),
+                actual: actual.clone(),
+                expected_from: origin,
+            }));
+            let BackendError::NeedsAction(PackNeedsAction::ConfirmHash, note) = stop else {
+                panic!("{origin:?} should ask, got {stop:?}");
+            };
+            for part in ["sodium.jar", GOOD_PIN, actual.as_str(), "not installed"] {
+                assert!(
+                    note.contains(part),
+                    "{origin:?}: {part} missing from: {note}"
+                );
+            }
+        }
+        // A real failure is still a failure, not a question.
+        assert!(matches!(
+            install_error(LauncherError::HashMismatch),
+            BackendError::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn malformed_pack_hashes_fail_the_entry_and_install_nothing() {
+        let mut backend = fake();
+        backend.modrinth = vec![candidate("2.0", "mod-2.0.jar")];
+        let sixty_five = format!("{GOOD_PIN}a");
+        let not_hex = "zz".repeat(32);
+        for bad in [
+            "",
+            "  ",
+            "\t",
+            "ab",
+            not_hex.as_str(),
+            sixty_five.as_str(),
+            &GOOD_PIN[1..],
+        ] {
+            let out = pack_installed(&backend, Some(bad));
+            assert_eq!(out.status, PackEntryStatus::Failed, "{bad:?}");
+            assert!(
+                !out.verified_against_pack,
+                "{bad:?} must not read as matching"
+            );
+            assert!(
+                out.reason.as_deref().unwrap().contains("malformed"),
+                "{bad:?}: {:?}",
+                out.reason
+            );
+        }
+        assert!(backend.installs.lock().unwrap().is_empty());
     }
 
     #[test]

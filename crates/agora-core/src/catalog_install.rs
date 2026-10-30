@@ -821,6 +821,7 @@ fn describe_origin(origin: HashOrigin) -> &'static str {
     match origin {
         HashOrigin::CuratorPin => "the curator's pin for this release file",
         HashOrigin::PreviousInstall => "the hash from an earlier install of this release file",
+        HashOrigin::PackPin => "the hash listed in the modpack",
     }
 }
 

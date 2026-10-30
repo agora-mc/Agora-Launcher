@@ -1,8 +1,8 @@
 use crate::artifact_hash::HashOrigin;
 
 /// A download whose bytes differ from an expectation the user has to confirm:
-/// the curator's pin for that release file, or the hash recorded when it was
-/// installed before. See [`crate::artifact_hash`].
+/// the curator's pin for that release file, the hash recorded when it was
+/// installed before, or the hash a modpack lists for it. See [`crate::artifact_hash`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HashConfirmation {
@@ -27,6 +27,7 @@ impl std::fmt::Display for HashConfirmation {
         let origin = match self.expected_from {
             HashOrigin::CuratorPin => "pinned curator",
             HashOrigin::PreviousInstall => "previously installed",
+            HashOrigin::PackPin => "modpack",
         };
         write!(
             f,

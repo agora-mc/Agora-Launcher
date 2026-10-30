@@ -201,7 +201,7 @@ describe('pack import report', () => {
     expect(callsTo('set_content_provider_enabled')).toHaveLength(0);
     const retry = callsTo('retry_pack_import_entries');
     expect(retry).toHaveLength(1);
-    expect(retry[0][1]).toEqual({ instanceId: 'friend-pack', entries: [xaeroEntry], allowModrinthOnce: true });
+    expect(retry[0][1]).toEqual({ instanceId: 'friend-pack', entries: [xaeroEntry], allowModrinthOnce: true, installAnyway: false });
   });
 
   it('turns the Modrinth setting on for good only when asked to, then retries', async () => {
@@ -211,7 +211,53 @@ describe('pack import report', () => {
 
     expect(await screen.findByText('5 of 5 mods installed.')).toBeTruthy();
     expect(callsTo('set_content_provider_enabled')[0][1]).toEqual({ providerId: 'modrinth', enabled: true });
-    expect(callsTo('retry_pack_import_entries')[0][1]).toMatchObject({ allowModrinthOnce: false });
+    expect(callsTo('retry_pack_import_entries')[0][1]).toMatchObject({ allowModrinthOnce: false, installAnyway: false });
+  });
+
+  describe('a file that differs from the hash the modpack lists', () => {
+    const differs: PackEntryOutcome = {
+      name: 'old.jar', status: 'needs_action', verified_against_pack: false, action: 'confirm_hash', display_name: 'Old Mod',
+      reason: `old.jar does not match the hash in the modpack: the modpack lists ${'a'.repeat(64)}, the download is ${'c'.repeat(64)}. It was not installed.`,
+      entry: entry('old.jar', 'oldmod'),
+    };
+    const stopped: PackImportReport = {
+      instance_id: 'friend-pack', instance_name: 'Friend Pack', total: 2, installed: 1, warnings: [],
+      outcomes: [installed('a.jar'), differs],
+    };
+
+    it('stops with both hashes shown, and installs only on Install anyway', async () => {
+      answer({
+        import_instance_pack: () => ({ instance_id: 'friend-pack', report: stopped }),
+        retry_pack_import_entries: () => ({
+          ...stopped, installed: 2,
+          outcomes: [{ ...installed('old.jar'), verified_against_pack: false, reason: 'Installed anyway: this file does not match the hash in the modpack, and you chose to install it.' }],
+        }),
+      });
+      renderImport();
+      fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+
+      const summary = await screen.findByTestId('pack-import-summary');
+      expect(summary.textContent).toContain('1 of 2 mods installed.');
+      expect(summary.textContent).toContain('c'.repeat(64));
+      expect(summary.textContent).toContain('a'.repeat(64));
+      // Nothing is sent until the user chooses.
+      expect(callsTo('retry_pack_import_entries')).toHaveLength(0);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Install anyway' }));
+      expect(await screen.findByText('2 of 2 mods installed.')).toBeTruthy();
+      const retry = callsTo('retry_pack_import_entries');
+      expect(retry).toHaveLength(1);
+      expect(retry[0][1]).toEqual({
+        instanceId: 'friend-pack', entries: [differs.entry], allowModrinthOnce: false, installAnyway: true,
+      });
+    });
+
+    it('offers no Install anyway when nothing was stopped on a hash', async () => {
+      renderImport();
+      fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+      await screen.findByTestId('pack-import-summary');
+      expect(screen.queryByRole('button', { name: /Install (all \d+ )?anyway/ })).toBeNull();
+    });
   });
 
   it('shows nothing extra for a clean, fully checked import', async () => {

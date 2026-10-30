@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
 import {
+  confirmHashOutcomes,
   failedOutcomes,
   importHasIssues,
   importHeadline,
   needsActionOutcomes,
   offlineOutcomes,
+  packOnlyOutcomes,
   uncheckedOutcomes,
 } from '../lib/packImport';
 import type { PackImportReport } from '../lib/tauri';
@@ -18,6 +20,7 @@ export function PackImportSummary({
   report,
   onAllowModrinthOnce,
   onTurnOnModrinth,
+  onInstallAnyway,
   onRetry,
   onOpenSettings,
   onDismiss,
@@ -27,6 +30,8 @@ export function PackImportSummary({
   onAllowModrinthOnce: () => Promise<void>;
   /** Turn the Modrinth setting on for good, then retry. */
   onTurnOnModrinth: () => Promise<void>;
+  /** Install the entries that differ from the hash the modpack lists. */
+  onInstallAnyway: () => Promise<void>;
   onRetry: () => Promise<void>;
   onOpenSettings: () => void;
   onDismiss: () => void;
@@ -36,6 +41,8 @@ export function PackImportSummary({
   const waiting = needsActionOutcomes(report);
   const failed = failedOutcomes(report);
   const unchecked = uncheckedOutcomes(report);
+  const packOnly = packOnlyOutcomes(report);
+  const confirmHash = confirmHashOutcomes(report);
   const needsModrinth = waiting.some((outcome) => outcome.action === 'enable_modrinth');
   const needsSettings = waiting.some((outcome) => outcome.action === 'open_settings');
   const offline = offlineOutcomes(report).length;
@@ -99,6 +106,11 @@ export function PackImportSummary({
             <span className="font-medium" title={outcome.name}>{outcome.display_name || outcome.name}</span>: {outcome.reason}
           </li>
         ))}
+        {packOnly.map((outcome, index) => (
+          <li key={`pack-only-${index}-${outcome.name}`} className="text-muted-foreground">
+            <span className="font-medium" title={outcome.name}>{outcome.display_name || outcome.name}</span>: {outcome.reason}
+          </li>
+        ))}
         {report.warnings.map((warning, index) => (
           <li key={`${index}-${warning}`} className="text-muted-foreground">{warning}</li>
         ))}
@@ -132,6 +144,16 @@ export function PackImportSummary({
               Turn on Modrinth search (stays on, Settings &gt; Services)
             </button>
           </>
+        )}
+        {confirmHash.length > 0 && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(onInstallAnyway)}
+            className="rounded-lg border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          >
+            {confirmHash.length === 1 ? 'Install anyway' : `Install all ${confirmHash.length} anyway`}
+          </button>
         )}
         {waiting.length > 0 && (
           <>

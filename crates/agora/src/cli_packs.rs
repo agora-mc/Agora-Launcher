@@ -315,6 +315,22 @@ pub async fn pack_import(
                 "  {} of {} mod(s) installed",
                 report.installed, report.total
             );
+            for outcome in &report.outcomes {
+                use agora_game_minecraft::agora_pack_import::PackEntryStatus;
+                let reason = outcome.reason.as_deref().unwrap_or("");
+                match outcome.status {
+                    PackEntryStatus::Installed if !reason.is_empty() => {
+                        println!("  Note: {}: {reason}", outcome.name)
+                    }
+                    PackEntryStatus::Installed => {}
+                    PackEntryStatus::Failed => {
+                        println!("  Not installed: {}: {reason}", outcome.name)
+                    }
+                    PackEntryStatus::NeedsAction => {
+                        println!("  Needs action, not installed: {}: {reason}", outcome.name)
+                    }
+                }
+            }
             for warning in &report.warnings {
                 println!("  Note: {warning}");
             }

@@ -15,7 +15,7 @@ import {
 } from '../lib/tauri';
 import { PackImportSummary } from './PackImportSummary';
 import { PackImportReview } from './PackImportReview';
-import { importHasIssues, importHeadline, mergeRetry, needsActionOutcomes } from '../lib/packImport';
+import { confirmHashOutcomes, importHasIssues, importHeadline, mergeRetry, needsActionOutcomes } from '../lib/packImport';
 import { applyInstallPlan, describePlanAction, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
 
 export type PackInstallTask = {
@@ -572,8 +572,24 @@ export function PackImportReports() {
       report.instance_id,
       waiting.map((outcome) => outcome.entry),
       allowModrinthOnce,
+      false,
     );
     updateImportReport(report.instance_id, mergeRetry(report, retried));
+  };
+  // The user was shown the stop for these files (they differ from the modpack's
+  // hash) and chose to install them. Only those entries are sent.
+  const installAnyway = async (report: PackImportReport) => {
+    const stopped = confirmHashOutcomes(report);
+    const retried = await retryPackImportEntries(
+      report.instance_id,
+      stopped.map((outcome) => outcome.entry),
+      false,
+      true,
+    );
+    updateImportReport(
+      report.instance_id,
+      mergeRetry(report, retried, (outcome) => outcome.status === 'needs_action' && outcome.action === 'confirm_hash'),
+    );
   };
   return (
     <aside
@@ -589,6 +605,7 @@ export function PackImportReports() {
             await setContentProviderEnabled('modrinth', true);
             await retry(report, false);
           }}
+          onInstallAnyway={() => installAnyway(report)}
           onRetry={() => retry(report, false)}
           onOpenSettings={() => window.dispatchEvent(new CustomEvent('agora-navigate', { detail: 'settings' }))}
           onDismiss={() => updateImportReport(report.instance_id, null)}

@@ -2761,7 +2761,8 @@ pub async fn discard_pack_review(
 /// Retry the entries of an Agora pack import that needed an action (Modrinth
 /// off, say) on the instance it created. Entries already installed are skipped.
 /// `allow_modrinth_once` lets just these entries use Modrinth without turning
-/// the Modrinth setting on.
+/// the Modrinth setting on. `install_anyway` installs the given entries although
+/// they differ from the hash the modpack lists (the user was shown the stop).
 #[tauri::command]
 pub async fn retry_pack_import_entries(
     app: tauri::AppHandle,
@@ -2769,8 +2770,16 @@ pub async fn retry_pack_import_entries(
     instance_id: String,
     entries: Vec<agora_game_minecraft::agora_pack_import::AgoraPackEntry>,
     allow_modrinth_once: bool,
+    install_anyway: bool,
 ) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportReport> {
-    mod_install::retry_pack_import_entries(&app, &instance_id, entries, allow_modrinth_once).await
+    mod_install::retry_pack_import_entries(
+        &app,
+        &instance_id,
+        entries,
+        allow_modrinth_once,
+        install_anyway,
+    )
+    .await
 }
 
 /// Whether the Modrinth integration is currently enabled (Â§6.3 toggle).

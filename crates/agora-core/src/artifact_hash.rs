@@ -9,7 +9,10 @@
 //! * a **curator pin**: a `pins` entry on a download source, naming the exact
 //!   release tag and asset it is for;
 //! * a **previous install**: the SHA-256 Agora recorded when the same release
-//!   file was installed before, and the source published no checksum for it.
+//!   file was installed before, and the source published no checksum for it;
+//! * a **pack pin**: the SHA-256 a shared modpack file lists for this file. It
+//!   stands in for a hash the source did not publish, and is never counted as
+//!   the source having verified the file.
 //!
 //! A file whose source published nothing is installed only after the user is
 //! told, and its bytes' SHA-256 is recorded with `hash_verified: false`.
@@ -24,6 +27,8 @@ pub enum HashOrigin {
     CuratorPin,
     /// The SHA-256 recorded when this release file was installed before.
     PreviousInstall,
+    /// The SHA-256 the modpack being imported lists for this file.
+    PackPin,
 }
 
 impl HashOrigin {
@@ -32,6 +37,7 @@ impl HashOrigin {
         match self {
             HashOrigin::CuratorPin => "curator_pin",
             HashOrigin::PreviousInstall => "previous_install",
+            HashOrigin::PackPin => "pack_pin",
         }
     }
 }
