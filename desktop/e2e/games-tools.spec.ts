@@ -18,6 +18,7 @@ const skyrimInstall = {
   storeVersion: '1.6.1170',
   storeBuild: null,
   addOnCount: 0,
+  installBytes: null,
   runtime: {
     status: 'identified',
     runtime: { game: 'skyrim-se', store: 'steam', version: '1.6.1170', build: null },

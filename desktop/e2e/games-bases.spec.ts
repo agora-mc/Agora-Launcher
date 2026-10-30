@@ -34,6 +34,7 @@ const skyrimInstall = {
   storeVersion: '1.6.1170',
   storeBuild: null,
   addOnCount: 0,
+  installBytes: 16 * 1024 ** 3,
   runtime: {
     status: 'identified',
     runtime: { game: 'skyrim-se', store: 'steam', version: '1.6.1170', build: null },
@@ -222,6 +223,8 @@ test('building a Copied base explains the mode, then reports what was built', as
   await dialog.getByRole('button', { name: /^Copied/ }).click();
   await expect(dialog.getByRole('button', { name: /^Copied/ })).toHaveAttribute('aria-pressed', 'true');
   await expect(dialog.getByText('takes about as much disk space as the game itself', { exact: false })).toBeVisible();
+  // The cost is shown before anything is built.
+  await expect(dialog.getByTestId('copied-cost')).toContainText('takes about 16 GB of disk space');
 
   await dialog.getByRole('button', { name: 'Build a Copied base' }).click();
   await expect(dialog.getByRole('status').filter({ hasText: 'Built the Copied base.' })).toBeVisible();

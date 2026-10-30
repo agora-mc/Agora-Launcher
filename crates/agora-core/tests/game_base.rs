@@ -3,9 +3,9 @@ use std::time::SystemTime;
 
 use agora_core::app_paths::AppPaths;
 use agora_core::game_base::{
-    build_base, evaluate_link_support, get_file_identity, is_plain_base_id, list_bases,
-    make_base_id, remove_base, sanitize_base_id_part, verify_base, BaseEntry, BaseError, BaseMode,
-    BuildOptions, BuildOutcome, ProblemKind, VerifyDepth,
+    build_base, evaluate_link_support, get_file_identity, install_size, is_plain_base_id,
+    list_bases, make_base_id, remove_base, sanitize_base_id_part, verify_base, BaseEntry,
+    BaseError, BaseMode, BuildOptions, BuildOutcome, ProblemKind, VerifyDepth,
 };
 use agora_core::game_discovery::{DiscoveredInstall, InstallKind};
 use agora_core::game_registry::{IdentifiedInstall, RuntimeResolution};
@@ -1562,4 +1562,54 @@ fn is_plain_base_id_accepts_real_ids_and_refuses_hostile_ones() {
     ] {
         assert!(!is_plain_base_id(bad), "{bad:?} must not be a base id");
     }
+}
+
+#[test]
+fn install_size_is_what_a_copied_base_holds_and_errors_when_unreadable() {
+    // The build dialog tells the user the Copied cost before building, so the size must equal the
+    // bytes a Copied build holds, and an unreadable folder is an error, never 0.
+    let tmp = TempDir::new().unwrap();
+    let install_dir = tmp.path().join("source_install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    let backup_dir = install_dir.join("Data").join("SSEEdit Backups");
+    std::fs::create_dir_all(&backup_dir).unwrap();
+    std::fs::write(backup_dir.join("x.esm.backup"), b"backup data").unwrap();
+    let mut def = test_definition();
+    def.excluded_paths = vec!["Data/SSEEdit Backups/**".into()];
+
+    let default = install_size(&install_dir, &def, BuildOptions::default()).unwrap();
+    let unfiltered = install_size(
+        &install_dir,
+        &def,
+        BuildOptions {
+            include_excluded: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(unfiltered - default, b"backup data".len() as u64);
+
+    let paths = AppPaths::from_root(tmp.path().join("data"));
+    let runtime = RuntimeIdentity {
+        game: GameId::new("skyrim-se").unwrap(),
+        store: StoreId::new("steam").unwrap(),
+        version: "1.0.0".into(),
+        build: None,
+    };
+    let install = make_test_install(&install_dir, runtime);
+    let outcome = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Copied,
+        Some(&tmp.path().join("bases_root")),
+        BuildOptions::default(),
+        &|_| {},
+    )
+    .unwrap();
+    let held: u64 = outcome.manifest().files.iter().map(|f| f.size).sum();
+    assert!(held > 0);
+    assert_eq!(default, held, "the announced cost is what the base holds");
+
+    assert!(install_size(&tmp.path().join("gone"), &def, BuildOptions::default()).is_err());
 }

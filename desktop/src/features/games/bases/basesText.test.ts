@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BaseFileProblem, BaseSummary, BuildProgressEvent, VerifyReply } from './api';
 import {
+  copiedCostText,
   canRemove,
   DAMAGED_EXPLANATION,
   DAMAGED_REMOVE_BODY,
@@ -182,5 +183,16 @@ describe('damaged records', () => {
   it('refuses removal of a damaged record that an instance uses, and allows it when none does', () => {
     expect(canRemove({ usedBy: [] })).toBe(true);
     expect(canRemove({ usedBy: [{ instanceId: 'a', name: 'Nordic Run' }] })).toBe(false);
+  });
+});
+
+describe('copiedCostText', () => {
+  it('names the size before anything is built', () => {
+    expect(copiedCostText(16 * 1024 ** 3)).toContain('about 16 GB');
+  });
+
+  it('says the size is unknown instead of showing 0', () => {
+    expect(copiedCostText(null)).toContain('could not measure');
+    expect(copiedCostText(null)).not.toMatch(/0 B/);
   });
 });

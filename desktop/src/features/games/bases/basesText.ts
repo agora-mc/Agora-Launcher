@@ -25,6 +25,17 @@ export const MODE_EXPLANATIONS: Record<BaseMode, { title: string; body: string }
   },
 };
 
+/**
+ * The cost of a Copied base before it is built, from the install's size. Says so plainly when the
+ * size is not known rather than showing 0.
+ */
+export function copiedCostText(installBytes: number | null | undefined): string {
+  if (installBytes == null) {
+    return 'Agora could not measure this install, so it cannot say how much space a Copied base takes.';
+  }
+  return `A Copied base of this install takes about ${formatBytes(installBytes)} of disk space.`;
+}
+
 export function describeUsers(usedBy: BaseUser[]): string {
   if (usedBy.length === 0) return 'No instance uses this base, so it can be removed.';
   // A blank name still names the user: the instance id is shown instead of an empty gap.

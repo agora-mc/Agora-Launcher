@@ -98,12 +98,28 @@ pub async fn games_remove_folder(
     .map_err(|_| GamesError::new(TASK_FAILED, "Removing the game folder did not finish."))?
 }
 
+/// What a base built from this install would hold. `None` when the game is unknown or the folder
+/// cannot be walked (a missing folder, a denied one): the screen then shows no size rather than 0.
+fn install_bytes(
+    registry: &GameRegistry,
+    install: &agora_core::game_registry::IdentifiedInstall,
+) -> Option<u64> {
+    let definition = registry.game(&install.game)?;
+    agora_core::game_base::install_size(
+        &install.discovered.location,
+        definition,
+        agora_core::game_base::BuildOptions::default(),
+    )
+    .ok()
+}
+
 /// Group identified installs by game. Only games with an install appear, and an
 /// unsupported install (a game Agora cannot manage yet) is never listed as one.
 pub fn group_by_game(registry: &GameRegistry, inventory: &GameInventory) -> GamesList {
     let mut games: Vec<GameListing> = Vec::new();
     for install in &inventory.installs {
-        let summary = InstallSummary::from(install);
+        let mut summary = InstallSummary::from(install);
+        summary.install_bytes = install_bytes(registry, install);
         let game_id = install.game.to_string();
         match games.iter_mut().find(|listing| listing.game_id == game_id) {
             Some(listing) => listing.installs.push(summary),

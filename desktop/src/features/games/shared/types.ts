@@ -33,6 +33,8 @@ export interface InstallSummary {
   storeBuild: string | null;
   addOnCount: number;
   runtime: RuntimeResolution;
+  /** What a base built from this install holds (the cost of a Copied base); null when unknown. */
+  installBytes: number | null;
 }
 
 export interface GameListing {

@@ -476,6 +476,29 @@ impl<'a> Drop for StagingGuard<'a> {
 // Build base
 // ---------------------------------------------------------------------------
 
+/// How many bytes a base built from the install at `location` would hold: the sizes of the files
+/// a build copies or links, left out the game's excluded paths unless `options` say otherwise.
+/// This is the cost of a Copied base, which the user is told before building. Metadata only; no
+/// file is read. `Err` when the folder cannot be walked, so a caller never shows 0 for "unknown".
+pub fn install_size(
+    location: &Path,
+    definition: &GameDefinition,
+    options: BuildOptions,
+) -> Result<u64, BaseError> {
+    let mut entries = Vec::new();
+    let mut skipped = Vec::new();
+    walk_source_dir(
+        location,
+        Path::new(""),
+        definition,
+        options,
+        &mut entries,
+        &mut skipped,
+    )
+    .map_err(|e| BaseError::Other(format!("cannot read '{}': {e}", location.display())))?;
+    Ok(entries.iter().map(|e| e.size).sum())
+}
+
 pub fn build_base(
     paths: &AppPaths,
     install: &IdentifiedInstall,

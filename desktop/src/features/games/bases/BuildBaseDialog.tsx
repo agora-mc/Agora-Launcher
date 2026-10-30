@@ -26,6 +26,7 @@ import {
   type BuildReply,
 } from './api';
 import {
+  copiedCostText,
   copiedNeededText,
   LINK_UNAVAILABLE_TITLE,
   MODE_EXPLANATIONS,
@@ -215,6 +216,11 @@ export function BuildBaseDialog({ open, onOpenChange, gameId, onBuilt }: BuildBa
                 >
                   <span className="font-medium">{MODE_EXPLANATIONS[choice].title}</span>
                   <span className="mt-1 block text-muted-foreground">{MODE_EXPLANATIONS[choice].body}</span>
+                  {choice === 'copied' && chosen && (
+                    <span className="mt-1 block text-muted-foreground" data-testid="copied-cost">
+                      {copiedCostText(chosen.installBytes)}
+                    </span>
+                  )}
                 </button>
               ))}
             </fieldset>

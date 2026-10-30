@@ -33,6 +33,9 @@ pub struct InstallSummary {
     pub store_build: Option<String>,
     pub add_on_count: usize,
     pub runtime: RuntimeResolution,
+    /// What a base built from this install holds, in bytes (the cost of a Copied base). `None`
+    /// when the folder could not be measured; never 0 for "unknown".
+    pub install_bytes: Option<u64>,
 }
 
 impl From<&IdentifiedInstall> for InstallSummary {
@@ -47,6 +50,7 @@ impl From<&IdentifiedInstall> for InstallSummary {
             store_build: discovered.store_build.clone(),
             add_on_count: install.add_ons.len(),
             runtime: install.runtime.clone(),
+            install_bytes: None,
         }
     }
 }
