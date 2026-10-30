@@ -7173,168 +7173,78 @@ async fn run_command(
                         into,
                         from,
                     } => {
-                        let (target_mount, target_source) = if into.is_some() || from.is_some() {
-                            (into, from)
+                        use agora_core::game_deploy::{AddToInstance, AddToInstanceError};
+
+                        // Where the item went: the caller's own `--into`/`--from`, or what the
+                        // game's content rules say (the same call the desktop makes).
+                        let (added_item, layer) = if into.is_some() || from.is_some() {
+                            match agora_core::game_deploy::add_content(
+                                ctx,
+                                &instance_id,
+                                &item_id,
+                                into.as_deref(),
+                                from.as_deref(),
+                            ) {
+                                Ok(layer) => (item_id.clone(), layer),
+                                Err(e) => exit_with_error(json, &e.to_string()),
+                            }
                         } else {
-                            let manifest =
-                                match agora_core::game_instance::get_manifest(ctx, &instance_id) {
-                                    Ok(m) => m,
-                                    Err(e) => {
+                            match agora_core::game_deploy::add_to_instance(
+                                ctx,
+                                &instance_id,
+                                &item_id,
+                            ) {
+                                Ok(AddToInstance::Added {
+                                    item_id: added_item,
+                                    layer,
+                                    placement_reason,
+                                    thunderstore,
+                                }) => {
+                                    if let Some(package) = thunderstore {
+                                        if !json {
+                                            println!(
+                                                "Thunderstore package {} {}: {}",
+                                                package.package_id,
+                                                package.version,
+                                                package.summary
+                                            );
+                                            println!(
+                                                "Added content '{added_item}' to instance '{instance_id}' (mount: '')."
+                                            );
+                                        }
+                                        for dep in &package.missing_dependencies {
+                                            eprintln!(
+                                                "Warning: {} needs {}; it is not in this instance",
+                                                package.package_name, dep
+                                            );
+                                        }
                                         if json {
                                             let out = serde_json::json!({
-                                                "status": "error",
-                                                "error": format!("{e}"),
-                                                "exitCode": 1,
+                                                "status": "added",
+                                                "instance_id": instance_id,
+                                                "item_id": added_item,
+                                                "layer_id": layer.id.as_str(),
+                                                "mount_path": layer.mount_path.as_str(),
+                                                "source_path": layer.source_path.as_str(),
+                                                "thunderstore": {
+                                                    "package": package.package_id,
+                                                    "version": package.version,
+                                                    "summary": package.summary,
+                                                    "missing_dependencies": package.missing_dependencies,
+                                                }
                                             });
-                                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
-                                        } else {
-                                            eprintln!("Error: {e}");
+                                            println!("{}", serde_json::to_string_pretty(&out)?);
                                         }
-                                        std::process::exit(1);
+                                        return Ok(());
                                     }
-                                };
-                            let game_def = ctx.games.game(&manifest.game);
-                            let Some(game_def) = game_def else {
-                                if json {
-                                    let out = serde_json::json!({
-                                        "status": "error",
-                                        "error": format!("Game definition not found for {}", manifest.game),
-                                        "exitCode": 1,
-                                    });
-                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
-                                } else {
-                                    eprintln!(
-                                        "Error: Game definition not found for {}",
-                                        manifest.game
-                                    );
-                                }
-                                std::process::exit(1);
-                            };
-                            let Some(layout) = &game_def.content_layout else {
-                                if json {
-                                    let out = serde_json::json!({
-                                        "status": "error",
-                                        "error": "Game definition has no content layout. Specify --into (and --from).",
-                                        "exitCode": 1,
-                                    });
-                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
-                                } else {
-                                    eprintln!("Error: Game definition '{}' has no content layout. Specify --into (and --from).", game_def.id);
-                                }
-                                std::process::exit(1);
-                            };
-
-                            if layout.thunderstore_bepinex {
-                                if let Ok(Some(manifest)) =
-                                    agora_core::content_thunderstore::parse_manifest(ctx, &item_id)
-                                {
-                                    match agora_core::content_thunderstore::install_thunderstore(
-                                        ctx,
-                                        &instance_id,
-                                        &item_id,
-                                    ) {
-                                        Ok(outcome) => {
-                                            if !json {
-                                                println!(
-                                                    "Thunderstore package {} {}: {}",
-                                                    outcome.package_id,
-                                                    outcome.version,
-                                                    outcome.summary
-                                                );
-                                                println!(
-                                                    "Added content '{}' to instance '{instance_id}' (mount: '').",
-                                                    outcome.derived_item.item_id
-                                                );
-                                            }
-                                            for dep in &outcome.missing_dependencies {
-                                                eprintln!(
-                                                    "Warning: {} needs {}; it is not in this instance",
-                                                    manifest.name, dep
-                                                );
-                                            }
-                                            if json {
-                                                let out = serde_json::json!({
-                                                    "status": "added",
-                                                    "instance_id": instance_id,
-                                                    "item_id": outcome.derived_item.item_id,
-                                                    "layer_id": outcome.layer.id.as_str(),
-                                                    "mount_path": outcome.layer.mount_path.as_str(),
-                                                    "source_path": outcome.layer.source_path.as_str(),
-                                                    "thunderstore": {
-                                                        "package": outcome.package_id,
-                                                        "version": outcome.version,
-                                                        "summary": outcome.summary,
-                                                        "missing_dependencies": outcome.missing_dependencies,
-                                                    }
-                                                });
-                                                println!("{}", serde_json::to_string_pretty(&out)?);
-                                            }
-                                            return Ok(());
-                                        }
-                                        Err(e) => {
-                                            if json {
-                                                let out = serde_json::json!({
-                                                    "status": "error",
-                                                    "error": format!("{e}"),
-                                                    "exitCode": 1,
-                                                });
-                                                eprintln!(
-                                                    "{}",
-                                                    serde_json::to_string_pretty(&out)?
-                                                );
-                                            } else {
-                                                eprintln!("Error: {e}");
-                                            }
-                                            std::process::exit(1);
-                                        }
-                                    }
-                                }
-                            }
-
-                            let item = match agora_core::content_store::get_item(ctx, &item_id) {
-                                Ok(it) => it,
-                                Err(e) => {
-                                    if json {
-                                        let out = serde_json::json!({
-                                            "status": "error",
-                                            "error": format!("{e}"),
-                                            "exitCode": 1,
-                                        });
-                                        eprintln!("{}", serde_json::to_string_pretty(&out)?);
-                                    } else {
-                                        eprintln!("Error: {e}");
-                                    }
-                                    std::process::exit(1);
-                                }
-                            };
-
-                            let decision = agora_core::game_deploy::decide_placement(&item, layout);
-
-                            match decision {
-                                agora_core::game_deploy::PlacementDecision::Place {
-                                    source_path,
-                                    mount_path,
-                                    reason,
-                                } => {
-                                    if !json {
+                                    if let (false, Some(reason)) = (json, placement_reason) {
                                         println!("{reason}");
                                     }
-                                    let mount_opt = if mount_path.is_empty() {
-                                        None
-                                    } else {
-                                        Some(mount_path.clone())
-                                    };
-                                    let source_opt = if source_path.is_empty() {
-                                        None
-                                    } else {
-                                        Some(source_path.as_str().to_string())
-                                    };
-                                    (mount_opt, source_opt)
+                                    (added_item, layer)
                                 }
-                                agora_core::game_deploy::PlacementDecision::Installer {
-                                    reason,
-                                    top_level,
-                                } => {
+                                Ok(AddToInstance::NeedsInstaller {
+                                    reason, top_level, ..
+                                }) => {
                                     let command = format!(
                                         "agora games content fomod install {item_id} --instance {instance_id}"
                                     );
@@ -7364,9 +7274,22 @@ async fn run_command(
                                     }
                                     std::process::exit(code);
                                 }
-                                agora_core::game_deploy::PlacementDecision::Unknown {
-                                    top_level,
-                                } => {
+                                Err(AddToInstanceError::UnknownGame(game)) => exit_with_error(
+                                    json,
+                                    &format!("Game definition not found for {game}"),
+                                ),
+                                Err(AddToInstanceError::NoContentLayout { game_id, .. }) => {
+                                    if json {
+                                        exit_with_error(
+                                            json,
+                                            "Game definition has no content layout. Specify --into (and --from).",
+                                        )
+                                    } else {
+                                        eprintln!("Error: Game definition '{game_id}' has no content layout. Specify --into (and --from).");
+                                        std::process::exit(1);
+                                    }
+                                }
+                                Err(AddToInstanceError::PlacementUnknown { top_level }) => {
                                     if json {
                                         let out = serde_json::json!({
                                             "status": "error",
@@ -7382,52 +7305,30 @@ async fn run_command(
                                     }
                                     std::process::exit(1);
                                 }
+                                Err(e) => exit_with_error(json, &e.to_string()),
                             }
                         };
 
-                        match agora_core::game_deploy::add_content(
-                            ctx,
-                            &instance_id,
-                            &item_id,
-                            target_mount.as_deref(),
-                            target_source.as_deref(),
-                        ) {
-                            Ok(layer) => {
-                                if json {
-                                    let out = serde_json::json!({
-                                        "status": "added",
-                                        "instance_id": instance_id,
-                                        "item_id": item_id,
-                                        "layer_id": layer.id.as_str(),
-                                        "mount_path": layer.mount_path.as_str(),
-                                        "source_path": layer.source_path.as_str(),
-                                    });
-                                    println!("{}", serde_json::to_string_pretty(&out)?);
-                                } else {
-                                    let from_note = if layer.source_path.as_str().is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(" (from '{}')", layer.source_path.as_str())
-                                    };
-                                    println!(
-                                        "Added content '{item_id}' to instance '{instance_id}' (mount: '{}'{from_note}).",
-                                        layer.mount_path.as_str()
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                if json {
-                                    let out = serde_json::json!({
-                                        "status": "error",
-                                        "error": format!("{e}"),
-                                        "exitCode": 1,
-                                    });
-                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
-                                } else {
-                                    eprintln!("Error: {e}");
-                                }
-                                std::process::exit(1);
-                            }
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "added",
+                                "instance_id": instance_id,
+                                "item_id": added_item,
+                                "layer_id": layer.id.as_str(),
+                                "mount_path": layer.mount_path.as_str(),
+                                "source_path": layer.source_path.as_str(),
+                            });
+                            println!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            let from_note = if layer.source_path.as_str().is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (from '{}')", layer.source_path.as_str())
+                            };
+                            println!(
+                                "Added content '{added_item}' to instance '{instance_id}' (mount: '{}'{from_note}).",
+                                layer.mount_path.as_str()
+                            );
                         }
                     }
                     InstanceContentCmd::List { instance_id } => {

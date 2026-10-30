@@ -12,8 +12,7 @@ use agora_core::content_store::{
     self, AddOutcome, ContentError, ContentItem, ContentProblem, ContentSource, ItemEntry,
     ProblemKind, VerifyDepth,
 };
-use agora_core::content_thunderstore::{self, ThunderstoreInstallError};
-use agora_core::game_deploy::{self, DeployError, PlacementDecision};
+use agora_core::game_deploy::{self, AddToInstance, AddToInstanceError, DeployError};
 use agora_core::game_instance::{self, InstanceError};
 use agora_game_api::{Layer, LayerSource};
 use serde::Serialize;
@@ -395,8 +394,31 @@ pub(super) fn instance_error(error: InstanceError) -> GamesError {
     GamesError::new(CORE_FAILED, error.to_string())
 }
 
-fn thunderstore_error(error: ThunderstoreInstallError) -> GamesError {
-    GamesError::new(CORE_FAILED, error.to_string())
+/// The words the screen gets for each reason a placement did not happen.
+fn add_error(error: AddToInstanceError) -> GamesError {
+    match error {
+        AddToInstanceError::Instance(error) => instance_error(error),
+        AddToInstanceError::UnknownGame(game) => GamesError::new(
+            CORE_FAILED,
+            format!("Agora does not know the game '{game}'."),
+        ),
+        AddToInstanceError::NoContentLayout { game_name, .. } => GamesError::new(
+            CORE_FAILED,
+            format!(
+                "Agora has no content rules for {game_name}, so it cannot say where this item goes."
+            ),
+        ),
+        AddToInstanceError::Content(error) => content_error(error),
+        AddToInstanceError::Thunderstore(error) => GamesError::new(CORE_FAILED, error.to_string()),
+        AddToInstanceError::Deploy(error) => deploy_error(error),
+        AddToInstanceError::PlacementUnknown { top_level } => GamesError::new(
+            PLACEMENT_UNKNOWN,
+            format!(
+                "Agora cannot tell where these files go (top-level entries: {}), and this game has no rule for them.",
+                top_level.join(", ")
+            ),
+        ),
+    }
 }
 
 fn last_component(path: &str) -> String {
@@ -546,82 +568,40 @@ pub async fn games_instance_content_add(
     let item_id = checked_id(&item_id)?;
     tokio::task::spawn_blocking(move || -> Result<InstanceAddOutcome, GamesError> {
         let ctx = crate::core_context(&app)?;
-        let manifest = game_instance::get_manifest(&ctx, &instance_id).map_err(instance_error)?;
-        let game_def = ctx.games.game(&manifest.game).ok_or_else(|| {
-            GamesError::new(
-                CORE_FAILED,
-                format!("Agora does not know the game '{}'.", manifest.game),
-            )
-        })?;
-        let layout = game_def.content_layout.as_ref().ok_or_else(|| {
-            GamesError::new(
-                CORE_FAILED,
-                format!(
-                    "Agora has no content rules for {}, so it cannot say where this item goes.",
-                    game_def.name
-                ),
-            )
-        })?;
-
-        // A Thunderstore package installs the way the game's BepInEx layout describes, as the
-        // CLI does. A manifest that cannot be read is an error here, not "not a package".
-        if layout.thunderstore_bepinex
-            && content_thunderstore::parse_manifest(&ctx, &item_id)
-                .map_err(content_error)?
-                .is_some()
-        {
-            let outcome = content_thunderstore::install_thunderstore(&ctx, &instance_id, &item_id)
-                .map_err(thunderstore_error)?;
-            return Ok(InstanceAddOutcome::Added(AddedToInstance {
-                item_id: outcome.derived_item.item_id.clone(),
-                layer_id: outcome.layer.id.as_str().to_string(),
-                mount_path: outcome.layer.mount_path.as_str().to_string(),
-                source_path: outcome.layer.source_path.as_str().to_string(),
-                placement_reason: None,
-                thunderstore: Some(ThunderstoreAdded {
-                    package_id: outcome.package_id,
-                    version: outcome.version,
-                    summary: outcome.summary,
-                    missing_dependencies: outcome.missing_dependencies,
-                }),
-            }));
-        }
-
-        let item = content_store::get_item(&ctx, &item_id).map_err(content_error)?;
-        match game_deploy::decide_placement(&item, layout) {
-            PlacementDecision::Place {
-                mount_path,
-                source_path,
-                reason,
+        match game_deploy::add_to_instance(&ctx, &instance_id, &item_id).map_err(add_error)? {
+            AddToInstance::Added {
+                item_id,
+                layer,
+                placement_reason,
+                thunderstore,
             } => {
-                let mount = (!mount_path.is_empty()).then_some(mount_path.as_str());
-                let source = (!source_path.is_empty()).then_some(source_path.as_str());
-                let layer = game_deploy::add_content(&ctx, &instance_id, &item_id, mount, source)
-                    .map_err(deploy_error)?;
-                Ok(InstanceAddOutcome::Added(added_layer(
-                    &layer,
-                    &item_id,
-                    Some(reason),
-                )))
+                let mut added = added_layer(&layer, &item_id, placement_reason);
+                added.thunderstore = thunderstore.map(|package| ThunderstoreAdded {
+                    package_id: package.package_id,
+                    version: package.version,
+                    summary: package.summary,
+                    missing_dependencies: package.missing_dependencies,
+                });
+                Ok(InstanceAddOutcome::Added(added))
             }
-            PlacementDecision::Installer { reason, top_level } => {
-                Ok(InstanceAddOutcome::NeedsInstaller(NeedsInstaller {
-                    item_id,
-                    reason,
-                    top_level,
-                }))
-            }
-            PlacementDecision::Unknown { top_level } => Err(GamesError::new(
-                PLACEMENT_UNKNOWN,
-                format!(
-                    "Agora cannot tell where these files go (top-level entries: {}), and this game has no rule for them.",
-                    top_level.join(", ")
-                ),
-            )),
+            AddToInstance::NeedsInstaller {
+                item_id,
+                reason,
+                top_level,
+            } => Ok(InstanceAddOutcome::NeedsInstaller(NeedsInstaller {
+                item_id,
+                reason,
+                top_level,
+            })),
         }
     })
     .await
-    .map_err(|_| GamesError::new(TASK_FAILED, "Adding the item to the instance did not finish."))?
+    .map_err(|_| {
+        GamesError::new(
+            TASK_FAILED,
+            "Adding the item to the instance did not finish.",
+        )
+    })?
 }
 
 /// Remove an item's layer from an instance. The stored item stays in the library.
@@ -744,6 +724,29 @@ mod tests {
         assert_eq!(stored.source_kind, "archive");
         assert_eq!(stored.source_label, "Archive: Mod-1.2.zip");
         assert_eq!(stored.file_count, 1);
+    }
+
+    #[test]
+    fn a_placement_that_cannot_happen_keeps_the_words_and_codes_the_screen_knows() {
+        let unknown = add_error(AddToInstanceError::PlacementUnknown {
+            top_level: vec!["stuff".into(), "docs".into()],
+        });
+        assert_eq!(unknown.code, PLACEMENT_UNKNOWN);
+        assert_eq!(
+            unknown.message,
+            "Agora cannot tell where these files go (top-level entries: stuff, docs), and this game has no rule for them."
+        );
+        let no_rules = add_error(AddToInstanceError::NoContentLayout {
+            game_id: "skyrim-se".into(),
+            game_name: "Skyrim Special Edition".into(),
+        });
+        assert_eq!(no_rules.code, CORE_FAILED);
+        assert_eq!(
+            no_rules.message,
+            "Agora has no content rules for Skyrim Special Edition, so it cannot say where this item goes."
+        );
+        let game = add_error(AddToInstanceError::UnknownGame("nope".into()));
+        assert_eq!(game.message, "Agora does not know the game 'nope'.");
     }
 
     #[test]

@@ -403,3 +403,168 @@ fn manifest_text_is_a_package_only_when_well_formed() {
         vec!["denikson-BepInExPack_Valheim-5.4.2100"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// add_to_instance: the one placement path the CLI and the desktop both call
+// ---------------------------------------------------------------------------
+
+mod add_to_instance {
+    use super::*;
+    use agora_core::game_deploy::{
+        add_to_instance, decide_placement, AddToInstance, AddToInstanceError, PlacementDecision,
+    };
+
+    fn content_layers(ctx: &Ctx, instance_id: &str) -> usize {
+        agora_core::game_instance::get_manifest(ctx, instance_id)
+            .unwrap()
+            .layers
+            .layers()
+            .iter()
+            .filter(|layer| matches!(layer.source, agora_game_api::LayerSource::Content { .. }))
+            .count()
+    }
+
+    fn stored(ctx: &Ctx, dir: &Path, name: &str, entries: &[(&str, &[u8])]) -> String {
+        let path = dir.join(name);
+        create_zip(&path, entries);
+        add_archive(ctx, &path, None)
+            .unwrap()
+            .item()
+            .item_id
+            .clone()
+    }
+
+    #[test]
+    fn a_thunderstore_package_installs_by_the_bepinex_layout_and_reports_its_dependencies() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, instance_id) = setup_valheim_instance(&tmp);
+        let item = stored(
+            &ctx,
+            tmp.path(),
+            "ValheimModding-Jotunn-2.30.2.zip",
+            &[
+                (
+                    "manifest.json",
+                    br#"{"name": "Jotunn", "version_number": "2.30.2", "description": "A library",
+                        "dependencies": ["denikson-BepInExPack_Valheim-5.4.2100"]}"#,
+                ),
+                ("plugins/Jotunn.dll", b"dll"),
+            ],
+        );
+        match add_to_instance(&ctx, &instance_id, &item).unwrap() {
+            AddToInstance::Added {
+                item_id,
+                thunderstore: Some(package),
+                placement_reason,
+                ..
+            } => {
+                assert_ne!(item_id, item, "the layer holds the derived item");
+                assert!(placement_reason.is_none());
+                assert_eq!(package.package_name, "Jotunn");
+                assert_eq!(package.package_id, "ValheimModding-Jotunn");
+                assert_eq!(
+                    package.missing_dependencies,
+                    vec!["denikson-BepInExPack_Valheim".to_string()]
+                );
+            }
+            other => panic!("expected a package to be added, got {other:?}"),
+        }
+        assert_eq!(content_layers(&ctx, &instance_id), 1);
+    }
+
+    #[test]
+    fn an_archive_with_an_installer_is_not_added() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, instance_id) = setup_valheim_instance(&tmp);
+        let item = stored(
+            &ctx,
+            tmp.path(),
+            "Installer.zip",
+            &[
+                ("fomod/ModuleConfig.xml", b"<config/>"),
+                ("Data/Thing.esp", b"esp"),
+            ],
+        );
+        match add_to_instance(&ctx, &instance_id, &item).unwrap() {
+            AddToInstance::NeedsInstaller {
+                item_id,
+                reason,
+                top_level,
+            } => {
+                assert_eq!(item_id, item);
+                assert!(reason.contains("FOMOD"), "{reason}");
+                assert_eq!(top_level, ["Data", "fomod"]);
+            }
+            other => panic!("expected the installer outcome, got {other:?}"),
+        }
+        assert_eq!(content_layers(&ctx, &instance_id), 0, "nothing was added");
+    }
+
+    #[test]
+    fn a_plain_archive_goes_where_decide_placement_says_or_is_refused_with_its_entries() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, instance_id) = setup_valheim_instance(&tmp);
+        let item = stored(
+            &ctx,
+            tmp.path(),
+            "Plain.zip",
+            &[("stuff/readme.txt", b"hello"), ("stuff/other.txt", b"hi")],
+        );
+        let expected = decide_placement(
+            &agora_core::content_store::get_item(&ctx, &item).unwrap(),
+            valheim_definition().content_layout.as_ref().unwrap(),
+        );
+        match (add_to_instance(&ctx, &instance_id, &item), expected) {
+            (
+                Ok(AddToInstance::Added {
+                    layer,
+                    placement_reason,
+                    thunderstore: None,
+                    ..
+                }),
+                PlacementDecision::Place {
+                    mount_path,
+                    source_path,
+                    reason,
+                },
+            ) => {
+                assert_eq!(layer.mount_path.as_str(), mount_path);
+                assert_eq!(layer.source_path.as_str(), source_path);
+                assert_eq!(placement_reason.as_deref(), Some(reason.as_str()));
+                assert_eq!(content_layers(&ctx, &instance_id), 1);
+            }
+            (
+                Err(AddToInstanceError::PlacementUnknown { top_level }),
+                PlacementDecision::Unknown {
+                    top_level: expected,
+                },
+            ) => {
+                assert_eq!(top_level, expected);
+                assert_eq!(content_layers(&ctx, &instance_id), 0);
+            }
+            (got, expected) => panic!("{got:?} does not follow {expected:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_instance_or_item_is_an_error_naming_it() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, instance_id) = setup_valheim_instance(&tmp);
+        let item = stored(&ctx, tmp.path(), "Any.zip", &[("a/b.txt", b"x")]);
+
+        let missing_instance = add_to_instance(&ctx, "no-such-instance", &item).unwrap_err();
+        assert!(
+            matches!(missing_instance, AddToInstanceError::Instance(_)),
+            "{missing_instance:?}"
+        );
+        // An id that no item has (valid hex, so the lookup reaches the store).
+        let missing_item = add_to_instance(&ctx, &instance_id, "abcdef0123").unwrap_err();
+        assert!(
+            matches!(
+                missing_item,
+                AddToInstanceError::Content(agora_core::content_store::ContentError::NotFound(_))
+            ),
+            "{missing_item:?}"
+        );
+    }
+}

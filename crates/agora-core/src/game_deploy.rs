@@ -2826,6 +2826,135 @@ pub fn decide_placement(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Adding a stored item to an instance by the game's content rules
+// ---------------------------------------------------------------------------
+
+/// A Thunderstore package that was added the way the game's BepInEx layout describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThunderstoreAdded {
+    /// The package's name from its `manifest.json`.
+    pub package_name: String,
+    pub package_id: String,
+    pub version: String,
+    pub summary: String,
+    /// Dependencies the package names that the instance does not have.
+    pub missing_dependencies: Vec<String>,
+}
+
+/// What [`add_to_instance`] did.
+#[derive(Debug, Clone)]
+pub enum AddToInstance {
+    /// The item is a layer of the instance now.
+    Added {
+        /// The item the layer holds: the one asked for, or for a Thunderstore package the item
+        /// derived from it.
+        item_id: String,
+        layer: Layer,
+        /// Why the item went where it did, when the content rules chose (not for a package).
+        placement_reason: Option<String>,
+        thunderstore: Option<ThunderstoreAdded>,
+    },
+    /// The archive has a FOMOD installer, so nothing was added: its questions come first.
+    NeedsInstaller {
+        item_id: String,
+        reason: String,
+        top_level: Vec<String>,
+    },
+}
+
+/// Why [`add_to_instance`] did not add the item. The text is for every adapter; an adapter that
+/// has its own words for a case matches the variant.
+#[derive(Debug, thiserror::Error)]
+pub enum AddToInstanceError {
+    #[error(transparent)]
+    Instance(#[from] crate::game_instance::InstanceError),
+    #[error("the game '{0}' is not known")]
+    UnknownGame(String),
+    #[error("{game_name} has no content rules, so Agora cannot say where this item goes")]
+    NoContentLayout { game_id: String, game_name: String },
+    /// The store item, or a Thunderstore `manifest.json` in it, cannot be read. A manifest that
+    /// cannot be read is an error, not "not a package".
+    #[error(transparent)]
+    Content(#[from] crate::content_store::ContentError),
+    #[error(transparent)]
+    Thunderstore(#[from] crate::content_thunderstore::ThunderstoreInstallError),
+    #[error(transparent)]
+    Deploy(#[from] DeployError),
+    #[error("no rule says where these files go (top-level entries: {})", .top_level.join(", "))]
+    PlacementUnknown { top_level: Vec<String> },
+}
+
+/// Add a stored item to an instance where the game's content rules put it: the one placement path
+/// the CLI (`games instance content add`) and the desktop both call. A Thunderstore package in a
+/// game with a BepInEx layout installs as that layout describes; an archive with a FOMOD installer
+/// is not added (`NeedsInstaller`); anything else is placed by [`decide_placement`]. A caller that
+/// names the place itself calls [`add_content`] instead.
+pub fn add_to_instance(
+    ctx: &Ctx,
+    instance_id: &str,
+    item_id: &str,
+) -> Result<AddToInstance, AddToInstanceError> {
+    let manifest = crate::game_instance::get_manifest(ctx, instance_id)?;
+    let game = ctx
+        .games
+        .game(&manifest.game)
+        .ok_or_else(|| AddToInstanceError::UnknownGame(manifest.game.to_string()))?;
+    let layout =
+        game.content_layout
+            .as_ref()
+            .ok_or_else(|| AddToInstanceError::NoContentLayout {
+                game_id: game.id.to_string(),
+                game_name: game.name.clone(),
+            })?;
+
+    if layout.thunderstore_bepinex {
+        if let Some(package) = crate::content_thunderstore::parse_manifest(ctx, item_id)? {
+            let outcome =
+                crate::content_thunderstore::install_thunderstore(ctx, instance_id, item_id)?;
+            return Ok(AddToInstance::Added {
+                item_id: outcome.derived_item.item_id.clone(),
+                layer: outcome.layer,
+                placement_reason: None,
+                thunderstore: Some(ThunderstoreAdded {
+                    package_name: package.name,
+                    package_id: outcome.package_id,
+                    version: outcome.version,
+                    summary: outcome.summary,
+                    missing_dependencies: outcome.missing_dependencies,
+                }),
+            });
+        }
+    }
+
+    let item = crate::content_store::get_item(ctx, item_id)?;
+    match decide_placement(&item, layout) {
+        PlacementDecision::Place {
+            mount_path,
+            source_path,
+            reason,
+        } => {
+            let mount = (!mount_path.is_empty()).then_some(mount_path.as_str());
+            let source = (!source_path.is_empty()).then_some(source_path.as_str());
+            let layer = add_content(ctx, instance_id, item_id, mount, source)?;
+            Ok(AddToInstance::Added {
+                item_id: item_id.to_string(),
+                layer,
+                placement_reason: Some(reason),
+                thunderstore: None,
+            })
+        }
+        PlacementDecision::Installer { reason, top_level } => Ok(AddToInstance::NeedsInstaller {
+            item_id: item_id.to_string(),
+            reason,
+            top_level,
+        }),
+        PlacementDecision::Unknown { top_level } => {
+            Err(AddToInstanceError::PlacementUnknown { top_level })
+        }
+    }
+}
+
 /// Choose (or, with `None`, stop choosing) how an instance is deployed and run. A chosen mode is
 /// never replaced by a fallback; `None` leaves the choice to the game definition and the machine.
 pub fn set_deployment(
