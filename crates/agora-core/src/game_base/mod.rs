@@ -529,11 +529,29 @@ pub fn build_base(
     }
     let manifest_path = paths.base_manifest_path(&base_id);
 
-    // 2. Existing manifest -> return without touching anything
+    // 2. Existing manifest -> return without touching anything. A record that is there but is not
+    // a base record is damaged: the build replaces it (and the folder it left) once it is known
+    // that no instance is pinned to it. A record that cannot be read at all is an error, because
+    // a failed read of a healthy record must not be taken as permission to replace its base.
+    let mut damaged_record = false;
     if manifest_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-            if let Ok(manifest) = serde_json::from_str::<BaseManifest>(&content) {
-                return Ok(BuildOutcome::Existing(manifest));
+        let content = std::fs::read_to_string(&manifest_path).map_err(|error| {
+            BaseError::Other(format!(
+                "the record of base {base_id} ({}) cannot be read: {error}",
+                manifest_path.display()
+            ))
+        })?;
+        match serde_json::from_str::<BaseManifest>(&content) {
+            Ok(manifest) => return Ok(BuildOutcome::Existing(manifest)),
+            Err(_) => {
+                let pinning = instances_pinning_base(paths, &base_id)?;
+                if !pinning.is_empty() {
+                    return Err(BaseError::Other(format!(
+                        "a damaged base with this id exists ({base_id}) and instance(s) {} are pinned to it, so it was not replaced. Remove those instances first.",
+                        pinning.join(", ")
+                    )));
+                }
+                damaged_record = true;
             }
         }
     }
@@ -594,6 +612,7 @@ pub fn build_base(
     }
 
     std::fs::create_dir_all(&base_root)?;
+    register_base_root(paths, &base_root)?;
 
     // 4. Staging folder <root>/<base_id>.partial-<unique>
     let unique = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
@@ -674,7 +693,8 @@ pub fn build_base(
     // A folder under our own name with no readable manifest is what an
     // interrupted build leaves (renamed into place, manifest never written).
     // Move it aside and delete it, or this base id could never be built again.
-    if final_base_dir.exists() && !manifest_path.exists() {
+    // A damaged record is no readable manifest either (the new manifest replaces it below).
+    if final_base_dir.exists() && (damaged_record || !manifest_path.exists()) {
         let stale = base_root.join(format!("{base_id}.stale-{unique}"));
         std::fs::rename(&final_base_dir, &stale)?;
         std::fs::remove_dir_all(&stale)?;
@@ -1105,23 +1125,113 @@ fn is_windows_device_name(stem: &str) -> bool {
     )
 }
 
-/// Whether `location` can only be a base folder Agora made for `base_id`: a
-/// folder named after the base, directly inside a bases root, and nowhere near
-/// the install it was built from. A manifest is a user-writable file, so
-/// removal checks this rather than deleting whatever path it names.
-fn is_own_base_folder(paths: &AppPaths, manifest: &BaseManifest, base_id: &str) -> bool {
-    let location = &manifest.location;
-    if manifest.base_id != base_id || location.file_name() != Some(std::ffi::OsStr::new(base_id)) {
-        return false;
-    }
-    let Some(parent) = location.parent() else {
-        return false;
+/// The bases roots outside the data folder that builds here created, from `bases/roots.json`. No
+/// file means none. A file that cannot be read is an error: removal must not treat it as "no
+/// roots", and must not guess one.
+fn read_base_roots(paths: &AppPaths) -> Result<Vec<PathBuf>, BaseError> {
+    let file = paths.base_roots_file();
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(BaseError::Other(format!(
+                "{} cannot be read, so Agora cannot tell which folders its bases live in: {error}",
+                file.display()
+            )))
+        }
     };
-    let in_a_bases_root = parent == paths.bases_dir()
-        || parent.file_name() == Some(std::ffi::OsStr::new("AgoraBases"));
-    let overlaps_source = location.starts_with(&manifest.source_location)
-        || manifest.source_location.starts_with(location);
-    in_a_bases_root && !overlaps_source
+    serde_json::from_str::<Vec<PathBuf>>(&text).map_err(|error| {
+        BaseError::Other(format!(
+            "{} is not a list of folders, so Agora cannot tell which folders its bases live in: {error}",
+            file.display()
+        ))
+    })
+}
+
+/// Serialises the read-modify-write of `roots.json` between builds in this process.
+static BASE_ROOTS_LOCK: Mutex<()> = Mutex::new(());
+
+/// Remember a bases root a build is about to use, so removal can later tell a folder Agora made
+/// from one a hand-edited record names. The data folder's own `bases` folder needs no entry.
+fn register_base_root(paths: &AppPaths, root: &Path) -> Result<(), BaseError> {
+    if same_path(root, &paths.bases_dir()) {
+        return Ok(());
+    }
+    let _guard = BASE_ROOTS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut roots = read_base_roots(paths)?;
+    if roots.iter().any(|known| same_path(known, root)) {
+        return Ok(());
+    }
+    roots.push(root.to_path_buf());
+    let file = paths.base_roots_file();
+    std::fs::create_dir_all(paths.bases_dir())?;
+    let tmp = file.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&roots)?)?;
+    std::fs::rename(&tmp, &file)?;
+    Ok(())
+}
+
+/// Path equality by components (so a `.` component does not matter), ignoring ASCII case on
+/// Windows.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let mut left = a.components();
+    let mut right = b.components();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) => {
+                let (x, y) = (
+                    x.as_os_str().to_string_lossy(),
+                    y.as_os_str().to_string_lossy(),
+                );
+                let equal = if cfg!(windows) {
+                    x.eq_ignore_ascii_case(&y)
+                } else {
+                    x == y
+                };
+                if !equal {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// The folder to delete for `base_id`, derived from folders Agora knows rather than from the path
+/// a record states: `<root>/<base_id>` for the data folder's `bases` folder or a root a build
+/// registered. The record's location only has to agree with it. A manifest is a user-writable
+/// file, so a record that names any other folder is refused and nothing is deleted. The base
+/// folder must also not overlap the install it was built from.
+fn trusted_base_folder(
+    paths: &AppPaths,
+    manifest: &BaseManifest,
+    base_id: &str,
+) -> Result<PathBuf, BaseError> {
+    let refuse = |why: &str| {
+        BaseError::Other(format!(
+            "refusing to remove {}: the record for base {base_id} {why}",
+            manifest.location.display()
+        ))
+    };
+    if manifest.base_id != base_id {
+        return Err(refuse("names a different base id"));
+    }
+    let mut roots = vec![paths.bases_dir()];
+    roots.extend(read_base_roots(paths)?);
+    let folder = roots
+        .iter()
+        .map(|root| root.join(base_id))
+        .find(|candidate| same_path(candidate, &manifest.location))
+        .ok_or_else(|| refuse("does not point at a base folder Agora made"))?;
+    let overlaps_source = folder.starts_with(&manifest.source_location)
+        || manifest.source_location.starts_with(&folder);
+    if overlaps_source {
+        return Err(refuse("points at the install it was built from"));
+    }
+    Ok(folder)
 }
 
 /// The game instances pinned to `base_id`. Fails closed: if the instance table
@@ -1160,11 +1270,50 @@ pub fn instances_pinning_base(paths: &AppPaths, base_id: &str) -> Result<Vec<Str
     Ok(instances)
 }
 
+/// The damaged record the list shows under `base_id`, found by its real file name. The list names
+/// a record by its file name without `.json`, which for a damaged file can be anything (`..`,
+/// `x.`), so those ids can only be matched against the folder, never joined into a path.
+fn damaged_record_listed_as(paths: &AppPaths, base_id: &str) -> Result<Option<PathBuf>, BaseError> {
+    let entries = match std::fs::read_dir(paths.base_manifests_dir()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(BaseError::Io(error)),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension() != Some(std::ffi::OsStr::new("json")) {
+            continue;
+        }
+        let listed_as = path.file_stem().map(|stem| stem.to_string_lossy());
+        if listed_as.as_deref() == Some(base_id) && read_manifest_file(&path).is_err() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 pub fn remove_base(paths: &AppPaths, base_id: &str) -> Result<(), BaseError> {
     if !is_plain_base_id(base_id) {
-        return Err(BaseError::Other(format!(
-            "'{base_id}' is not a base id, so nothing was removed."
-        )));
+        // Not a name that can reach a folder or a manifest path, but the list can still show a
+        // damaged record under it. That record file (and nothing else) is removed.
+        let Some(record) = damaged_record_listed_as(paths, base_id)? else {
+            return Err(BaseError::Other(format!(
+                "'{base_id}' is not a base id, so nothing was removed."
+            )));
+        };
+        let pinning = instances_pinning_base(paths, base_id)?;
+        if !pinning.is_empty() {
+            return Err(BaseError::InUse { instances: pinning });
+        }
+        let metadata = std::fs::symlink_metadata(&record)?;
+        if !metadata.is_file() || record.parent() != Some(paths.base_manifests_dir().as_path()) {
+            return Err(BaseError::Other(format!(
+                "refusing to remove {}: it is not a plain record file",
+                record.display()
+            )));
+        }
+        std::fs::remove_file(&record)?;
+        return Ok(());
     }
     let pinning = instances_pinning_base(paths, base_id)?;
     if !pinning.is_empty() {
@@ -1180,14 +1329,9 @@ pub fn remove_base(paths: &AppPaths, base_id: &str) -> Result<(), BaseError> {
     let text = std::fs::read_to_string(&manifest_path)?;
     match serde_json::from_str::<BaseManifest>(&text) {
         Ok(manifest) => {
-            if !is_own_base_folder(paths, &manifest, base_id) {
-                return Err(BaseError::Other(format!(
-                    "refusing to remove {}: the manifest for base {base_id} does not point at a base folder Agora made",
-                    manifest.location.display()
-                )));
-            }
-            if manifest.location.exists() {
-                std::fs::remove_dir_all(&manifest.location)?;
+            let folder = trusted_base_folder(paths, &manifest, base_id)?;
+            if folder.exists() {
+                std::fs::remove_dir_all(&folder)?;
             }
             let _ = std::fs::remove_file(&manifest_path);
             Ok(())

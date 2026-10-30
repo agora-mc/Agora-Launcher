@@ -731,6 +731,30 @@ fn rollback_needs_a_previous_generation() {
 }
 
 #[test]
+fn rollback_to_a_generation_that_is_gone_changes_nothing() {
+    // Guard: the previous generation's folder is checked before the layer is touched.
+    let f = fixture(vec![tagged("nemesis")]);
+    f.run_ok(
+        "nemesis",
+        &StagingLauncher::new().with_env("AGORA_TEST_TAG", "1"),
+    );
+    f.run_ok(
+        "nemesis",
+        &StagingLauncher::new().with_env("AGORA_TEST_TAG", "2"),
+    );
+    std::fs::remove_dir_all(f.generation_dir("nemesis", "1")).unwrap();
+
+    let err =
+        game_tools::rollback(&f.ctx, f.id(), &f.def, &ToolId::new("nemesis").unwrap()).unwrap_err();
+    assert!(matches!(err, ToolError::Other(_)), "{err:?}");
+    assert_eq!(
+        f.generated("nemesis").unwrap().0,
+        "2",
+        "the current generation is still in effect"
+    );
+}
+
+#[test]
 fn remove_drops_the_layer_and_every_generation_and_leaves_the_mods() {
     let f = fixture(vec![tagged("nemesis")]);
     f.add_mod("Mod", &[("Data/other.txt", b"mod")]);
