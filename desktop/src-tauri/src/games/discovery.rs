@@ -168,6 +168,58 @@ mod tests {
         assert!(group_by_game(&registry, &inventory).games.is_empty());
     }
 
+    /// A Skyrim install as the core hands it over, at `location`.
+    fn skyrim_at(location: &std::path::Path) -> agora_core::game_registry::IdentifiedInstall {
+        serde_json::from_value(serde_json::json!({
+            "game": "skyrim-se",
+            "install_id": "steam:489830",
+            "discovered": {
+                "store": "steam",
+                "product": "489830",
+                "name": "Skyrim Special Edition",
+                "kind": "base_game",
+                "parent_product": null,
+                "location": location,
+                "store_version": "1.6.1170",
+                "store_build": null,
+                "executables": [],
+                "capabilities": {
+                    "executables_readable": true,
+                    "accepts_new_files": true,
+                    "relocatable": true,
+                },
+                "volume": null,
+            },
+            "add_ons": [],
+            "runtime": { "status": "unidentified", "reasons": ["test"] },
+        }))
+        .expect("an install in the core's shape")
+    }
+
+    #[test]
+    fn a_listed_install_carries_the_size_of_a_copied_base_or_none() {
+        let registry = registry();
+        let root = std::env::temp_dir().join(format!("agora-install-bytes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data = root.join("Data");
+        std::fs::create_dir_all(&data).expect("a fixture folder");
+        std::fs::write(root.join("SkyrimSE.exe"), vec![0u8; 100]).expect("a file");
+        std::fs::write(data.join("Skyrim.esm"), vec![0u8; 250]).expect("a file");
+
+        let present = skyrim_at(&root);
+        let missing = skyrim_at(&root.join("gone"));
+        let inventory = GameInventory {
+            installs: vec![present, missing],
+            unsupported: Vec::new(),
+        };
+        let listing = group_by_game(&registry, &inventory);
+        let installs = &listing.games[0].installs;
+        assert_eq!(installs[0].install_bytes, Some(350));
+        // An unreadable folder is "unknown", never 0.
+        assert_eq!(installs[1].install_bytes, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_warning_keeps_its_store_and_message() {
         let warning: DiscoveryWarning = serde_json::from_value(serde_json::json!({
