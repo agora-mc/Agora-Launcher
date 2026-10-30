@@ -90,3 +90,19 @@ export async function storedSetting(page: Page, key: string): Promise<unknown> {
 export async function expectNoUnmockedCommands(page: Page): Promise<void> {
   expect(await unmockedCommands(page), 'commands the games table does not answer').toEqual([]);
 }
+
+/**
+ * Replies for the sections other slices mount on the same game page, empty. The Setup tab shows
+ * installs, bases, game folders and recovery together, the Library shows the store and the
+ * catalog, and the Instances tab lists instances: a spec about one of them still renders the
+ * others, and an unanswered command fails the test. Put this first in a spec's boot replies so
+ * the spec's own entries override it.
+ */
+export const OTHER_SLICES_REPLIES: Record<string, unknown> = {
+  games_instance_list: { instances: [] },
+  games_discover: { folders: [], warnings: [] },
+  games_user_files_status: { sessions: [] },
+  games_base_list: { bases: [], damaged: [] },
+  games_content_list: { items: [], damaged: [] },
+  games_catalog_list: { entries: [], instances: [] },
+};

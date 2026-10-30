@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { expectNoUnmockedCommands, installGamesMock } from './support/games-mock';
+import { expectNoUnmockedCommands, installGamesMock, OTHER_SLICES_REPLIES } from './support/games-mock';
 
 /**
  * Setup → pinned bases (MASTER_SPEC §26.4): the list, the checks, building a base, and removing one.
@@ -9,6 +9,7 @@ import { expectNoUnmockedCommands, installGamesMock } from './support/games-mock
 
 /** The boot commands the shell answers with empty data. Shared by every test here. */
 const BOOT_REPLIES = {
+  ...OTHER_SLICES_REPLIES,
   get_windows_accent_color: null,
   get_registry_status: { has_cached_db: false, checked: true, message: 'Missing' },
   check_registry_update: { has_cached_db: false, checked: true, message: 'Missing' },
