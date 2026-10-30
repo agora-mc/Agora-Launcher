@@ -87,7 +87,33 @@ pub enum ImportError {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Other(String),
+    /// Setting the new instance up failed, and the half-made instance could not be removed either.
+    #[error("{cause}. The half-made instance '{instance_id}' could not be removed ({cleanup}), so it was left behind{}", left_behind_note(.listed, .labelled))]
+    CleanupFailed {
+        cause: String,
+        instance_id: String,
+        cleanup: String,
+        /// The instance is still in the instance list.
+        listed: bool,
+        /// Why it could not be labelled incomplete, if it is listed and the label failed.
+        labelled: Result<(), String>,
+    },
 }
+
+fn left_behind_note(listed: &bool, labelled: &Result<(), String>) -> String {
+    match (listed, labelled) {
+        (false, _) => ". It is no longer in the instance list; its folder can be deleted by hand".into(),
+        (true, Ok(())) => format!(
+            ". It is listed as \"{INCOMPLETE_LABEL}\": delete it, then import again"
+        ),
+        (true, Err(why)) => format!(
+            ". It is still listed under its own name and could not be labelled incomplete ({why}): delete it, then import again"
+        ),
+    }
+}
+
+/// Added to the name of an import's half-made instance that could not be removed.
+pub const INCOMPLETE_LABEL: &str = "(incomplete import)";
 
 /// Recorded on an instance that came from an import, so a second import of the same setup and
 /// profile can be refused.
@@ -1019,14 +1045,13 @@ fn plan_saves(
     let from = profile_dir.join("saves");
     let mut files = 0usize;
     let mut bytes = 0u64;
-    if let Ok(entries) = std::fs::read_dir(&from) {
-        for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
-                if meta.is_file() {
-                    files += 1;
-                    bytes += meta.len();
-                }
-            }
+    for entry in saves_entries(&from)? {
+        let meta = entry
+            .metadata()
+            .map_err(|e| saves_unreadable(&entry.path(), &e))?;
+        if meta.is_file() {
+            files += 1;
+            bytes += meta.len();
         }
     }
     Ok(SavesPlan {
@@ -1037,6 +1062,26 @@ fn plan_saves(
         to: None,
         note: String::new(),
     })
+}
+
+fn saves_unreadable(path: &Path, error: &std::io::Error) -> ImportError {
+    ImportError::Unreadable {
+        path: path.to_path_buf(),
+        reason: format!("the profile's saves cannot be read: {error}"),
+    }
+}
+
+/// The entries of a profile's `saves` folder. A profile that has no such folder has no saves; a
+/// folder that cannot be read is an error, so saves are never left behind unseen.
+fn saves_entries(from: &Path) -> Result<Vec<std::fs::DirEntry>, ImportError> {
+    let entries = match std::fs::read_dir(from) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(saves_unreadable(from, &e)),
+    };
+    entries
+        .map(|entry| entry.map_err(|e| saves_unreadable(from, &e)))
+        .collect()
 }
 
 /// The instance an earlier import of this setup and profile made, if there is one.
@@ -1102,6 +1147,37 @@ pub struct ImportProgress {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RunOptions {
     pub stop_after_mods: Option<usize>,
+}
+
+/// Remove the instance an import failed to set up, and return the error to report: `cause` itself
+/// when the instance is gone, and [`ImportError::CleanupFailed`] when it is not. An instance that
+/// stays in the list is renamed to say it is incomplete, so nobody launches it by mistake.
+pub fn abandon_half_made_instance(ctx: &Ctx, instance_id: &str, cause: ImportError) -> ImportError {
+    let cleanup = match game_instance::delete(ctx, instance_id) {
+        Ok(_) => return cause,
+        Err(e) => e.to_string(),
+    };
+    let (listed, labelled) = match game_instance::get(ctx, instance_id) {
+        Ok(Some(record)) => (
+            true,
+            game_instance::rename(
+                ctx,
+                instance_id,
+                &format!("{} {INCOMPLETE_LABEL}", record.name),
+            )
+            .map_err(|e| e.to_string()),
+        ),
+        Ok(None) => (false, Ok(())),
+        // Cannot tell whether it is listed: say it is, and that the label was not set.
+        Err(e) => (true, Err(e.to_string())),
+    };
+    ImportError::CleanupFailed {
+        cause: cause.to_string(),
+        instance_id: instance_id.to_string(),
+        cleanup,
+        listed,
+        labelled,
+    }
 }
 
 /// Run an import: store the bytes, make the instance, and set it up from the profile. The plan is
@@ -1360,19 +1436,17 @@ pub fn run(
                 report.saves_folder = Some(folder.clone());
                 if request.copy_saves {
                     if let Some(from) = &plan.saves.from {
-                        if let Ok(entries) = std::fs::read_dir(from) {
-                            for entry in entries.flatten() {
-                                if !entry.path().is_file() {
-                                    continue;
-                                }
-                                let dest = folder.join(entry.file_name());
-                                if dest.exists() {
-                                    report.saves_skipped_existing += 1;
-                                    continue;
-                                }
-                                std::fs::copy(entry.path(), &dest)?;
-                                report.saves_copied += 1;
+                        for entry in saves_entries(from)? {
+                            if !entry.path().is_file() {
+                                continue;
                             }
+                            let dest = folder.join(entry.file_name());
+                            if dest.exists() {
+                                report.saves_skipped_existing += 1;
+                                continue;
+                            }
+                            std::fs::copy(entry.path(), &dest)?;
+                            report.saves_copied += 1;
                         }
                     }
                 } else if plan.saves.files > 0 {
@@ -1389,8 +1463,7 @@ pub fn run(
         Ok(())
     })();
     if let Err(error) = populated {
-        let _ = game_instance::delete(ctx, &instance_id);
-        return Err(error);
+        return Err(abandon_half_made_instance(ctx, &instance_id, error));
     }
 
     report.next_steps.extend(plan.problems.iter().map(|p| {

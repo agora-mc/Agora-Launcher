@@ -1152,3 +1152,123 @@ fn an_enabled_mods_plugin_the_install_already_has_keeps_its_active_line() {
     prepare_launch(&f, &id);
     assert_eq!(plugin_state(&f, &id, "Shared.esp"), (true, false));
 }
+
+#[test]
+fn a_saves_folder_that_cannot_be_read_stops_the_import_instead_of_being_skipped() {
+    let f = fixture();
+    // `saves` is a file, so listing it fails with something other than "not there".
+    let saves = f.setup.join("profiles/Test Profile/saves");
+    std::fs::remove_dir_all(&saves).unwrap();
+    write(&saves, b"not a folder");
+
+    let planned = game_import::plan(&f.ctx, &f.inventory, &request(&f, None, true));
+    let Err(ImportError::Unreadable { path, reason }) = planned else {
+        panic!("expected the plan to refuse an unreadable saves folder, got {planned:?}");
+    };
+    assert_eq!(path, saves);
+    assert!(reason.contains("saves"), "{reason}");
+
+    let run = game_import::run(
+        &f.ctx,
+        &f.inventory,
+        &request(&f, None, true),
+        RunOptions::default(),
+        &|_| {},
+    );
+    assert!(
+        matches!(run, Err(ImportError::Unreadable { .. })),
+        "{run:?}"
+    );
+    assert!(
+        game_instance::list(&f.ctx).unwrap().is_empty(),
+        "nothing was made"
+    );
+}
+
+#[test]
+fn a_profile_with_no_saves_folder_has_no_saves_and_still_imports() {
+    let f = fixture();
+    std::fs::remove_dir_all(f.setup.join("profiles/Test Profile/saves")).unwrap();
+    let plan = game_import::plan(&f.ctx, &f.inventory, &request(&f, None, true)).unwrap();
+    assert_eq!(plan.saves.files, 0);
+}
+
+/// An instance the import made, for the cleanup tests.
+fn imported_instance(f: &Fixture) -> String {
+    game_import::run(
+        &f.ctx,
+        &f.inventory,
+        &request(f, None, false),
+        RunOptions::default(),
+        &|_| {},
+    )
+    .unwrap()
+    .instance_id
+    .unwrap()
+}
+
+#[test]
+fn a_half_made_instance_is_removed_and_the_original_error_is_what_is_reported() {
+    let f = fixture();
+    let id = imported_instance(&f);
+    let cause = ImportError::Other("the plugin list could not be written".into());
+
+    let reported = game_import::abandon_half_made_instance(&f.ctx, &id, cause);
+
+    assert!(
+        matches!(&reported, ImportError::Other(m) if m == "the plugin list could not be written"),
+        "{reported:?}"
+    );
+    assert!(game_instance::get(&f.ctx, &id).unwrap().is_none());
+}
+
+#[test]
+fn a_half_made_instance_that_cannot_be_removed_is_reported_and_labelled_incomplete() {
+    let f = fixture();
+    let id = imported_instance(&f);
+    let name_before = game_instance::get(&f.ctx, &id).unwrap().unwrap().name;
+    // A trigger that refuses the row's deletion makes the removal fail with the row still listed.
+    let conn = rusqlite::Connection::open(f.ctx.paths.local_state_db()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER keep_rows BEFORE DELETE ON game_instances \
+         BEGIN SELECT RAISE(ABORT, 'row is pinned by the test'); END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let reported = game_import::abandon_half_made_instance(
+        &f.ctx,
+        &id,
+        ImportError::Other("the plugin list could not be written".into()),
+    );
+
+    let ImportError::CleanupFailed {
+        instance_id,
+        listed,
+        labelled,
+        ..
+    } = &reported
+    else {
+        panic!("a failed cleanup is reported, got {reported:?}");
+    };
+    assert_eq!(instance_id, &id);
+    assert!(*listed);
+    assert_eq!(labelled, &Ok(()));
+    let message = reported.to_string();
+    assert!(
+        message.contains("the plugin list could not be written"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&id) && message.contains("(incomplete import)"),
+        "{message}"
+    );
+
+    // It stays, and says so in the list and in its manifest.
+    let record = game_instance::get(&f.ctx, &id).unwrap().unwrap();
+    assert_eq!(record.name, format!("{name_before} (incomplete import)"));
+    assert_eq!(
+        game_instance::get_manifest(&f.ctx, &id).unwrap().name,
+        record.name
+    );
+}

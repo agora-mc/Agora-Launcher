@@ -248,18 +248,6 @@ pub fn parse_capture(capture: &str) -> Result<CaptureMode, GamesError> {
     })
 }
 
-/// A swap runs only after its costs were shown and the user accepted them. Refused here too, so the
-/// screen is not the only thing standing between a click and a copy of the whole of Data.
-pub fn require_swap_confirmed(capture: CaptureMode, confirmed: bool) -> Result<(), GamesError> {
-    if capture == CaptureMode::Swap && !confirmed {
-        return Err(GamesError::new(
-            SWAP_NOT_CONFIRMED,
-            "The full-copy swap was not confirmed. Its costs have to be shown and accepted before it runs.",
-        ));
-    }
-    Ok(())
-}
-
 /// A run that follows a refusal has to say what was refused. An empty or blank reason is refused here,
 /// because the screen's own check is not the only thing standing between a click and the run.
 pub fn require_named_refusal(refusal: Option<&str>) -> Result<(), GamesError> {
@@ -392,6 +380,11 @@ pub fn run_reply(result: Result<RunOutcome, ToolError>) -> Result<RunResult, Gam
             offers: offers.iter().map(OfferDto::from).collect(),
         }),
         Err(ToolError::InstallPathNeedsSwap { tool, .. }) => Ok(RunResult::NeedsSwap { tool }),
+        // Core refuses a swap whose costs were not shown and accepted; the screen is told by code.
+        Err(ToolError::SwapNotConfirmed) => Err(GamesError::new(
+            SWAP_NOT_CONFIRMED,
+            "The full-copy swap was not confirmed. Its costs have to be shown and accepted before it runs.",
+        )),
         Err(other) => Err(core_error(other)),
     }
 }
@@ -447,7 +440,6 @@ pub async fn games_tools_run(
 ) -> Result<RunResult, GamesError> {
     let tool = tool_id_of(&tool_id)?;
     let capture = parse_capture(&capture)?;
-    require_swap_confirmed(capture, confirm_swap)?;
     require_named_refusal(refusal.as_deref())?;
     with_ctx(app, move |ctx| {
         let game = definition_of(&ctx, &instance_id)?;
@@ -459,6 +451,7 @@ pub async fn games_tools_run(
                 &game,
                 &tool,
                 capture,
+                confirm_swap,
                 &reason,
                 &SystemLauncher,
                 &cancel,
@@ -469,6 +462,7 @@ pub async fn games_tools_run(
                 &game,
                 &tool,
                 capture,
+                confirm_swap,
                 &SystemLauncher,
                 &cancel,
             ),
@@ -674,14 +668,9 @@ mod tests {
     }
 
     #[test]
-    fn a_swap_needs_its_costs_confirmed_and_other_captures_do_not() {
-        let refused =
-            require_swap_confirmed(CaptureMode::Swap, false).expect_err("unconfirmed swap");
+    fn an_unconfirmed_swap_is_reported_by_its_own_code() {
+        let refused = run_reply(Err(ToolError::SwapNotConfirmed)).expect_err("unconfirmed swap");
         assert_eq!(refused.code, SWAP_NOT_CONFIRMED);
-        assert!(require_swap_confirmed(CaptureMode::Swap, true).is_ok());
-        assert!(require_swap_confirmed(CaptureMode::Auto, false).is_ok());
-        assert!(require_swap_confirmed(CaptureMode::Links, false).is_ok());
-        assert!(require_swap_confirmed(CaptureMode::Vfs, false).is_ok());
     }
 
     #[test]

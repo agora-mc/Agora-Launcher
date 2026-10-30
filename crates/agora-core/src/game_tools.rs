@@ -105,6 +105,10 @@ pub enum ToolError {
         "{tool} works on the real install's Data folder, which link capture would miss, and this instance is not deployed under the virtual file system. It runs by swap: run it with --capture swap"
     )]
     InstallPathNeedsSwap { tool: String, instance_id: String },
+    /// The full-copy swap was asked for, and the caller did not say the user had been shown its costs
+    /// and accepted them. Nothing ran and nothing was touched.
+    #[error("the full-copy swap was not confirmed: its costs have to be shown to the user and accepted before it runs")]
+    SwapNotConfirmed,
     #[error("{0}")]
     Invalid(String),
     #[error(transparent)]
@@ -1249,12 +1253,19 @@ fn refused_vfs(
 ///
 /// The instance lock is held for the whole run, and the game's user files are swapped in for it, as
 /// for a launch, so the tool and the game never run at once.
+///
+/// `CaptureMode::Swap` has costs (see [`game_tool_copy::swap_costs`]), so it is refused with
+/// [`ToolError::SwapNotConfirmed`] unless `swap_costs_acknowledged` is true. The caller passes true
+/// only after it showed the user those costs and the user accepted them; the flag is not read for
+/// any other capture.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     ctx: &Ctx,
     instance_id: &str,
     definition: &GameDefinition,
     tool_id: &ToolId,
     capture: CaptureMode,
+    swap_costs_acknowledged: bool,
     launcher: &dyn Launcher,
     cancel: &CancellationToken,
 ) -> Result<RunOutcome, ToolError> {
@@ -1264,6 +1275,7 @@ pub fn run(
         definition,
         tool_id,
         capture,
+        swap_costs_acknowledged,
         launcher,
         cancel,
         None,
@@ -1273,6 +1285,7 @@ pub fn run(
 /// Run a tool by the tier the user chose after the virtual file system refused it (MASTER_SPEC §26.9): link
 /// capture or the full-copy swap. `refusal` is the refusal's reason, and the outcome's `capture_reason` names
 /// it, so the record says what failed and which tier ran instead. Only `Links` and `Swap` are accepted.
+/// `swap_costs_acknowledged` is as for [`run`]: a `Swap` is refused without it.
 #[allow(clippy::too_many_arguments)]
 pub fn run_after_vfs_refusal(
     ctx: &Ctx,
@@ -1280,6 +1293,7 @@ pub fn run_after_vfs_refusal(
     definition: &GameDefinition,
     tool_id: &ToolId,
     next: CaptureMode,
+    swap_costs_acknowledged: bool,
     refusal: &str,
     launcher: &dyn Launcher,
     cancel: &CancellationToken,
@@ -1291,6 +1305,7 @@ pub fn run_after_vfs_refusal(
             definition,
             tool_id,
             next,
+            swap_costs_acknowledged,
             launcher,
             cancel,
             Some(refusal),
@@ -1317,10 +1332,14 @@ fn run_inner(
     definition: &GameDefinition,
     tool_id: &ToolId,
     capture: CaptureMode,
+    swap_costs_acknowledged: bool,
     launcher: &dyn Launcher,
     cancel: &CancellationToken,
     fallback: Option<&str>,
 ) -> Result<RunOutcome, ToolError> {
+    if capture == CaptureMode::Swap && !swap_costs_acknowledged {
+        return Err(ToolError::SwapNotConfirmed);
+    }
     let tool = declared_tool(ctx, definition, tool_id)?;
     let record = crate::game_instance::get(ctx, instance_id)?
         .ok_or_else(|| ToolError::InstanceNotFound(instance_id.to_string()))?;

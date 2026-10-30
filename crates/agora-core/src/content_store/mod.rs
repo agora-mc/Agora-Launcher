@@ -334,6 +334,22 @@ pub fn validate_entry_path(rel_str: &str) -> Result<RelPath, ContentError> {
                 reason: "component ends in '.' or space".into(),
             });
         }
+        if let Some(bad) = comp
+            .chars()
+            .find(|c| matches!(c, '?' | '*' | '"' | '<' | '>' | '|') || c.is_control())
+        {
+            return Err(ContentError::InvalidPath {
+                path: rel_str.to_string(),
+                reason: format!(
+                    "component '{comp}' contains {} which Windows cannot have in a file name",
+                    if bad.is_control() {
+                        format!("the control character U+{:04X}", u32::from(bad))
+                    } else {
+                        format!("'{bad}'")
+                    }
+                ),
+            });
+        }
         let stem = comp.split('.').next().unwrap_or("");
         if is_windows_device_name(stem) {
             return Err(ContentError::InvalidPath {
@@ -349,6 +365,16 @@ pub fn validate_entry_path(rel_str: &str) -> Result<RelPath, ContentError> {
     })
 }
 
+/// The spelling NTFS compares names by: every Unicode letter folded, not just ASCII. Upper then
+/// lower, so a letter with no single lower-case form (such as 'ß') still meets its capital. This
+/// errs toward calling two names equal, which only costs a refusal.
+pub(crate) fn fold_case(name: &str) -> String {
+    name.chars()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 pub fn validate_path_set(paths: &[RelPath]) -> Result<(), ContentError> {
     if paths.is_empty() {
         return Err(ContentError::EmptyItem);
@@ -356,7 +382,7 @@ pub fn validate_path_set(paths: &[RelPath]) -> Result<(), ContentError> {
 
     let mut seen_lower = HashSet::with_capacity(paths.len());
     for p in paths {
-        let lower = p.as_str().to_ascii_lowercase();
+        let lower = fold_case(p.as_str());
         if !seen_lower.insert(lower) {
             return Err(ContentError::InvalidPath {
                 path: p.to_string(),
@@ -368,7 +394,7 @@ pub fn validate_path_set(paths: &[RelPath]) -> Result<(), ContentError> {
     for p in paths {
         let parts: Vec<&str> = p.as_str().split('/').collect();
         for i in 1..parts.len() {
-            let prefix = parts[..i].join("/").to_ascii_lowercase();
+            let prefix = fold_case(&parts[..i].join("/"));
             if seen_lower.contains(&prefix) {
                 return Err(ContentError::InvalidPath {
                     path: p.to_string(),
@@ -1839,12 +1865,15 @@ pub fn remove_item(ctx: &Ctx, item_id_or_prefix: &str) -> Result<(), ContentErro
         });
     }
 
-    // The target's own manifest is not parsed: the sweep below works from the remaining items, so
-    // a corrupt item can still be removed.
-
-    // 1. Read every other manifest first; refuse if ANY cannot be read or parsed
+    // The target's own manifest is not parsed, so a corrupt item can still be removed. Another
+    // item record that cannot be read cannot name this item (an item record holds files, not
+    // references to other items), so it does not block the removal. It may still hold the hash of
+    // an object, though, so while any record is unreadable no object is deleted: they stay until
+    // the next removal with every record readable sweeps whatever nothing references.
+    // 1. Read every other manifest, noting whether any is unreadable.
     let items_dir = ctx.paths.content_items_dir();
     let mut other_items = Vec::new();
+    let mut an_other_record_is_unreadable = false;
 
     if items_dir.exists() {
         for entry in std::fs::read_dir(&items_dir)? {
@@ -1855,27 +1884,15 @@ pub fn remove_item(ctx: &Ctx, item_id_or_prefix: &str) -> Result<(), ContentErro
                     if stem == item_id {
                         continue;
                     }
-                    let content = match std::fs::read_to_string(&path) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            return Err(ContentError::UnreadableManifest {
-                                item_id: item_id.clone(),
-                                manifest: path.display().to_string(),
-                                error: e.to_string(),
-                            });
-                        }
-                    };
-                    let item: ContentItem = match serde_json::from_str(&content) {
-                        Ok(it) => it,
-                        Err(e) => {
-                            return Err(ContentError::UnreadableManifest {
-                                item_id: item_id.clone(),
-                                manifest: path.display().to_string(),
-                                error: e.to_string(),
-                            });
-                        }
-                    };
-                    other_items.push(item);
+                    let parsed = std::fs::read_to_string(&path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|content| {
+                            serde_json::from_str::<ContentItem>(&content).map_err(|e| e.to_string())
+                        });
+                    match parsed {
+                        Ok(item) => other_items.push(item),
+                        Err(_) => an_other_record_is_unreadable = true,
+                    }
                 }
             }
         }
@@ -1896,7 +1913,7 @@ pub fn remove_item(ctx: &Ctx, item_id_or_prefix: &str) -> Result<(), ContentErro
     //    removed item's own, and any an interrupted add left behind before writing its manifest.
     //    A failure here only leaves an unreferenced object for the next sweep.
     let objects_dir = ctx.paths.content_objects_dir();
-    if objects_dir.exists() {
+    if objects_dir.exists() && !an_other_record_is_unreadable {
         for shard in std::fs::read_dir(&objects_dir)?.flatten() {
             if !shard.path().is_dir() {
                 continue;

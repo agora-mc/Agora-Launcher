@@ -9126,13 +9126,15 @@ fn instance_tools_command(
             });
             let cancel = agora_core::event_sink::CancellationToken::new();
             let launcher = &agora_core::game_launch::SystemLauncher;
-            let run_as = |capture: game_tools::CaptureMode| {
+            // `confirmed` is passed true only on the paths below that showed the swap's costs and got a yes.
+            let run_as = |capture: game_tools::CaptureMode, confirmed: bool| {
                 game_tools::run(
                     ctx,
                     &instance_id,
                     game_def,
                     &tool,
                     capture,
+                    confirmed,
                     launcher,
                     &cancel,
                 )
@@ -9142,14 +9144,14 @@ fn instance_tools_command(
                 if !confirm_swap(ctx, &instance_id, game_def, tool.as_str(), json, yes)? {
                     std::process::exit(1);
                 }
-                run_as(capture).unwrap_or_else(|e| fail(e.to_string()))
+                run_as(capture, true).unwrap_or_else(|e| fail(e.to_string()))
             } else {
-                match run_as(capture) {
+                match run_as(capture, false) {
                     Ok(outcome) => outcome,
                     // `auto` refuses a tool that works on the real install, before anything is deployed.
                     Err(game_tools::ToolError::InstallPathNeedsSwap { .. }) => {
                         if confirm_swap(ctx, &instance_id, game_def, tool.as_str(), json, yes)? {
-                            run_as(game_tools::CaptureMode::Swap)
+                            run_as(game_tools::CaptureMode::Swap, true)
                                 .unwrap_or_else(|e| fail(e.to_string()))
                         } else {
                             std::process::exit(1);
@@ -9180,6 +9182,8 @@ fn instance_tools_command(
                                 game_def,
                                 &tool,
                                 next,
+                                // `offer_vfs_tool_fallback` above showed the swap's costs and got a yes.
+                                true,
                                 &vfs_refusal_reason(&e),
                                 launcher,
                                 &cancel,
@@ -9214,7 +9218,7 @@ fn instance_tools_command(
                             if std::io::stdin().is_terminal()
                                 && ask_yes_no("Try the full-copy swap now? [y/N]: ")?
                             {
-                                outcome = run_as(game_tools::CaptureMode::Swap)
+                                outcome = run_as(game_tools::CaptureMode::Swap, true)
                                     .unwrap_or_else(|e| fail(e.to_string()));
                                 print_tool_run(&outcome);
                             } else {
