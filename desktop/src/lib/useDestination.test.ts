@@ -127,4 +127,21 @@ describe('useDestination', () => {
     expect(result.current.destination).toEqual({ type: 'tab', tab: 'home' });
     expect(result.current.canGoBack).toBe(false);
   });
+
+  it('replaces the start page with a game tab without adding an entry behind it', () => {
+    const { result } = renderHook(() => useDestination());
+
+    act(() => result.current.replaceWithGameTab('skyrim-se', 'instances'));
+
+    expect(result.current.destination).toEqual({ type: 'game-tab', gameId: 'skyrim-se', tab: 'instances' });
+    expect(result.current.canGoBack).toBe(false);
+    expect(harness.depth()).toBe(0);
+    expect(window.history.state).toMatchObject({ __agoraDepth: 0, __agora: { type: 'game-tab' } });
+
+    // A later step is an ordinary push with depth 1; Back from it returns to the replaced entry.
+    act(() => result.current.navigateToGameTab('skyrim-se', 'library'));
+    expect(harness.depth()).toBe(1);
+    act(() => result.current.goBack());
+    expect(result.current.destination).toEqual({ type: 'game-tab', gameId: 'skyrim-se', tab: 'instances' });
+  });
 });

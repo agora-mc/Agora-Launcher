@@ -292,6 +292,7 @@ function AppContent() {
     navigateToPluginPage,
     navigateToGameTab,
     navigateToGameInstance,
+    replaceWithGameTab,
     goBack,
   } = useDestination();
 
@@ -530,7 +531,8 @@ function AppContent() {
       startupGameCheckedRef.current = true;
       const onFirstPage = destination.type === 'tab' && destination.tab === 'home' && !canGoBack;
       if (onFirstPage && shownGame !== MINECRAFT_GAME_ID) {
-        navigateToGameTab(shownGame, 'instances' satisfies GameTabId);
+        // In place of Home, not after it: the saved game is where the app starts.
+        replaceWithGameTab(shownGame, 'instances' satisfies GameTabId);
       }
       return;
     }
@@ -540,7 +542,7 @@ function AppContent() {
     // because the user is on a Minecraft page: it is simply not shown.
     if (target === MINECRAFT_GAME_ID && shownGame === MINECRAFT_GAME_ID) return;
     setActiveGame(target);
-  }, [gameShellReady, destination, canGoBack, shownGame, activeGame, setActiveGame, navigateToGameTab]);
+  }, [gameShellReady, destination, canGoBack, shownGame, activeGame, setActiveGame, replaceWithGameTab]);
 
   // The walkthrough opens on Home, whatever page the user started it from.
   // Every step after that is driven by the user, never by the tour. Declared

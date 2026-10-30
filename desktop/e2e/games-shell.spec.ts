@@ -60,6 +60,7 @@ const BOOT_REPLIES = {
   list_plugin_contributions: [],
   get_connectivity_status: { state: 'unknown', last_outcome_at: null },
   list_recent_play: [],
+  games_instance_list: { instances: [] },
 };
 
 async function boot(page: Page, games: unknown, settings: Record<string, unknown> = {}) {
@@ -120,7 +121,7 @@ test('switching to Skyrim swaps the sidebar to its tabs and back again', async (
   await expect(page.getByTestId('game-switcher').getByRole('button', { name: /Game: Skyrim Special Edition/ })).toBeVisible();
   await expect.poll(() => navLabels(page))
     .toEqual(GAME_NAV);
-  await expect(page.getByTestId('game-slot-placeholder').first()).toHaveAttribute('data-slice', 'instances');
+  await expect(page.getByTestId('instances-empty')).toContainText('No instances yet');
 
   await page.getByTestId('game-switcher').getByRole('button', { name: /Game: Skyrim Special Edition/ }).click();
   await page.getByTestId('game-switcher').getByRole('button', { name: 'Minecraft', exact: true }).click();
@@ -166,4 +167,19 @@ test('a failed discovery shows Minecraft and keeps the chosen game for next time
   await sidebarNav(page).getByRole('button', { name: 'Field Guide' }).click();
   await expect(page.getByTestId('game-switcher')).toHaveCount(0);
   expect(await storedSetting(page, 'active_game')).toBe('skyrim-se');
+});
+
+test('landing on the remembered game at startup does not add a history entry behind it', async ({ page }) => {
+  // A fresh start opens the game the user last chose. That landing replaces the start page: if it
+  // pushed an entry instead, Back from the game would step to Minecraft's Home and switch games.
+  await boot(page, { games: [skyrim] }, { active_game: 'skyrim-se' });
+  await page.goto('/');
+  await expect.poll(() => navLabels(page)).toEqual(GAME_NAV);
+
+  const entry = await page.evaluate(() => {
+    const state = window.history.state as { __agora?: { type?: string; gameId?: string }; __agoraDepth?: number } | null;
+    return { destination: state?.__agora, depth: state?.__agoraDepth };
+  });
+  expect(entry.destination).toMatchObject({ type: 'game-tab', gameId: 'skyrim-se' });
+  expect(entry.depth, 'the game page is the first entry the app owns').toBe(0);
 });

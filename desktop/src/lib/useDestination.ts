@@ -51,6 +51,11 @@ export interface UseDestinationReturn {
   navigateToPluginPage: (contributionId: string) => void;
   navigateToGameTab: (gameId: string, tab: GameTabId) => void;
   navigateToGameInstance: (gameId: string, instanceId: string, page?: GameInstancePage) => void;
+  /**
+   * Show a game tab in place of the current page, adding no history entry. Used to land on the
+   * remembered game at startup: it is where the app starts, so Back must not lead to Home.
+   */
+  replaceWithGameTab: (gameId: string, tab: GameTabId) => void;
 }
 
 function isValidDestination(d: unknown): d is Destination {
@@ -101,6 +106,12 @@ export function useDestination(): UseDestinationReturn {
     setCanGoBack(depth > 0);
     setDestination(dest);
     window.history.pushState({ __agora: dest, __agoraDepth: depth }, '');
+  }, []);
+
+  // Replaces the current entry, keeping its depth, so the page it shows is not a step the user took.
+  const replace = useCallback((dest: Destination) => {
+    setDestination(dest);
+    window.history.replaceState({ __agora: dest, __agoraDepth: depthRef.current }, '');
   }, []);
 
   // Handle browser back/forward via popstate.
@@ -182,6 +193,10 @@ export function useDestination(): UseDestinationReturn {
     (gameId: string, tab: GameTabId) => push({ type: 'game-tab', gameId, tab }),
     [push],
   );
+  const replaceWithGameTab = useCallback(
+    (gameId: string, tab: GameTabId) => replace({ type: 'game-tab', gameId, tab }),
+    [replace],
+  );
   const navigateToGameInstance = useCallback(
     (gameId: string, instanceId: string, page: GameInstancePage = 'overview') =>
       push({ type: 'game-instance', gameId, instanceId, page }),
@@ -200,5 +215,6 @@ export function useDestination(): UseDestinationReturn {
     navigateToPluginPage,
     navigateToGameTab,
     navigateToGameInstance,
+    replaceWithGameTab,
   };
 }
