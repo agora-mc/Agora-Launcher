@@ -1213,24 +1213,34 @@ fn describe_install_error(error: LauncherError) -> String {
     }
 }
 
-/// What the entry says when a download differs from the hash the modpack lists.
-/// Names the file, the pack's hash and the downloaded hash.
+/// What the entry says when a download misses an expectation the user can
+/// override. Names the file and the downloaded hash, then EVERY expectation it
+/// missed (the modpack's hash, the catalog's pin, the hash from an earlier
+/// install), because one "install anyway" overrides all of them.
 fn hash_confirmation_note(confirmation: &HashConfirmation) -> String {
-    match confirmation.expected_from {
-        HashOrigin::PackPin => format!(
-            "{} does not match the hash in the modpack: the modpack lists {}, the download is \
-             {}. It was not installed. Install it anyway only if you trust this file.",
-            confirmation.file, confirmation.expected, confirmation.actual
-        ),
-        HashOrigin::CuratorPin => format!(
-            "{} does not match the curator's pin in the catalog: the catalog pins {}, the \
-             download is {}. It was not installed. Install it anyway only if you trust this file.",
-            confirmation.file, confirmation.expected, confirmation.actual
-        ),
-        HashOrigin::PreviousInstall => format!(
-            "{confirmation} It was not installed. Install it anyway only if you trust this file."
-        ),
-    }
+    let describe = |origin: HashOrigin, expected: &str| match origin {
+        HashOrigin::PackPin => format!("the hash in the modpack ({expected})"),
+        HashOrigin::CuratorPin => format!("the curator's pin in the catalog ({expected})"),
+        HashOrigin::PreviousInstall => {
+            format!("the hash from an earlier install of this file ({expected})")
+        }
+    };
+    let missed: Vec<String> =
+        std::iter::once(describe(confirmation.expected_from, &confirmation.expected))
+            .chain(
+                confirmation
+                    .also_unmet
+                    .iter()
+                    .map(|other| describe(other.origin, &other.sha256)),
+            )
+            .collect();
+    format!(
+        "{} does not match {}; the download is {}. It was not installed. Install it anyway \
+         only if you trust this file.",
+        confirmation.file,
+        missed.join(", nor "),
+        confirmation.actual
+    )
 }
 
 fn install_error(error: LauncherError) -> BackendError {
@@ -2285,7 +2295,7 @@ mod tests {
 
     fn pack_confirmation(error: LauncherError) -> HashConfirmation {
         match error {
-            LauncherError::HashConfirmationRequired(detail) => detail,
+            LauncherError::HashConfirmationRequired(detail) => *detail,
             other => panic!("expected a confirmation stop, got {other:?}"),
         }
     }
@@ -2519,13 +2529,16 @@ mod tests {
             HashOrigin::PreviousInstall,
             HashOrigin::CuratorPin,
         ] {
-            let stop = install_error(LauncherError::HashConfirmationRequired(HashConfirmation {
-                file: "sodium.jar".into(),
-                release: None,
-                expected: GOOD_PIN.into(),
-                actual: actual.clone(),
-                expected_from: origin,
-            }));
+            let stop = install_error(LauncherError::HashConfirmationRequired(Box::new(
+                HashConfirmation {
+                    file: "sodium.jar".into(),
+                    release: None,
+                    expected: GOOD_PIN.into(),
+                    actual: actual.clone(),
+                    expected_from: origin,
+                    also_unmet: Box::default(),
+                },
+            )));
             let BackendError::NeedsAction(PackNeedsAction::ConfirmHash, note) = stop else {
                 panic!("{origin:?} should ask, got {stop:?}");
             };
@@ -2772,13 +2785,16 @@ mod tests {
 
     #[test]
     fn a_curator_pin_mismatch_stops_and_names_the_file_and_both_hashes() {
-        let stop = install_error(LauncherError::HashConfirmationRequired(HashConfirmation {
-            file: "old.jar".into(),
-            release: None,
-            expected: CURATOR.into(),
-            actual: "d".repeat(64),
-            expected_from: HashOrigin::CuratorPin,
-        }));
+        let stop = install_error(LauncherError::HashConfirmationRequired(Box::new(
+            HashConfirmation {
+                file: "old.jar".into(),
+                release: None,
+                expected: CURATOR.into(),
+                actual: "d".repeat(64),
+                expected_from: HashOrigin::CuratorPin,
+                also_unmet: Box::default(),
+            },
+        )));
         let BackendError::NeedsAction(PackNeedsAction::ConfirmHash, note) = stop else {
             panic!("should ask, got {stop:?}");
         };
@@ -2832,6 +2848,68 @@ mod tests {
         let matching = sha256_hex(bytes);
         let installed = commit_pinned(&ctx, bytes, &matching, false).unwrap();
         assert!(!installed.hash_verified);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn one_install_anyway_lists_every_pin_it_overrides() {
+        let (ctx, root) = temp_ctx_with_instance();
+        let bytes = b"jar bytes";
+        let actual = sha256_hex(bytes);
+        let stop = crate::install_service::InstallService::new(ctx.clone())
+            .commit_verified_artifact(
+                "inst",
+                "m.jar",
+                "mod",
+                "https://cdn.modrinth.com/m.jar",
+                Some("oldmod"),
+                None,
+                "registry",
+                Some("1"),
+                None,
+                None,
+                Some(GOOD_PIN),
+                None,
+                Some(CURATOR),
+                false,
+                bytes.to_vec(),
+            )
+            .unwrap_err();
+        let detail = pack_confirmation(stop);
+        let note = hash_confirmation_note(&detail);
+        for part in [
+            GOOD_PIN,
+            CURATOR,
+            actual.as_str(),
+            "modpack",
+            "curator's pin",
+        ] {
+            assert!(note.contains(part), "{part} missing from: {note}");
+        }
+        assert_eq!(detail.also_unmet.len(), 1);
+        // A pin that is met is not listed as something to override.
+        let one_met = crate::install_service::InstallService::new(ctx.clone())
+            .commit_verified_artifact(
+                "inst",
+                "m.jar",
+                "mod",
+                "https://cdn.modrinth.com/m.jar",
+                Some("oldmod"),
+                None,
+                "registry",
+                Some("1"),
+                None,
+                None,
+                Some(&actual),
+                None,
+                Some(CURATOR),
+                false,
+                bytes.to_vec(),
+            )
+            .unwrap_err();
+        let detail = pack_confirmation(one_met);
+        assert_eq!(detail.expected_from, HashOrigin::CuratorPin);
+        assert!(detail.also_unmet.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

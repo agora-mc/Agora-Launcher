@@ -63,8 +63,8 @@ pub struct PackImportArgs {
     pub import_anyway: bool,
     #[arg(
         long,
-        help = "Install mods that differ from the SHA-256 the pack lists (Agora packs). \
-                Without it they are not installed and the files and hashes are printed"
+        help = "Install files that fail the hashes the pack lists, or that it lists none for \
+                (Agora packs and .mrpack). Without it they are not installed and are printed"
     )]
     pub install_anyway: bool,
 }
@@ -307,6 +307,10 @@ pub async fn pack_import(
     .map_err(|error| {
         if error.code() == "ERR_INSTANCE_EXISTS" {
             anyhow::anyhow!("{error} Re-run with --name \"<new name>\" to import it as a copy.")
+        } else if error.code() == agora_game_minecraft::import::MRPACK_HASH_STOP_CODE {
+            anyhow::anyhow!(
+                "{error}\nRe-run `agora pack import {review_id} --install-anyway` to import it as it is."
+            )
         } else {
             anyhow::Error::from(error)
         }

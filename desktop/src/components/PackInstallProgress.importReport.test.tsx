@@ -102,7 +102,7 @@ describe('pack import review', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(1));
     // The import is held to the exact bytes that were reviewed.
-    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\friend.agora-pack.json', reviewedSha256: plan.file_sha256, name: 'Friend Pack', skipUnfetchable: false });
+    expect(callsTo('import_instance_pack')[0][1]).toEqual({ sourcePath: 'C:\\friend.agora-pack.json', reviewedSha256: plan.file_sha256, name: 'Friend Pack', skipUnfetchable: false, installAnyway: false });
   });
 
   it('Cancel leaves nothing behind', async () => {
@@ -150,6 +150,7 @@ describe('pack import review', () => {
       reviewedSha256: plan.file_sha256,
       name: 'Friend Pack (2)',
       skipUnfetchable: false,
+      installAnyway: false,
     });
   });
 
@@ -212,6 +213,53 @@ describe('pack import report', () => {
     expect(await screen.findByText('5 of 5 mods installed.')).toBeTruthy();
     expect(callsTo('set_content_provider_enabled')[0][1]).toEqual({ providerId: 'modrinth', enabled: true });
     expect(callsTo('retry_pack_import_entries')[0][1]).toMatchObject({ allowModrinthOnce: false, installAnyway: false });
+  });
+
+  describe('a .mrpack whose files fail the hashes it lists', () => {
+    const stopMessage = [
+      'Nothing was imported: 2 problem(s) with the hashes this pack lists:',
+      '  - mods/a.jar: the pack lists no SHA-1 or SHA-512 for it, so it cannot be checked.',
+      `  - mods/b.jar: the pack's SHA-1 entry is malformed ("zz"), so the file cannot be checked against it.`,
+    ].join(String.fromCharCode(10));
+    const stop = { code: 'ERR_IMPORT_HASH_CONFIRMATION', message: stopMessage };
+
+    it('names every file, imports nothing until Install anyway, then imports again with the flag', async () => {
+      let attempts = 0;
+      answer({
+        import_instance_pack: () => {
+          attempts += 1;
+          if (attempts === 1) throw stop;
+          return { instance_id: 'friend-pack', report: null };
+        },
+      });
+      renderImport('C:\\packs\\friend.mrpack');
+      fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+
+      const dialog = await screen.findByTestId('pack-hash-stop');
+      expect(dialog.textContent).toContain('mods/a.jar');
+      expect(dialog.textContent).toContain('mods/b.jar');
+      expect(dialog.textContent).toContain('malformed');
+      expect(callsTo('import_instance_pack')).toHaveLength(1);
+      expect(callsTo('import_instance_pack')[0][1]).toMatchObject({ installAnyway: false });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Install anyway' }));
+      await waitFor(() => expect(callsTo('import_instance_pack')).toHaveLength(2));
+      expect(callsTo('import_instance_pack')[1][1]).toMatchObject({
+        reviewedSha256: plan.file_sha256, installAnyway: true,
+      });
+      await waitFor(() => expect(screen.queryByTestId('pack-hash-stop')).toBeNull());
+    });
+
+    it('Cancel imports nothing and drops the staged copy', async () => {
+      answer({ import_instance_pack: () => { throw stop; } });
+      renderImport('C:\\packs\\friend.mrpack');
+      fireEvent.click(await screen.findByRole('button', { name: 'Import' }));
+      await screen.findByTestId('pack-hash-stop');
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByTestId('pack-hash-stop')).toBeNull());
+      expect(callsTo('import_instance_pack')).toHaveLength(1);
+      expect(callsTo('discard_pack_review')).toHaveLength(1);
+    });
   });
 
   describe('a file that differs from the hash the modpack lists', () => {

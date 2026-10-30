@@ -2718,6 +2718,8 @@ fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> 
 /// whose bytes no longer match it is refused. `name` is the instance name the
 /// user chose in the review. `skip_unfetchable` is the user's "Import anyway":
 /// files with no way to be fetched are left out instead of stopping the import.
+/// `install_anyway` (a `.mrpack`) imports files that fail the hashes the pack
+/// lists, after the user was shown which ones stopped the import.
 #[tauri::command]
 pub async fn import_instance_pack(
     app: tauri::AppHandle,
@@ -2726,6 +2728,7 @@ pub async fn import_instance_pack(
     reviewed_sha256: Option<String>,
     name: Option<String>,
     skip_unfetchable: bool,
+    install_anyway: bool,
 ) -> LauncherResult<mod_install::PackImportOutcome> {
     mod_install::import_instance_pack(
         &app,
@@ -2733,6 +2736,7 @@ pub async fn import_instance_pack(
         reviewed_sha256.as_deref(),
         name.as_deref(),
         skip_unfetchable,
+        install_anyway,
     )
     .await
 }

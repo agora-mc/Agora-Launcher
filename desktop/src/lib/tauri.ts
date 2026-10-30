@@ -1791,13 +1791,27 @@ export const importInstancePack = (
   reviewedSha256?: string | null,
   name?: string | null,
   skipUnfetchable = false,
+  installAnyway = false,
 ) =>
   invoke<PackImportOutcome>('import_instance_pack', {
     sourcePath,
     reviewedSha256: reviewedSha256 ?? null,
     name: name ?? null,
     skipUnfetchable,
+    installAnyway,
   });
+
+/** The code of the error a .mrpack import stops with when files fail the hashes the pack lists. */
+export const PACK_HASH_STOP_CODE = 'ERR_IMPORT_HASH_CONFIRMATION';
+
+/** The `code` of a Tauri error, when it has one. */
+export function errorCode(e: unknown): string | null {
+  if (e && typeof e === 'object') {
+    const code = (e as Record<string, unknown>).code;
+    if (typeof code === 'string') return code;
+  }
+  return null;
+}
 /** Drop the copy a .mrpack review staged (the review was cancelled). */
 export const discardPackReview = (sha256: string) =>
   invoke<void>('discard_pack_review', { sha256 });

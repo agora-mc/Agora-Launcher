@@ -16,6 +16,10 @@ pub struct HashConfirmation {
     pub actual: String,
     /// Where the expectation came from.
     pub expected_from: HashOrigin,
+    /// Further expectations the bytes also failed (a pack hash and a curator pin
+    /// can both be unmet). "Install anyway" overrides all of them, so all are shown.
+    #[serde(default)]
+    pub also_unmet: Box<[crate::artifact_hash::ConfirmableHash]>,
 }
 
 impl std::fmt::Display for HashConfirmation {
@@ -33,7 +37,20 @@ impl std::fmt::Display for HashConfirmation {
             f,
             "{file} does not match the {origin} hash: expected {}, downloaded {}.",
             self.expected, self.actual
-        )
+        )?;
+        for other in &self.also_unmet {
+            let origin = match other.origin {
+                HashOrigin::CuratorPin => "pinned curator",
+                HashOrigin::PreviousInstall => "previously installed",
+                HashOrigin::PackPin => "modpack",
+            };
+            write!(
+                f,
+                " It also differs from the {origin} hash {}.",
+                other.sha256
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -63,7 +80,7 @@ pub enum LauncherError {
     /// ERR_HASH_CONFIRMATION_REQUIRED — The download does not match a curator
     /// pin or a hash recorded on an earlier install. Install only after the
     /// user confirms, which retries with the install-anyway override.
-    HashConfirmationRequired(HashConfirmation),
+    HashConfirmationRequired(Box<HashConfirmation>),
     /// ERR_UNTRUSTED_SOURCE — Download rejected: URL is not from an allowed source.
     UntrustedSource,
     /// ERR_DISKFULL — Not enough disk space to complete this operation.
@@ -643,6 +660,14 @@ impl serde::Serialize for LauncherError {
                     "expected": confirmation.expected,
                     "actual": confirmation.actual,
                     "expected_from": confirmation.expected_from.as_str(),
+                    "also_unmet": confirmation
+                        .also_unmet
+                        .iter()
+                        .map(|other| serde_json::json!({
+                            "expected_from": other.origin.as_str(),
+                            "expected": other.sha256,
+                        }))
+                        .collect::<Vec<_>>(),
                     "suggested_actions": ["install_anyway", "cancel"],
                 });
                 map.serialize_entry("details", &details)?;

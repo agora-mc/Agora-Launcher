@@ -1,4 +1,5 @@
 use crate::override_sanitizer::OverridePolicy;
+use agora_core::download::{sha1_hex, sha512_hex};
 use agora_core::error::{LauncherError, LauncherResult};
 use agora_core::event_sink::{OperationId, ProgressEvent, ProgressPhase, ProgressSink};
 use agora_core::models::{
@@ -107,24 +108,75 @@ fn validate_mrpack_download_url(raw_url: &str) -> LauncherResult<reqwest::Url> {
     Ok(url)
 }
 
-fn verify_mrpack_file_hash(file: &MrpackFile, bytes: &[u8]) -> LauncherResult<()> {
-    let expected = file.hashes.get("sha1").ok_or_else(|| {
-        import_error(
-            "ERR_IMPORT_HASH_MISSING",
-            format!("Pack entry '{}' has no SHA-1 integrity hash.", file.path),
-        )
-    })?;
-    let actual = agora_core::download::sha1_hex(bytes);
-    if !actual.eq_ignore_ascii_case(expected) {
-        return Err(import_error(
-            "ERR_HASH_MISMATCH",
-            format!(
-                "Pack entry '{}' failed integrity verification: expected {} got {}.",
-                file.path, expected, actual
-            ),
+/// The code of the error a `.mrpack` import stops with when files do not match the
+/// hashes the pack lists (or it lists none). Nothing is imported; the same import
+/// with `install_anyway` goes ahead.
+pub const MRPACK_HASH_STOP_CODE: &str = "ERR_IMPORT_HASH_CONFIRMATION";
+
+/// Everything wrong with `bytes` against the hashes the pack lists for the file,
+/// one line each; empty when it is all good. The strongest hash is checked first
+/// and a mismatch in ANY listed hash counts (a SHA-1 alone is weak, and a SHA-512
+/// alone would let a bad SHA-1 through). A listed hash that is empty, the wrong
+/// length or not hex never matches and is reported as malformed. A pack that lists
+/// neither hash gives nothing to check, and says so.
+fn mrpack_hash_problems(file: &MrpackFile, bytes: &[u8]) -> Vec<String> {
+    let listed = |key: &str| {
+        file.hashes
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value.trim())
+    };
+    let strongest_first = [("SHA-512", "sha512", 128), ("SHA-1", "sha1", 40)];
+    let mut problems = Vec::new();
+    let mut any_listed = false;
+    for (label, key, length) in strongest_first {
+        let Some(value) = listed(key) else { continue };
+        any_listed = true;
+        if value.len() != length || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let shown: String = value.chars().take(70).collect();
+            let shown = if value.is_empty() {
+                "empty".to_string()
+            } else {
+                format!("{shown:?}")
+            };
+            problems.push(format!(
+                "{}: the pack's {label} entry is malformed ({shown}), so the file cannot be checked against it.",
+                file.path
+            ));
+            continue;
+        }
+        let actual = if key == "sha512" {
+            sha512_hex(bytes)
+        } else {
+            sha1_hex(bytes)
+        };
+        if !actual.eq_ignore_ascii_case(value) {
+            problems.push(format!(
+                "{}: the file's {label} is {actual}, but the pack lists {value}.",
+                file.path
+            ));
+        }
+    }
+    if !any_listed {
+        problems.push(format!(
+            "{}: the pack lists no SHA-1 or SHA-512 for it, so it cannot be checked.",
+            file.path
         ));
     }
-    Ok(())
+    problems
+}
+
+/// The stop for files that failed [`mrpack_hash_problems`]: all of them, so the
+/// one Install anyway the user is offered covers exactly what they were shown.
+fn mrpack_hash_stop(problems: &[String]) -> LauncherError {
+    import_error(
+        MRPACK_HASH_STOP_CODE,
+        format!(
+            "Nothing was imported: {} problem(s) with the hashes this pack lists:\n  - {}\nInstall anyway only if you trust this pack. It imports every file listed above as it is.",
+            problems.len(),
+            problems.join("\n  - ")
+        ),
+    )
 }
 
 /// Extract a Modrinth project ID only from the canonical Modrinth CDN path.
@@ -764,13 +816,15 @@ pub fn import_mrpack_with_progress(
         override_policy,
         name_override,
         false,
+        false,
     )
 }
 
 /// The import. With `skip_unfetchable`, a listed file that has no allowed
 /// download link and no copy inside the pack is left out instead of stopping
 /// the import (the user saw it in the review and chose to go on). Every other
-/// refusal still applies.
+/// refusal still applies. Files that fail the hashes the pack lists are all
+/// collected and stop the import (`MRPACK_HASH_STOP_CODE`) unless `install_anyway`.
 #[allow(clippy::too_many_arguments)]
 pub fn import_mrpack_inner(
     mrpack_path: &Path,
@@ -782,6 +836,7 @@ pub fn import_mrpack_inner(
     override_policy: OverridePolicy,
     name_override: Option<&str>,
     skip_unfetchable: bool,
+    install_anyway: bool,
 ) -> LauncherResult<ImportResult> {
     let file = fs::File::open(mrpack_path).map_err(|e| LauncherError::Generic {
         code: "ERR_IMPORT_OPEN".into(),
@@ -824,6 +879,7 @@ pub fn import_mrpack_inner(
         let target_dir = &target.staging_dir;
         let total_files = index.files.len() as u32;
         let mut completed_files = 0u32;
+        let mut hash_problems: Vec<String> = Vec::new();
         let modrinth_files: BTreeMap<_, _> = index
             .files
             .iter()
@@ -911,7 +967,7 @@ pub fn import_mrpack_inner(
             } else {
                 read_embedded()?
             };
-            verify_mrpack_file_hash(file_entry, &bytes)?;
+            hash_problems.extend(mrpack_hash_problems(file_entry, &bytes));
             fs::write(&dest, &bytes).map_err(|e| LauncherError::Generic {
                 code: "ERR_IMPORT_WRITE".into(),
                 message: format!("Cannot write {:?}: {e}", dest),
@@ -932,6 +988,10 @@ pub fn import_mrpack_inner(
                     }),
                 );
             }
+        }
+
+        if !hash_problems.is_empty() && !install_anyway {
+            return Err(mrpack_hash_stop(&hash_problems));
         }
 
         let mut override_bytes = 0u64;
@@ -1177,10 +1237,12 @@ pub fn plan_mrpack(
             && relative_archive_path(&listed.path)
                 .components()
                 .all(|c| matches!(c, Component::Normal(_)));
-        let has_sha1 = listed
-            .hashes
-            .get("sha1")
-            .is_some_and(|h| !h.trim().is_empty());
+        let has_hash = ["sha1", "sha512"].iter().any(|key| {
+            listed
+                .hashes
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case(key) && !value.trim().is_empty())
+        });
         let embedded_size = archive.by_name(&key).ok().map(|e| e.size());
         let first_url = listed.downloads.first();
         let checked_url = first_url.map(|u| validate_mrpack_download_url(u));
@@ -1212,33 +1274,31 @@ pub fn plan_mrpack(
             hard = true;
         } else if unfetchable {
             // Keeps the reason set above.
-        } else if !has_sha1 {
-            reason = Some(
-                "The pack gives no SHA-1 hash for it, so Agora cannot check it and will not import it."
-                    .to_string(),
-            );
-            hard = true;
         } else if embedded_size.is_some_and(|size| size > MAX_MRPACK_FILE_BYTES as u64)
             && source == PlannedSource::Bundled
         {
             reason = Some("The copy inside the pack is over the 500 MB limit.".to_string());
             hard = true;
         } else if source == PlannedSource::Bundled {
-            // The copy inside the pack must match the hash the pack itself gives.
+            // The copy inside the pack should match the hash the pack itself gives.
+            // If it does not, the import stops and asks (Install anyway).
             let expected = listed.hashes.get("sha1").cloned().unwrap_or_default();
             if let Some(actual) = archive
                 .by_name(&key)
                 .ok()
                 .and_then(|mut e| sha1_of_reader(&mut e))
             {
-                if !actual.eq_ignore_ascii_case(expected.trim()) {
-                    reason = Some(
-                        "The copy inside the pack does not match the SHA-1 the pack lists for it."
-                            .to_string(),
-                    );
-                    hard = true;
+                if !expected.trim().is_empty() && !actual.eq_ignore_ascii_case(expected.trim()) {
+                    notes.push(format!(
+                        "{key}: the copy inside the pack does not match the SHA-1 the pack lists for it. The import will stop and ask before installing it."
+                    ));
                 }
             }
+        }
+        if safe && !unfetchable && !has_hash {
+            notes.push(format!(
+                "{key}: the pack lists no SHA-1 or SHA-512 for it, so it cannot be checked. The import will stop and ask before installing it."
+            ));
         }
         let blocked = reason.is_some();
         if hard {
@@ -1261,7 +1321,7 @@ pub fn plan_mrpack(
             } else {
                 source
             },
-            checkable: has_sha1,
+            checkable: has_hash,
             reason,
             action: None,
             arrives_disabled: key.to_ascii_lowercase().ends_with(".disabled"),
@@ -2857,18 +2917,277 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_mrpack_file_requires_matching_sha1() {
-        let bytes = b"mod bytes";
-        let mut hashes = BTreeMap::new();
-        hashes.insert("sha1".to_string(), agora_core::download::sha1_hex(bytes));
-        let file = MrpackFile {
+    fn listed(pairs: &[(&str, &str)]) -> MrpackFile {
+        MrpackFile {
             path: "mods/example.jar".to_string(),
             downloads: Vec::new(),
-            hashes,
-        };
-        assert!(verify_mrpack_file_hash(&file, bytes).is_ok());
-        assert!(verify_mrpack_file_hash(&file, b"tampered").is_err());
+            hashes: pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn mrpack_hashes_all_listed_must_match_and_the_strongest_is_checked() {
+        let bytes = b"mod bytes";
+        let sha1 = sha1_hex(bytes);
+        let sha512 = sha512_hex(bytes);
+        let wrong512 = sha512_hex(b"other");
+        let wrong1 = sha1_hex(b"other");
+        // Good: either alone, both, and upper case.
+        for pairs in [
+            vec![("sha1", sha1.as_str())],
+            vec![("sha512", sha512.as_str())],
+            vec![("sha1", sha1.as_str()), ("sha512", sha512.as_str())],
+        ] {
+            assert!(
+                mrpack_hash_problems(&listed(&pairs), bytes).is_empty(),
+                "{pairs:?}"
+            );
+        }
+        let upper = sha512.to_uppercase();
+        assert!(mrpack_hash_problems(&listed(&[("sha512", upper.as_str())]), bytes).is_empty());
+        // A matching SHA-1 does not cover for a wrong SHA-512, nor the reverse.
+        let bad512 = mrpack_hash_problems(
+            &listed(&[("sha1", sha1.as_str()), ("sha512", wrong512.as_str())]),
+            bytes,
+        );
+        assert_eq!(bad512.len(), 1, "{bad512:?}");
+        assert!(
+            bad512[0].contains("SHA-512") && bad512[0].contains(&wrong512),
+            "{bad512:?}"
+        );
+        let bad1 = mrpack_hash_problems(
+            &listed(&[("sha1", wrong1.as_str()), ("sha512", sha512.as_str())]),
+            bytes,
+        );
+        assert_eq!(bad1.len(), 1, "{bad1:?}");
+        assert!(bad1[0].contains("SHA-1"), "{bad1:?}");
+        // Both wrong: both are listed.
+        assert_eq!(
+            mrpack_hash_problems(
+                &listed(&[("sha1", wrong1.as_str()), ("sha512", wrong512.as_str())]),
+                bytes
+            )
+            .len(),
+            2
+        );
+        // Tampered bytes against good hashes.
+        assert!(!mrpack_hash_problems(&listed(&[("sha1", sha1.as_str())]), b"tampered").is_empty());
+    }
+
+    /// A real-shaped `modrinth.index.json` pack whose files are embedded (no
+    /// network). Each file is `(path, bytes, the "hashes" object as JSON)`.
+    fn write_hashed_mrpack(dir: &Path, files: &[(&str, &[u8], String)]) -> PathBuf {
+        let path = dir.join("hashed.mrpack");
+        let listed: Vec<String> = files
+            .iter()
+            .map(|(rel, bytes, hashes)| {
+                format!(
+                    r#"{{"path":"{rel}","hashes":{hashes},"env":{{"client":"required","server":"required"}},"downloads":[],"fileSize":{}}}"#,
+                    bytes.len()
+                )
+            })
+            .collect();
+        let index = format!(
+            r#"{{"formatVersion":1,"game":"minecraft","versionId":"1.0.0","name":"Hashed","summary":"","files":[{}],
+                "dependencies":{{"minecraft":"1.20.4","fabric-loader":"0.15.0"}}}}"#,
+            listed.join(",")
+        );
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("modrinth.index.json", opts).unwrap();
+        writer.write_all(index.as_bytes()).unwrap();
+        for (rel, bytes, _) in files {
+            writer.start_file(*rel, opts).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+        path
+    }
+
+    fn both_hashes(bytes: &[u8]) -> String {
+        format!(
+            r#"{{"sha1":"{}","sha512":"{}"}}"#,
+            sha1_hex(bytes),
+            sha512_hex(bytes)
+        )
+    }
+
+    fn import_hashed(
+        path: &Path,
+        root: &Path,
+        install_anyway: bool,
+    ) -> LauncherResult<ImportResult> {
+        import_mrpack_inner(
+            path,
+            root,
+            false,
+            None,
+            None,
+            None,
+            crate::override_sanitizer::OverridePolicy::Standard,
+            None,
+            false,
+            install_anyway,
+        )
+    }
+
+    fn nothing_left_behind(root: &Path) -> bool {
+        !root.exists() || fs::read_dir(root).unwrap().next().is_none()
+    }
+
+    #[test]
+    fn mrpack_with_matching_sha1_and_sha512_imports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_hashed_mrpack(tmp.path(), &[("mods/a.jar", b"aaa", both_hashes(b"aaa"))]);
+        let imported = import_hashed(&path, &tmp.path().join("in"), false).unwrap();
+        assert_eq!(imported.imported_mods, 1);
+    }
+
+    #[test]
+    fn mrpack_with_a_wrong_sha512_stops_and_install_anyway_imports_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wrong = sha512_hex(b"other");
+        let hashes = format!(r#"{{"sha1":"{}","sha512":"{wrong}"}}"#, sha1_hex(b"aaa"));
+        let path = write_hashed_mrpack(tmp.path(), &[("mods/a.jar", b"aaa", hashes)]);
+        let root = tmp.path().join("in");
+        let stop = import_hashed(&path, &root, false).unwrap_err();
+        assert_eq!(stop.code(), MRPACK_HASH_STOP_CODE);
+        let text = stop.to_string();
+        assert!(
+            text.contains("mods/a.jar") && text.contains("SHA-512") && text.contains(&wrong),
+            "{text}"
+        );
+        assert!(
+            nothing_left_behind(&root),
+            "a stop leaves no instance or staging behind"
+        );
+
+        let imported = import_hashed(&path, &root, true).unwrap();
+        assert!(root
+            .join(&imported.instance_id)
+            .join("mods")
+            .join("a.jar")
+            .is_file());
+    }
+
+    #[test]
+    fn mrpack_with_a_wrong_sha1_and_good_sha512_also_stops() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hashes = format!(
+            r#"{{"sha1":"{}","sha512":"{}"}}"#,
+            sha1_hex(b"other"),
+            sha512_hex(b"aaa")
+        );
+        let path = write_hashed_mrpack(tmp.path(), &[("mods/a.jar", b"aaa", hashes)]);
+        let stop = import_hashed(&path, &tmp.path().join("in"), false).unwrap_err();
+        assert_eq!(stop.code(), MRPACK_HASH_STOP_CODE);
+        assert!(stop.to_string().contains("SHA-1"));
+    }
+
+    #[test]
+    fn mrpack_with_no_listed_hash_stops_labelled_as_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_hashed_mrpack(tmp.path(), &[("mods/a.jar", b"aaa", "{}".to_string())]);
+        let root = tmp.path().join("in");
+        let stop = import_hashed(&path, &root, false).unwrap_err();
+        assert_eq!(stop.code(), MRPACK_HASH_STOP_CODE);
+        assert!(
+            stop.to_string().contains("lists no SHA-1 or SHA-512"),
+            "{stop}"
+        );
+        assert!(nothing_left_behind(&root));
+        assert!(import_hashed(&path, &root, true).is_ok());
+    }
+
+    #[test]
+    fn mrpack_with_a_malformed_hash_stops_labelled_as_malformed_whatever_the_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        for bad in ["", "   ", "zz", "not hex at all"] {
+            let hashes = format!(r#"{{"sha1":"{bad}"}}"#);
+            let path = write_hashed_mrpack(tmp.path(), &[("mods/a.jar", b"aaa", hashes)]);
+            let root = tmp.path().join(format!("in-{}", bad.len()));
+            let stop = import_hashed(&path, &root, false).unwrap_err();
+            assert_eq!(stop.code(), MRPACK_HASH_STOP_CODE, "{bad:?}");
+            assert!(stop.to_string().contains("malformed"), "{bad:?}: {stop}");
+            assert!(import_hashed(&path, &root, true).is_ok(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn mrpack_stop_lists_every_bad_file_once_and_good_files_do_not_appear() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_hashed_mrpack(
+            tmp.path(),
+            &[
+                ("mods/good.jar", b"good", both_hashes(b"good")),
+                ("mods/none.jar", b"none", "{}".to_string()),
+                ("mods/wrong.jar", b"wrong", both_hashes(b"different")),
+            ],
+        );
+        let stop = import_hashed(&path, &tmp.path().join("in"), false).unwrap_err();
+        let text = stop.to_string();
+        assert!(
+            text.contains("mods/none.jar") && text.contains("mods/wrong.jar"),
+            "{text}"
+        );
+        assert!(!text.contains("mods/good.jar"), "{text}");
+        assert_eq!(text.matches("mods/none.jar").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn plan_for_a_pack_with_no_hash_notes_the_stop_instead_of_blocking_the_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_hashed_mrpack(tmp.path(), &[("mods/a.jar", b"aaa", "{}".to_string())]);
+        let plan = plan_mrpack(&path, crate::override_sanitizer::OverridePolicy::Standard).unwrap();
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("mods/a.jar") && n.contains("stop and ask")),
+            "{:?}",
+            plan.notes
+        );
+        assert!(!plan.entries[0].checkable);
+    }
+
+    #[test]
+    fn mrpack_missing_and_malformed_hashes_are_named_and_never_match() {
+        let bytes = b"mod bytes";
+        let missing = mrpack_hash_problems(&listed(&[]), bytes);
+        assert_eq!(missing.len(), 1);
+        assert!(
+            missing[0].contains("lists no SHA-1 or SHA-512"),
+            "{missing:?}"
+        );
+        assert!(missing[0].contains("mods/example.jar"));
+        // Another algorithm is not one of the two the format defines.
+        assert_eq!(
+            mrpack_hash_problems(&listed(&[("md5", "abc")]), bytes).len(),
+            1
+        );
+        let good1 = agora_core::download::sha1_hex(bytes);
+        for bad in [
+            "",
+            "   ",
+            "abc",
+            &"z".repeat(40),
+            &format!("{good1}a"),
+            &good1[1..],
+        ] {
+            let problems = mrpack_hash_problems(&listed(&[("sha1", bad)]), bytes);
+            assert_eq!(problems.len(), 1, "{bad:?}: {problems:?}");
+            assert!(problems[0].contains("malformed"), "{bad:?}: {problems:?}");
+        }
+        // A malformed SHA-512 next to a good SHA-1 is still a problem.
+        let mixed = mrpack_hash_problems(
+            &listed(&[("sha1", good1.as_str()), ("sha512", "nope")]),
+            bytes,
+        );
+        assert_eq!(mixed.len(), 1);
+        assert!(mixed[0].contains("SHA-512") && mixed[0].contains("malformed"));
     }
 
     #[test]

@@ -70,6 +70,22 @@ pub fn first_unmet<'a>(
     })
 }
 
+/// Every expectation the downloaded bytes do not meet, in order. The first is
+/// what a confirmation names; the rest are listed too, so one "install anyway"
+/// never overrides a check the user was not told about.
+pub fn all_unmet<'a>(
+    actual_sha256: &str,
+    expectations: &'a [ConfirmableHash],
+) -> Vec<&'a ConfirmableHash> {
+    expectations
+        .iter()
+        .filter(|expected| {
+            !(is_sha256_hex(&expected.sha256)
+                && expected.sha256.eq_ignore_ascii_case(actual_sha256.trim()))
+        })
+        .collect()
+}
+
 /// What a download was checked against, once it has passed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadCheck {
@@ -117,14 +133,18 @@ pub fn verify_download(
     let verified = !sha256.is_empty() || !sha1.is_empty();
 
     if !accept_confirmation {
-        if let Some(unmet) = first_unmet(&actual_sha256, expectations) {
-            return Err(LauncherError::HashConfirmationRequired(HashConfirmation {
-                file: file.to_string(),
-                release: release.map(str::to_string),
-                expected: unmet.sha256.clone(),
-                actual: actual_sha256,
-                expected_from: unmet.origin,
-            }));
+        let unmet = all_unmet(&actual_sha256, expectations);
+        if let Some((first, rest)) = unmet.split_first() {
+            return Err(LauncherError::HashConfirmationRequired(Box::new(
+                HashConfirmation {
+                    file: file.to_string(),
+                    release: release.map(str::to_string),
+                    expected: first.sha256.clone(),
+                    actual: actual_sha256,
+                    expected_from: first.origin,
+                    also_unmet: rest.iter().map(|other| (*other).clone()).collect(),
+                },
+            )));
         }
     }
 
@@ -303,6 +323,40 @@ mod tests {
         )
         .expect_err("asks");
         assert_eq!(error.code(), "ERR_HASH_CONFIRMATION_REQUIRED");
+    }
+
+    #[test]
+    fn every_unmet_expectation_is_listed_not_just_the_first() {
+        let bytes = b"new bytes";
+        let curator = pin(&"ef".repeat(32));
+        let pack = ConfirmableHash {
+            origin: HashOrigin::PackPin,
+            sha256: "12".repeat(32),
+        };
+        let met = ConfirmableHash {
+            origin: HashOrigin::PreviousInstall,
+            sha256: digest_of(bytes),
+        };
+        let expectations = [pack.clone(), met, curator.clone()];
+        let error = verify_download(bytes, None, None, &expectations, false, "a.jar", None)
+            .expect_err("asks");
+        match error {
+            crate::error::LauncherError::HashConfirmationRequired(detail) => {
+                assert_eq!(detail.expected_from, HashOrigin::PackPin);
+                assert_eq!(
+                    detail.also_unmet.to_vec(),
+                    vec![curator],
+                    "the met one is not listed"
+                );
+                let text = detail.to_string();
+                assert!(
+                    text.contains(&pack.sha256) && text.contains(&"ef".repeat(32)),
+                    "{text}"
+                );
+            }
+            other => panic!("expected a confirmation, got {other:?}"),
+        }
+        assert_eq!(all_unmet(&digest_of(bytes), &[]).len(), 0);
     }
 
     #[test]

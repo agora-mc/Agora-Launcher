@@ -65,7 +65,8 @@ pub fn read_agora_pack_bytes(source_path: &str) -> LauncherResult<Vec<u8>> {
 /// creates the instance and installs each entry. `reviewed_sha256` is the
 /// fingerprint the review recorded; bytes that no longer match it are refused.
 /// `install_anyway` (Agora packs only) installs files that differ from the hash
-/// the pack lists instead of stopping to ask; a `.mrpack` ignores it.
+/// the pack lists instead of stopping to ask; for a `.mrpack` it imports files
+/// that fail the hashes the pack lists (or that it lists none for).
 pub async fn import_pack_file(
     ctx: &Ctx,
     source_path: &str,
@@ -78,7 +79,14 @@ pub async fn import_pack_file(
     let lower = source_path.to_ascii_lowercase();
     if lower.ends_with(".mrpack") {
         Ok(PackImportOutcome {
-            instance_id: import_mrpack(ctx, reviewed_sha256, name, skip_unfetchable).await?,
+            instance_id: import_mrpack(
+                ctx,
+                reviewed_sha256,
+                name,
+                skip_unfetchable,
+                install_anyway,
+            )
+            .await?,
             report: None,
         })
     } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
@@ -106,6 +114,7 @@ async fn import_mrpack(
     reviewed_sha256: Option<&str>,
     name: Option<&str>,
     skip_unfetchable: bool,
+    install_anyway: bool,
 ) -> LauncherResult<String> {
     let svc = ImportService::new(ctx.clone());
     let staged = svc.take_reviewed_copy(reviewed_sha256)?;
@@ -114,6 +123,7 @@ async fn import_mrpack(
             path: staged,
             origin_url: None,
             skip_unfetchable,
+            install_anyway,
         },
         symlink_saves: false,
     };
@@ -125,8 +135,15 @@ async fn import_mrpack(
             agora_core::event_sink::CancellationToken::new(),
         )
         .await;
+    // A hash stop keeps the reviewed copy: the same import with Install anyway needs it.
+    let stopped_on_hashes = result
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.code() == crate::import::MRPACK_HASH_STOP_CODE);
     if let Some(sha) = reviewed_sha256 {
-        svc.discard_reviewed_copy(sha);
+        if !stopped_on_hashes {
+            svc.discard_reviewed_copy(sha);
+        }
     }
     Ok(result?.instance_id)
 }

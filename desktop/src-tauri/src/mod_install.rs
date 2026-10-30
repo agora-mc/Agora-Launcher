@@ -329,6 +329,7 @@ pub async fn import_instance_pack(
     reviewed_sha256: Option<&str>,
     name: Option<&str>,
     skip_unfetchable: bool,
+    install_anyway: bool,
 ) -> LauncherResult<PackImportOutcome> {
     let ctx = crate::core_context(app)?;
     agora_game_minecraft::pack_file_import::import_pack_file(
@@ -337,9 +338,10 @@ pub async fn import_instance_pack(
         reviewed_sha256,
         name,
         skip_unfetchable,
-        // The desktop never installs past the pack's hash up front: a stopped entry
-        // is shown and the user chooses (retry_pack_import_entries).
-        false,
+        // Only after the user saw what stopped: an Agora pack's stopped entries
+        // are retried one by one (retry_pack_import_entries); a .mrpack stops as a
+        // whole and is imported again with this set.
+        install_anyway,
         &|instance_id: &str| crate::instances::create_progress_sink(app, instance_id),
     )
     .await
