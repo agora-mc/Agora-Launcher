@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use agora_core::artifact_hash::{first_unmet, ConfirmableHash, HashOrigin};
+use agora_core::artifact_hash::{all_unmet, ConfirmableHash, HashOrigin};
 use agora_core::error::HashConfirmation;
 use agora_core::task_scheduler::{BlockingPriority, TaskScheduler};
 
@@ -3599,17 +3599,19 @@ fn verify_file_add(
         return Ok(());
     }
     let actual = agora_core::download::sha256_hex(contents);
-    match first_unmet(&actual, &add.hashes.confirmable) {
+    let unmet = all_unmet(&actual, &add.hashes.confirmable);
+    match unmet.split_first() {
         None => Ok(()),
-        Some(unmet) => Err(StageFailure::Confirmation(HashConfirmation {
+        Some((first, rest)) => Err(StageFailure::Confirmation(HashConfirmation {
             file: add.target_filename.clone(),
             release: match &add.artifact {
                 ResolvedArtifact::Download(download) => recorded_version(download),
                 ResolvedArtifact::LocalFile(_) => None,
             },
-            expected: unmet.sha256.clone(),
+            expected: first.sha256.clone(),
             actual,
-            expected_from: unmet.origin,
+            expected_from: first.origin,
+            also_unmet: rest.iter().map(|other| (*other).clone()).collect(),
         })),
     }
 }

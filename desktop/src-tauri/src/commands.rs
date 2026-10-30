@@ -2718,6 +2718,8 @@ fn exports_folder(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> 
 /// whose bytes no longer match it is refused. `name` is the instance name the
 /// user chose in the review. `skip_unfetchable` is the user's "Import anyway":
 /// files with no way to be fetched are left out instead of stopping the import.
+/// `install_anyway` (a `.mrpack`) imports files that fail the hashes the pack
+/// lists, after the user was shown which ones stopped the import.
 #[tauri::command]
 pub async fn import_instance_pack(
     app: tauri::AppHandle,
@@ -2726,6 +2728,7 @@ pub async fn import_instance_pack(
     reviewed_sha256: Option<String>,
     name: Option<String>,
     skip_unfetchable: bool,
+    install_anyway: bool,
 ) -> LauncherResult<mod_install::PackImportOutcome> {
     mod_install::import_instance_pack(
         &app,
@@ -2733,6 +2736,7 @@ pub async fn import_instance_pack(
         reviewed_sha256.as_deref(),
         name.as_deref(),
         skip_unfetchable,
+        install_anyway,
     )
     .await
 }
@@ -2761,7 +2765,8 @@ pub async fn discard_pack_review(
 /// Retry the entries of an Agora pack import that needed an action (Modrinth
 /// off, say) on the instance it created. Entries already installed are skipped.
 /// `allow_modrinth_once` lets just these entries use Modrinth without turning
-/// the Modrinth setting on.
+/// the Modrinth setting on. `install_anyway` installs the given entries although
+/// they differ from the hash the modpack lists (the user was shown the stop).
 #[tauri::command]
 pub async fn retry_pack_import_entries(
     app: tauri::AppHandle,
@@ -2769,8 +2774,16 @@ pub async fn retry_pack_import_entries(
     instance_id: String,
     entries: Vec<agora_game_minecraft::agora_pack_import::AgoraPackEntry>,
     allow_modrinth_once: bool,
+    install_anyway: bool,
 ) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportReport> {
-    mod_install::retry_pack_import_entries(&app, &instance_id, entries, allow_modrinth_once).await
+    mod_install::retry_pack_import_entries(
+        &app,
+        &instance_id,
+        entries,
+        allow_modrinth_once,
+        install_anyway,
+    )
+    .await
 }
 
 /// Whether the Modrinth integration is currently enabled (Â§6.3 toggle).

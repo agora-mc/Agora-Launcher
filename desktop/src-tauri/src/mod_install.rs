@@ -329,6 +329,7 @@ pub async fn import_instance_pack(
     reviewed_sha256: Option<&str>,
     name: Option<&str>,
     skip_unfetchable: bool,
+    install_anyway: bool,
 ) -> LauncherResult<PackImportOutcome> {
     let ctx = crate::core_context(app)?;
     agora_game_minecraft::pack_file_import::import_pack_file(
@@ -337,6 +338,10 @@ pub async fn import_instance_pack(
         reviewed_sha256,
         name,
         skip_unfetchable,
+        // Only after the user saw what stopped: an Agora pack's stopped entries
+        // are retried one by one (retry_pack_import_entries); a .mrpack stops as a
+        // whole and is imported again with this set.
+        install_anyway,
         &|instance_id: &str| crate::instances::create_progress_sink(app, instance_id),
     )
     .await
@@ -344,12 +349,14 @@ pub async fn import_instance_pack(
 
 /// Try pack entries again on an existing instance (after the user turned
 /// Modrinth on, or allowed it for this import). Entries already installed are
-/// not downloaded again.
+/// not downloaded again. `install_anyway` is the user's answer to a stop on a
+/// file that differs from the hash the modpack lists.
 pub async fn retry_pack_import_entries(
     app: &tauri::AppHandle,
     instance_id: &str,
     entries: Vec<agora_game_minecraft::agora_pack_import::AgoraPackEntry>,
     allow_modrinth_once: bool,
+    install_anyway: bool,
 ) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportReport> {
     let ctx = crate::core_context(app)?;
     agora_game_minecraft::agora_pack_import::retry_agora_pack_entries(
@@ -357,6 +364,7 @@ pub async fn retry_pack_import_entries(
         instance_id,
         entries,
         allow_modrinth_once,
+        install_anyway,
     )
     .await
 }

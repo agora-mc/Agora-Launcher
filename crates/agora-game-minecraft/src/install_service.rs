@@ -9,7 +9,7 @@ use crate::install_pipeline::{
     ProgressReporter, ResolvedInstallPlan, ResolvedOperation, ReverseDepInfo,
 };
 use crate::resolver::Resolver;
-use agora_core::artifact_hash::{verify_download, ConfirmableHash, HashOrigin};
+use agora_core::artifact_hash::{is_sha256_hex, verify_download, ConfirmableHash, HashOrigin};
 use agora_core::ctx::Ctx;
 use agora_core::dependency_ops::AliasMap;
 use agora_core::error::{LauncherError, LauncherResult};
@@ -401,13 +401,18 @@ impl InstallService {
         )
     }
 
-    /// [`install_artifact`](Self::install_artifact) plus a SHA-256 the caller
-    /// *requires* the bytes to have, on top of whatever the source published.
+    /// [`install_artifact`](Self::install_artifact) plus a SHA-256 a shared pack
+    /// file pinned for this exact file, on top of whatever the source published.
     ///
-    /// A hash published by the source is checked whenever there is one; a hash
-    /// pinned by someone else (a shared pack file) is a separate requirement, so
-    /// it is checked unconditionally, before anything is written. There is no
-    /// "install anyway" for it: the caller named the exact file it expects.
+    /// A hash published by the source is checked whenever there is one, and a
+    /// mismatch there is final. The pack's hash is a separate pin: checked before
+    /// anything is written, and a mismatch stops with
+    /// `HashConfirmationRequired` (origin `PackPin`) unless
+    /// `accept_hash_confirmation` says the user chose to install it anyway. When
+    /// the source published nothing, the pack's hash is still not counted as the
+    /// source having verified the file (`hash_verified` stays `false`).
+    /// `pinned_sha256` is the catalog's curator pin for this file, held the same
+    /// way a single-mod install holds it (a mismatch asks first).
     #[allow(clippy::too_many_arguments)]
     pub async fn install_artifact_pinned(
         &self,
@@ -423,6 +428,8 @@ impl InstallService {
         expected_sha256: Option<&str>,
         required_sha256: Option<&str>,
         expected_sha512: Option<&str>,
+        pinned_sha256: Option<&str>,
+        accept_hash_confirmation: bool,
     ) -> LauncherResult<InstalledMod> {
         self.check_not_locked(instance_id)?;
 
@@ -445,8 +452,8 @@ impl InstallService {
             expected_sha256,
             required_sha256,
             expected_sha512,
-            None,
-            false,
+            pinned_sha256,
+            accept_hash_confirmation,
             bytes,
         )
     }
@@ -484,9 +491,22 @@ impl InstallService {
         let manifest_path = self.ctx.paths.instance_manifest(instance_id)?;
         let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
 
-        // Curator pin and the hash remembered from an earlier install both ask
-        // the user before a mismatch is installed. See agora_core::artifact_hash.
+        // Curator pin, the hash a modpack lists and the hash remembered from an
+        // earlier install all ask the user before a mismatch is installed. See
+        // agora_core::artifact_hash.
         let mut expectations = Vec::new();
+        if let Some(required) = required_sha256 {
+            // A pack hash that is not a well-formed digest can never be matched, so
+            // it is refused outright: confirming it would install an unchecked file.
+            let required = required.trim().to_lowercase();
+            if !is_sha256_hex(&required) {
+                return Err(LauncherError::HashMismatch);
+            }
+            expectations.push(ConfirmableHash {
+                origin: HashOrigin::PackPin,
+                sha256: required,
+            });
+        }
         if let Some(pin) = pinned_sha256
             .map(|hash| hash.trim().to_lowercase())
             .filter(|hash| !hash.is_empty())
@@ -532,12 +552,6 @@ impl InstallService {
             .filter(|h| !h.is_empty())
         {
             if agora_core::download::sha512_hex(&bytes) != published {
-                return Err(LauncherError::HashMismatch);
-            }
-        }
-        if let Some(required) = required_sha256 {
-            let required = required.trim().to_lowercase();
-            if required.is_empty() || check.sha256 != required {
                 return Err(LauncherError::HashMismatch);
             }
         }

@@ -28,6 +28,9 @@ pub enum ImportSource {
         /// Leave out files that cannot be fetched instead of stopping (the
         /// user chose "Import anyway" in the review).
         skip_unfetchable: bool,
+        /// Import even though some files do not match the hashes the pack lists
+        /// (or it lists none). Without it the import stops and names them.
+        install_anyway: bool,
     },
     /// A PrismLauncher / MultiMC instance `.zip`.
     PrismZip(PathBuf),
@@ -58,6 +61,7 @@ impl ImportSource {
             path,
             origin_url: None,
             skip_unfetchable: false,
+            install_anyway: false,
         }
     }
 }
@@ -207,6 +211,7 @@ impl ImportService {
                         path: temp_path.clone(),
                         origin_url: Some(stripped),
                         skip_unfetchable: false,
+                        install_anyway: false,
                     },
                     symlink_saves: false,
                 },
@@ -532,6 +537,7 @@ impl ImportService {
                 path,
                 origin_url,
                 skip_unfetchable,
+                install_anyway,
             } => crate::import::import_mrpack_inner(
                 &path,
                 &blocking_instances_root,
@@ -542,6 +548,7 @@ impl ImportService {
                 override_policy,
                 name_override.as_deref(),
                 skip_unfetchable,
+                install_anyway,
             ),
             ImportSource::PrismZip(path) => crate::import::import_prism_zip_named(
                 &path,
@@ -1659,6 +1666,7 @@ mod tests {
                 path: mrpack_path,
                 origin_url: Some(presigned.to_string()),
                 skip_unfetchable: false,
+                install_anyway: false,
             },
             symlink_saves: false,
         };
@@ -1914,13 +1922,14 @@ mod review_tests {
             source_of("shaderpacks/BSL.zip").source,
             PlannedSource::Bundled
         );
-        assert!(source_of("mods/nohash.jar")
-            .reason
-            .as_deref()
-            .unwrap()
-            .contains("SHA-1"));
+        // No listed hash is no longer a block: the import stops and asks.
+        assert!(!source_of("mods/nohash.jar").checkable);
+        assert!(plan
+            .notes
+            .iter()
+            .any(|n| n.contains("mods/nohash.jar") && n.contains("stop and ask")));
         assert_eq!(source_of("mods/ghost.jar").source, PlannedSource::CannotGet);
-        assert_eq!(plan.problems.len(), 1, "{:?}", plan.problems);
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
         assert_eq!(plan.soft_problems.len(), 1, "{:?}", plan.soft_problems);
         assert!(plan
             .left_out
@@ -2061,7 +2070,7 @@ mod review_tests {
     }
 
     #[test]
-    fn unfetchable_files_are_soft_and_unsafe_or_unverifiable_ones_are_hard() {
+    fn unfetchable_files_are_soft_unsafe_ones_are_hard_and_unverifiable_ones_ask() {
         let (tmp, ctx) = new_ctx();
         let index = index_with_files(serde_json::json!([
             { "path": "mods/ghost.jar", "hashes": { "sha1": SHA1 }, "downloads": [] },
@@ -2080,14 +2089,18 @@ mod review_tests {
 
         assert_eq!(plan.soft_problems.len(), 1, "{:?}", plan.soft_problems);
         assert!(plan.soft_problems[0].contains("mods/ghost.jar"));
-        assert_eq!(plan.problems.len(), 3, "{:?}", plan.problems);
-        let joined = plan.problems.join("\n");
+        // Only a path that leaves the instance is hard; hash problems stop and ask.
+        assert_eq!(plan.problems.len(), 1, "{:?}", plan.problems);
         assert!(
-            joined.contains("mods/tampered.jar"),
-            "hash mismatch is hard"
+            plan.problems[0].contains("escape.jar"),
+            "path traversal is hard"
         );
-        assert!(joined.contains("mods/nohash.jar"), "no hash is hard");
-        assert!(joined.contains("escape.jar"), "path traversal is hard");
+        let notes = plan.notes.join("\n");
+        assert!(
+            notes.contains("mods/tampered.jar"),
+            "hash mismatch asks: {notes}"
+        );
+        assert!(notes.contains("mods/nohash.jar"), "no hash asks: {notes}");
     }
 
     #[tokio::test]
@@ -2109,6 +2122,7 @@ mod review_tests {
                 path: path.clone(),
                 origin_url: None,
                 skip_unfetchable: skip,
+                install_anyway: false,
             },
             symlink_saves: false,
         };

@@ -1483,13 +1483,22 @@ impl ModrinthService {
         candidate: &RawModrinthVersionCandidate,
         project_type: &str,
     ) -> LauncherResult<InstalledMod> {
-        self.install_raw_modrinth_pinned(instance_id, project_id, candidate, project_type, None)
-            .await
+        self.install_raw_modrinth_pinned(
+            instance_id,
+            project_id,
+            candidate,
+            project_type,
+            None,
+            false,
+        )
+        .await
     }
 
-    /// [`install_raw_modrinth`](Self::install_raw_modrinth) that also requires
-    /// the downloaded bytes to have `required_sha256`, e.g. the hash a shared
-    /// pack file pinned for this exact file. Checked before anything is written.
+    /// [`install_raw_modrinth`](Self::install_raw_modrinth) that also holds the
+    /// downloaded bytes to `required_sha256`, e.g. the hash a shared pack file
+    /// pinned for this exact file. Checked before anything is written; a
+    /// mismatch asks for confirmation unless `accept_hash_confirmation` is set.
+    /// Modrinth's own published hashes are checked either way.
     pub async fn install_raw_modrinth_pinned(
         &self,
         instance_id: &str,
@@ -1497,6 +1506,7 @@ impl ModrinthService {
         candidate: &RawModrinthVersionCandidate,
         project_type: &str,
         required_sha256: Option<&str>,
+        accept_hash_confirmation: bool,
     ) -> LauncherResult<InstalledMod> {
         self.check_enabled()?;
         self.install_raw_modrinth_pinned_unchecked(
@@ -1505,6 +1515,7 @@ impl ModrinthService {
             candidate,
             project_type,
             required_sha256,
+            accept_hash_confirmation,
         )
         .await
     }
@@ -1519,6 +1530,7 @@ impl ModrinthService {
         candidate: &RawModrinthVersionCandidate,
         project_type: &str,
         required_sha256: Option<&str>,
+        accept_hash_confirmation: bool,
     ) -> LauncherResult<InstalledMod> {
         self.check_network_enabled()?;
         self.install_raw_modrinth_pinned_unchecked(
@@ -1527,6 +1539,7 @@ impl ModrinthService {
             candidate,
             project_type,
             required_sha256,
+            accept_hash_confirmation,
         )
         .await
     }
@@ -1539,6 +1552,7 @@ impl ModrinthService {
         candidate: &RawModrinthVersionCandidate,
         project_type: &str,
         required_sha256: Option<&str>,
+        accept_hash_confirmation: bool,
     ) -> LauncherResult<InstalledMod> {
         if project_type == "modpack" {
             return Err(LauncherError::Generic {
@@ -1579,6 +1593,8 @@ impl ModrinthService {
             None,
             required_sha256,
             candidate.sha512.as_deref(),
+            None,
+            accept_hash_confirmation,
         )
         .await
     }

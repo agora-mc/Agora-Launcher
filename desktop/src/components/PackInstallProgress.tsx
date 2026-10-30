@@ -2,7 +2,9 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { listen } from '@tauri-apps/api/event';
 import {
   formatError,
+  errorCode,
   importInstancePack,
+  PACK_HASH_STOP_CODE,
   importModrinthPackByUrl,
   discardPackReview,
   describeRestoreCoverage,
@@ -15,7 +17,8 @@ import {
 } from '../lib/tauri';
 import { PackImportSummary } from './PackImportSummary';
 import { PackImportReview } from './PackImportReview';
-import { importHasIssues, importHeadline, mergeRetry, needsActionOutcomes } from '../lib/packImport';
+import { PackHashStop } from './PackHashStop';
+import { confirmHashOutcomes, importHasIssues, importHeadline, mergeRetry, needsActionOutcomes } from '../lib/packImport';
 import { applyInstallPlan, describePlanAction, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
 
 export type PackInstallTask = {
@@ -173,6 +176,15 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     error: string | null;
     /** The name for the new instance; starts as the plan's free suggestion. */
     name: string;
+  } | null>(null);
+  /** A .mrpack import that stopped on hashes; Install anyway imports it again as it is. */
+  const [hashStop, setHashStop] = useState<{
+    sourcePath: string;
+    label: string;
+    reviewedSha256?: string;
+    name?: string;
+    skipUnfetchable: boolean;
+    message: string;
   } | null>(null);
 
   useEffect(() => {
@@ -395,15 +407,24 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     reviewedSha256?: string,
     name?: string,
     skipUnfetchable = false,
+    installAnyway = false,
   ) => {
     const id = `pack-file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setTaskMap((current) => ({
       ...current,
       [id]: initialTask(id, label, 'pack-file', null, label),
     }));
-    void importInstancePack(sourcePath, reviewedSha256, name, skipUnfetchable)
+    void importInstancePack(sourcePath, reviewedSha256, name, skipUnfetchable, installAnyway)
       .then((outcome) => completeImportedTask(id, outcome.instance_id, label, outcome.report))
-      .catch((cause) => failTask(id, formatError(cause)));
+      .catch((cause) => {
+        if (errorCode(cause) === PACK_HASH_STOP_CODE && !installAnyway) {
+          // Not a failure to hide: name every file and let the user decide.
+          dismissTask(id);
+          setHashStop({ sourcePath, label, reviewedSha256, name, skipUnfetchable, message: formatError(cause) });
+          return;
+        }
+        failTask(id, formatError(cause));
+      });
   };
 
   const startPackFile = (sourcePath: string, label: string) => {
@@ -471,6 +492,22 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
             // A .mrpack review staged a copy of the file; drop it.
             if (review.plan) void Promise.resolve(discardPackReview(review.plan.file_sha256)).catch(() => undefined);
             setReview(null);
+          }}
+        />
+      )}
+      {hashStop && (
+        <PackHashStop
+          label={hashStop.label}
+          message={hashStop.message}
+          onInstallAnyway={() => {
+            const stop = hashStop;
+            setHashStop(null);
+            beginPackFileImport(stop.sourcePath, stop.label, stop.reviewedSha256, stop.name, stop.skipUnfetchable, true);
+          }}
+          onCancel={() => {
+            // The stop kept the staged copy so this could be retried; drop it now.
+            if (hashStop.reviewedSha256) void Promise.resolve(discardPackReview(hashStop.reviewedSha256)).catch(() => undefined);
+            setHashStop(null);
           }}
         />
       )}
@@ -572,8 +609,24 @@ export function PackImportReports() {
       report.instance_id,
       waiting.map((outcome) => outcome.entry),
       allowModrinthOnce,
+      false,
     );
     updateImportReport(report.instance_id, mergeRetry(report, retried));
+  };
+  // The user was shown the stop for these files (they differ from the modpack's
+  // hash) and chose to install them. Only those entries are sent.
+  const installAnyway = async (report: PackImportReport) => {
+    const stopped = confirmHashOutcomes(report);
+    const retried = await retryPackImportEntries(
+      report.instance_id,
+      stopped.map((outcome) => outcome.entry),
+      false,
+      true,
+    );
+    updateImportReport(
+      report.instance_id,
+      mergeRetry(report, retried, (outcome) => outcome.status === 'needs_action' && outcome.action === 'confirm_hash'),
+    );
   };
   return (
     <aside
@@ -589,6 +642,7 @@ export function PackImportReports() {
             await setContentProviderEnabled('modrinth', true);
             await retry(report, false);
           }}
+          onInstallAnyway={() => installAnyway(report)}
           onRetry={() => retry(report, false)}
           onOpenSettings={() => window.dispatchEvent(new CustomEvent('agora-navigate', { detail: 'settings' }))}
           onDismiss={() => updateImportReport(report.instance_id, null)}
