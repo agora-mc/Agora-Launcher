@@ -1462,14 +1462,18 @@ pub fn derive_item(
 // Prefix Resolution & Queries
 // ---------------------------------------------------------------------------
 
+/// Whether `text` can name an item: non-empty lowercase hex, which can never become a path.
+fn is_item_id(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 pub fn resolve_item_id(ctx: &Ctx, prefix: &str) -> Result<String, ContentError> {
     // An empty prefix would match every item, so `remove ""` could delete the only one; ids are
     // lowercase hex, so anything else cannot name an item (and can never become a path).
-    if prefix.is_empty()
-        || !prefix
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    if !is_item_id(prefix) {
         return Err(ContentError::NotFound(prefix.to_string()));
     }
     let items_dir = ctx.paths.content_items_dir();
@@ -1509,25 +1513,91 @@ pub fn get_item(ctx: &Ctx, item_id_or_prefix: &str) -> Result<ContentItem, Conte
     Ok(item)
 }
 
-pub fn list_items(ctx: &Ctx) -> Result<Vec<ContentItem>, ContentError> {
+/// One record in the store's items folder: an item that reads, or a record that does not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ItemEntry {
+    Readable(Box<ContentItem>),
+    Damaged(DamagedItem),
+}
+
+/// An item record that cannot be read as a content item. It is listed, not dropped: the user can
+/// see it, read why it cannot be used, and remove it (`remove_item` does not parse the target).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DamagedItem {
+    /// The record's file name without `.json`.
+    pub item_id: String,
+    pub manifest_path: String,
+    /// Why the record cannot be used, naming the file and the cause.
+    pub error: String,
+}
+
+impl ItemEntry {
+    /// The item's id: from the record when it reads, otherwise from the file name.
+    pub fn item_id(&self) -> &str {
+        match self {
+            ItemEntry::Readable(item) => &item.item_id,
+            ItemEntry::Damaged(damaged) => &damaged.item_id,
+        }
+    }
+
+    /// The item, when the record reads.
+    pub fn readable(&self) -> Option<&ContentItem> {
+        match self {
+            ItemEntry::Readable(item) => Some(item),
+            ItemEntry::Damaged(_) => None,
+        }
+    }
+
+    /// The item, or the damaged record that stands in its place.
+    pub fn into_item(self) -> Result<ContentItem, DamagedItem> {
+        match self {
+            ItemEntry::Readable(item) => Ok(*item),
+            ItemEntry::Damaged(damaged) => Err(damaged),
+        }
+    }
+}
+
+/// Every record in the store, sorted by id. A record that cannot be read is returned as
+/// [`ItemEntry::Damaged`] with the reason, never skipped: a store that looks emptier than it is
+/// would hide the damage from the person who has to fix it.
+pub fn list_items(ctx: &Ctx) -> Result<Vec<ItemEntry>, ContentError> {
     let items_dir = ctx.paths.content_items_dir();
     if !items_dir.exists() {
         return Ok(Vec::new());
     }
-    let mut items = Vec::new();
+    let mut entries = Vec::new();
     for entry in std::fs::read_dir(items_dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().map(|e| e == "json").unwrap_or(false) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(item) = serde_json::from_str::<ContentItem>(&content) {
-                    items.push(item);
-                }
-            }
+            let item_id = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let read = std::fs::read_to_string(&path)
+                .map_err(|e| format!("{} cannot be read: {e}", path.display()))
+                .and_then(|text| {
+                    serde_json::from_str::<ContentItem>(&text)
+                        .map_err(|e| format!("{} is not a valid item record: {e}", path.display()))
+                });
+            entries.push(match read {
+                Ok(item) => ItemEntry::Readable(Box::new(item)),
+                Err(error) => ItemEntry::Damaged(DamagedItem {
+                    // Removal names items by hex id; a file named otherwise is not one of ours.
+                    error: if is_item_id(&item_id) {
+                        error
+                    } else {
+                        format!("{error} Its name is not an item id, so Agora cannot remove it: delete the file yourself.")
+                    },
+                    item_id,
+                    manifest_path: path.display().to_string(),
+                }),
+            });
         }
     }
-    items.sort_by(|a, b| a.item_id.cmp(&b.item_id));
-    Ok(items)
+    entries.sort_by(|a, b| a.item_id().cmp(b.item_id()));
+    Ok(entries)
 }
 
 // ---------------------------------------------------------------------------

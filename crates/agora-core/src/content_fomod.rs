@@ -111,8 +111,8 @@ pub enum FomodError {
     #[error("the chosen options install no files")]
     NothingToInstall,
     #[error(
-        "{what} depends on {condition}, which Agora cannot check ({reason}), so --defaults will \
-         not choose for it; pick its options explicitly with --choose \"Step/Group/Plugin\""
+        "{what} depends on {condition}, which Agora cannot check ({reason}), so the default choices \
+         will not choose for it; choose its options yourself"
     )]
     UnknownCondition {
         what: String,

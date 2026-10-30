@@ -49,6 +49,9 @@ const BOOT_REPLIES = {
   list_plugin_contributions: [],
   get_connectivity_status: { state: 'unknown', last_outcome_at: null },
   list_recent_play: [],
+  // The Library tab also carries the catalog and instance lists of the other slices.
+  games_instance_list: { instances: [] },
+  games_catalog_list: { entries: [], instances: [] },
 };
 
 const odin = {
@@ -59,6 +62,7 @@ const odin = {
   sourceKind: 'archive',
   sourceLabel: 'Archive: odin.zip',
   addedAtUnixMs: 1,
+  gameIds: [],
 };
 
 const sky = {
@@ -69,6 +73,7 @@ const sky = {
   sourceKind: 'archive',
   sourceLabel: 'Archive: sky.7z',
   addedAtUnixMs: 1,
+  gameIds: [],
 };
 
 const oneRow = {
@@ -140,7 +145,7 @@ test.afterEach(async ({ page }) => {
 
 test('an empty library says what to do, and adding an archive confirms it', async ({ page }) => {
   await boot(page, {
-    games_content_list: { items: [] },
+    games_content_list: { items: [], damaged: [] },
     pick_open_file: '/mods/Odin Patch.zip',
     games_content_add: { status: 'added', item: odin, objectsNew: 1, objectsRestored: 0 },
   });
@@ -153,7 +158,7 @@ test('an empty library says what to do, and adding an archive confirms it', asyn
 
 test('a stored item can be checked, and the check says what is wrong with it', async ({ page }) => {
   await boot(page, {
-    games_content_list: { items: [odin] },
+    games_content_list: { items: [odin], damaged: [] },
     games_content_verify: {
       itemId: odin.itemId,
       checked: 1,
@@ -174,7 +179,7 @@ test('a stored item can be checked, and the check says what is wrong with it', a
 
 test('removing a stored item asks first, then removes it', async ({ page }) => {
   await boot(page, {
-    games_content_list: { items: [odin] },
+    games_content_list: { items: [odin], damaged: [] },
     games_content_remove: null,
   });
   await openLibrary(page);
@@ -187,7 +192,7 @@ test('removing a stored item asks first, then removes it', async ({ page }) => {
 });
 
 test('a library that cannot be read says so and offers a retry, rather than looking empty', async ({ page }) => {
-  await boot(page, { games_content_list: { items: [] } }, {
+  await boot(page, { games_content_list: { items: [], damaged: [] } }, {
     failures: { games_content_list: { code: 'core_failed', message: 'The store index is damaged.' } },
   });
   await openLibrary(page);
@@ -201,7 +206,7 @@ test('a library that cannot be read says so and offers a retry, rather than look
 test('an instance’s content lists its load order and says where each item goes', async ({ page }) => {
   await boot(page, {
     games_instance_content_list: { instanceId: 'inst-1', items: [oneRow] },
-    games_content_list: { items: [] },
+    games_content_list: { items: [], damaged: [] },
   });
   await openInstanceContent(page);
   await page.goto('/');
@@ -214,7 +219,7 @@ test('an instance’s content lists its load order and says where each item goes
 });
 
 test('an instance whose content cannot be read says so, and does not show an empty tab', async ({ page }) => {
-  await boot(page, { games_content_list: { items: [] } }, {
+  await boot(page, { games_content_list: { items: [], damaged: [] } }, {
     failures: { games_instance_content_list: { code: 'core_failed', message: 'The instance manifest is damaged.' } },
   });
   await openInstanceContent(page);
@@ -230,7 +235,7 @@ test('an archive with an installer asks its questions, previews the files, then 
     page,
     {
       games_instance_content_list: { instanceId: 'inst-1', items: [] },
-      games_content_list: { items: [sky] },
+      games_content_list: { items: [sky], damaged: [] },
       games_instance_content_add: {
         status: 'needs_installer',
         itemId: sky.itemId,
@@ -309,4 +314,39 @@ test('an archive with an installer asks its questions, previews the files, then 
   await wizard.getByRole('button', { name: 'Install these files' }).click();
   await expect(wizard).toContainText('Installed Sky Installer (FOMOD): 1 file.');
   await expect(wizard).toContainText('It has been added to this instance.');
+});
+
+test('the Library shows the mods for this game and those that name none; a switch shows the rest', async ({ page }) => {
+  const forFallout = { ...sky, itemId: 'ffff0001', name: 'Fallout Texture Pack', gameIds: ['fallout-4'] };
+  const forSkyrim = { ...sky, itemId: 'ffff0002', name: 'Skyrim Lighting', gameIds: ['skyrim-se'] };
+  await boot(page, { games_content_list: { items: [odin, forFallout, forSkyrim], damaged: [] } });
+  await openLibrary(page);
+
+  const rows = page.getByTestId('library-item');
+  await expect(rows).toHaveCount(2);
+  await expect(page.getByText('Odin Patch')).toBeVisible();
+  await expect(page.getByText('Skyrim Lighting')).toBeVisible();
+  await expect(page.getByText('Fallout Texture Pack')).toHaveCount(0);
+
+  await page.getByLabel('Show mods for every game').check();
+  await expect(rows).toHaveCount(3);
+  await expect(page.getByText('Fallout Texture Pack')).toBeVisible();
+});
+
+test('a stored record the store cannot read is listed with its reason and can be removed', async ({ page }) => {
+  await boot(page, {
+    games_content_list: {
+      items: [odin],
+      damaged: [{ itemId: 'abc123', message: 'items/abc123.json is not a valid item record: EOF while parsing' }],
+    },
+    games_content_remove: null,
+  });
+  await openLibrary(page);
+
+  const damaged = page.getByTestId('library-damaged');
+  await expect(damaged).toContainText('A stored record cannot be read');
+  await expect(damaged).toContainText('not a valid item record');
+  await damaged.getByRole('button', { name: 'Remove' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Remove' }).click();
+  await expect(page.getByText('Removed abc123.', { exact: true })).toBeVisible();
 });

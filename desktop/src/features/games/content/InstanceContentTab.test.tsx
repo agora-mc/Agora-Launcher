@@ -50,6 +50,7 @@ const storeOther = {
   sourceKind: 'archive',
   sourceLabel: 'Archive: sky.7z',
   addedAtUnixMs: 1,
+  gameIds: [],
 };
 
 function mountTab() {
@@ -65,7 +66,7 @@ describe('InstanceContentTab', () => {
     invokeMock.mockReset();
     replies = {
       games_instance_content_list: () => ({ instanceId: 'inst-1', items: [rowA, rowB] }),
-      games_content_list: () => ({ items: [storeOther] }),
+      games_content_list: () => ({ items: [storeOther], damaged: [] }),
     };
     route();
   });

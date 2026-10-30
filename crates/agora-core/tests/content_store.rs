@@ -205,6 +205,59 @@ fn test_shared_objects_and_removal() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn list_items_shows_an_unreadable_record_as_damaged_and_it_can_be_removed() {
+    use agora_core::content_store::{list_items, ItemEntry};
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+    let folder = work.path().join("good");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("a.txt"), b"alpha").unwrap();
+    let good = add_folder(&ctx, &folder, Some("good")).unwrap();
+
+    // A record that is not JSON, and one that is JSON but not an item.
+    let items_dir = ctx.paths.content_items_dir();
+    std::fs::write(items_dir.join("abc123.json"), b"{ not json").unwrap();
+    std::fs::write(items_dir.join("notes.json"), br#"{"hello": 1}"#).unwrap();
+
+    let entries = list_items(&ctx).unwrap();
+    assert_eq!(entries.len(), 3, "nothing is skipped: {entries:?}");
+    let damaged: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            ItemEntry::Damaged(d) => Some(d),
+            ItemEntry::Readable(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        damaged
+            .iter()
+            .map(|d| d.item_id.as_str())
+            .collect::<Vec<_>>(),
+        ["abc123", "notes"]
+    );
+    for record in &damaged {
+        assert!(
+            record.error.contains("is not a valid item record"),
+            "{}",
+            record.error
+        );
+        assert!(record.error.contains(&record.item_id), "{}", record.error);
+    }
+    assert!(entries.iter().any(|entry| entry
+        .readable()
+        .is_some_and(|i| i.item_id == good.item().item_id)));
+
+    // The user can remove a damaged item record. A file that is not named like an item says so.
+    assert!(!damaged[0].error.contains("delete the file yourself"));
+    assert!(damaged[1].error.contains("delete the file yourself"));
+    // (Removing an item reads every other record, so a second damaged record has to go first.)
+    assert!(remove_item(&ctx, "abc123").is_err());
+    std::fs::remove_file(items_dir.join("notes.json")).unwrap();
+    remove_item(&ctx, "abc123").unwrap();
+    assert_eq!(list_items(&ctx).unwrap().len(), 1);
+}
+
+#[test]
 fn test_refusal_empty_component() {
     let (_tmp, ctx) = test_ctx();
     let work = tempfile::tempdir().unwrap();

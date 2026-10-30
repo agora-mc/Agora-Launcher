@@ -363,9 +363,17 @@ fn tree_hashes(root: &Path) -> BTreeMap<String, String> {
     out
 }
 
-fn item_names(ctx: &CoreContext) -> BTreeMap<String, String> {
+/// The store's items. An unreadable record fails the test: the import must not damage the store.
+fn stored_items(ctx: &CoreContext) -> Vec<content_store::ContentItem> {
     content_store::list_items(ctx)
         .unwrap()
+        .into_iter()
+        .map(|entry| entry.into_item().expect("every stored item reads"))
+        .collect()
+}
+
+fn item_names(ctx: &CoreContext) -> BTreeMap<String, String> {
+    stored_items(ctx)
         .into_iter()
         .map(|i| (i.item_id.clone(), i.name.clone()))
         .collect()
@@ -424,8 +432,7 @@ fn hostile_modlist_names_are_reported_and_never_read() {
     )
     .unwrap();
     assert!(!run.interrupted);
-    let stored: Vec<String> = content_store::list_items(&f.ctx)
-        .unwrap()
+    let stored: Vec<String> = stored_items(&f.ctx)
         .iter()
         .flat_map(|i| i.files.iter().map(|file| file.path.as_str().to_string()))
         .collect();
@@ -690,7 +697,7 @@ fn an_interrupted_import_finishes_on_rerun() {
     assert!(!second.interrupted);
     assert_eq!(game_instance::list(&f.ctx).unwrap().len(), 1);
     // Alpha was stored by the first run and is reused, not stored twice.
-    let items = content_store::list_items(&f.ctx).unwrap();
+    let items = stored_items(&f.ctx);
     let mut ids: Vec<&String> = items.iter().map(|i| &i.item_id).collect();
     ids.sort();
     ids.dedup();

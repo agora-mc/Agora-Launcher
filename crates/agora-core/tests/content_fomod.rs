@@ -938,7 +938,9 @@ fn an_unknown_game_version_refuses_a_default_and_names_the_step() {
         assert_eq!(what, "the type of 'Main/DLL/Next'");
         let text = err.to_string();
         assert!(text.contains("game version 1.6.1179.0"), "{text}");
-        assert!(text.contains("--choose"), "{text}");
+        // The text is for every adapter (the desktop shows it too), so it names no CLI flag.
+        assert!(text.contains("choose its options yourself"), "{text}");
+        assert!(!text.contains("--"), "{text}");
     }
     // An unknown condition in a visible step refuses the same way.
     let xml = format!(

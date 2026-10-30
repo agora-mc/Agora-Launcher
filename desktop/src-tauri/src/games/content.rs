@@ -9,8 +9,8 @@
 use std::path::{Path, PathBuf};
 
 use agora_core::content_store::{
-    self, AddOutcome, ContentError, ContentItem, ContentProblem, ContentSource, ProblemKind,
-    VerifyDepth,
+    self, AddOutcome, ContentError, ContentItem, ContentProblem, ContentSource, ItemEntry,
+    ProblemKind, VerifyDepth,
 };
 use agora_core::content_thunderstore::{self, ThunderstoreInstallError};
 use agora_core::game_deploy::{self, DeployError, PlacementDecision};
@@ -44,12 +44,26 @@ pub struct StoreItem {
     /// Where the item came from, in a sentence a person can read.
     pub source_label: String,
     pub added_at_unix_ms: i64,
+    /// The games the store recorded for this item (a curated catalog entry names one). Empty for
+    /// an item added by hand: nothing says which game it is for, so every game's Library shows it.
+    pub game_ids: Vec<String>,
+}
+
+/// A record in the store that cannot be read as an item. Listed so the user can see why and
+/// remove it, instead of the Library looking emptier than the store is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DamagedStoreItem {
+    pub item_id: String,
+    /// Why the record cannot be used, naming the file and the cause.
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoreList {
     pub items: Vec<StoreItem>,
+    pub damaged: Vec<DamagedStoreItem>,
 }
 
 /// The result of adding an archive or folder to the store.
@@ -198,7 +212,37 @@ pub fn store_item(item: &ContentItem) -> StoreItem {
         source_kind,
         source_label,
         added_at_unix_ms: item.added_at_unix_ms,
+        game_ids: item_game_ids(item),
     }
+}
+
+/// The games the store recorded on the item: one per curated catalog source, in order, once each.
+fn item_game_ids(item: &ContentItem) -> Vec<String> {
+    let mut games: Vec<String> = Vec::new();
+    for source in &item.sources {
+        if let ContentSource::Catalog { game, .. } = source {
+            if !games.contains(game) {
+                games.push(game.clone());
+            }
+        }
+    }
+    games
+}
+
+/// The Library's rows: readable items as rows, unreadable records beside them.
+fn store_list(entries: &[ItemEntry]) -> StoreList {
+    let mut items = Vec::new();
+    let mut damaged = Vec::new();
+    for entry in entries {
+        match entry {
+            ItemEntry::Readable(item) => items.push(store_item(item)),
+            ItemEntry::Damaged(record) => damaged.push(DamagedStoreItem {
+                item_id: record.item_id.clone(),
+                message: record.error.clone(),
+            }),
+        }
+    }
+    StoreList { items, damaged }
 }
 
 pub fn store_added(outcome: &AddOutcome) -> StoreAdded {
@@ -389,10 +433,8 @@ fn added_layer(layer: &Layer, item_id: &str, placement_reason: Option<String>) -
 pub async fn games_content_list(app: tauri::AppHandle) -> Result<StoreList, GamesError> {
     tokio::task::spawn_blocking(move || -> Result<StoreList, GamesError> {
         let ctx = crate::core_context(&app)?;
-        let items = content_store::list_items(&ctx).map_err(content_error)?;
-        Ok(StoreList {
-            items: items.iter().map(store_item).collect(),
-        })
+        let entries = content_store::list_items(&ctx).map_err(content_error)?;
+        Ok(store_list(&entries))
     })
     .await
     .map_err(|_| GamesError::new(TASK_FAILED, "Reading the library did not finish."))?
@@ -702,6 +744,40 @@ mod tests {
         assert_eq!(stored.source_kind, "archive");
         assert_eq!(stored.source_label, "Archive: Mod-1.2.zip");
         assert_eq!(stored.file_count, 1);
+    }
+
+    #[test]
+    fn a_catalog_item_names_its_game_and_a_hand_added_one_names_none() {
+        let catalog = store_item(&item(
+            "dddd",
+            json!([
+                { "kind": "catalog", "item_id": "x", "game": "skyrim-se", "release": null, "asset": "a.7z", "sha256": "ff", "verified": true, "added_at_unix_ms": 1 },
+                { "kind": "catalog", "item_id": "y", "game": "skyrim-se", "release": null, "asset": "b.7z", "sha256": "ee", "verified": true, "added_at_unix_ms": 2 },
+            ]),
+        ));
+        assert_eq!(catalog.game_ids, vec!["skyrim-se".to_string()]);
+        let by_hand = store_item(&item(
+            "eeee",
+            json!([{ "kind": "folder", "path": "D:/Mods/x", "added_at_unix_ms": 1 }]),
+        ));
+        assert!(by_hand.game_ids.is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_record_is_listed_as_damaged_not_dropped() {
+        let entries = vec![
+            ItemEntry::Readable(Box::new(item("aaaa", json!([])))),
+            ItemEntry::Damaged(content_store::DamagedItem {
+                item_id: "bbbb".into(),
+                manifest_path: "items/bbbb.json".into(),
+                error: "items/bbbb.json is not a valid item record: EOF".into(),
+            }),
+        ];
+        let list = store_list(&entries);
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.damaged.len(), 1);
+        assert_eq!(list.damaged[0].item_id, "bbbb");
+        assert!(list.damaged[0].message.contains("not a valid item record"));
     }
 
     #[test]

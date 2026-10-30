@@ -3792,6 +3792,46 @@ fn games_content_cli_lifecycle() {
 }
 
 #[test]
+fn games_content_list_shows_an_unreadable_record_as_damaged() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let mod_dir = tempfile::tempdir().unwrap();
+    std::fs::write(mod_dir.path().join("readme.txt"), b"mod content").unwrap();
+    let added = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "add",
+            mod_dir.path().to_str().unwrap(),
+            "--name",
+            "good-mod",
+        ],
+    );
+    assert!(added.status.success());
+    let items_dir = data_dir.join("content").join("items");
+    std::fs::write(items_dir.join("abcdef0.json"), b"{ not json").unwrap();
+
+    let text = run_agora(&data_dir, &["games", "content", "list"]);
+    assert!(text.status.success());
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(stdout.contains("good-mod"), "{stdout}");
+    assert!(stdout.contains("abcdef0 (DAMAGED:"), "{stdout}");
+
+    let json = run_agora_json(&data_dir, &["games", "content", "list"]);
+    let list: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let states: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["state"].as_str().unwrap())
+        .collect();
+    assert!(
+        states.contains(&"readable") && states.contains(&"damaged"),
+        "{states:?}"
+    );
+}
+
+#[test]
 fn games_content_fomod_cli_show_and_install() {
     let (_tmp, data_dir) = temp_data_dir();
     let mod_dir = tempfile::tempdir().unwrap();

@@ -409,7 +409,11 @@ impl Fixture {
     }
 
     fn content_items(&self) -> Vec<agora_core::content_store::ContentItem> {
-        content_store::list_items(&self.ctx).unwrap()
+        content_store::list_items(&self.ctx)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.into_item().expect("every stored item reads"))
+            .collect()
     }
 
     fn layer_count(&self, instance_id: &str) -> usize {

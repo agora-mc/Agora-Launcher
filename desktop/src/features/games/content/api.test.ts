@@ -7,12 +7,14 @@ import {
   addInstanceContent,
   formatBytes,
   listInstanceContent,
+  itemsForGame,
   listStore,
   moveInstanceContent,
   verifyStored,
+  type StoreItem,
 } from './api';
 
-const storeItem = {
+const storeItem: StoreItem = {
   itemId: '0151b2a0',
   name: 'Odin Patch',
   fileCount: 1,
@@ -20,6 +22,7 @@ const storeItem = {
   sourceKind: 'archive',
   sourceLabel: 'Archive: odin.zip',
   addedAtUnixMs: 1,
+  gameIds: [],
 };
 
 describe('listStore', () => {
@@ -28,14 +31,14 @@ describe('listStore', () => {
   });
 
   it('returns the items the backend lists', async () => {
-    invokeMock.mockResolvedValueOnce({ items: [storeItem] });
-    await expect(listStore()).resolves.toEqual({ items: [storeItem] });
+    invokeMock.mockResolvedValueOnce({ items: [storeItem], damaged: [] });
+    await expect(listStore()).resolves.toEqual({ items: [storeItem], damaged: [] });
     expect(invokeMock).toHaveBeenCalledWith('games_content_list');
   });
 
   it('accepts an empty library as an empty list, not as a failure', async () => {
-    invokeMock.mockResolvedValueOnce({ items: [] });
-    await expect(listStore()).resolves.toEqual({ items: [] });
+    invokeMock.mockResolvedValueOnce({ items: [], damaged: [] });
+    await expect(listStore()).resolves.toEqual({ items: [], damaged: [] });
   });
 
   it.each([
@@ -43,7 +46,10 @@ describe('listStore', () => {
     ['a bare array', [storeItem]],
     ['an object without items', { other: [] }],
     ['items that are not a list', { items: 'Odin Patch' }],
-    ['an item without an id', { items: [{ name: 'Odin Patch', sourceLabel: 'x' }] }],
+    ['an item without an id', { items: [{ name: 'Odin Patch', sourceLabel: 'x', gameIds: [] }], damaged: [] }],
+    ['an item without its games', { items: [{ ...storeItem, gameIds: undefined }], damaged: [] }],
+    ['items without the damaged list', { items: [storeItem] }],
+    ['a damaged record without a reason', { items: [], damaged: [{ itemId: 'abc' }] }],
   ])('rejects %s rather than reading it as an empty library', async (_label, reply) => {
     invokeMock.mockResolvedValueOnce(reply);
     await expect(listStore()).rejects.toThrow('games_content_list did not return a list of items.');
@@ -52,6 +58,22 @@ describe('listStore', () => {
   it('passes the backend error through when the command fails', async () => {
     invokeMock.mockRejectedValueOnce({ code: 'core_failed', message: 'The store index is damaged.' });
     await expect(listStore()).rejects.toMatchObject({ code: 'core_failed', message: 'The store index is damaged.' });
+  });
+});
+
+describe('itemsForGame', () => {
+  const byHand = { ...storeItem, itemId: 'a', gameIds: [] };
+  const skyrimOnly = { ...storeItem, itemId: 'b', gameIds: ['skyrim-se'] };
+  const fallout = { ...storeItem, itemId: 'c', gameIds: ['fallout-4'] };
+  const both = { ...storeItem, itemId: 'd', gameIds: ['fallout-4', 'skyrim-se'] };
+
+  it('keeps the items for the game and those that name no game', () => {
+    const shown = itemsForGame([byHand, skyrimOnly, fallout, both], 'skyrim-se', false);
+    expect(shown.map((item) => item.itemId)).toEqual(['a', 'b', 'd']);
+  });
+
+  it('shows everything when asked to', () => {
+    expect(itemsForGame([byHand, skyrimOnly, fallout], 'skyrim-se', true)).toHaveLength(3);
   });
 });
 

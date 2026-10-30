@@ -1,7 +1,8 @@
 /**
  * The Library's content store: the archives and folders the user has added, each kept once.
- * Add, check, and remove. The store is shared by every game, so the section does not filter by
- * the game it sits in (the core records a game only on curated catalog items).
+ * Add, check, and remove. The store is shared by every game; the core records a game only on
+ * curated catalog items, so the section shows the items for its game plus those that name none,
+ * and a switch shows the rest. A record the store cannot read is listed so it can be removed.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -11,17 +12,19 @@ import { isGamesError } from '../shared/types';
 import {
   addToStore,
   formatBytes,
+  itemsForGame,
   listStore,
   pickArchive,
   pickFolder,
   removeStored,
   verifyStored,
+  type DamagedStoreItem,
   type StoreItem,
   type VerifyReport,
 } from './api';
 
 export interface LibraryStoreSectionProps {
-  /** The game the Library tab is for. The store itself is shared, so the section does not use it. */
+  /** The game the Library tab is for. */
   gameId: string;
 }
 
@@ -35,9 +38,11 @@ function fileCount(count: number): string {
   return `${count} file${count === 1 ? '' : 's'}`;
 }
 
-export function LibraryStoreSection(_props: LibraryStoreSectionProps) {
+export function LibraryStoreSection({ gameId }: LibraryStoreSectionProps) {
   const { confirm } = useConfirm();
   const [items, setItems] = useState<StoreItem[] | null>(null);
+  const [damaged, setDamaged] = useState<DamagedStoreItem[]>([]);
+  const [showAll, setShowAll] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -49,9 +54,11 @@ export function LibraryStoreSection(_props: LibraryStoreSectionProps) {
     try {
       const list = await listStore();
       setItems(list.items);
+      setDamaged(list.damaged);
     } catch (error) {
       // Not "empty": the list did not come back, so the section says so and offers a retry.
       setItems(null);
+      setDamaged([]);
       setLoadError(errorMessage(error));
     }
   }, []);
@@ -59,6 +66,8 @@ export function LibraryStoreSection(_props: LibraryStoreSectionProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const shown = items === null ? [] : itemsForGame(items, gameId, showAll);
 
   const addFrom = async (pick: () => Promise<string | null>, what: string) => {
     setNotice(null);
@@ -95,7 +104,7 @@ export function LibraryStoreSection(_props: LibraryStoreSectionProps) {
     }
   };
 
-  const remove = async (item: StoreItem) => {
+  const remove = async (item: { itemId: string; name: string }) => {
     const confirmed = await confirm({
       title: `Remove ${item.name} from your library?`,
       body: 'Its files are deleted from Agora’s store. This cannot be undone.',
@@ -158,16 +167,57 @@ export function LibraryStoreSection(_props: LibraryStoreSectionProps) {
 
       {!loadError && items === null && <p className="text-sm text-muted-foreground">Reading your library…</p>}
 
-      {items !== null && items.length === 0 && (
+      {items !== null && items.length > 0 && (
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <input type="checkbox" checked={showAll} onChange={(event) => setShowAll(event.target.checked)} />
+          Show mods for every game
+        </label>
+      )}
+
+      {items !== null && items.length === 0 && damaged.length === 0 && (
         <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
           Your library is empty. Add an archive or a folder you downloaded, and it will show up here, ready to add to
           any instance.
         </p>
       )}
 
-      {items !== null && items.length > 0 && (
+      {items !== null && items.length > 0 && shown.length === 0 && (
+        <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground" data-testid="library-filtered-out">
+          None of the {items.length} stored mod{items.length === 1 ? ' is' : 's are'} for this game. Turn on &ldquo;Show
+          mods for every game&rdquo; to see {items.length === 1 ? 'it' : 'them'}.
+        </p>
+      )}
+
+      {damaged.length > 0 && (
+        <ul className="space-y-2" aria-label="Damaged records">
+          {damaged.map((record) => (
+            <li
+              key={record.itemId}
+              className="rounded-xl border border-destructive/50 bg-destructive/10 p-4"
+              data-testid="library-damaged"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 space-y-0.5">
+                  <p className="font-medium">A stored record cannot be read</p>
+                  <p className="text-sm">{record.message}</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void remove({ itemId: record.itemId, name: record.itemId })}
+                  disabled={busy !== null}
+                >
+                  Remove
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {items !== null && shown.length > 0 && (
         <ul className="space-y-2">
-          {items.map((item) => {
+          {shown.map((item) => {
             const report = reports[item.itemId];
             return (
               <li key={item.itemId} className="rounded-xl border border-border bg-card p-4" data-testid="library-item">

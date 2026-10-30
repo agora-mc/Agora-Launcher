@@ -878,8 +878,9 @@ fn stored_copy(
     };
     let release = plan.source.release().map(str::to_string);
     let file = plan.source.file_name().to_string();
-    let items = content_store::list_items(ctx).map_err(|e| generic("ERR_CONTENT_STORE", e))?;
-    for item in items {
+    let entries = content_store::list_items(ctx).map_err(|e| generic("ERR_CONTENT_STORE", e))?;
+    // A damaged record names no source, so it can match nothing here; the Library lists it.
+    for item in entries.iter().filter_map(|entry| entry.readable()) {
         let imported_from_this_file = item.sources.iter().any(|source| {
             matches!(
                 source,
@@ -959,7 +960,7 @@ fn stored_copy(
             ),
             confirmed_past: None,
         };
-        return Ok(Some((item, size, hash)));
+        return Ok(Some((item.clone(), size, hash)));
     }
     Ok(None)
 }
@@ -972,8 +973,9 @@ fn remembered_hash(
     release: Option<&str>,
     asset: &str,
 ) -> LauncherResult<Option<String>> {
-    let items = content_store::list_items(ctx).map_err(|e| generic("ERR_CONTENT_STORE", e))?;
-    for item in items {
+    let entries = content_store::list_items(ctx).map_err(|e| generic("ERR_CONTENT_STORE", e))?;
+    // A damaged record names no source, so it remembers no hash; the Library lists it.
+    for item in entries.iter().filter_map(|entry| entry.readable()) {
         for source in &item.sources {
             if let ContentSource::Catalog {
                 item_id: id,

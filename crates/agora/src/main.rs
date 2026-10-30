@@ -6121,7 +6121,15 @@ async fn run_command(
                     } else if items.is_empty() {
                         println!("No content items found.");
                     } else {
-                        for item in items {
+                        for entry in items {
+                            let item = match entry {
+                                agora_core::content_store::ItemEntry::Readable(item) => item,
+                                agora_core::content_store::ItemEntry::Damaged(damaged) => {
+                                    // Listed, not skipped: `games content remove` clears it.
+                                    println!("{} (DAMAGED: {})", damaged.item_id, damaged.error);
+                                    continue;
+                                }
+                            };
                             let short_id = &item.item_id[..12.min(item.item_id.len())];
                             let sources_str = item
                                 .sources
@@ -11095,6 +11103,17 @@ fn print_plan(
 }
 
 /// Print an error the way the other `games content` commands do, and exit 1.
+/// A refusal from the installer's default choices, with the CLI flag that answers it. The core's
+/// text is adapter-neutral; the flag belongs to this adapter.
+fn defaults_refusal_text(error: &agora_core::content_fomod::FomodError) -> String {
+    match error {
+        agora_core::content_fomod::FomodError::UnknownCondition { .. } => {
+            format!("{error} (pick its options with --choose \"Step/Group/Plugin\")")
+        }
+        other => other.to_string(),
+    }
+}
+
 fn exit_with_error(json: bool, message: &str) -> ! {
     if json {
         let out = serde_json::json!({
@@ -11281,7 +11300,7 @@ fn run_fomod_command(
             let choices = if defaults {
                 match fomod::defaults_over(&installer, &explicit, context.as_ref()) {
                     Ok(c) => c,
-                    Err(e) => exit_with_error(json, &e.to_string()),
+                    Err(e) => exit_with_error(json, &defaults_refusal_text(&e)),
                 }
             } else {
                 fomod::merge_choices(Vec::new(), explicit)
@@ -13362,6 +13381,21 @@ mod tests {
             exit_code_from_launcher_error(&LauncherError::UserDecisionRequired),
             71
         );
+    }
+
+    #[test]
+    fn a_default_choice_refusal_names_the_choose_flag_for_the_cli() {
+        let refusal = agora_core::content_fomod::FomodError::UnknownCondition {
+            what: "a step".into(),
+            condition: "game version 1.6".into(),
+            reason: "the game version is unknown".into(),
+        };
+        let text = super::defaults_refusal_text(&refusal);
+        assert!(text.contains("--choose \"Step/Group/Plugin\""), "{text}");
+        assert!(text.contains("game version 1.6"), "{text}");
+        let other =
+            super::defaults_refusal_text(&agora_core::content_fomod::FomodError::NothingToInstall);
+        assert_eq!(other, "the chosen options install no files");
     }
 
     #[test]

@@ -18,10 +18,19 @@ export interface StoreItem {
   sourceKind: SourceKind;
   sourceLabel: string;
   addedAtUnixMs: number;
+  /** The games the store recorded for the item. Empty when nothing says (an item added by hand). */
+  gameIds: string[];
+}
+
+/** A record in the store that cannot be read as an item: listed so it can be seen and removed. */
+export interface DamagedStoreItem {
+  itemId: string;
+  message: string;
 }
 
 export interface StoreList {
   items: StoreItem[];
+  damaged: DamagedStoreItem[];
 }
 
 export interface StoreAdded {
@@ -97,16 +106,43 @@ function hasItemList(value: unknown): value is { items: unknown[] } {
 function isStoreItem(value: unknown): value is StoreItem {
   if (typeof value !== 'object' || value === null) return false;
   const item = value as Partial<StoreItem>;
-  return typeof item.itemId === 'string' && typeof item.name === 'string' && typeof item.sourceLabel === 'string';
+  return (
+    typeof item.itemId === 'string' &&
+    typeof item.name === 'string' &&
+    typeof item.sourceLabel === 'string' &&
+    Array.isArray(item.gameIds) &&
+    item.gameIds.every((id) => typeof id === 'string')
+  );
 }
 
-/** The content store. Rejects if the reply is not a list of items. */
+function isDamagedStoreItem(value: unknown): value is DamagedStoreItem {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Partial<DamagedStoreItem>;
+  return typeof record.itemId === 'string' && typeof record.message === 'string';
+}
+
+/** The content store. Rejects if the reply is not a list of items and a list of damaged records. */
 export async function listStore(): Promise<StoreList> {
   const reply: unknown = await invoke<unknown>('games_content_list');
-  if (!hasItemList(reply) || !reply.items.every(isStoreItem)) {
+  const damaged = (reply as { damaged?: unknown } | null)?.damaged;
+  if (
+    !hasItemList(reply) ||
+    !reply.items.every(isStoreItem) ||
+    !Array.isArray(damaged) ||
+    !damaged.every(isDamagedStoreItem)
+  ) {
     throw new Error('games_content_list did not return a list of items.');
   }
   return reply as StoreList;
+}
+
+/**
+ * The items the Library of `gameId` shows: those recorded for that game, and those that name no
+ * game (added by hand, so nothing says they belong elsewhere). `showAll` lifts the filter.
+ */
+export function itemsForGame(items: StoreItem[], gameId: string, showAll: boolean): StoreItem[] {
+  if (showAll) return items;
+  return items.filter((item) => item.gameIds.length === 0 || item.gameIds.includes(gameId));
 }
 
 /** Add an archive or a folder to the store. A blank name keeps the item's own. */
