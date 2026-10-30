@@ -2850,7 +2850,7 @@ pub enum AddToInstance {
         /// The item the layer holds: the one asked for, or for a Thunderstore package the item
         /// derived from it.
         item_id: String,
-        layer: Layer,
+        layer: Box<Layer>,
         /// Why the item went where it did, when the content rules chose (not for a package).
         placement_reason: Option<String>,
         thunderstore: Option<ThunderstoreAdded>,
@@ -2914,7 +2914,7 @@ pub fn add_to_instance(
                 crate::content_thunderstore::install_thunderstore(ctx, instance_id, item_id)?;
             return Ok(AddToInstance::Added {
                 item_id: outcome.derived_item.item_id.clone(),
-                layer: outcome.layer,
+                layer: Box::new(outcome.layer),
                 placement_reason: None,
                 thunderstore: Some(ThunderstoreAdded {
                     package_name: package.name,
@@ -2939,7 +2939,7 @@ pub fn add_to_instance(
             let layer = add_content(ctx, instance_id, item_id, mount, source)?;
             Ok(AddToInstance::Added {
                 item_id: item_id.to_string(),
-                layer,
+                layer: Box::new(layer),
                 placement_reason: Some(reason),
                 thunderstore: None,
             })

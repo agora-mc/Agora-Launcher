@@ -7185,7 +7185,7 @@ async fn run_command(
                                 into.as_deref(),
                                 from.as_deref(),
                             ) {
-                                Ok(layer) => (item_id.clone(), layer),
+                                Ok(layer) => (item_id.clone(), Box::new(layer)),
                                 Err(e) => exit_with_error(json, &e.to_string()),
                             }
                         } else {

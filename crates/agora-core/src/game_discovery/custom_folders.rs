@@ -641,7 +641,7 @@ mod tests {
             inventory
                 .installs
                 .iter()
-                .any(|i| i.game.to_string() == "folder-only-game"),
+                .any(|i| i.game.as_str() == "folder-only-game"),
             "the custom folder is in the inventory"
         );
     }
