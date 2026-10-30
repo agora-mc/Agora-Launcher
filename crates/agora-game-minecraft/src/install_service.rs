@@ -411,6 +411,8 @@ impl InstallService {
     /// `accept_hash_confirmation` says the user chose to install it anyway. When
     /// the source published nothing, the pack's hash is still not counted as the
     /// source having verified the file (`hash_verified` stays `false`).
+    /// `pinned_sha256` is the catalog's curator pin for this file, held the same
+    /// way a single-mod install holds it (a mismatch asks first).
     #[allow(clippy::too_many_arguments)]
     pub async fn install_artifact_pinned(
         &self,
@@ -426,6 +428,7 @@ impl InstallService {
         expected_sha256: Option<&str>,
         required_sha256: Option<&str>,
         expected_sha512: Option<&str>,
+        pinned_sha256: Option<&str>,
         accept_hash_confirmation: bool,
     ) -> LauncherResult<InstalledMod> {
         self.check_not_locked(instance_id)?;
@@ -449,7 +452,7 @@ impl InstallService {
             expected_sha256,
             required_sha256,
             expected_sha512,
-            None,
+            pinned_sha256,
             accept_hash_confirmation,
             bytes,
         )

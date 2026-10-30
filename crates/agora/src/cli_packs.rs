@@ -61,6 +61,12 @@ pub struct PackImportArgs {
         help = "Import even though some files cannot be fetched; they are left out"
     )]
     pub import_anyway: bool,
+    #[arg(
+        long,
+        help = "Install mods that differ from the SHA-256 the pack lists (Agora packs). \
+                Without it they are not installed and the files and hashes are printed"
+    )]
+    pub install_anyway: bool,
 }
 
 fn confirm(question: &str, refusal: &str) -> anyhow::Result<bool> {
@@ -294,6 +300,7 @@ pub async fn pack_import(
         Some(&review_id),
         args.name.as_deref(),
         args.import_anyway,
+        args.install_anyway,
         &|_instance_id: &str| ctx.progress_sink.clone(),
     )
     .await
@@ -304,7 +311,16 @@ pub async fn pack_import(
             anyhow::Error::from(error)
         }
     })?;
-    svc.discard_reviewed_copy(&review_id);
+    // A mod stopped on the pack's hash can still be installed with --install-anyway,
+    // which needs the reviewed copy again, so keep it until nothing is waiting.
+    let stopped_on_hash = outcome.report.as_ref().is_some_and(|report| {
+        report.outcomes.iter().any(|o| {
+            o.action == Some(agora_game_minecraft::agora_pack_import::PackNeedsAction::ConfirmHash)
+        })
+    });
+    if !stopped_on_hash {
+        svc.discard_reviewed_copy(&review_id);
+    }
     wait_for_initial_snapshot(ctx, &outcome.instance_id)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&outcome)?);
@@ -333,6 +349,13 @@ pub async fn pack_import(
             }
             for warning in &report.warnings {
                 println!("  Note: {warning}");
+            }
+            if stopped_on_hash {
+                println!(
+                    "  To install the mods that differ from the pack's hash, trust the pack and run: \
+                     agora pack import {review_id} --name \"<new name>\" --install-anyway \
+                     (this makes a second instance)"
+                );
             }
         }
     }

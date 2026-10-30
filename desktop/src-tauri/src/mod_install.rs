@@ -337,6 +337,9 @@ pub async fn import_instance_pack(
         reviewed_sha256,
         name,
         skip_unfetchable,
+        // The desktop never installs past the pack's hash up front: a stopped entry
+        // is shown and the user chooses (retry_pack_import_entries).
+        false,
         &|instance_id: &str| crate::instances::create_progress_sink(app, instance_id),
     )
     .await

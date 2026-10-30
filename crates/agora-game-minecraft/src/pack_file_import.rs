@@ -64,12 +64,15 @@ pub fn read_agora_pack_bytes(source_path: &str) -> LauncherResult<Vec<u8>> {
 /// Import a pack file. `.mrpack` goes through [`ImportService`]; `.agora-pack.json`
 /// creates the instance and installs each entry. `reviewed_sha256` is the
 /// fingerprint the review recorded; bytes that no longer match it are refused.
+/// `install_anyway` (Agora packs only) installs files that differ from the hash
+/// the pack lists instead of stopping to ask; a `.mrpack` ignores it.
 pub async fn import_pack_file(
     ctx: &Ctx,
     source_path: &str,
     reviewed_sha256: Option<&str>,
     name: Option<&str>,
     skip_unfetchable: bool,
+    install_anyway: bool,
     create_progress: CreateProgressFactory<'_>,
 ) -> LauncherResult<PackImportOutcome> {
     let lower = source_path.to_ascii_lowercase();
@@ -79,7 +82,15 @@ pub async fn import_pack_file(
             report: None,
         })
     } else if lower.ends_with(".json") || lower.ends_with(".agora-pack.json") {
-        import_agora_json(ctx, source_path, reviewed_sha256, name, create_progress).await
+        import_agora_json(
+            ctx,
+            source_path,
+            reviewed_sha256,
+            name,
+            install_anyway,
+            create_progress,
+        )
+        .await
     } else {
         Err(LauncherError::Generic {
             code: "ERR_INVALID_FORMAT".into(),
@@ -127,6 +138,7 @@ async fn import_agora_json(
     source_path: &str,
     reviewed_sha256: Option<&str>,
     name_override: Option<&str>,
+    install_anyway: bool,
     create_progress: CreateProgressFactory<'_>,
 ) -> LauncherResult<PackImportOutcome> {
     // One read: the bytes checked against the reviewed fingerprint are the
@@ -171,7 +183,8 @@ async fn import_agora_json(
     creating.create(req).await?;
     let instances = InstanceService::new(ctx.clone());
     let mut report =
-        agora_pack_import::install_agora_pack_mods(ctx, &instance_id, &name, pack).await;
+        agora_pack_import::install_agora_pack_mods(ctx, &instance_id, &name, pack, install_anyway)
+            .await;
     if agora_pack_import::nothing_installed_for_lack_of_connection(&report) {
         // Nothing usable was made, so do not leave an empty instance behind.
         // It goes to the trash, and a later import starts clean.
@@ -236,7 +249,16 @@ mod tests {
         };
         // The loader download needs a network, so the import may fail; the
         // create step still reports before that.
-        let _ = import_pack_file(&ctx, &path, Some(&plan.file_sha256), None, false, &factory).await;
+        let _ = import_pack_file(
+            &ctx,
+            &path,
+            Some(&plan.file_sha256),
+            None,
+            false,
+            false,
+            &factory,
+        )
+        .await;
 
         assert_eq!(*seen_ids.lock().unwrap(), vec!["prog-pack".to_string()]);
         assert!(

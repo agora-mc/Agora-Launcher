@@ -1593,6 +1593,7 @@ impl ModrinthService {
             None,
             required_sha256,
             candidate.sha512.as_deref(),
+            None,
             accept_hash_confirmation,
         )
         .await
