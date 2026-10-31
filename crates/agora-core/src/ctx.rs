@@ -595,8 +595,10 @@ mod tests {
     fn test_clock_abstraction() {
         let start = std::time::SystemTime::now();
         let test_clock = TestClock::new(start);
-        let ctx = CoreContext::for_testing(std::env::temp_dir().join("agora-clock-test"))
-            .with_clock(Arc::new(test_clock));
+        let ctx = CoreContext::for_testing(
+            std::env::temp_dir().join(format!("agora-clock-test-{}", std::process::id())),
+        )
+        .with_clock(Arc::new(test_clock));
         let _now = ctx.clock.now();
     }
 

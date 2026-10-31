@@ -12379,7 +12379,8 @@ mod tests {
 
         static TEST_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let seq = TEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = std::env::temp_dir().join(format!("agora-cli-mod-test-{}", seq));
+        let tmp =
+            std::env::temp_dir().join(format!("agora-cli-mod-test-{}-{}", std::process::id(), seq));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("create tmp");
 

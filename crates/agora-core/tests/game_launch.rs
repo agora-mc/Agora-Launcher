@@ -549,13 +549,15 @@ fn launch_and_watch_standin_process() {
     std::fs::create_dir_all(&install_dir).unwrap();
     let paths = AppPaths::from_root(data_dir);
 
-    // Copy PING.EXE into the fake install as PingGame.exe
-    let fake_game_exe = install_dir.join("PingGame.exe");
+    // Copy PING.EXE into the fake install under a process-unique name, so a
+    // concurrent test run's stand-in process is not mistaken for this one.
+    let exe_name = format!("PingGame-{}.exe", std::process::id());
+    let fake_game_exe = install_dir.join(&exe_name);
     std::fs::copy(ping_sys_path, &fake_game_exe).unwrap();
 
     let recipe = LaunchRecipe {
         executable: GamePath::Runtime {
-            path: RelPath::new("PingGame.exe").unwrap(),
+            path: RelPath::new(&exe_name).unwrap(),
         },
         arguments: vec![
             LaunchValue::Literal { value: "-n".into() },
@@ -644,10 +646,12 @@ fn only_a_process_started_after_launch_counts_as_relaunched_outside() {
     for dir in [&data_dir, &install_dir, &elsewhere] {
         std::fs::create_dir_all(dir).unwrap();
     }
-    std::fs::copy(ping, install_dir.join("PingRelaunch.exe")).unwrap();
-    std::fs::copy(ping, elsewhere.join("PingRelaunch.exe")).unwrap();
+    // Process-unique, so a concurrent test run's stand-in is not mistaken for ours.
+    let exe_name = format!("PingRelaunch-{}.exe", std::process::id());
+    std::fs::copy(ping, install_dir.join(&exe_name)).unwrap();
+    std::fs::copy(ping, elsewhere.join(&exe_name)).unwrap();
     let run_elsewhere = |count: &str| {
-        std::process::Command::new(elsewhere.join("PingRelaunch.exe"))
+        std::process::Command::new(elsewhere.join(&exe_name))
             .args(["-n", count, "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .spawn()
@@ -656,7 +660,7 @@ fn only_a_process_started_after_launch_counts_as_relaunched_outside() {
 
     let recipe = LaunchRecipe {
         executable: GamePath::Runtime {
-            path: RelPath::new("PingRelaunch.exe").unwrap(),
+            path: RelPath::new(&exe_name).unwrap(),
         },
         arguments: ["-n", "3", "127.0.0.1"]
             .into_iter()

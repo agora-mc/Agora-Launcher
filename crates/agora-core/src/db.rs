@@ -1831,7 +1831,7 @@ mod tests {
     /// Helper: create a unique temp-file-backed test database with migrations applied.
     fn test_db() -> (Connection, PathBuf) {
         let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("agora-test-{}.db", n));
+        let path = std::env::temp_dir().join(format!("agora-test-{}-{}.db", std::process::id(), n));
         let _ = std::fs::remove_file(&path);
         init_local_state_db(&path).expect("failed to init test db");
         let conn = Connection::open(&path).expect("failed to open test db");

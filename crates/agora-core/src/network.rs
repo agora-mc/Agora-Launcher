@@ -184,7 +184,11 @@ mod tests {
 
     fn test_db() -> rusqlite::Connection {
         let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("agora-network-test-{}.db", n));
+        let path = std::env::temp_dir().join(format!(
+            "agora-network-test-{}-{}.db",
+            std::process::id(),
+            n
+        ));
         let _ = std::fs::remove_file(&path);
         let _ = crate::db::init_local_state_db(&path);
         rusqlite::Connection::open(&path).expect("test db")
@@ -266,7 +270,8 @@ mod tests {
         // Connection with NO launch-network keys at all — all categories
         // default to enabled (first-party network defaults).
         let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("agora-network-raw-{}.db", n));
+        let path =
+            std::env::temp_dir().join(format!("agora-network-raw-{}-{}.db", std::process::id(), n));
         let _ = std::fs::remove_file(&path);
         let conn = rusqlite::Connection::open(&path).expect("raw test db");
         // Apply only minimal schema (no init, no default settings).

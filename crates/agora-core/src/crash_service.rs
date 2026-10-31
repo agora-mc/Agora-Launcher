@@ -1616,7 +1616,11 @@ mod tests {
     /// Initializes the local state database so connection-based methods work.
     fn setup_ctx() -> (CoreContext, PathBuf) {
         let seq = TEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = std::env::temp_dir().join(format!("agora-crash-svc-test-{}", seq));
+        let tmp = std::env::temp_dir().join(format!(
+            "agora-crash-svc-test-{}-{}",
+            std::process::id(),
+            seq
+        ));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let ctx = CoreContext::for_testing(tmp.clone());

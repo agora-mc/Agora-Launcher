@@ -2026,7 +2026,8 @@ mod tests {
             worlds: vec![],
             user_preferences: serde_json::json!({}),
         };
-        let dir = std::env::temp_dir().join("agora_health_test_empty");
+        let dir =
+            std::env::temp_dir().join(format!("agora_health_test_empty-{}", std::process::id()));
         let _ = std::fs::create_dir_all(dir.join("mods"));
         let report = health(&dir, &manifest, None);
         assert_eq!(report.score, HealthScore::Green);
@@ -2076,7 +2077,10 @@ mod tests {
             worlds: vec![],
             user_preferences: serde_json::json!({}),
         };
-        let dir = std::env::temp_dir().join("agora_health_test_missing_dep");
+        let dir = std::env::temp_dir().join(format!(
+            "agora_health_test_missing_dep-{}",
+            std::process::id()
+        ));
         let mods_dir = dir.join("mods");
         let _ = std::fs::create_dir_all(&mods_dir);
         // No fabric-api.jar present, but mod-with-dep.jar declares it as required

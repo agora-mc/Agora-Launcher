@@ -2228,7 +2228,10 @@ mod tests {
     #[test]
     fn an_empty_or_unreadable_mods_folder_satisfies_nothing() {
         let mods = [installed("sodium.jar", Some("sodium"), &[], &[])];
-        let missing_dir = std::env::temp_dir().join("agora_deps_no_such_instance_dir");
+        let missing_dir = std::env::temp_dir().join(format!(
+            "agora_deps_no_such_instance_dir-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&missing_dir);
         assert!(mod_jars_on_disk(&missing_dir).is_empty());
         assert!(!satisfies_dependency(
