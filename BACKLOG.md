@@ -246,6 +246,7 @@
   - **Detail:** New `scripts/fetch_registry_db.py` (stdlib only) queries the GitHub Releases API for the latest `registry-*` release and downloads `registry.db` (+ `.sig` if present) to a target dir. New `.github/workflows/web-build.yml` (dispatch / daily schedule / push to `web/**`) sets up Node 20 + Python 3.11, runs the fetch script to place `registry.db` at the repo root (matching `web/src/lib/db.ts` fallback), then `npm ci && npm run build`, uploading `web/out` as `web-static`. Depends on a `registry-*` release existing (created by `compile.yml`).
   - **Spec:** §13
   - **Acceptance:** `npm run build` in CI works without a local `registry.db`.
+  - **Superseded:** `scripts/fetch_registry_db.py` was deleted with the catalog hash-policy change. `web-build.yml` compiles the catalog itself and never called it.
 
 - [x] **Category / MC version / loader filters on web**
   - **Short:** Category chips + MC version dropdown + loader filter in the web catalog. Implemented in `web/src/components/Catalog.tsx`.
@@ -608,4 +609,6 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
         Native companions only if a concrete plugin justifies them.
 
 **Explicitly out of scope for v1:** MO2 integration, Steam discovery, generic
-game adapters. These are a separate initiative and block none of the above.
+game adapters. These are a separate initiative and block none of the above. The
+plan for after v1 is MASTER_SPEC §26 (multi-game support), backed by the spike in
+`scripts/spikes/game-support/`.

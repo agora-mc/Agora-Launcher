@@ -9,17 +9,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use agora_core::ctx::Ctx;
-use agora_core::install_pipeline::{
+use agora_core::models::{InstalledMod, InstanceManifest};
+use agora_core::providers::ProviderRegistry;
+use agora_core::registry::RegistryService;
+use agora_game_minecraft::install_pipeline::{
     BatchUpdateItem, CancellationToken, InstallAction, InstallIntent, InstallOutcome,
     PlanOverrides, RequestSource,
 };
-use agora_core::install_service::InstallService;
-use agora_core::models::{InstalledMod, InstanceManifest};
-use agora_core::pack_merge::PlanActionKind;
-use agora_core::pack_update::{ConflictResolution, PackUpdateOutcome, PackUpdatePreview};
-use agora_core::providers::ProviderRegistry;
-use agora_core::registry::RegistryService;
-use agora_core::update_cache::{ItemErrorPolicy, UpdateCheckOptions, UpdateInfo};
+use agora_game_minecraft::install_service::InstallService;
+use agora_game_minecraft::pack_merge::PlanActionKind;
+use agora_game_minecraft::pack_update::{ConflictResolution, PackUpdateOutcome, PackUpdatePreview};
+use agora_game_minecraft::update_cache::{ItemErrorPolicy, UpdateCheckOptions, UpdateInfo};
 
 use crate::{print_plan, print_table, report_unresolved_plan, SilentReporter};
 
@@ -75,7 +75,7 @@ pub async fn instance_updates(
     // Refuse an unknown instance here, before any network work.
     service.load_instance(instance)?;
 
-    let updates = agora_core::update_cache::check_and_cache_instance_updates(
+    let updates = agora_game_minecraft::update_cache::check_and_cache_instance_updates(
         ctx,
         instance,
         UpdateCheckOptions {
@@ -332,7 +332,7 @@ pub async fn mod_changelog(
         anyhow::bail!("{file} is pinned, so update checks skip it. Unpin it to see its changelog.");
     }
 
-    let updates = agora_core::update_cache::check_single_instance_updates_with(
+    let updates = agora_game_minecraft::update_cache::check_single_instance_updates_with(
         ctx,
         instance,
         UpdateCheckOptions {
@@ -396,9 +396,13 @@ fn load_pack_preview(
     let load = InstallService::new(ctx.clone()).load_instance(instance)?;
     let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())?;
     let sanitized = agora_core::paths::sanitize_id(instance);
-    let preview =
-        agora_core::pack_update::preview_pack_update(&conn, &sanitized, &load.instance_dir, mrpack)
-            .map_err(anyhow::Error::msg)?;
+    let preview = agora_game_minecraft::pack_update::preview_pack_update(
+        &conn,
+        &sanitized,
+        &load.instance_dir,
+        mrpack,
+    )
+    .map_err(anyhow::Error::msg)?;
     Ok((load.instance_dir, preview))
 }
 
@@ -563,7 +567,7 @@ pub async fn pack_update(
     let instance_id = instance.to_string();
     let mrpack = mrpack.to_path_buf();
     let outcome = tokio::task::spawn_blocking(move || {
-        agora_core::pack_update::apply_pack_update(
+        agora_game_minecraft::pack_update::apply_pack_update(
             &task_ctx,
             &instance_id,
             &instance_dir,

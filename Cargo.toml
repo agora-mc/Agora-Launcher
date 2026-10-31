@@ -19,9 +19,15 @@ resolver = "2"
 members = [
     "crates/agora-core",
     "crates/agora-plugin-api",
+    "crates/agora-game-api",
+    "crates/agora-game-minecraft",
+    "crates/agora-game-creation",
     "crates/agora-plugin-host",
     "desktop/src-tauri",
     "crates/agora",
+    "crates/agora-vfs",
+    "crates/agora-vfs-inject",
+    "crates/agora-vfs/fixtures/early-import",
 ]
 
 [workspace.package]
@@ -64,3 +70,11 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# The CLI's command dispatcher is one large async fn. Unoptimised, every local
+# of every match arm gets its own slot in the poll frame, so launching an
+# instance used ~813 KB of the 1 MB Windows main-thread stack before any launch
+# work began, and growing a struct on that path (InstanceManifest) overflowed it.
+# opt-level 1 lets slots be reused: measured 290 KB at the same point.
+[profile.dev.package.agora-cli]
+opt-level = 1

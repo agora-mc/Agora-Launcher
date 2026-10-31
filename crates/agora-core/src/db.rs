@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 17;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 18;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -701,6 +701,37 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (17)",
+            [],
+        )?;
+    }
+
+    if current < 18 {
+        // Instances of games other than Minecraft (MASTER_SPEC section 26). Created here, after
+        // master's versions 16 and 17, so a database that already ran this branch's earlier
+        // version 16 still gets master's pack-gap table and play-time column; both statements are
+        // idempotent.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS game_instances (
+                 instance_id TEXT PRIMARY KEY,
+                 game TEXT NOT NULL,
+                 name TEXT NOT NULL,
+                 base_json TEXT NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 last_launched_at TEXT
+             );
+             CREATE TABLE IF NOT EXISTS instance_pack_gaps (
+                 instance_id TEXT NOT NULL,
+                 filename TEXT NOT NULL,
+                 display_name TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 reason TEXT,
+                 FOREIGN KEY (instance_id) REFERENCES user_instances(instance_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_instance_pack_gaps_instance
+                 ON instance_pack_gaps (instance_id);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (18)",
             [],
         )?;
     }
@@ -1800,7 +1831,7 @@ mod tests {
     /// Helper: create a unique temp-file-backed test database with migrations applied.
     fn test_db() -> (Connection, PathBuf) {
         let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("agora-test-{}.db", n));
+        let path = std::env::temp_dir().join(format!("agora-test-{}-{}.db", std::process::id(), n));
         let _ = std::fs::remove_file(&path);
         init_local_state_db(&path).expect("failed to init test db");
         let conn = Connection::open(&path).expect("failed to open test db");

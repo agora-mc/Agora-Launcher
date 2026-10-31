@@ -2,10 +2,10 @@
 //! `agora backup ...`: thin adapters over the same core services the desktop uses.
 
 use crate::{print_table, wait_for_initial_snapshot, OutputFormat};
-use agora_core::agora_pack_import::{PackImportPlan, PlannedSource};
 use agora_core::ctx::Ctx;
-use agora_core::launcher_import::{CandidateStatus, ImportCandidate, LauncherKind};
-use agora_core::launcher_import_service::{
+use agora_game_minecraft::agora_pack_import::{PackImportPlan, PlannedSource};
+use agora_game_minecraft::launcher_import::{CandidateStatus, ImportCandidate, LauncherKind};
+use agora_game_minecraft::launcher_import_service::{
     ImportSelection, LauncherImportPlan, LauncherImportService, PerItemOutcome,
 };
 use clap::{Args, Subcommand, ValueEnum};
@@ -61,6 +61,12 @@ pub struct PackImportArgs {
         help = "Import even though some files cannot be fetched; they are left out"
     )]
     pub import_anyway: bool,
+    #[arg(
+        long,
+        help = "Install files that fail the hashes the pack lists, or that it lists none for \
+                (Agora packs and .mrpack). Without it they are not installed and are printed"
+    )]
+    pub install_anyway: bool,
 }
 
 fn confirm(question: &str, refusal: &str) -> anyhow::Result<bool> {
@@ -96,7 +102,7 @@ pub async fn pack_export(
     let mut left_out: Vec<String> = Vec::new();
     let format_name = match args.format {
         PackExportFormat::Lockfile => {
-            let lockfile = agora_core::lockfile::build_from_instance(&instance_dir)
+            let lockfile = agora_game_minecraft::lockfile::build_from_instance(&instance_dir)
                 .map_err(|e| anyhow::anyhow!("Failed to build lockfile: {e}"))?;
             let text = lockfile
                 .to_pretty_json()
@@ -111,7 +117,7 @@ pub async fn pack_export(
             } else {
                 "mrpack"
             };
-            left_out = agora_core::export_service::sourceless_mods_of_instance(
+            left_out = agora_game_minecraft::export_service::sourceless_mods_of_instance(
                 ctx,
                 &args.instance,
                 core_format,
@@ -132,7 +138,7 @@ pub async fn pack_export(
                     anyhow::bail!("Export cancelled; nothing was written.");
                 }
             }
-            agora_core::export_service::export_pack_of_instance(
+            agora_game_minecraft::export_service::export_pack_of_instance(
                 ctx,
                 &args.instance,
                 core_format,
@@ -237,12 +243,13 @@ pub async fn pack_review(
         anyhow::bail!("Pack file '{}' does not exist", args.file.display());
     }
     let path = args.file.to_string_lossy().into_owned();
-    let plan = agora_core::pack_file_import::plan_pack_file(ctx, &path)?;
+    let plan = agora_game_minecraft::pack_file_import::plan_pack_file(ctx, &path)?;
     if !path.to_ascii_lowercase().ends_with(".mrpack") {
         // A .mrpack is staged by the review itself. Stage the Agora pack the
         // same way so the import runs on exactly the bytes reviewed.
-        let (_, staged_sha, _) = agora_core::import_service::ImportService::new(ctx.clone())
-            .stage_for_review(&args.file)?;
+        let (_, staged_sha, _) =
+            agora_game_minecraft::import_service::ImportService::new(ctx.clone())
+                .stage_for_review(&args.file)?;
         if !staged_sha.eq_ignore_ascii_case(&plan.file_sha256) {
             anyhow::bail!("The pack file changed while it was being reviewed. Review it again.");
         }
@@ -269,12 +276,12 @@ pub async fn pack_import(
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
-    let svc = agora_core::import_service::ImportService::new(ctx.clone());
+    let svc = agora_game_minecraft::import_service::ImportService::new(ctx.clone());
     let review_id = args.review_id.trim().to_ascii_lowercase();
     let staged = svc.take_reviewed_copy(Some(&review_id))?;
     let staged_path = staged.to_string_lossy().into_owned();
     // Re-plan the staged copy: hard problems always refuse, whatever the flags.
-    let plan = agora_core::pack_file_import::plan_pack_file(ctx, &staged_path)?;
+    let plan = agora_game_minecraft::pack_file_import::plan_pack_file(ctx, &staged_path)?;
     if !plan.problems.is_empty() {
         anyhow::bail!(
             "This pack cannot be imported:\n  - {}",
@@ -287,23 +294,37 @@ pub async fn pack_import(
             plan.soft_problems.join("\n  - ")
         );
     }
-    let outcome = agora_core::pack_file_import::import_pack_file(
+    let outcome = agora_game_minecraft::pack_file_import::import_pack_file(
         ctx,
         &staged_path,
         Some(&review_id),
         args.name.as_deref(),
         args.import_anyway,
+        args.install_anyway,
         &|_instance_id: &str| ctx.progress_sink.clone(),
     )
     .await
     .map_err(|error| {
         if error.code() == "ERR_INSTANCE_EXISTS" {
             anyhow::anyhow!("{error} Re-run with --name \"<new name>\" to import it as a copy.")
+        } else if error.code() == agora_game_minecraft::import::MRPACK_HASH_STOP_CODE {
+            anyhow::anyhow!(
+                "{error}\nRe-run `agora pack import {review_id} --install-anyway` to import it as it is."
+            )
         } else {
             anyhow::Error::from(error)
         }
     })?;
-    svc.discard_reviewed_copy(&review_id);
+    // A mod stopped on the pack's hash can still be installed with --install-anyway,
+    // which needs the reviewed copy again, so keep it until nothing is waiting.
+    let stopped_on_hash = outcome.report.as_ref().is_some_and(|report| {
+        report.outcomes.iter().any(|o| {
+            o.action == Some(agora_game_minecraft::agora_pack_import::PackNeedsAction::ConfirmHash)
+        })
+    });
+    if !stopped_on_hash {
+        svc.discard_reviewed_copy(&review_id);
+    }
     wait_for_initial_snapshot(ctx, &outcome.instance_id)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&outcome)?);
@@ -314,8 +335,31 @@ pub async fn pack_import(
                 "  {} of {} mod(s) installed",
                 report.installed, report.total
             );
+            for outcome in &report.outcomes {
+                use agora_game_minecraft::agora_pack_import::PackEntryStatus;
+                let reason = outcome.reason.as_deref().unwrap_or("");
+                match outcome.status {
+                    PackEntryStatus::Installed if !reason.is_empty() => {
+                        println!("  Note: {}: {reason}", outcome.name)
+                    }
+                    PackEntryStatus::Installed => {}
+                    PackEntryStatus::Failed => {
+                        println!("  Not installed: {}: {reason}", outcome.name)
+                    }
+                    PackEntryStatus::NeedsAction => {
+                        println!("  Needs action, not installed: {}: {reason}", outcome.name)
+                    }
+                }
+            }
             for warning in &report.warnings {
                 println!("  Note: {warning}");
+            }
+            if stopped_on_hash {
+                println!(
+                    "  To install the mods that differ from the pack's hash, trust the pack and run: \
+                     agora pack import {review_id} --name \"<new name>\" --install-anyway \
+                     (this makes a second instance)"
+                );
             }
         }
     }

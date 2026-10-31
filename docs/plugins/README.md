@@ -136,7 +136,12 @@ have to infer any of them:
     ],
 
     // Colour tokens. Declarative — a theme needs no script at all.
-    "theme": { "id": "forest", "title": "Forest", "light": {}, "dark": {} }
+    "theme": { "id": "forest", "title": "Forest", "light": {}, "dark": {} },
+
+    // Game packages defined by this plugin. Requires `game:define`.
+    "gamePackages": [
+      { "path": "games/package.json" }
+    ]
   }
 }
 ```
@@ -145,6 +150,8 @@ Everything under `contributions` is optional; a theme-only plugin needs no `entr
 `examples/plugins/` has runnable versions of each of these. Where this document and
 `crates/agora-plugin-api/src/manifest.rs` disagree, the code is right and this is a bug — please
 report it.
+
+A plugin installed or enabled while Agora runs takes effect on the next start.
 
 ### The runtime
 
@@ -169,6 +176,7 @@ View and command calls have a ten-second host deadline. Diagnostic calls use the
 | `ui.refresh/notify`, `log` | No extra capability | Attributed UI messages and plugin logs |
 | `on/off` | Event's read capability | Subscribe/unsubscribe to documented events |
 | `net.fetchJson` | `network` | Declared host allowlist, network opt-in, and live lockdown policy |
+| Game packages | `game:define` | Define games: their stores, versions, folders and how to launch them |
 
 All service failures reject the promise with a structured error code and message. Treat errors as failures; never display a successful mutation after a rejection. The low-level `call` function exposes the same capability checks, not an escape hatch. There is no shell or arbitrary executable API. Current method definitions are in `agora-core/src/plugins/dispatch.rs`.
 

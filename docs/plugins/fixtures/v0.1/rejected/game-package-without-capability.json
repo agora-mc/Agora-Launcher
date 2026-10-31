@@ -1,0 +1,13 @@
+{
+  "manifest": 1,
+  "id": "fixture.game-package-without-capability",
+  "name": "Game package without capability",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "contributions": {
+    "gamePackages": [
+      { "path": "games/package.json" }
+    ]
+  }
+}

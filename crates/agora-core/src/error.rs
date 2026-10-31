@@ -1,3 +1,59 @@
+use crate::artifact_hash::HashOrigin;
+
+/// A download whose bytes differ from an expectation the user has to confirm:
+/// the curator's pin for that release file, the hash recorded when it was
+/// installed before, or the hash a modpack lists for it. See [`crate::artifact_hash`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HashConfirmation {
+    /// The file that did not match, as the instance would name it.
+    pub file: String,
+    /// The release tag it was published under, when it came from a release.
+    pub release: Option<String>,
+    /// The SHA-256 the expectation named.
+    pub expected: String,
+    /// The SHA-256 of the bytes that were downloaded.
+    pub actual: String,
+    /// Where the expectation came from.
+    pub expected_from: HashOrigin,
+    /// Further expectations the bytes also failed (a pack hash and a curator pin
+    /// can both be unmet). "Install anyway" overrides all of them, so all are shown.
+    #[serde(default)]
+    pub also_unmet: Box<[crate::artifact_hash::ConfirmableHash]>,
+}
+
+impl std::fmt::Display for HashConfirmation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let file = match &self.release {
+            Some(release) => format!("{} from release {release}", self.file),
+            None => self.file.clone(),
+        };
+        let origin = match self.expected_from {
+            HashOrigin::CuratorPin => "pinned curator",
+            HashOrigin::PreviousInstall => "previously installed",
+            HashOrigin::PackPin => "modpack",
+        };
+        write!(
+            f,
+            "{file} does not match the {origin} hash: expected {}, downloaded {}.",
+            self.expected, self.actual
+        )?;
+        for other in &self.also_unmet {
+            let origin = match other.origin {
+                HashOrigin::CuratorPin => "pinned curator",
+                HashOrigin::PreviousInstall => "previously installed",
+                HashOrigin::PackPin => "modpack",
+            };
+            write!(
+                f,
+                " It also differs from the {origin} hash {}.",
+                other.sha256
+            )?;
+        }
+        Ok(())
+    }
+}
+
 /// Standardized launcher error codes matching the human-centric taxonomy.
 #[derive(Debug, Clone)]
 pub enum LauncherError {
@@ -21,6 +77,10 @@ pub enum LauncherError {
     OverrideSecurityViolation,
     /// ERR_HASH_MISMATCH — Downloaded file does not match its expected hash.
     HashMismatch,
+    /// ERR_HASH_CONFIRMATION_REQUIRED — The download does not match a curator
+    /// pin or a hash recorded on an earlier install. Install only after the
+    /// user confirms, which retries with the install-anyway override.
+    HashConfirmationRequired(Box<HashConfirmation>),
     /// ERR_UNTRUSTED_SOURCE — Download rejected: URL is not from an allowed source.
     UntrustedSource,
     /// ERR_DISKFULL — Not enough disk space to complete this operation.
@@ -65,14 +125,14 @@ pub enum LauncherError {
     LoaderProfileNotFound,
     /// ERR_PROFILE_MISSING — The loader profile JSON is missing from the
     /// Mojang launcher's version directory.
-    ProfileMissing(crate::installed_profile::ProfileIssue),
+    ProfileMissing(ProfileIssue),
     /// ERR_PROFILE_UNSUPPORTED_METADATA — The installed profile is structurally
     /// valid but contains metadata or artifacts that this launcher version
     /// does not support (unknown rules, unverifiable generated libraries, etc.).
-    ProfileUnsupportedMetadata(crate::installed_profile::ProfileIssue),
+    ProfileUnsupportedMetadata(ProfileIssue),
     /// ERR_PROFILE_CORRUPT — The installed profile is malformed, corrupted,
     /// or fails security validation.
-    ProfileCorrupt(crate::installed_profile::ProfileIssue),
+    ProfileCorrupt(ProfileIssue),
     /// ERR_JAVA_INCOMPATIBLE — The selected Java runtime is older than the
     /// major version required by this Minecraft version's metadata.
     JavaIncompatible,
@@ -165,6 +225,9 @@ impl LauncherError {
                 "ERR_OVERRIDE_SECURITY_VIOLATION".to_string()
             }
             LauncherError::HashMismatch => "ERR_HASH_MISMATCH".to_string(),
+            LauncherError::HashConfirmationRequired(_) => {
+                "ERR_HASH_CONFIRMATION_REQUIRED".to_string()
+            }
             LauncherError::UntrustedSource => "ERR_UNTRUSTED_SOURCE".to_string(),
             LauncherError::DiskFull => "ERR_DISKFULL".to_string(),
             LauncherError::AuthExpired => "ERR_AUTH_EXPIRED".to_string(),
@@ -476,6 +539,7 @@ impl std::fmt::Display for LauncherError {
                      Enable runtime downloads in Privacy settings or choose a local Java installation."
                 )
             }
+            LauncherError::HashConfirmationRequired(confirmation) => write!(f, "{confirmation}"),
             LauncherError::Generic { message, .. } => write!(f, "{}", message),
         }
     }
@@ -589,6 +653,25 @@ impl serde::Serialize for LauncherError {
                 });
                 map.serialize_entry("details", &details)?;
             }
+            LauncherError::HashConfirmationRequired(confirmation) => {
+                let details = serde_json::json!({
+                    "file": confirmation.file,
+                    "release": confirmation.release,
+                    "expected": confirmation.expected,
+                    "actual": confirmation.actual,
+                    "expected_from": confirmation.expected_from.as_str(),
+                    "also_unmet": confirmation
+                        .also_unmet
+                        .iter()
+                        .map(|other| serde_json::json!({
+                            "expected_from": other.origin.as_str(),
+                            "expected": other.sha256,
+                        }))
+                        .collect::<Vec<_>>(),
+                    "suggested_actions": ["install_anyway", "cancel"],
+                });
+                map.serialize_entry("details", &details)?;
+            }
             _ => {
                 map.serialize_entry("details", &None::<String>)?;
             }
@@ -602,6 +685,95 @@ impl serde::Serialize for LauncherError {
 impl std::error::Error for LauncherError {}
 
 pub type LauncherResult<T> = Result<T, LauncherError>;
+
+/// Suggested action strings returned in serialized profile errors.
+const SUGGEST_REINSTALL: &str = "reinstall_loader";
+const SUGGEST_DELEGATED: &str = "use_delegated_launch";
+const SUGGEST_DISMISS: &str = "dismiss";
+
+// The structured payload of the ERR_PROFILE_* errors. It lives with the error
+// because the frontend reads it (`details.recoverable_issue`); the Minecraft
+// package, which detects these issues, re-exports it.
+
+/// The kind of profile issue encountered during adoption.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ProfileIssueKind {
+    /// The profile JSON (or the base version JSON) does not exist on disk.
+    MissingProfile,
+    /// The profile metadata is structurally valid but contains values that
+    /// this launcher version does not support (unknown rules, unverifiable
+    /// generated artifacts without a receipt, etc.).
+    UnsupportedProfileMetadata,
+    /// The profile JSON is malformed, corrupted, fails security checks, or
+    /// violates structural invariants.
+    CorruptProfile,
+}
+
+/// A structured error returned during profile adoption.
+///
+/// Contains enough information to give the user a targeted recovery action
+/// (reinstall the loader, switch to delegated launch via Mojang, or dismiss).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProfileIssue {
+    pub kind: ProfileIssueKind,
+    /// The absolute path to the profile JSON that caused the issue (if known).
+    pub profile_path: Option<std::path::PathBuf>,
+    /// Human-readable diagnostic reasons.
+    pub reasons: Vec<String>,
+}
+
+impl ProfileIssue {
+    pub fn missing(path: Option<std::path::PathBuf>, reason: impl Into<String>) -> Self {
+        Self {
+            kind: ProfileIssueKind::MissingProfile,
+            profile_path: path,
+            reasons: vec![reason.into()],
+        }
+    }
+
+    pub fn corrupt(path: Option<std::path::PathBuf>, reason: impl Into<String>) -> Self {
+        Self {
+            kind: ProfileIssueKind::CorruptProfile,
+            profile_path: path,
+            reasons: vec![reason.into()],
+        }
+    }
+
+    pub fn unsupported(path: Option<std::path::PathBuf>, reasons: Vec<String>) -> Self {
+        Self {
+            kind: ProfileIssueKind::UnsupportedProfileMetadata,
+            profile_path: path,
+            reasons,
+        }
+    }
+
+    /// Return the standard suggested actions for this kind of issue.
+    pub fn suggested_actions(&self) -> Vec<&'static str> {
+        match self.kind {
+            ProfileIssueKind::MissingProfile => {
+                vec![SUGGEST_REINSTALL, SUGGEST_DELEGATED]
+            }
+            ProfileIssueKind::UnsupportedProfileMetadata => {
+                vec![SUGGEST_REINSTALL, SUGGEST_DELEGATED, SUGGEST_DISMISS]
+            }
+            ProfileIssueKind::CorruptProfile => {
+                vec![SUGGEST_REINSTALL, SUGGEST_DELEGATED, SUGGEST_DISMISS]
+            }
+        }
+    }
+}
+
+impl From<ProfileIssue> for LauncherError {
+    fn from(issue: ProfileIssue) -> Self {
+        match issue.kind {
+            ProfileIssueKind::MissingProfile => LauncherError::ProfileMissing(issue),
+            ProfileIssueKind::UnsupportedProfileMetadata => {
+                LauncherError::ProfileUnsupportedMetadata(issue)
+            }
+            ProfileIssueKind::CorruptProfile => LauncherError::ProfileCorrupt(issue),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -737,18 +909,18 @@ mod tests {
                 pid: 42,
                 detail: "test".into(),
             },
-            LauncherError::ProfileMissing(crate::installed_profile::ProfileIssue {
-                kind: crate::installed_profile::ProfileIssueKind::MissingProfile,
+            LauncherError::ProfileMissing(ProfileIssue {
+                kind: ProfileIssueKind::MissingProfile,
                 profile_path: None,
                 reasons: vec!["test".into()],
             }),
-            LauncherError::ProfileUnsupportedMetadata(crate::installed_profile::ProfileIssue {
-                kind: crate::installed_profile::ProfileIssueKind::UnsupportedProfileMetadata,
+            LauncherError::ProfileUnsupportedMetadata(ProfileIssue {
+                kind: ProfileIssueKind::UnsupportedProfileMetadata,
                 profile_path: None,
                 reasons: vec!["test".into()],
             }),
-            LauncherError::ProfileCorrupt(crate::installed_profile::ProfileIssue {
-                kind: crate::installed_profile::ProfileIssueKind::CorruptProfile,
+            LauncherError::ProfileCorrupt(ProfileIssue {
+                kind: ProfileIssueKind::CorruptProfile,
                 profile_path: None,
                 reasons: vec!["test".into()],
             }),
@@ -765,7 +937,7 @@ mod tests {
 
     #[test]
     fn test_serialize_profile_missing_structured_details() {
-        use crate::installed_profile::{ProfileIssue, ProfileIssueKind};
+        use {ProfileIssue, ProfileIssueKind};
 
         let issue = ProfileIssue {
             kind: ProfileIssueKind::MissingProfile,
@@ -806,7 +978,7 @@ mod tests {
 
     #[test]
     fn test_serialize_profile_unsupported_structured_details() {
-        use crate::installed_profile::{ProfileIssue, ProfileIssueKind};
+        use {ProfileIssue, ProfileIssueKind};
 
         let issue = ProfileIssue {
             kind: ProfileIssueKind::UnsupportedProfileMetadata,
@@ -835,7 +1007,7 @@ mod tests {
 
     #[test]
     fn test_serialize_profile_corrupt_structured_details() {
-        use crate::installed_profile::{ProfileIssue, ProfileIssueKind};
+        use {ProfileIssue, ProfileIssueKind};
 
         let issue = ProfileIssue {
             kind: ProfileIssueKind::CorruptProfile,
@@ -863,7 +1035,7 @@ mod tests {
 
     #[test]
     fn test_profile_missing_suggested_actions() {
-        use crate::installed_profile::{ProfileIssue, ProfileIssueKind};
+        use {ProfileIssue, ProfileIssueKind};
         let issue = ProfileIssue {
             kind: ProfileIssueKind::MissingProfile,
             profile_path: None,
@@ -882,7 +1054,7 @@ mod tests {
 
     #[test]
     fn test_profile_unsupported_suggested_actions() {
-        use crate::installed_profile::{ProfileIssue, ProfileIssueKind};
+        use {ProfileIssue, ProfileIssueKind};
         let issue = ProfileIssue {
             kind: ProfileIssueKind::UnsupportedProfileMetadata,
             profile_path: None,
@@ -967,7 +1139,7 @@ mod tests {
 
     #[test]
     fn test_profile_corrupt_suggested_actions_includes_delegated() {
-        use crate::installed_profile::{ProfileIssue, ProfileIssueKind};
+        use {ProfileIssue, ProfileIssueKind};
         let issue = ProfileIssue {
             kind: ProfileIssueKind::CorruptProfile,
             profile_path: None,

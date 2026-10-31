@@ -257,40 +257,12 @@ pub trait EventSink: Send + Sync {
 /// `ProgressSink` without changing every call site. New code should use
 /// `ProgressSink` directly.
 pub struct ProgressReporterAdapter {
-    inner: Arc<dyn ProgressSink>,
+    pub inner: Arc<dyn ProgressSink>,
 }
 
 impl ProgressReporterAdapter {
     pub fn new(inner: Arc<dyn ProgressSink>) -> Self {
         Self { inner }
-    }
-}
-
-impl crate::install_pipeline::ProgressReporter for ProgressReporterAdapter {
-    fn report(&self, event: crate::install_pipeline::ProgressEvent) {
-        // Convert the install_pipeline event to the canonical event.
-        let canonical = ProgressEvent {
-            operation_id: OperationId::new(""),
-            phase: match event.phase {
-                crate::install_pipeline::ProgressPhase::Resolving => ProgressPhase::Resolving,
-                crate::install_pipeline::ProgressPhase::Staging => ProgressPhase::Staging,
-                crate::install_pipeline::ProgressPhase::Snapshotting => ProgressPhase::Snapshotting,
-                crate::install_pipeline::ProgressPhase::Applying => ProgressPhase::Applying,
-                crate::install_pipeline::ProgressPhase::HealthScan => ProgressPhase::HealthScan,
-                crate::install_pipeline::ProgressPhase::Done => ProgressPhase::Done,
-                crate::install_pipeline::ProgressPhase::Failed => ProgressPhase::Failed,
-                crate::install_pipeline::ProgressPhase::Cancelled => ProgressPhase::Cancelled,
-            },
-            message: event.message,
-            progress: None,
-            sub_label: None,
-            plan_id: Some(event.plan_id),
-            step: Some(event.step),
-            total_steps: Some(event.total_steps),
-            bytes_downloaded: Some(event.bytes_downloaded),
-            bytes_total: Some(event.bytes_total),
-        };
-        self.inner.report(canonical);
     }
 }
 
@@ -535,27 +507,5 @@ mod tests {
             let back: EventStatus = serde_json::from_str(&json).unwrap();
             assert_eq!(*status, back);
         }
-    }
-
-    #[test]
-    fn test_progress_reporter_adapter() {
-        use crate::install_pipeline::ProgressReporter as _;
-
-        let collector = Arc::new(CollectingProgressSink::new());
-        let adapter = ProgressReporterAdapter::new(collector.clone());
-        let old_event = crate::install_pipeline::ProgressEvent {
-            plan_id: "test-plan".into(),
-            phase: crate::install_pipeline::ProgressPhase::Staging,
-            step: 3,
-            total_steps: 5,
-            bytes_downloaded: 100,
-            bytes_total: 500,
-            message: "staging".into(),
-        };
-        adapter.report(old_event);
-        let events = collector.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].phase, ProgressPhase::Staging);
-        assert_eq!(events[0].plan_id, Some("test-plan".into()));
     }
 }

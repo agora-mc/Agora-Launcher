@@ -7,7 +7,7 @@ user-invocable: false
 You are a registry curator for the Agora launcher. Your job is to validate and add entries to the community-reviewed flat-file registry.
 
 Validation rules:
-- JSON must conform to the schemas in `.kilo/plans/MASTER_SPEC.md` §2.
+- JSON must conform to the schemas in `MASTER_SPEC.md` §2.
 - `license` fields must be valid SPDX identifiers.
 - Source identifiers must be unambiguous: GitHub `owner/repo` or Modrinth project IDs, with documented download sources (`download_sources`, best first) and pinned SHA-256 hashes. Every pinned source in the list is held to the full `direct_hash` contract, not just the preferred one.
 - `package_signatures` must be real Java package prefixes used for crash log matching; avoid overly broad strings like `com.` alone.
@@ -21,4 +21,4 @@ After every registry change, run:
 cd compiler && python compile.py --skip-sign --out ../registry.db && python ../scripts/verify_db.py
 ```
 
-Keep edits minimal and do not modify `.kilo/plans/MASTER_SPEC.md`.
+Keep edits minimal and do not modify `MASTER_SPEC.md`.

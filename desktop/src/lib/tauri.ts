@@ -382,6 +382,11 @@ export interface InstalledMod {
   source_url?: string | null;
   version: string | null;
   sha256: string;
+  /**
+   * False when the source published no checksum, so Agora could not verify
+   * this file. Absent on records from before the field existed (those are true).
+   */
+  hash_verified?: boolean;
   installed_at: string;
   mod_jar_id?: string | null;
   enabled: boolean;
@@ -499,6 +504,15 @@ export interface LoaderVersionSummary {
 export interface DownloadSource {
   strategy: string;
   identifier: string;
+  /** Curator pins for exact release files of a github_release source. */
+  pins?: SourcePin[];
+}
+
+/** A curator's expected SHA-256 for one release file (`github_release` only). */
+export interface SourcePin {
+  tag: string;
+  asset: string;
+  sha256: string;
 }
 
 export interface RegistryItem {
@@ -509,7 +523,8 @@ export interface RegistryItem {
   /// prefer `downloadSourcesOf(item)` when the fallbacks matter.
   download_strategy: string;
   source_identifier: string;
-  sha256: string;
+  /** The manifest's sha256 when the entry states one; null otherwise. */
+  sha256: string | null;
   upvotes: number;
   downvotes: number;
   net_score: number;
@@ -1676,13 +1691,17 @@ export interface AgoraPackEntry {
 }
 
 export type PackEntryStatus = 'installed' | 'failed' | 'needs_action';
-export type PackNeedsAction = 'enable_modrinth' | 'open_settings';
+export type PackNeedsAction = 'enable_modrinth' | 'open_settings' | 'confirm_hash';
 
 /** How one pack entry ended. Every entry gets exactly one. */
 export interface PackEntryOutcome {
   name: string;
   status: PackEntryStatus;
-  /** Installed only: the bytes matched the SHA-256 the pack pinned. */
+  /**
+   * Installed only: the bytes matched the SHA-256 the pack pinned. This is the
+   * pack vouching, not the source: when the source published no checksum the
+   * `reason` says the modpack's hash was the only check.
+   */
   verified_against_pack: boolean;
   /** Why it failed or what it needs; for an unverified install, the caveat. */
   reason: string | null;
@@ -1772,13 +1791,27 @@ export const importInstancePack = (
   reviewedSha256?: string | null,
   name?: string | null,
   skipUnfetchable = false,
+  installAnyway = false,
 ) =>
   invoke<PackImportOutcome>('import_instance_pack', {
     sourcePath,
     reviewedSha256: reviewedSha256 ?? null,
     name: name ?? null,
     skipUnfetchable,
+    installAnyway,
   });
+
+/** The code of the error a .mrpack import stops with when files fail the hashes the pack lists. */
+export const PACK_HASH_STOP_CODE = 'ERR_IMPORT_HASH_CONFIRMATION';
+
+/** The `code` of a Tauri error, when it has one. */
+export function errorCode(e: unknown): string | null {
+  if (e && typeof e === 'object') {
+    const code = (e as Record<string, unknown>).code;
+    if (typeof code === 'string') return code;
+  }
+  return null;
+}
 /** Drop the copy a .mrpack review staged (the review was cancelled). */
 export const discardPackReview = (sha256: string) =>
   invoke<void>('discard_pack_review', { sha256 });
@@ -1788,13 +1821,16 @@ export const planPackImport = (sourcePath: string) =>
 /**
  * Try needs-action entries again on the instance the import created.
  * `allowModrinthOnce` lets these entries use Modrinth without turning the
- * Modrinth setting on.
+ * Modrinth setting on. `installAnyway` installs the entries although they
+ * differ from the hash the modpack lists; only pass it for entries the user was
+ * shown a `confirm_hash` stop for. A hash the source published still applies.
  */
 export const retryPackImportEntries = (
   instanceId: string,
   entries: AgoraPackEntry[],
   allowModrinthOnce: boolean,
-) => invoke<PackImportReport>('retry_pack_import_entries', { instanceId, entries, allowModrinthOnce });
+  installAnyway: boolean,
+) => invoke<PackImportReport>('retry_pack_import_entries', { instanceId, entries, allowModrinthOnce, installAnyway });
 export const importModrinthPackByUrl = (downloadUrl: string, packIconUrl?: string | null) =>
   invoke<string>('import_modrinth_pack_by_url', {
     downloadUrl,

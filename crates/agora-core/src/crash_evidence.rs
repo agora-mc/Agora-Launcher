@@ -630,12 +630,26 @@ fn find_newest_file(dir: &Path, extension: &str) -> Option<(PathBuf, SystemTime)
         .max_by_key(|(_, mtime)| *mtime)
 }
 
-/// Find the newest `hs_err_pid*.log` file in a directory.
+/// File (under `<game_dir>/logs/`) holding the last launch's captured game
+/// output, written by the game package's launcher. Read back here when the game
+/// died before writing its own logs.
+pub const CAPTURED_LAUNCH_OUTPUT_FILE: &str = "agora-launch-output.log";
+
+/// Flag the captured launch output as the result of a user-requested stop so
+/// Crash Doctor does not treat the resulting non-zero exit as a crash.
+pub fn mark_captured_launch_output_user_stopped(game_dir: &Path) {
+    use std::io::Write;
+    let path = game_dir.join("logs").join(CAPTURED_LAUNCH_OUTPUT_FILE);
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+        let _ = writeln!(file, "# user_stopped=true");
+    }
+}
+
 /// The captured launch output, but only when that launch ended abnormally
 /// (non-zero or unknown exit code) and was not a user-requested stop. A clean
 /// exit's output is not crash evidence.
 fn failed_launch_output(logs_dir: &Path) -> Option<(PathBuf, SystemTime)> {
-    let path = logs_dir.join(crate::launch_planner::CAPTURED_LAUNCH_OUTPUT_FILE);
+    let path = logs_dir.join(CAPTURED_LAUNCH_OUTPUT_FILE);
     let modified_at = file_modified_at(&path)?;
     let text = String::from_utf8_lossy(&read_bounded(&path, 64 * 1024, 0)).into_owned();
     let header: Vec<&str> = text.lines().filter(|l| l.starts_with("# ")).collect();
@@ -649,6 +663,7 @@ fn failed_launch_output(logs_dir: &Path) -> Option<(PathBuf, SystemTime)> {
     (exit_code != "0").then_some((path, modified_at))
 }
 
+/// Find the newest `hs_err_pid*.log` file in a directory.
 fn find_hs_err_file(dir: &Path) -> Option<(PathBuf, SystemTime)> {
     let entries = std::fs::read_dir(dir).ok()?;
     entries
@@ -707,7 +722,7 @@ mod tests {
     fn failed_launch_output_is_collected_but_clean_or_stopped_is_not() {
         let fx = TestFixture::new();
         let logs = fx.logs_dir();
-        let file = logs.join(crate::launch_planner::CAPTURED_LAUNCH_OUTPUT_FILE);
+        let file = logs.join(CAPTURED_LAUNCH_OUTPUT_FILE);
         let svc = CrashEvidenceService::new();
 
         std::fs::write(
@@ -725,16 +740,14 @@ mod tests {
         assert!(svc.collect(&fx.path, &[]).sources.is_empty());
 
         std::fs::write(&file, "# exit_code=1\n[stderr] killed\n").unwrap();
-        crate::launch_planner::mark_captured_launch_output_user_stopped(&fx.path);
+        mark_captured_launch_output_user_stopped(&fx.path);
         assert!(svc.collect(&fx.path, &[]).sources.is_empty());
     }
 
     #[test]
     fn failed_launch_output_with_a_fabric_resolution_error_gets_a_specific_diagnosis() {
         let fx = TestFixture::new();
-        let file = fx
-            .logs_dir()
-            .join(crate::launch_planner::CAPTURED_LAUNCH_OUTPUT_FILE);
+        let file = fx.logs_dir().join(CAPTURED_LAUNCH_OUTPUT_FILE);
         std::fs::write(
             &file,
             "# Agora captured Java output (sanitized, last 200 lines)\n# exit_code=1\n# runtime_ms=40111\n\

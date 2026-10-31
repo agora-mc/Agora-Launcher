@@ -7,11 +7,11 @@
 
 use agora_core::ctx::Ctx;
 use agora_core::governance::{self, DiagnosticStatus, GovernanceService};
-use agora_core::import::{ImportResult, TechnicZipPack};
 use agora_core::plugins::PluginService;
 use agora_core::providers::{self, ProviderRegistry};
 use agora_core::registry::RegistryService;
-use agora_core::technic::{self, TechnicTier};
+use agora_game_minecraft::import::{ImportResult, TechnicZipPack};
+use agora_game_minecraft::technic::{self, TechnicTier};
 use anyhow::{bail, Context};
 use clap::Subcommand;
 
@@ -398,7 +398,10 @@ pub async fn install_provider_pack(
     let plugins = service.is_enabled().then_some(&service);
     let registry = ProviderRegistry::new(ctx, plugins);
     let item = providers::item_id(provider, project);
-    let result = providers::install::install_pack(ctx, &registry, &item, version, name).await?;
+    let result = agora_game_minecraft::providers::install::install_pack(
+        ctx, &registry, &item, version, name,
+    )
+    .await?;
     print_import_result(&result, json, &format!("'{item}'"))
 }
 

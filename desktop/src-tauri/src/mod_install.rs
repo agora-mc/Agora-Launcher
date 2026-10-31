@@ -10,7 +10,7 @@ pub fn load_instance_info(
     instance_id: &str,
 ) -> LauncherResult<InstanceRow> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::instance_service::InstanceService::new(ctx);
+    let svc = agora_game_minecraft::instance_service::InstanceService::new(ctx);
     svc.get(instance_id)?
         .map(|detail| detail.row)
         .ok_or_else(|| LauncherError::Generic {
@@ -36,7 +36,7 @@ pub fn load_registry_item(
 /// Check instance is not locked via core InstallService.
 pub(crate) fn check_not_locked(app: &tauri::AppHandle, instance_id: &str) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::install_service::InstallService::new(ctx);
+    let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
     svc.check_not_locked(instance_id)
 }
 
@@ -67,14 +67,14 @@ pub async fn list_mod_versions_for(
 ) -> LauncherResult<Vec<ModVersionCandidate>> {
     let ctx = crate::core_context(app)?;
     let item = load_registry_item(app, item_id)?;
-    let resolver = agora_core::resolver::Resolver::new(ctx);
+    let resolver = agora_game_minecraft::resolver::Resolver::new(ctx);
     resolver
         .list_curated_versions(&item, mc_version, loader)
         .await
 }
 
 // The bounded candidate set for update checks is resolved by
-// `agora_core::update_cache::check_single_instance_updates_with`, which owns
+// `agora_game_minecraft::update_cache::check_single_instance_updates_with`, which owns
 // the caching and the matching rules for both the background sweep and the
 // `check_instance_updates` command. Adapters must not open a second door to
 // `Resolver::list_curated_versions_for_update` — see check 9 in
@@ -89,7 +89,7 @@ pub async fn check_mod_compat(
     let ctx = crate::core_context(app)?;
     let instance = load_instance_info(app, instance_id)?;
     let item = load_registry_item(app, item_id)?;
-    let resolver = agora_core::resolver::Resolver::new(ctx);
+    let resolver = agora_game_minecraft::resolver::Resolver::new(ctx);
     list_curated_versions_tolerant(
         &resolver,
         &item,
@@ -100,7 +100,7 @@ pub async fn check_mod_compat(
 }
 
 async fn list_curated_versions_tolerant(
-    resolver: &agora_core::resolver::Resolver,
+    resolver: &agora_game_minecraft::resolver::Resolver,
     item: &registry::RegistryItem,
     mc_version: &str,
     loader: &str,
@@ -120,8 +120,8 @@ async fn list_curated_versions_tolerant(
 async fn make_resolver(
     ctx: agora_core::ctx::Ctx,
     app: &tauri::AppHandle,
-) -> agora_core::resolver::Resolver {
-    let base = agora_core::resolver::Resolver::new(ctx);
+) -> agora_game_minecraft::resolver::Resolver {
+    let base = agora_game_minecraft::resolver::Resolver::new(ctx);
     match auth::get_valid_access_token(app).await {
         Some(tok) => base.with_stored_github_token(tok),
         None => base,
@@ -153,7 +153,7 @@ pub fn enabled_download_sources(
     item: &registry::RegistryItem,
 ) -> LauncherResult<Vec<agora_core::registry::DownloadSource>> {
     let ctx = crate::core_context(app)?;
-    Ok(agora_core::resolver::Resolver::new(ctx).enabled_download_sources(item))
+    Ok(agora_game_minecraft::resolver::Resolver::new(ctx).enabled_download_sources(item))
 }
 
 /// The source an item lists versions from: the curator's preferred source
@@ -185,11 +185,17 @@ pub async fn fetch_github_versions_batch(
 }
 
 /// Install a mod version via core InstallService.
+///
+/// `accept_hash_confirmation` is the user's answer to ERR_HASH_CONFIRMATION_REQUIRED:
+/// it lets a download through that differs from a curator pin or from the hash
+/// recorded on an earlier install. It never lets a mismatch against the hash
+/// the source published through.
 pub async fn install_mod_version(
     app: &tauri::AppHandle,
     instance_id: &str,
     item_id: &str,
     candidate: &ModVersionCandidate,
+    accept_hash_confirmation: bool,
 ) -> LauncherResult<InstalledMod> {
     let ctx = crate::core_context(app)?;
     let item = load_registry_item(app, item_id)?;
@@ -198,8 +204,13 @@ pub async fn install_mod_version(
     } else {
         &item.content_type
     };
-    let exp_sha256 = agora_core::agora_pack_import::expected_sha256_for_candidate(&item, candidate);
-    let svc = agora_core::install_service::InstallService::new(ctx);
+    let exp_sha256 =
+        agora_game_minecraft::agora_pack_import::expected_sha256_for_candidate(&item, candidate);
+    let pinned = agora_game_minecraft::resolver::curator_pins_for(&item, candidate)
+        .into_iter()
+        .next()
+        .map(|pin| pin.sha256);
+    let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
     svc.install_artifact(
         instance_id,
         &candidate.filename,
@@ -211,6 +222,8 @@ pub async fn install_mod_version(
         Some(&candidate.version),
         candidate.sha1.as_deref(),
         exp_sha256.as_deref(),
+        pinned.as_deref(),
+        accept_hash_confirmation,
     )
     .await
 }
@@ -224,7 +237,7 @@ pub async fn remove_mod_from_instance(
     let ctx = crate::core_context(app)?;
     let (iid, fn_own) = (instance_id.to_string(), filename.to_string());
     let removed = tokio::task::spawn_blocking(move || {
-        let svc = agora_core::install_service::InstallService::new(ctx);
+        let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
         svc.remove_artifact(&iid, &fn_own)
     })
     .await
@@ -238,26 +251,24 @@ pub async fn remove_mod_from_instance(
     Ok(())
 }
 
-/// Disable artifact via core CrashService.
+/// Disable an artifact; a data pack's worlds follow at once.
 pub fn disable_instance_mod(
     app: &tauri::AppHandle,
     instance_id: &str,
     filename: &str,
 ) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::crash_service::CrashService::new(ctx);
-    svc.disable_artifact(instance_id, filename)
+    agora_game_minecraft::datapack_sync::set_artifact_enabled(&ctx, instance_id, filename, false)
 }
 
-/// Enable artifact via core CrashService.
+/// Enable an artifact; a data pack's worlds follow at once.
 pub fn enable_instance_mod(
     app: &tauri::AppHandle,
     instance_id: &str,
     filename: &str,
 ) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::crash_service::CrashService::new(ctx);
-    svc.enable_artifact(instance_id, filename)
+    agora_game_minecraft::datapack_sync::set_artifact_enabled(&ctx, instance_id, filename, true)
 }
 
 /// Add manual .jar via core InstallService.
@@ -269,7 +280,7 @@ pub async fn add_manual_mod(
     let ctx = crate::core_context(app)?;
     let (iid, sp) = (instance_id.to_string(), source_path.to_string());
     tokio::task::spawn_blocking(move || {
-        let svc = agora_core::install_service::InstallService::new(ctx);
+        let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
         svc.add_manual_artifact(&iid, &sp)
     })
     .await
@@ -288,7 +299,8 @@ pub async fn export_sourceless_mods(
     format: &str,
 ) -> LauncherResult<Vec<String>> {
     let ctx = crate::core_context(app)?;
-    agora_core::export_service::sourceless_mods_of_instance(&ctx, instance_id, format).await
+    agora_game_minecraft::export_service::sourceless_mods_of_instance(&ctx, instance_id, format)
+        .await
 }
 
 /// Export pack via core ExportService, to the file the user chose in the save dialog.
@@ -299,10 +311,16 @@ pub async fn export_instance_pack(
     out_path: &Path,
 ) -> LauncherResult<String> {
     let ctx = crate::core_context(app)?;
-    agora_core::export_service::export_pack_of_instance(&ctx, instance_id, format, out_path).await
+    agora_game_minecraft::export_service::export_pack_of_instance(
+        &ctx,
+        instance_id,
+        format,
+        out_path,
+    )
+    .await
 }
 
-pub use agora_core::pack_file_import::PackImportOutcome;
+pub use agora_game_minecraft::pack_file_import::PackImportOutcome;
 
 /// Import a pack file via core (`.mrpack` or `.agora-pack.json`).
 pub async fn import_instance_pack(
@@ -311,14 +329,19 @@ pub async fn import_instance_pack(
     reviewed_sha256: Option<&str>,
     name: Option<&str>,
     skip_unfetchable: bool,
+    install_anyway: bool,
 ) -> LauncherResult<PackImportOutcome> {
     let ctx = crate::core_context(app)?;
-    agora_core::pack_file_import::import_pack_file(
+    agora_game_minecraft::pack_file_import::import_pack_file(
         &ctx,
         source_path,
         reviewed_sha256,
         name,
         skip_unfetchable,
+        // Only after the user saw what stopped: an Agora pack's stopped entries
+        // are retried one by one (retry_pack_import_entries); a .mrpack stops as a
+        // whole and is imported again with this set.
+        install_anyway,
         &|instance_id: &str| crate::instances::create_progress_sink(app, instance_id),
     )
     .await
@@ -326,19 +349,22 @@ pub async fn import_instance_pack(
 
 /// Try pack entries again on an existing instance (after the user turned
 /// Modrinth on, or allowed it for this import). Entries already installed are
-/// not downloaded again.
+/// not downloaded again. `install_anyway` is the user's answer to a stop on a
+/// file that differs from the hash the modpack lists.
 pub async fn retry_pack_import_entries(
     app: &tauri::AppHandle,
     instance_id: &str,
-    entries: Vec<agora_core::agora_pack_import::AgoraPackEntry>,
+    entries: Vec<agora_game_minecraft::agora_pack_import::AgoraPackEntry>,
     allow_modrinth_once: bool,
-) -> LauncherResult<agora_core::agora_pack_import::PackImportReport> {
+    install_anyway: bool,
+) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportReport> {
     let ctx = crate::core_context(app)?;
-    agora_core::agora_pack_import::retry_agora_pack_entries(
+    agora_game_minecraft::agora_pack_import::retry_agora_pack_entries(
         &ctx,
         instance_id,
         entries,
         allow_modrinth_once,
+        install_anyway,
     )
     .await
 }
@@ -347,14 +373,14 @@ pub async fn retry_pack_import_entries(
 pub fn plan_pack_import(
     app: &tauri::AppHandle,
     source_path: &str,
-) -> LauncherResult<agora_core::agora_pack_import::PackImportPlan> {
+) -> LauncherResult<agora_game_minecraft::agora_pack_import::PackImportPlan> {
     let ctx = crate::core_context(app)?;
-    agora_core::pack_file_import::plan_pack_file(&ctx, source_path)
+    agora_game_minecraft::pack_file_import::plan_pack_file(&ctx, source_path)
 }
 
 /// Drops the staged copy of a pack whose review was cancelled.
 pub fn discard_pack_review(app: &tauri::AppHandle, sha256: &str) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
-    agora_core::import_service::ImportService::new(ctx).discard_reviewed_copy(sha256);
+    agora_game_minecraft::import_service::ImportService::new(ctx).discard_reviewed_copy(sha256);
     Ok(())
 }

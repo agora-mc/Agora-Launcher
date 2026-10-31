@@ -1,11 +1,11 @@
 //! `agora world …` and `agora server …`: an instance's worlds and its in-game
-//! server list. Thin adapters over `agora_core::worlds::WorldService`, which
+//! server list. Thin adapters over `agora_game_minecraft::worlds::WorldService`, which
 //! the desktop Worlds & Servers tab uses too.
 
 use std::path::PathBuf;
 
 use agora_core::ctx::Ctx;
-use agora_core::worlds::WorldService;
+use agora_game_minecraft::worlds::WorldService;
 use clap::Subcommand;
 
 use crate::{print_table, OutputFormat};
@@ -64,7 +64,7 @@ pub enum ServerCmd {
 pub fn run_world_command(
     action: WorldCmd,
     ctx: &Ctx,
-    trash: &agora_core::instance_service::TrashFn,
+    trash: &agora_game_minecraft::instance_service::TrashFn,
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
@@ -172,7 +172,9 @@ pub async fn run_server_command(
             let mut statuses = Vec::new();
             if ping {
                 for server in &servers {
-                    statuses.push(Some(agora_core::server_ping::ping(&server.address).await?));
+                    statuses.push(Some(
+                        agora_game_minecraft::server_ping::ping(&server.address).await?,
+                    ));
                 }
             } else {
                 statuses.resize(servers.len(), None);

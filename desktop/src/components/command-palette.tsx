@@ -25,6 +25,11 @@ interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNavigate: (tab: Tab, instanceId?: string) => void;
+  /** Replaces the Minecraft navigation entries while a non-Minecraft game is shown. */
+  navigationItems?: { label: string; tab: Tab; icon: string }[];
+  /** Games the user can switch to. Shown only when there is one (the switcher's rule). */
+  switchGameItems?: { gameId: string; label: string }[];
+  onSwitchGame?: (gameId: string) => void;
 }
 
 const SETTINGS_ITEMS: { label: string; tab: Tab; icon: string }[] = [
@@ -37,13 +42,24 @@ const SETTINGS_ITEMS: { label: string; tab: Tab; icon: string }[] = [
   { label: 'Settings', tab: 'settings', icon: '⚙️' },
 ];
 
+/** A stable empty list, so the default does not change identity on every render. */
+const NO_GAMES: { gameId: string; label: string }[] = [];
+
 type ResultItem =
   | { __section: string }
   | { __type: 'instance'; instance_id: string; name: string; loader: string; loader_version: string; minecraft_version: string }
   | { __type: 'setting'; label: string; tab: Tab; icon: string; section?: SettingsSectionTarget }
+  | { __type: 'game'; gameId: string; label: string }
   | { __type: 'plugin'; id: string; pluginId: string; label: string; exportName: string };
 
-export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPaletteProps) {
+export function CommandPalette({
+  open,
+  onOpenChange,
+  onNavigate,
+  navigationItems,
+  switchGameItems = NO_GAMES,
+  onSwitchGame,
+}: CommandPaletteProps) {
   const { plugins, ofKind } = usePlugins();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -85,19 +101,26 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
     const filteredInstances = instances.filter((inst) =>
       query ? inst.name.toLowerCase().includes(query.toLowerCase()) : true,
     );
+    const settingsItems = navigationItems ?? SETTINGS_ITEMS;
     const filteredSettings: ResultItem[] = [
-      ...SETTINGS_ITEMS.filter((item) =>
+      ...settingsItems.filter((item) =>
         query ? item.label.toLowerCase().includes(query.toLowerCase()) : true,
       ).map((item) => ({ __type: 'setting' as const, ...item })),
       // Named sections of Settings, found by their label or what they cover.
-      ...matchSettingsSections(query).map((entry) => ({
-        __type: 'setting' as const,
-        label: entry.label,
-        tab: 'settings' as const,
-        icon: entry.icon,
-        section: entry.target,
-      })),
+      // Only offered where Settings is a destination of the shown game.
+      ...(settingsItems.some((item) => item.tab === 'settings')
+        ? matchSettingsSections(query).map((entry) => ({
+            __type: 'setting' as const,
+            label: entry.label,
+            tab: 'settings' as const,
+            icon: entry.icon,
+            section: entry.target,
+          }))
+        : []),
     ];
+    const filteredGames = switchGameItems.filter((game) =>
+      query ? game.label.toLowerCase().includes(query.toLowerCase()) : true,
+    );
 
     if (filteredInstances.length > 0) {
       r.push({ __section: 'Instances' });
@@ -116,6 +139,12 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
       r.push({ __section: 'Settings' });
       r.push(...filteredSettings);
     }
+    if (filteredGames.length > 0) {
+      r.push({ __section: 'Switch game' });
+      for (const game of filteredGames) {
+        r.push({ __type: 'game', gameId: game.gameId, label: game.label });
+      }
+    }
     const commands: ResultItem[] = ofKind('command').flatMap((contribution) => {
       const command = plugins.find((plugin) => plugin.id === contribution.pluginId)
         ?.definitions?.commands.find((entry) => entry.id === contribution.localId);
@@ -125,7 +154,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
     });
     if (commands.length) r.push({ __section: 'Plugin commands' }, ...commands);
     return r;
-  }, [query, instances, ofKind, plugins]);
+  }, [query, instances, ofKind, plugins, navigationItems, switchGameItems]);
 
   // Indices into `results` that point to actionable (non-section) items.
   const actionableIndices = useMemo(
@@ -194,7 +223,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, actionableIndices, actionableCount, safeSelectedIndex, results, onOpenChange, onNavigate]);
+  }, [open, actionableIndices, actionableCount, safeSelectedIndex, results, onOpenChange, onNavigate, onSwitchGame]);
 
   const activateItem = (index: number) => {
     const item = results[index];
@@ -207,6 +236,9 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
       onOpenChange(false);
       if (item.section) requestSettingsSection(item.section);
       onNavigate(item.tab);
+    } else if (item.__type === 'game') {
+      onOpenChange(false);
+      onSwitchGame?.(item.gameId);
     } else if (item.__type === 'plugin') {
       onOpenChange(false);
       void runPluginCommand(item.pluginId, item.exportName)
@@ -321,6 +353,26 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
                     ) : (
                       <span className="text-lg" aria-hidden="true">{item.icon}</span>
                     )}
+                    <span className="font-medium">{item.label}</span>
+                  </button>
+                );
+              }
+
+              if (item.__type === 'game') {
+                return (
+                  <button
+                    key={`game-${item.gameId}`}
+                    role="option"
+                    aria-selected={isItemSelected(index)}
+                    onClick={() => activateItem(index)}
+                    className={cn(
+                      'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors text-left',
+                      isItemSelected(index)
+                        ? 'bg-accent text-accent-foreground'
+                        : 'text-[rgb(var(--text))] hover:bg-gray-100 dark:hover:bg-gray-800',
+                    )}
+                  >
+                    <span className="text-lg" aria-hidden="true">🎮</span>
                     <span className="font-medium">{item.label}</span>
                   </button>
                 );

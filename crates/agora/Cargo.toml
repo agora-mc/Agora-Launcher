@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 agora-core = { path = "../agora-core" }
+agora-game-api = { path = "../agora-game-api" }
+agora-game-minecraft = { path = "../agora-game-minecraft" }
+agora-game-creation = { path = "../agora-game-creation" }
 agora-plugin-api = { path = "../agora-plugin-api" }
 agora-plugin-host = { path = "../agora-plugin-host" }
 clap = { version = "4", features = ["derive"] }
@@ -33,7 +36,10 @@ trash = "3"
 
 [dev-dependencies]
 agora-core = { path = "../agora-core", features = ["test-support"] }
+agora-game-minecraft = { path = "../agora-game-minecraft", features = ["test-support"] }
 rusqlite = { workspace = true }
+tempfile = { workspace = true }
+
 # Builds the .mrpack fixtures for the `pack update` tests. Already in the lock
 # file through agora-core.
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }

@@ -35,7 +35,7 @@ pub async fn check_and_download_update<R: tauri::Runtime>(
         ctx.lock_manager(),
     )
     .await?;
-    for warning in ctx.reload_runtime_catalog()? {
+    for warning in ctx.reload_game_catalogs()? {
         eprintln!("[agora] {warning}");
     }
     Ok(status)

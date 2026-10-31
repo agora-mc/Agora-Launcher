@@ -1,6 +1,6 @@
 //! `agora log …` (share a game log as a mclo.gs link) and `agora proxy …`
 //! (how Agora's own requests reach the internet). Thin adapters over
-//! `agora_core::log_share` and `agora_core::http_client`.
+//! `agora_game_minecraft::log_share` and `agora_core::http_client`.
 
 use agora_core::ctx::Ctx;
 use agora_core::http_client::ProxySetting;
@@ -56,7 +56,7 @@ pub async fn run_log_command(
     let json = output_fmt.is_json_output();
     match action {
         LogCmd::List { instance } => {
-            let logs = agora_core::log_share::shareable_logs(ctx, &instance)?;
+            let logs = agora_game_minecraft::log_share::shareable_logs(ctx, &instance)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&logs)?);
             } else if logs.is_empty() {
@@ -73,7 +73,7 @@ pub async fn run_log_command(
             yes,
             preview,
         } => {
-            let shown = agora_core::log_share::preview(ctx, &instance, &path)?;
+            let shown = agora_game_minecraft::log_share::preview(ctx, &instance, &path)?;
             if preview {
                 println!("{}", shown.text);
                 return Ok(());
@@ -94,7 +94,7 @@ pub async fn run_log_command(
             {
                 anyhow::bail!("Cancelled.");
             }
-            let shared = agora_core::log_share::upload(ctx, &instance, &path).await?;
+            let shared = agora_game_minecraft::log_share::upload(ctx, &instance, &path).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&shared)?);
             } else {
@@ -169,7 +169,7 @@ pub async fn run_skin_command(
     ctx: &Ctx,
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
-    use agora_core::skins::{self, SkinVariant};
+    use agora_game_minecraft::skins::{self, SkinVariant};
     match action {
         SkinCmd::Show => {}
         SkinCmd::Wear { file, slim } => {

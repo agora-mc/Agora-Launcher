@@ -1,8 +1,8 @@
 //! Desktop shim for dependency resolution.
 //!
 //! Re-exports all types and functions from `agora_core::dependency_ops`. The
-//! JAR metadata parser has been deduplicated to `agora_core::jar_metadata`;
-//! callers use `agora_core::jar_metadata::parse_jar_metadata` directly.
+//! JAR metadata parser has been deduplicated to `agora_game_minecraft::jar_metadata`;
+//! callers use `agora_game_minecraft::jar_metadata::parse_jar_metadata` directly.
 
 use agora_core::dependency_ops::JarDeps;
 
@@ -55,7 +55,7 @@ pub fn build_removal_plan(
 ///
 /// Delegates directly to `agora_core::dependency_ops::build_install_plan`.
 /// Callers pass `agora_core::dependency_ops::JarDeps` (from
-/// `agora_core::jar_metadata::parse_jar_metadata`) directly.
+/// `agora_game_minecraft::jar_metadata::parse_jar_metadata`) directly.
 pub fn build_install_plan(
     target_manifest_deps: Option<crate::registry::ManifestDeps>,
     target_jar_deps: &JarDeps,
@@ -77,7 +77,7 @@ pub fn build_install_plan(
 /// Refresh dependency identity metadata from the physical JARs of an instance.
 ///
 /// The work, and its on-disk cache, live in
-/// `agora_core::dependency_service::refresh_installed_jar_metadata`; this only
+/// `agora_game_minecraft::dependency_service::refresh_installed_jar_metadata`; this only
 /// resolves the instance directory from the Tauri app handle.
 pub fn refresh_installed_jar_metadata<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -86,5 +86,8 @@ pub fn refresh_installed_jar_metadata<R: tauri::Runtime>(
 ) -> crate::error::LauncherResult<()> {
     let instance_dir = crate::paths::instance_dir(app, instance_id)
         .map_err(|_| crate::error::LauncherError::InstanceCreateFailed)?;
-    agora_core::dependency_service::refresh_installed_jar_metadata(&instance_dir, installed)
+    agora_game_minecraft::dependency_service::refresh_installed_jar_metadata(
+        &instance_dir,
+        installed,
+    )
 }

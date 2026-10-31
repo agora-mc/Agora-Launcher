@@ -1,0 +1,1370 @@
+//! Pinned bases for game instances (MASTER_SPEC §26.4).
+//!
+//! A pinned base is a private copy of one game version that every instance
+//! pinned to that version runs from, so a store update cannot break an instance.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+use agora_game_api::{GameDefinition, InstallId, RuntimeIdentity, VolumeInfo};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::app_paths::AppPaths;
+use crate::game_discovery::volume::VolumeDetector;
+use crate::game_registry::IdentifiedInstall;
+
+pub use agora_game_api::BaseMode;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FileIdentity {
+    pub volume: u64,
+    pub index: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseFile {
+    pub path: String, // relative, '/'-separated, as RelPath normalises it
+    pub size: u64,
+    pub sha256: String, // lowercase hex
+    pub linked: bool,
+    pub identity: Option<FileIdentity>, // of the base file, recorded after it is created
+    pub modified_unix_ms: i64,          // of the base file
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseManifest {
+    pub manifest_version: u32, // 1
+    pub base_id: String,
+    pub runtime: RuntimeIdentity,
+    pub mode: BaseMode,
+    pub source_install: InstallId,
+    #[serde(default)]
+    pub source_product: Option<String>,
+    pub source_location: PathBuf,
+    pub location: PathBuf, // the base's own folder
+    pub created_unix_ms: i64,
+    pub files: Vec<BaseFile>, // sorted by path
+    pub skipped: Vec<String>, // source entries not copied (symlinks, junctions), with reasons
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BuildOutcome {
+    Built {
+        manifest: BaseManifest,
+        linked_bytes: u64,
+        copied_bytes: u64,
+    },
+    Existing(BaseManifest),
+}
+
+impl BuildOutcome {
+    pub fn manifest(&self) -> &BaseManifest {
+        match self {
+            BuildOutcome::Built { manifest, .. } => manifest,
+            BuildOutcome::Existing(manifest) => manifest,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildProgress {
+    pub files_done: u64,
+    pub files_total: u64,
+    pub bytes_hashed: u64,
+    pub bytes_total: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildOptions {
+    pub include_excluded: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyDepth {
+    Quick,
+    Full,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProblemKind {
+    Missing,
+    SizeChanged { expected: u64, actual: u64 },
+    ContentChanged,
+    Unexpected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseProblem {
+    pub path: String,
+    pub kind: ProblemKind,
+    /// The file is hardlinked to the store install, so a change to it is a
+    /// change to the store install too. Until the write layer of Phase 3
+    /// exists, an undeclared write to a linked file reaches the store.
+    #[serde(default)]
+    pub linked_to_store: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseVerification {
+    pub checked: usize,
+    pub hashed: usize,
+    #[serde(default)]
+    pub game_writes: Vec<String>,
+    pub problems: Vec<BaseProblem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaseListing {
+    pub manifest: BaseManifest,
+    pub present: bool,
+}
+
+/// A base the listing found, either readable or damaged. A damaged record is listed rather than
+/// dropped: the user can see it, read why it cannot be used, and remove it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum BaseEntry {
+    Readable(Box<BaseListing>),
+    Damaged(DamagedBase),
+}
+
+impl BaseEntry {
+    /// The base's id: from the manifest when it reads, otherwise from the file name.
+    pub fn base_id(&self) -> &str {
+        match self {
+            BaseEntry::Readable(listing) => &listing.manifest.base_id,
+            BaseEntry::Damaged(damaged) => &damaged.base_id,
+        }
+    }
+}
+
+/// A manifest file in the bases folder that cannot be read as a base record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DamagedBase {
+    /// The file name without `.json`. Not checked here; removal checks it.
+    pub base_id: String,
+    pub manifest_path: PathBuf,
+    /// Why the record cannot be used, naming the file and the cause.
+    pub error: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BaseError {
+    #[error("install runtime is unknown or unidentified")]
+    RuntimeUnknown,
+    #[error("hardlinks unavailable: {reason} (copied base requires {copied_bytes} bytes)")]
+    LinkUnavailable { reason: String, copied_bytes: u64 },
+    #[error("base not found: {0}")]
+    NotFound(String),
+    #[error("base is in use by instance(s): {}", instances.join(", "))]
+    InUse { instances: Vec<String> },
+    #[error("declared write matches linked file: {path}")]
+    DeclaredWriteLinked { path: String },
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    Other(String),
+}
+
+// ---------------------------------------------------------------------------
+// Base ID calculation
+// ---------------------------------------------------------------------------
+
+pub fn sanitize_base_id_part(original: &str) -> String {
+    let mut kept = String::new();
+    for c in original.chars() {
+        let lc = c.to_ascii_lowercase();
+        if lc.is_ascii_lowercase() || lc.is_ascii_digit() || lc == '.' || lc == '-' {
+            kept.push(lc);
+        }
+    }
+    let changed = kept != original;
+    let is_empty = kept.is_empty();
+    // Windows strips a trailing dot from a folder name, and a leading one hides
+    // it on Unix; either would make the recorded location wrong.
+    let edge_dot = kept.starts_with('.') || kept.ends_with('.');
+
+    if changed || is_empty || edge_dot {
+        let hash = format!("{:08x}", crate::game_registry::fnv1a_32(original));
+        let kept = kept.trim_matches('.');
+        if kept.is_empty() {
+            format!("h{hash}")
+        } else {
+            format!("{kept}-{hash}")
+        }
+    } else {
+        kept
+    }
+}
+
+pub fn make_base_id(runtime: &RuntimeIdentity) -> String {
+    let game = sanitize_base_id_part(runtime.game.as_str());
+    let store = sanitize_base_id_part(runtime.store.as_str());
+    let version = sanitize_base_id_part(&runtime.version);
+    let build = match runtime.build.as_deref() {
+        Some(b) if !b.is_empty() => sanitize_base_id_part(b),
+        _ => "nobuild".to_string(),
+    };
+    format!("{game}_{store}_{version}_{build}")
+}
+
+// ---------------------------------------------------------------------------
+// Volume and file identity helpers
+// ---------------------------------------------------------------------------
+
+pub fn get_file_identity(path: &Path) -> Option<FileIdentity> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        let file = std::fs::File::open(path).ok()?;
+        let handle = file.as_raw_handle();
+        let mut info: windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION =
+            unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
+                handle as _,
+                &mut info,
+            )
+        };
+        if ok != 0 {
+            let volume = info.dwVolumeSerialNumber as u64;
+            let index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+            Some(FileIdentity { volume, index })
+        } else {
+            None
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(FileIdentity {
+            volume: meta.dev(),
+            index: meta.ino(),
+        })
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+pub fn get_file_identity_from_file(file: &std::fs::File) -> Option<FileIdentity> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        let handle = file.as_raw_handle();
+        let mut info: windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION =
+            unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
+                handle as _,
+                &mut info,
+            )
+        };
+        if ok != 0 {
+            let volume = info.dwVolumeSerialNumber as u64;
+            let index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+            Some(FileIdentity { volume, index })
+        } else {
+            None
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = file.metadata().ok()?;
+        Some(FileIdentity {
+            volume: meta.dev(),
+            index: meta.ino(),
+        })
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = file;
+        None
+    }
+}
+
+pub fn get_modified_unix_ms(metadata: &std::fs::Metadata) -> i64 {
+    match metadata.modified() {
+        Ok(t) => match t.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as i64,
+            Err(e) => -(e.duration().as_millis() as i64),
+        },
+        Err(_) => 0,
+    }
+}
+
+fn is_reparse_point_or_symlink(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        (metadata.file_attributes() & 0x0000_0400) != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+/// Pure volume decision function for checking whether hardlinking is supported.
+pub fn evaluate_link_support(
+    base_volume: Option<&VolumeInfo>,
+    install_volume: Option<&VolumeInfo>,
+) -> Result<(), String> {
+    let (Some(bv), Some(iv)) = (base_volume, install_volume) else {
+        return Err("volume information unavailable".to_string());
+    };
+    if !bv.id.eq_ignore_ascii_case(&iv.id) {
+        return Err(format!(
+            "base location is on volume {}, but game install is on volume {}",
+            bv.id, iv.id
+        ));
+    }
+    if !iv.supports_hardlinks || !bv.supports_hardlinks {
+        return Err(format!(
+            "volume filesystem '{}' does not support hard links",
+            iv.filesystem
+        ));
+    }
+    Ok(())
+}
+
+pub fn bases_root_for(
+    paths: &AppPaths,
+    install_location: &Path,
+    install_volume_id: Option<&str>,
+) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let detector = VolumeDetector::new();
+        let data_vol = detector.get_volume_info(&paths.bases_dir());
+        let install_vol_id = install_volume_id
+            .map(|s| s.to_string())
+            .or_else(|| detector.get_volume_info(install_location).map(|v| v.id));
+
+        if let (Some(d), Some(i)) = (data_vol.map(|v| v.id), install_vol_id) {
+            if d.eq_ignore_ascii_case(&i) {
+                return paths.bases_dir();
+            }
+        }
+
+        if let Some(mount_root) =
+            crate::game_discovery::volume::get_volume_mount_root(install_location)
+        {
+            return mount_root.join("AgoraBases");
+        }
+    }
+    let _ = install_location;
+    let _ = install_volume_id;
+    paths.bases_dir()
+}
+
+// ---------------------------------------------------------------------------
+// Source walking and staging
+// ---------------------------------------------------------------------------
+
+struct SourceEntry {
+    rel_path: String,
+    abs_src_path: PathBuf,
+    size: u64,
+    is_archive: bool,
+}
+
+fn walk_source_dir(
+    source_root: &Path,
+    rel_dir: &Path,
+    definition: &GameDefinition,
+    options: BuildOptions,
+    entries: &mut Vec<SourceEntry>,
+    skipped: &mut Vec<String>,
+) -> Result<(), std::io::Error> {
+    let cur_dir = if rel_dir.as_os_str().is_empty() {
+        source_root.to_path_buf()
+    } else {
+        source_root.join(rel_dir)
+    };
+
+    let read_dir = std::fs::read_dir(&cur_dir)?;
+    for entry in read_dir {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let rel_path = rel_dir.join(&file_name);
+        let abs_path = entry.path();
+        let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+
+        let meta = match std::fs::symlink_metadata(&abs_path) {
+            Ok(m) => m,
+            Err(e) => {
+                skipped.push(format!("{rel_str}: failed to read metadata ({e})"));
+                continue;
+            }
+        };
+
+        if is_reparse_point_or_symlink(&meta) {
+            skipped.push(format!("{rel_str}: symlink or junction"));
+            continue;
+        }
+
+        if meta.is_dir() {
+            walk_source_dir(
+                source_root,
+                &rel_path,
+                definition,
+                options,
+                entries,
+                skipped,
+            )?;
+        } else if meta.is_file() {
+            if !options.include_excluded && definition.is_excluded(&rel_str) {
+                skipped.push(format!("{rel_str}: excluded by the game definition"));
+                continue;
+            }
+            let is_archive = definition.is_linked_archive(&rel_str);
+            entries.push(SourceEntry {
+                rel_path: rel_str,
+                abs_src_path: abs_path,
+                size: meta.len(),
+                is_archive,
+            });
+        } else {
+            skipped.push(format!("{rel_str}: non-regular file skipped"));
+        }
+    }
+    Ok(())
+}
+
+fn hash_file(path: &Path) -> Result<String, std::io::Error> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+struct StagingGuard<'a> {
+    path: &'a Path,
+    active: bool,
+}
+
+impl<'a> Drop for StagingGuard<'a> {
+    fn drop(&mut self) {
+        if self.active && self.path.exists() {
+            let _ = std::fs::remove_dir_all(self.path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build base
+// ---------------------------------------------------------------------------
+
+/// How many bytes a base built from the install at `location` would hold: the sizes of the files
+/// a build copies or links, left out the game's excluded paths unless `options` say otherwise.
+/// This is the cost of a Copied base, which the user is told before building. Metadata only; no
+/// file is read. `Err` when the folder cannot be walked, so a caller never shows 0 for "unknown".
+pub fn install_size(
+    location: &Path,
+    definition: &GameDefinition,
+    options: BuildOptions,
+) -> Result<u64, BaseError> {
+    let mut entries = Vec::new();
+    let mut skipped = Vec::new();
+    walk_source_dir(
+        location,
+        Path::new(""),
+        definition,
+        options,
+        &mut entries,
+        &mut skipped,
+    )
+    .map_err(|e| BaseError::Other(format!("cannot read '{}': {e}", location.display())))?;
+    Ok(entries.iter().map(|e| e.size).sum())
+}
+
+pub fn build_base(
+    paths: &AppPaths,
+    install: &IdentifiedInstall,
+    definition: &GameDefinition,
+    mode: BaseMode,
+    root_override: Option<&Path>,
+    options: BuildOptions,
+    progress: &(dyn Fn(BuildProgress) + Send + Sync),
+) -> Result<BuildOutcome, BaseError> {
+    // 1. Runtime must be Identified
+    let runtime = match &install.runtime {
+        crate::game_registry::RuntimeResolution::Identified { runtime, .. } => runtime,
+        crate::game_registry::RuntimeResolution::Unidentified { .. } => {
+            return Err(BaseError::RuntimeUnknown);
+        }
+    };
+
+    // A Copied base stores the same files differently from a Linked one (no
+    // hardlinks into the store install), and an unfiltered base holds different
+    // files from the default one, so each gets its own id rather than being
+    // answered by whichever was built first.
+    let mut base_id = make_base_id(runtime);
+    if mode == BaseMode::Copied {
+        base_id.push_str("_copied");
+    }
+    if options.include_excluded {
+        base_id.push_str("_unfiltered");
+    }
+    let manifest_path = paths.base_manifest_path(&base_id);
+
+    // 2. Existing manifest -> return without touching anything. A record that is there but is not
+    // a base record is damaged: the build replaces it (and the folder it left) once it is known
+    // that no instance is pinned to it. A record that cannot be read at all is an error, because
+    // a failed read of a healthy record must not be taken as permission to replace its base.
+    let mut damaged_record = false;
+    if manifest_path.exists() {
+        let content = std::fs::read_to_string(&manifest_path).map_err(|error| {
+            BaseError::Other(format!(
+                "the record of base {base_id} ({}) cannot be read: {error}",
+                manifest_path.display()
+            ))
+        })?;
+        match serde_json::from_str::<BaseManifest>(&content) {
+            Ok(manifest) => return Ok(BuildOutcome::Existing(manifest)),
+            Err(_) => {
+                let pinning = instances_pinning_base(paths, &base_id)?;
+                if !pinning.is_empty() {
+                    return Err(BaseError::Other(format!(
+                        "a damaged base with this id exists ({base_id}) and instance(s) {} are pinned to it, so it was not replaced. Remove those instances first.",
+                        pinning.join(", ")
+                    )));
+                }
+                damaged_record = true;
+            }
+        }
+    }
+
+    let source_dir = &install.discovered.location;
+    if !source_dir.exists() {
+        return Err(BaseError::Other(format!(
+            "source install location does not exist: {}",
+            source_dir.display()
+        )));
+    }
+
+    // Walk source without following symlinks/junctions
+    let mut entries = Vec::new();
+    let mut skipped = Vec::new();
+    walk_source_dir(
+        source_dir,
+        Path::new(""),
+        definition,
+        options,
+        &mut entries,
+        &mut skipped,
+    )?;
+
+    let total_source_bytes: u64 = entries.iter().map(|e| e.size).sum();
+
+    // Determine root
+    let base_root = root_override.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        bases_root_for(
+            paths,
+            source_dir,
+            install.discovered.volume.as_ref().map(|v| v.id.as_str()),
+        )
+    });
+
+    // 3. Linked mode checks
+    if mode == BaseMode::Linked {
+        let detector = VolumeDetector::new();
+        let base_volume = detector.get_volume_info(&base_root);
+        let install_volume = install.discovered.volume.as_ref();
+        if let Err(reason) = evaluate_link_support(base_volume.as_ref(), install_volume) {
+            return Err(BaseError::LinkUnavailable {
+                reason,
+                copied_bytes: total_source_bytes,
+            });
+        }
+    }
+
+    // Refuse definition where any file it would link also matches declared_writes
+    if mode == BaseMode::Linked {
+        for entry in &entries {
+            if entry.is_archive && definition.is_declared_write(&entry.rel_path) {
+                return Err(BaseError::DeclaredWriteLinked {
+                    path: entry.rel_path.clone(),
+                });
+            }
+        }
+    }
+
+    std::fs::create_dir_all(&base_root)?;
+    register_base_root(paths, &base_root)?;
+
+    // 4. Staging folder <root>/<base_id>.partial-<unique>
+    let unique = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
+    let staging_dir = base_root.join(format!("{base_id}.partial-{unique}"));
+    std::fs::create_dir_all(&staging_dir)?;
+
+    let mut guard = StagingGuard {
+        path: &staging_dir,
+        active: true,
+    };
+
+    let mut linked_bytes = 0u64;
+    let mut copied_bytes = 0u64;
+    let mut staged_entries = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        let dest = staging_dir.join(&entry.rel_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let link_it = mode == BaseMode::Linked && entry.is_archive;
+        if link_it {
+            std::fs::hard_link(&entry.abs_src_path, &dest)?;
+            linked_bytes += entry.size;
+        } else {
+            std::fs::copy(&entry.abs_src_path, &dest)?;
+            copied_bytes += entry.size;
+        }
+        staged_entries.push((entry, link_it));
+    }
+
+    // 5. Hash every base file with scoped threads
+    let pool_size = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8);
+
+    let total_files = staged_entries.len() as u64;
+    let current_idx = AtomicUsize::new(0);
+    let files_done_counter = AtomicU64::new(0);
+    let bytes_hashed_counter = AtomicU64::new(0);
+    let hashed_files = Mutex::new(Vec::with_capacity(staged_entries.len()));
+
+    let hash_ctx = HashProgressContext {
+        bytes_hashed_counter: &bytes_hashed_counter,
+        files_done_counter: &files_done_counter,
+        total_files,
+        total_bytes: total_source_bytes,
+        progress,
+    };
+
+    std::thread::scope(|s| {
+        for _ in 0..pool_size {
+            s.spawn(|| loop {
+                let idx = current_idx.fetch_add(1, Ordering::Relaxed);
+                if idx >= staged_entries.len() {
+                    break;
+                }
+                let (entry, linked) = &staged_entries[idx];
+                let dest = staging_dir.join(&entry.rel_path);
+                let res = hash_and_record(&dest, &entry.rel_path, *linked, &hash_ctx);
+                hashed_files.lock().unwrap().push(res);
+            });
+        }
+    });
+
+    let results = hashed_files.into_inner().unwrap();
+    let mut base_files = Vec::with_capacity(results.len());
+    for r in results {
+        base_files.push(r?);
+    }
+    base_files.sort_by(|a, b| a.path.cmp(&b.path));
+    skipped.sort();
+
+    let final_base_dir = base_root.join(&base_id);
+
+    // A folder under our own name with no readable manifest is what an
+    // interrupted build leaves (renamed into place, manifest never written).
+    // Move it aside and delete it, or this base id could never be built again.
+    // A damaged record is no readable manifest either (the new manifest replaces it below).
+    if final_base_dir.exists() && (damaged_record || !manifest_path.exists()) {
+        let stale = base_root.join(format!("{base_id}.stale-{unique}"));
+        std::fs::rename(&final_base_dir, &stale)?;
+        std::fs::remove_dir_all(&stale)?;
+    }
+
+    // 6. Rename staging folder to <root>/<base_id>/
+    if let Err(e) = std::fs::rename(&staging_dir, &final_base_dir) {
+        // If rename failed because another build won the race, delete staging and return Existing
+        if final_base_dir.exists() && manifest_path.exists() {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            guard.active = false;
+            if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+                if let Ok(m) = serde_json::from_str::<BaseManifest>(&content) {
+                    return Ok(BuildOutcome::Existing(m));
+                }
+            }
+        }
+        return Err(BaseError::Io(e));
+    }
+
+    guard.active = false;
+
+    let created_unix_ms = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as i64,
+        Err(e) => -(e.duration().as_millis() as i64),
+    };
+
+    let manifest = BaseManifest {
+        manifest_version: 1,
+        base_id: base_id.clone(),
+        runtime: runtime.clone(),
+        mode,
+        source_install: install.install_id.clone(),
+        source_product: Some(install.discovered.product.clone()),
+        source_location: source_dir.clone(),
+        location: final_base_dir,
+        created_unix_ms,
+        files: base_files,
+        skipped,
+    };
+
+    // Write manifest (temp file + rename)
+    let manifests_dir = paths.base_manifests_dir();
+    std::fs::create_dir_all(&manifests_dir)?;
+    let tmp_manifest = manifests_dir.join(format!("{base_id}.json.tmp-{unique}"));
+    let manifest_bytes = serde_json::to_string_pretty(&manifest)?;
+    std::fs::write(&tmp_manifest, manifest_bytes)?;
+    std::fs::rename(&tmp_manifest, &manifest_path)?;
+
+    Ok(BuildOutcome::Built {
+        manifest,
+        linked_bytes,
+        copied_bytes,
+    })
+}
+
+struct HashProgressContext<'a> {
+    bytes_hashed_counter: &'a AtomicU64,
+    files_done_counter: &'a AtomicU64,
+    total_files: u64,
+    total_bytes: u64,
+    progress: &'a (dyn Fn(BuildProgress) + Send + Sync),
+}
+
+fn hash_and_record(
+    dest_path: &Path,
+    rel_path: &str,
+    linked: bool,
+    ctx: &HashProgressContext<'_>,
+) -> Result<BaseFile, std::io::Error> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(dest_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 128 * 1024];
+    let mut file_size: u64 = 0;
+
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+        file_size += n as u64;
+        let hashed = ctx
+            .bytes_hashed_counter
+            .fetch_add(n as u64, Ordering::Relaxed)
+            + (n as u64);
+        let done = ctx.files_done_counter.load(Ordering::Relaxed);
+        (ctx.progress)(BuildProgress {
+            files_done: done,
+            files_total: ctx.total_files,
+            bytes_hashed: hashed,
+            bytes_total: ctx.total_bytes,
+        });
+    }
+
+    let sha256 = format!("{:x}", hasher.finalize());
+    let metadata = file.metadata()?;
+    let identity = get_file_identity_from_file(&file);
+    let modified_unix_ms = get_modified_unix_ms(&metadata);
+
+    let done = ctx.files_done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    let hashed = ctx.bytes_hashed_counter.load(Ordering::Relaxed);
+    (ctx.progress)(BuildProgress {
+        files_done: done,
+        files_total: ctx.total_files,
+        bytes_hashed: hashed,
+        bytes_total: ctx.total_bytes,
+    });
+
+    Ok(BaseFile {
+        path: rel_path.to_string(),
+        size: file_size,
+        sha256,
+        linked,
+        identity,
+        modified_unix_ms,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Verify base
+// ---------------------------------------------------------------------------
+
+fn walk_base_dir(base_root: &Path, rel_dir: &Path, out: &mut Vec<String>) {
+    let cur_dir = if rel_dir.as_os_str().is_empty() {
+        base_root.to_path_buf()
+    } else {
+        base_root.join(rel_dir)
+    };
+    let Ok(read_dir) = std::fs::read_dir(&cur_dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let file_name = entry.file_name();
+        let rel_path = rel_dir.join(&file_name);
+        let abs_path = entry.path();
+        let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+
+        let Ok(meta) = std::fs::symlink_metadata(&abs_path) else {
+            continue;
+        };
+
+        if is_reparse_point_or_symlink(&meta) {
+            out.push(rel_str);
+            continue;
+        }
+
+        if meta.is_dir() {
+            walk_base_dir(base_root, &rel_path, out);
+        } else if meta.is_file() {
+            out.push(rel_str);
+        }
+    }
+}
+
+pub fn verify_base(
+    manifest: &BaseManifest,
+    depth: VerifyDepth,
+    is_declared_write: &dyn Fn(&str) -> bool,
+    is_excluded: &dyn Fn(&str) -> bool,
+) -> BaseVerification {
+    let mut problems = Vec::new();
+    let mut game_writes = Vec::new();
+    let mut checked = 0;
+    let mut hashed = 0;
+
+    if !manifest.location.exists() || !manifest.location.is_dir() {
+        for file in &manifest.files {
+            if is_declared_write(&file.path) && !file.linked {
+                game_writes.push(file.path.clone());
+            } else {
+                problems.push(BaseProblem {
+                    path: file.path.clone(),
+                    linked_to_store: file.linked,
+                    kind: ProblemKind::Missing,
+                });
+            }
+        }
+        game_writes.sort();
+        game_writes.dedup();
+        problems.sort_by(|a, b| a.path.cmp(&b.path));
+        return BaseVerification {
+            checked: manifest.files.len(),
+            hashed: 0,
+            game_writes,
+            problems,
+        };
+    }
+
+    for file in &manifest.files {
+        checked += 1;
+        let file_path = manifest.location.join(&file.path);
+        let meta = match std::fs::symlink_metadata(&file_path) {
+            Ok(m) => m,
+            Err(_) => {
+                if is_declared_write(&file.path) && !file.linked {
+                    game_writes.push(file.path.clone());
+                } else {
+                    problems.push(BaseProblem {
+                        path: file.path.clone(),
+                        linked_to_store: file.linked,
+                        kind: ProblemKind::Missing,
+                    });
+                }
+                continue;
+            }
+        };
+
+        if !meta.is_file() {
+            if is_declared_write(&file.path) && !file.linked {
+                game_writes.push(file.path.clone());
+            } else {
+                problems.push(BaseProblem {
+                    path: file.path.clone(),
+                    linked_to_store: file.linked,
+                    kind: ProblemKind::Missing,
+                });
+            }
+            continue;
+        }
+
+        let actual_size = meta.len();
+        if actual_size != file.size {
+            if is_declared_write(&file.path) && !file.linked {
+                game_writes.push(file.path.clone());
+            } else {
+                problems.push(BaseProblem {
+                    path: file.path.clone(),
+                    linked_to_store: file.linked,
+                    kind: ProblemKind::SizeChanged {
+                        expected: file.size,
+                        actual: actual_size,
+                    },
+                });
+            }
+            continue;
+        }
+
+        match depth {
+            VerifyDepth::Quick => {
+                let cur_identity = get_file_identity(&file_path);
+                let cur_modified = get_modified_unix_ms(&meta);
+                let identity_differs = file.identity.is_some() && cur_identity != file.identity;
+                let modified_differs = cur_modified != file.modified_unix_ms;
+
+                if identity_differs || modified_differs {
+                    hashed += 1;
+                    if let Ok(actual_hash) = hash_file(&file_path) {
+                        if actual_hash != file.sha256 {
+                            if is_declared_write(&file.path) && !file.linked {
+                                game_writes.push(file.path.clone());
+                            } else {
+                                problems.push(BaseProblem {
+                                    path: file.path.clone(),
+                                    linked_to_store: file.linked,
+                                    kind: ProblemKind::ContentChanged,
+                                });
+                            }
+                        }
+                    } else if is_declared_write(&file.path) && !file.linked {
+                        game_writes.push(file.path.clone());
+                    } else {
+                        problems.push(BaseProblem {
+                            path: file.path.clone(),
+                            linked_to_store: file.linked,
+                            kind: ProblemKind::ContentChanged,
+                        });
+                    }
+                }
+            }
+            VerifyDepth::Full => {
+                hashed += 1;
+                if let Ok(actual_hash) = hash_file(&file_path) {
+                    if actual_hash != file.sha256 {
+                        if is_declared_write(&file.path) && !file.linked {
+                            game_writes.push(file.path.clone());
+                        } else {
+                            problems.push(BaseProblem {
+                                path: file.path.clone(),
+                                linked_to_store: file.linked,
+                                kind: ProblemKind::ContentChanged,
+                            });
+                        }
+                    }
+                } else if is_declared_write(&file.path) && !file.linked {
+                    game_writes.push(file.path.clone());
+                } else {
+                    problems.push(BaseProblem {
+                        path: file.path.clone(),
+                        linked_to_store: file.linked,
+                        kind: ProblemKind::ContentChanged,
+                    });
+                }
+            }
+        }
+    }
+
+    let manifest_file_set: HashSet<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+
+    let mut actual_files = Vec::new();
+    walk_base_dir(&manifest.location, Path::new(""), &mut actual_files);
+    for actual_rel in actual_files {
+        if !manifest_file_set.contains(actual_rel.as_str()) {
+            if is_declared_write(&actual_rel) {
+                game_writes.push(actual_rel);
+            } else if is_excluded(&actual_rel) {
+                // Stray excluded files appearing in the base later are ignored, not Unexpected.
+            } else {
+                problems.push(BaseProblem {
+                    path: actual_rel,
+                    linked_to_store: false,
+                    kind: ProblemKind::Unexpected,
+                });
+            }
+        }
+    }
+
+    game_writes.sort();
+    game_writes.dedup();
+    problems.sort_by(|a, b| a.path.cmp(&b.path));
+
+    BaseVerification {
+        checked,
+        hashed,
+        game_writes,
+        problems,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Listing and removing
+// ---------------------------------------------------------------------------
+
+/// Every base record in the bases folder. A record that cannot be read is returned as
+/// `BaseEntry::Damaged` with its path and the reason, never dropped. A folder that does not exist
+/// yet has no bases. Any other failure to read the folder is an error: a list that skipped
+/// records silently would hide bases the user needs to repair or remove.
+pub fn list_bases(paths: &AppPaths) -> Result<Vec<BaseEntry>, BaseError> {
+    let manifests_dir = paths.base_manifests_dir();
+    let entries = match std::fs::read_dir(&manifests_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(BaseError::Io(error)),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension() != Some(std::ffi::OsStr::new("json")) {
+            continue;
+        }
+        let base_id = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match read_manifest_file(&path) {
+            Ok(manifest) => {
+                let present = manifest.location.exists() && manifest.location.is_dir();
+                found.push(BaseEntry::Readable(Box::new(BaseListing {
+                    manifest,
+                    present,
+                })));
+            }
+            Err(error) => found.push(BaseEntry::Damaged(DamagedBase {
+                base_id,
+                manifest_path: path,
+                error,
+            })),
+        }
+    }
+    found.sort_by(|a, b| a.base_id().cmp(b.base_id()));
+    Ok(found)
+}
+
+/// Read a manifest file. The error names the file and whether it could not be read or is not a
+/// base record.
+fn read_manifest_file(path: &Path) -> Result<BaseManifest, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("{} cannot be read: {error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("{} is not a valid base record: {error}", path.display()))
+}
+
+/// Whether `base_id` can name a manifest file and a folder directly inside a bases root. Core's
+/// ids are lowercase letters, digits, `.`, `-` and `_`, and start with the game id. `.` and `..`
+/// pass the character test, so the first and last characters are checked too: a leading dot is a
+/// relative path, and Windows drops a trailing dot from a folder name. Windows device names
+/// (`nul`, `con.txt`) are not folders at all.
+pub fn is_plain_base_id(base_id: &str) -> bool {
+    let chars_ok = base_id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'));
+    let starts_ok = base_id
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let ends_ok = base_id.chars().last().is_some_and(|c| c != '.');
+    let stem = base_id.split('.').next().unwrap_or_default();
+    base_id.len() <= 200 && chars_ok && starts_ok && ends_ok && !is_windows_device_name(stem)
+}
+
+fn is_windows_device_name(stem: &str) -> bool {
+    matches!(
+        stem,
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    )
+}
+
+/// The bases roots outside the data folder that builds here created, from `bases/roots.json`. No
+/// file means none. A file that cannot be read is an error: removal must not treat it as "no
+/// roots", and must not guess one.
+fn read_base_roots(paths: &AppPaths) -> Result<Vec<PathBuf>, BaseError> {
+    let file = paths.base_roots_file();
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(BaseError::Other(format!(
+                "{} cannot be read, so Agora cannot tell which folders its bases live in: {error}",
+                file.display()
+            )))
+        }
+    };
+    serde_json::from_str::<Vec<PathBuf>>(&text).map_err(|error| {
+        BaseError::Other(format!(
+            "{} is not a list of folders, so Agora cannot tell which folders its bases live in: {error}",
+            file.display()
+        ))
+    })
+}
+
+/// Serialises the read-modify-write of `roots.json` between builds in this process.
+static BASE_ROOTS_LOCK: Mutex<()> = Mutex::new(());
+
+/// Remember a bases root a build is about to use, so removal can later tell a folder Agora made
+/// from one a hand-edited record names. The data folder's own `bases` folder needs no entry.
+fn register_base_root(paths: &AppPaths, root: &Path) -> Result<(), BaseError> {
+    if same_path(root, &paths.bases_dir()) {
+        return Ok(());
+    }
+    let _guard = BASE_ROOTS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut roots = read_base_roots(paths)?;
+    if roots.iter().any(|known| same_path(known, root)) {
+        return Ok(());
+    }
+    roots.push(root.to_path_buf());
+    let file = paths.base_roots_file();
+    std::fs::create_dir_all(paths.bases_dir())?;
+    let tmp = file.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&roots)?)?;
+    std::fs::rename(&tmp, &file)?;
+    Ok(())
+}
+
+/// Path equality by components (so a `.` component does not matter), ignoring ASCII case on
+/// Windows.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let mut left = a.components();
+    let mut right = b.components();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) => {
+                let (x, y) = (
+                    x.as_os_str().to_string_lossy(),
+                    y.as_os_str().to_string_lossy(),
+                );
+                let equal = if cfg!(windows) {
+                    x.eq_ignore_ascii_case(&y)
+                } else {
+                    x == y
+                };
+                if !equal {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// The folder to delete for `base_id`, derived from folders Agora knows rather than from the path
+/// a record states: `<root>/<base_id>` for the data folder's `bases` folder or a root a build
+/// registered. The record's location only has to agree with it. A manifest is a user-writable
+/// file, so a record that names any other folder is refused and nothing is deleted. The base
+/// folder must also not overlap the install it was built from.
+fn trusted_base_folder(
+    paths: &AppPaths,
+    manifest: &BaseManifest,
+    base_id: &str,
+) -> Result<PathBuf, BaseError> {
+    let refuse = |why: &str| {
+        BaseError::Other(format!(
+            "refusing to remove {}: the record for base {base_id} {why}",
+            manifest.location.display()
+        ))
+    };
+    if manifest.base_id != base_id {
+        return Err(refuse("names a different base id"));
+    }
+    let mut roots = vec![paths.bases_dir()];
+    roots.extend(read_base_roots(paths)?);
+    let folder = roots
+        .iter()
+        .map(|root| root.join(base_id))
+        .find(|candidate| same_path(candidate, &manifest.location))
+        .ok_or_else(|| refuse("does not point at a base folder Agora made"))?;
+    let overlaps_source = folder.starts_with(&manifest.source_location)
+        || manifest.source_location.starts_with(&folder);
+    if overlaps_source {
+        return Err(refuse("points at the install it was built from"));
+    }
+    Ok(folder)
+}
+
+/// The game instances pinned to `base_id`. Fails closed: if the instance table
+/// cannot be read, or a row's base reference cannot be parsed, the answer is an
+/// error rather than "none", because the caller may be about to delete the base.
+pub fn instances_pinning_base(paths: &AppPaths, base_id: &str) -> Result<Vec<String>, BaseError> {
+    let db_path = paths.local_state_db();
+    if !db_path.exists() {
+        // No state database means no instances were ever created here.
+        return Ok(Vec::new());
+    }
+    let unreadable = |e: &dyn std::fmt::Display| {
+        BaseError::Other(format!(
+            "cannot tell which instances use base {base_id}, so it is kept: {e}"
+        ))
+    };
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| unreadable(&e))?;
+    let mut stmt = conn
+        .prepare("SELECT instance_id, base_json FROM game_instances")
+        .map_err(|e| unreadable(&e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| unreadable(&e))?;
+    let mut instances = Vec::new();
+    for row in rows {
+        let (instance_id, base_json) = row.map_err(|e| unreadable(&e))?;
+        let base_ref: agora_game_api::BaseReference = serde_json::from_str(&base_json)
+            .map_err(|e| unreadable(&format!("instance {instance_id}: {e}")))?;
+        if matches!(&base_ref, agora_game_api::BaseReference::Pinned { id, .. } if id == base_id) {
+            instances.push(instance_id);
+        }
+    }
+    instances.sort();
+    Ok(instances)
+}
+
+/// The damaged record the list shows under `base_id`, found by its real file name. The list names
+/// a record by its file name without `.json`, which for a damaged file can be anything (`..`,
+/// `x.`), so those ids can only be matched against the folder, never joined into a path.
+fn damaged_record_listed_as(paths: &AppPaths, base_id: &str) -> Result<Option<PathBuf>, BaseError> {
+    let entries = match std::fs::read_dir(paths.base_manifests_dir()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(BaseError::Io(error)),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension() != Some(std::ffi::OsStr::new("json")) {
+            continue;
+        }
+        let listed_as = path.file_stem().map(|stem| stem.to_string_lossy());
+        if listed_as.as_deref() == Some(base_id) && read_manifest_file(&path).is_err() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+pub fn remove_base(paths: &AppPaths, base_id: &str) -> Result<(), BaseError> {
+    if !is_plain_base_id(base_id) {
+        // Not a name that can reach a folder or a manifest path, but the list can still show a
+        // damaged record under it. That record file (and nothing else) is removed.
+        let Some(record) = damaged_record_listed_as(paths, base_id)? else {
+            return Err(BaseError::Other(format!(
+                "'{base_id}' is not a base id, so nothing was removed."
+            )));
+        };
+        let pinning = instances_pinning_base(paths, base_id)?;
+        if !pinning.is_empty() {
+            return Err(BaseError::InUse { instances: pinning });
+        }
+        let metadata = std::fs::symlink_metadata(&record)?;
+        if !metadata.is_file() || record.parent() != Some(paths.base_manifests_dir().as_path()) {
+            return Err(BaseError::Other(format!(
+                "refusing to remove {}: it is not a plain record file",
+                record.display()
+            )));
+        }
+        std::fs::remove_file(&record)?;
+        return Ok(());
+    }
+    let pinning = instances_pinning_base(paths, base_id)?;
+    if !pinning.is_empty() {
+        return Err(BaseError::InUse { instances: pinning });
+    }
+
+    let manifest_path = paths.base_manifest_path(base_id);
+    if !manifest_path.exists() {
+        return Err(BaseError::NotFound(base_id.to_string()));
+    }
+    // A record that cannot be read at all is an error, not a damaged record: a failed read of a
+    // healthy record must never be taken as permission to delete a folder elsewhere.
+    let text = std::fs::read_to_string(&manifest_path)?;
+    match serde_json::from_str::<BaseManifest>(&text) {
+        Ok(manifest) => {
+            let folder = trusted_base_folder(paths, &manifest, base_id)?;
+            if folder.exists() {
+                std::fs::remove_dir_all(&folder)?;
+            }
+            let _ = std::fs::remove_file(&manifest_path);
+            Ok(())
+        }
+        // The record reads but is not a base record, so there is no recorded location to check.
+        // Only the folder the id names in the data folder's bases folder is removed, and only if
+        // it is a plain folder.
+        Err(_) => remove_damaged_base(paths, base_id, &manifest_path),
+    }
+}
+
+/// Remove a base whose record cannot be read: the folder the id names in the data folder's bases
+/// folder (if there is one), then the record. A base on another drive keeps its folder under that
+/// drive's `AgoraBases` folder, because a damaged record does not say where that is.
+fn remove_damaged_base(
+    paths: &AppPaths,
+    base_id: &str,
+    manifest_path: &Path,
+) -> Result<(), BaseError> {
+    let folder = paths.bases_dir().join(base_id);
+    match std::fs::symlink_metadata(&folder) {
+        Ok(metadata) => {
+            if is_reparse_point_or_symlink(&metadata) || !metadata.is_dir() {
+                return Err(BaseError::Other(format!(
+                    "refusing to remove {}: it is not a plain folder",
+                    folder.display()
+                )));
+            }
+            std::fs::remove_dir_all(&folder)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(BaseError::Io(error)),
+    }
+    std::fs::remove_file(manifest_path)?;
+    Ok(())
+}

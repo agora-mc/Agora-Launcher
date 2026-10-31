@@ -2,7 +2,7 @@
 //! enabled mods off and on.
 //!
 //! The scriptable subcommands map one-to-one onto
-//! `agora_core::bisect_service::BisectService`, which the desktop app uses too.
+//! `agora_game_minecraft::bisect_service::BisectService`, which the desktop app uses too.
 //! `run` is the interactive loop on top of the same calls: it applies a trial,
 //! asks the person to launch the game themselves, and records the answer. This
 //! command never launches the game.
@@ -10,8 +10,8 @@
 use std::io::{BufRead, IsTerminal, Write};
 
 use agora_core::bisect::BisectStatus;
-use agora_core::bisect_service::{BisectService, BisectView};
 use agora_core::ctx::Ctx;
+use agora_game_minecraft::bisect_service::{BisectService, BisectView};
 use clap::Subcommand;
 
 use crate::OutputFormat;

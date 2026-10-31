@@ -154,7 +154,6 @@ impl CrashService {
         }
 
         let _ = crate::snapshot::mark_instance_mutated(&dir);
-        self.sync_world_datapacks_after_toggle(&sanitized, &dir, filename);
 
         Ok(())
     }
@@ -192,37 +191,8 @@ impl CrashService {
         }
 
         let _ = crate::snapshot::mark_instance_mutated(&dir);
-        self.sync_world_datapacks_after_toggle(&sanitized, &dir, filename);
 
         Ok(())
-    }
-
-    /// Enabling or disabling a data pack changes what its worlds should hold;
-    /// bring them in line now rather than at the next launch. Best effort: the
-    /// toggle has already succeeded and sync problems are only logged.
-    fn sync_world_datapacks_after_toggle(
-        &self,
-        instance_id: &str,
-        dir: &std::path::Path,
-        filename: &str,
-    ) {
-        let Ok(manifest_path) = self.ctx.paths.instance_manifest(instance_id) else {
-            return;
-        };
-        let Ok(manifest) = crate::helpers::read_manifest(&manifest_path) else {
-            return;
-        };
-        if !manifest
-            .datapacks
-            .iter()
-            .any(|entry| entry.filename == filename)
-            || crate::instance_runtime::check_idle(&self.ctx.paths, instance_id).is_err()
-        {
-            return;
-        }
-        for warning in crate::datapack_sync::sync_instance_datapacks(dir, &manifest).warnings {
-            eprintln!("[datapacks] {instance_id}: {warning}");
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -1646,7 +1616,11 @@ mod tests {
     /// Initializes the local state database so connection-based methods work.
     fn setup_ctx() -> (CoreContext, PathBuf) {
         let seq = TEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = std::env::temp_dir().join(format!("agora-crash-svc-test-{}", seq));
+        let tmp = std::env::temp_dir().join(format!(
+            "agora-crash-svc-test-{}-{}",
+            std::process::id(),
+            seq
+        ));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let ctx = CoreContext::for_testing(tmp.clone());
@@ -1665,6 +1639,7 @@ mod tests {
 
         let manifest = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: instance_id.to_string(),
             name: instance_id.to_string(),
@@ -1687,6 +1662,7 @@ mod tests {
                     source_url: None,
                     version: Some("1.0.0".into()),
                     sha256: "abc".into(),
+                    hash_verified: true,
                     installed_at: "2024-01-01T00:00:00Z".into(),
                     java_packages: vec![],
                     mod_jar_id: None,
@@ -2228,6 +2204,7 @@ mod tests {
             source_url: None,
             version: Some("1.0.0".into()),
             sha256: "abc".into(),
+            hash_verified: true,
             installed_at: "2024-01-01T00:00:00Z".into(),
             java_packages: packages.iter().map(|p| p.to_string()).collect(),
             mod_jar_id: None,

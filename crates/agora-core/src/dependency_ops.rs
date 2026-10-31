@@ -6,7 +6,6 @@
 //! The desktop crate provides thin shim functions that open DB connections
 //! and delegate to these pure functions.
 
-use crate::jar_metadata::is_platform_dependency;
 use crate::models::InstalledMod;
 use crate::registry::ManifestDeps;
 use serde::{Deserialize, Serialize};
@@ -485,6 +484,71 @@ fn find_dependents_for_ids(
     let mut result: Vec<DependentInfo> = seen.into_values().collect();
     result.sort_by(|a, b| a.mod_id.cmp(&b.mod_id));
     result
+}
+
+/// Mod ids a loader ships inside itself, as `(loader, mod id, first loader
+/// version that ships it)`. A dependency on one of these is met by the loader,
+/// so no jar has to be found for it.
+///
+/// Sources: the MixinExtras README (https://github.com/LlamaLad7/MixinExtras)
+/// says "FabricLoader 0.15.0+ includes MixinExtras already" and "NeoForge
+/// 20.2.84+ includes MixinExtras already". Fabric Loader's release PR is
+/// FabricMC/fabric-loader#854 ("Include MixinExtras"). The same README tells
+/// Forge mods to depend on MixinExtras, so Forge is not listed. Quilt is not
+/// stated anywhere we checked, so it is not listed either.
+///
+/// Not verified: the exact mod id each loader exposes for the bundled library
+/// (the README gives none), and the MixinExtras version it bundles. A
+/// dependency's version range is not checked against that bundled version.
+const LOADER_BUNDLED_MODS: &[(&str, &str, &str)] = &[
+    ("fabric", "mixinextras", "0.15.0"),
+    ("neoforge", "mixinextras", "20.2.84"),
+];
+
+/// True when `dependency` is a platform id that needs no jar: the game, Java,
+/// the loader's own identity, or a library `loader` ships at `loader_version`.
+/// Every place that judges a dependency should ask this one question.
+pub fn is_platform_dependency(dependency: &str, loader: &str, loader_version: &str) -> bool {
+    matches!(
+        dependency,
+        "minecraft" | "java" | "fabricloader" | "fabric_loader" | "quilt_loader" | "quilt-loader"
+    ) || dependency.eq_ignore_ascii_case(loader)
+        || (loader == "neoforge" && dependency == "forge")
+        || is_loader_bundled_mod(dependency, loader, loader_version)
+}
+
+fn is_loader_bundled_mod(dependency: &str, loader: &str, loader_version: &str) -> bool {
+    LOADER_BUNDLED_MODS.iter().any(|(bundler, id, since)| {
+        bundler.eq_ignore_ascii_case(loader)
+            && id.eq_ignore_ascii_case(dependency)
+            && loader_version_at_least(release_part_of(loader, loader_version), since)
+    })
+}
+
+/// The release number a loader version is a build of. NeoForge publishes its
+/// betas as `<release>-beta` (e.g. `21.3.20-beta`), and a beta of a release
+/// ships what that release ships, so the suffix is dropped for NeoForge only.
+/// Fabric's published versions carry no such suffix (checked against
+/// https://maven.fabricmc.net/net/fabricmc/fabric-loader/maven-metadata.xml),
+/// so for any other loader the version is left alone and refused as before.
+fn release_part_of<'a>(loader: &str, version: &'a str) -> &'a str {
+    match version.strip_suffix("-beta") {
+        Some(release) if loader.eq_ignore_ascii_case("neoforge") => release,
+        _ => version,
+    }
+}
+
+/// Whether `version` is a plain dotted-number release at or after `since`.
+/// Anything else (empty, pre-release like `0.20.1-alpha`, build metadata,
+/// surrounding spaces) is not trusted, so the dependency stays a normal jar
+/// requirement and is reported as missing if no jar provides it.
+fn loader_version_at_least(version: &str, since: &str) -> bool {
+    let is_plain_release = !version.is_empty()
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+    is_plain_release
+        && crate::version_match::compare_versions(version, since) != std::cmp::Ordering::Less
 }
 
 /// Alias-aware `resolve_install_deps`: normalize all mod_jar_ids on both
@@ -1194,6 +1258,7 @@ mod tests {
             source_url: None,
             version: None,
             sha256: String::new(),
+            hash_verified: true,
             installed_at: String::new(),
             java_packages: Vec::new(),
             mod_jar_id: jar_id.map(String::from),
@@ -2163,7 +2228,10 @@ mod tests {
     #[test]
     fn an_empty_or_unreadable_mods_folder_satisfies_nothing() {
         let mods = [installed("sodium.jar", Some("sodium"), &[], &[])];
-        let missing_dir = std::env::temp_dir().join("agora_deps_no_such_instance_dir");
+        let missing_dir = std::env::temp_dir().join(format!(
+            "agora_deps_no_such_instance_dir-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&missing_dir);
         assert!(mod_jars_on_disk(&missing_dir).is_empty());
         assert!(!satisfies_dependency(

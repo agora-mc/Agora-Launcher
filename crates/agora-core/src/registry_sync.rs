@@ -917,7 +917,8 @@ mod tests {
 
     #[test]
     fn test_schema_version_from_bytes() {
-        let tmp_dir = std::env::temp_dir().join("agora-test-schema-version");
+        let tmp_dir =
+            std::env::temp_dir().join(format!("agora-test-schema-version-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
@@ -941,7 +942,8 @@ mod tests {
 
     #[test]
     fn test_schema_version_missing_table() {
-        let tmp_dir = std::env::temp_dir().join("agora-test-schema-missing");
+        let tmp_dir =
+            std::env::temp_dir().join(format!("agora-test-schema-missing-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
@@ -961,7 +963,8 @@ mod tests {
 
     #[test]
     fn test_schema_version_from_cached() {
-        let tmp_dir = std::env::temp_dir().join("agora-test-schema-cached");
+        let tmp_dir =
+            std::env::temp_dir().join(format!("agora-test-schema-cached-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
@@ -988,7 +991,8 @@ mod tests {
 
     #[test]
     fn test_atomic_replace_creates_files() {
-        let tmp_dir = std::env::temp_dir().join("agora-test-atomic");
+        let tmp_dir =
+            std::env::temp_dir().join(format!("agora-test-atomic-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
@@ -1009,7 +1013,8 @@ mod tests {
 
     #[test]
     fn test_registry_status_default() {
-        let tmp_dir = std::env::temp_dir().join("agora-test-status");
+        let tmp_dir =
+            std::env::temp_dir().join(format!("agora-test-status-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 

@@ -4,7 +4,9 @@ pub mod crash_diagnostics;
 pub mod crash_export;
 pub mod crash_investigator;
 pub mod dependency_ops;
-pub use agora_core::{download, error, loader_manifests, models};
+pub mod games;
+pub use agora_core::{download, error, models};
+pub use agora_game_minecraft::loader_manifests;
 
 pub mod governance;
 pub mod instances;
@@ -13,13 +15,13 @@ pub mod mod_install;
 pub mod modrinth_raw;
 pub mod mojang;
 pub mod providers;
-pub use agora_core::override_sanitizer;
+pub use agora_game_minecraft::override_sanitizer;
 pub mod mcp;
 pub mod paths;
 pub mod plugins;
 pub mod registry;
 pub mod registry_sync;
-pub use agora_core::state;
+pub use agora_game_minecraft::state;
 pub mod technic;
 pub mod version_cache;
 
@@ -28,6 +30,23 @@ use tauri::Manager;
 
 /// Shared type alias for the managed core context.
 type ManagedCoreContext = std::sync::Arc<std::sync::Mutex<agora_core::ctx::CoreContext>>;
+
+/// The games this build supports. A refused compiled package is a build bug,
+/// not user input.
+fn build_game_registry() -> agora_core::game_registry::GameRegistryBuilder {
+    let mut builder = agora_core::game_registry::GameRegistry::builder();
+    agora_game_minecraft::register_into(&mut builder)
+        .expect("build bug: the Minecraft package was refused");
+    builder
+        .add(
+            agora_core::game_registry::PackageSource::Compiled {
+                crate_name: "agora-game-creation".to_string(),
+            },
+            agora_game_creation::game_package(),
+        )
+        .expect("build bug: the Creation Engine package was refused");
+    builder
+}
 
 /// Return a clone of the initialized core context for adapter commands.
 pub fn core_context<R: tauri::Runtime>(
@@ -48,7 +67,9 @@ pub fn core_context<R: tauri::Runtime>(
             message: error.to_string(),
         }
     })?;
-    agora_core::ctx::CoreContext::initialize(paths).map(|(ctx, _)| plugins::with_events(app, ctx))
+    let games = build_game_registry();
+    agora_core::ctx::CoreContext::initialize(paths, games)
+        .map(|(ctx, _)| plugins::with_events(app, ctx))
 }
 
 /// Pull the instance id out of a `--launch <id>` / `--launch=<id>` argv.
@@ -113,6 +134,8 @@ fn watch_external_changes(app: tauri::AppHandle, locks_root: std::path::PathBuf)
 
 pub fn run() {
     agora_core::lock_manager::set_program_name("Agora app");
+    // Minecraft is a game package; register it with core before any context
+    // is built (idempotent, so the helper below may repeat it).
     // Log startup so the user can verify from the log file that they are
     // actually running the freshly-compiled binary (not a stale one). When
     // diagnosing OAuth issues, the absence of this line means the running
@@ -473,6 +496,56 @@ pub fn run() {
             commands::reveal_path,
             commands::restart_app,
             commands::open_external_url,
+            games::discovery::games_list,
+            games::discovery::games_discover,
+            games::discovery::games_add_folder,
+            games::discovery::games_remove_folder,
+            games::bases::games_base_list,
+            games::bases::games_base_build,
+            games::bases::games_base_verify,
+            games::bases::games_base_remove,
+            games::instances::games_instance_list,
+            games::instances::games_instance_get,
+            games::instances::games_instance_create,
+            games::instances::games_instance_delete,
+            games::instances::games_instance_check,
+            games::instances::games_instance_set_deployment,
+            games::instances::games_instance_launch,
+            games::content::games_content_list,
+            games::content::games_content_add,
+            games::content::games_content_verify,
+            games::content::games_content_remove,
+            games::content::games_instance_content_list,
+            games::content::games_instance_content_add,
+            games::content::games_instance_content_remove,
+            games::content::games_instance_content_set_enabled,
+            games::content::games_instance_content_move,
+            games::fomod::games_fomod_show,
+            games::fomod::games_fomod_install,
+            games::plugins::games_plugins_list,
+            games::plugins::games_plugins_set_active,
+            games::plugins::games_plugins_set_locked,
+            games::plugins::games_plugins_move,
+            games::plugins::games_plugins_sort,
+            games::plugins::games_plugins_check,
+            games::ini_saves::games_ini_get,
+            games::ini_saves::games_ini_set,
+            games::ini_saves::games_saves_get,
+            games::ini_saves::games_saves_set,
+            games::tools::games_tools_list,
+            games::tools::games_tools_run,
+            games::tools::games_tools_rollback,
+            games::tools::games_tools_remove,
+            games::tools::games_tools_diff,
+            games::tools::games_tools_swap_costs,
+            games::tools::games_tools_swap_status,
+            games::tools::games_tools_swap_restore,
+            games::import::games_import_mo2_scan,
+            games::import::games_import_mo2,
+            games::catalog::games_catalog_list,
+            games::catalog::games_catalog_install,
+            games::user_files::games_user_files_status,
+            games::user_files::games_user_files_restore,
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]
@@ -495,7 +568,7 @@ pub fn run() {
             // Keep one clone for startup maintenance after the managed state is
             // installed; maintenance is optional and must never delay setup.
             let startup_maintenance_ctx = match crate::paths::app_paths(app.handle()) {
-                Ok(paths) => match agora_core::ctx::CoreContext::initialize(paths) {
+                Ok(paths) => match agora_core::ctx::CoreContext::initialize(paths, build_game_registry()) {
                     Ok((ctx, warnings)) => {
                         for w in &warnings {
                             eprintln!("[core] {w}");
@@ -535,7 +608,7 @@ pub fn run() {
                     // Prewarm remains bounded and launch never depends on it (maintenance.rs:1).
                     let prewarm_ctx = ctx.clone();
                     tauri::async_runtime::spawn(async move {
-                        match agora_core::maintenance::prewarm_recent_instances(prewarm_ctx).await {
+                        match agora_game_minecraft::maintenance::prewarm_recent_instances(prewarm_ctx).await {
                             Ok(summary) if summary.warmed > 0 => eprintln!(
                                 "[core] warmed {} recent instance cache(s) ({} skipped, {} failed)",
                                 summary.warmed, summary.skipped, summary.failed
@@ -550,7 +623,7 @@ pub fn run() {
                     // budget) go to the OS trash; failures leave them in place.
                     let cleanup_ctx = ctx.clone();
                     tauri::async_runtime::spawn(async move {
-                        match agora_core::maintenance::cleanup_recently_deleted(
+                        match agora_game_minecraft::maintenance::cleanup_recently_deleted(
                             cleanup_ctx,
                             crate::instances::trash_adapter(),
                         )
@@ -572,7 +645,7 @@ pub fn run() {
                     // NetworkPolicy (network.rs), never errors.
                     let sweep_ctx = ctx.clone();
                     tauri::async_runtime::spawn(async move {
-                        match agora_core::update_cache::sweep_all_updates(sweep_ctx).await {
+                        match agora_game_minecraft::update_cache::sweep_all_updates(sweep_ctx).await {
                             Ok(summary) if summary.updated > 0 => eprintln!(
                                 "[core] update sweep refreshed {} instance(s) ({} skipped, {} failed, offline={})",
                                 summary.updated, summary.skipped, summary.failed, summary.offline_skipped

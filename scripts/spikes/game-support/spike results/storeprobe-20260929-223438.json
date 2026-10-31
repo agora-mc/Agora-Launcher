@@ -1,0 +1,112 @@
+{
+    "spikeVersion":  2,
+    "mode":  "StoreProbe",
+    "games":  [
+                  {
+                      "name":  "Minecraft Dungeons",
+                      "contentDir":  "C:\\XboxGames\\Minecraft Dungeons\\Content",
+                      "isBaseGame":  true,
+                      "contentIsReparsePoint":  false,
+                      "contentOwner":  "BUILTIN\\Administrators",
+                      "contentWritable":  true,
+                      "config":  {
+                                     "identityName":  "Microsoft.Lovika",
+                                     "publisher":  "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+                                     "version":  "1.17.0.0",
+                                     "executables":  [
+                                                         {
+                                                             "name":  "Dungeons\\Binaries\\Win64\\Dungeons.exe",
+                                                             "id":  "Game",
+                                                             "deviceFamily":  "",
+                                                             "overrideDisplayName":  ""
+                                                         }
+                                                     ],
+                                     "desktopRegistration":  {
+                                                                 "DependencyList":  "",
+                                                                 "ProcessorArchitecture":  "x64",
+                                                                 "MultiplayerProtocol":  "true"
+                                                             },
+                                     "topLevelElements":  [
+                                                              "Identity",
+                                                              "StoreId",
+                                                              "TitleId",
+                                                              "MSAFullTrust",
+                                                              "Resources",
+                                                              "ExecutableList",
+                                                              "ShellVisuals",
+                                                              "DesktopRegistration"
+                                                          ]
+                                 },
+                      "executableChecks":  [
+                                               {
+                                                   "name":  "Dungeons\\Binaries\\Win64\\Dungeons.exe",
+                                                   "id":  "Game",
+                                                   "exists":  true,
+                                                   "readable":  false,
+                                                   "peHeader":  false,
+                                                   "error":  "Exception calling \"Open\" with \"4\" argument(s): \"Access to the path \u0027C:\\XboxGames\\Minecraft Dungeons\\Content\\Dungeons\\Binaries\\Win64\\Dungeons.exe\u0027 is denied.\""
+                                               }
+                                           ],
+                      "gameLaunchHelperReadable":  true,
+                      "packageFound":  true,
+                      "packageFamilyName":  "Microsoft.Lovika_8wekyb3d8bbwe",
+                      "packageInstallLocation":  "C:\\Program Files\\WindowsApps\\Microsoft.Lovika_1.17.0.0_x64__8wekyb3d8bbwe",
+                      "packageLocationIsReparsePoint":  true,
+                      "packageLocationTarget":  "C:\\XboxGames\\Minecraft Dungeons\\Content\\",
+                      "isDevelopmentMode":  false,
+                      "signatureKind":  "Store",
+                      "applications":  [
+                                           {
+                                               "id":  "Game",
+                                               "executable":  "GameLaunchHelper.exe",
+                                               "aumid":  "Microsoft.Lovika_8wekyb3d8bbwe!Game"
+                                           }
+                                       ],
+                      "manifestError":  null
+                  }
+              ],
+    "launchAttempts":  [
+                           {
+                               "method":  "direct executable",
+                               "startError":  null,
+                               "processSeen":  true,
+                               "processes":  [
+                                                 {
+                                                     "name":  "Dungeons",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\Microsoft.Lovika_1.17.0.0_x64__8wekyb3d8bbwe\\Dungeons\\Binaries\\Win64\\Dungeons.exe",
+                                                     "pathError":  null
+                                                 }
+                                             ],
+                               "userSaysGameStarted":  "y",
+                               "notes":  ""
+                           },
+                           {
+                               "method":  "gamelaunchhelper.exe",
+                               "startError":  null,
+                               "processSeen":  true,
+                               "processes":  [
+                                                 {
+                                                     "name":  "Dungeons",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\Microsoft.Lovika_1.17.0.0_x64__8wekyb3d8bbwe\\Dungeons\\Binaries\\Win64\\Dungeons.exe",
+                                                     "pathError":  null
+                                                 }
+                                             ],
+                               "userSaysGameStarted":  "y",
+                               "notes":  ""
+                           },
+                           {
+                               "method":  "app id (shell:AppsFolder)",
+                               "startError":  null,
+                               "processSeen":  true,
+                               "processes":  [
+                                                 {
+                                                     "name":  "Dungeons",
+                                                     "path":  "C:\\Program Files\\WindowsApps\\Microsoft.Lovika_1.17.0.0_x64__8wekyb3d8bbwe\\Dungeons\\Binaries\\Win64\\Dungeons.exe",
+                                                     "pathError":  null
+                                                 }
+                                             ],
+                               "userSaysGameStarted":  "y",
+                               "notes":  ""
+                           }
+                       ]
+}
